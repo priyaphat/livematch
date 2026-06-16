@@ -16,16 +16,29 @@ defineProps([
   <section class="grid gap-4 lg:grid-cols-2">
     <div class="grid gap-4">
       <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-        ค่าเข้าสนามต่อคน
+        <span class="font-bold">ค่าเข้าสนามต่อคน</span>
         <input v-model.number="state.settings.entryFee" type="number" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
       </label>
+
       <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-        ค่าลูกแบด
+        <span class="font-bold">ค่าลูกแบด</span>
         <input v-model.number="state.settings.shuttleFee" type="number" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
       </label>
-      <label class="flex items-center justify-between rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-        จับคู่ข้ามระดับมือ
+
+      <label class="flex items-center justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+        <span class="font-bold">จับคู่ข้ามระดับมือ</span>
         <input v-model="state.settings.allowCrossLevel" type="checkbox" class="h-5 w-5" @change="saveSettings" />
+      </label>
+
+      <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+        <span class="font-bold">ลำดับการสุ่ม</span>
+        <select v-model="state.settings.randomPriority" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings">
+          <option value="level">ระดับมือก่อน</option>
+          <option value="games">เกมน้อยก่อน</option>
+        </select>
+        <span class="text-sm text-stone-500 dark:text-stone-400">
+          ระดับมือก่อนจะจัดกลุ่มตามระดับเป็นหลัก ส่วนเกมน้อยก่อนจะเลือกกลุ่มที่จำนวนเกมรวมน้อยกว่า
+        </span>
       </label>
     </div>
 

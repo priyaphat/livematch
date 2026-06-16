@@ -5,7 +5,7 @@ defineProps([
   'state',
   'forms',
   'ui',
-  'levelLabel',
+  'matchLevelLabel',
   'randomMatch',
   'startMatch',
   'playerName'
@@ -33,7 +33,7 @@ defineProps([
       <article v-for="match in state.queue" :key="match.id" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
         <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
           <div>
-            <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ levelLabel(match.level) }}</p>
+            <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ matchLevelLabel(match) }}</p>
             <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
           </div>
           <div class="grid grid-cols-[1fr_auto] gap-2 sm:min-w-72">

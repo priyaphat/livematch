@@ -1,5 +1,5 @@
 <script setup>
-import { Check, Dumbbell, LockKeyhole, Plus, ShieldCheck, Sparkles } from '@lucide/vue'
+import { Check, Medal, LockKeyhole, Plus, ShieldCheck, Sparkles } from '@lucide/vue'
 
 defineProps([
   'forms',
@@ -13,7 +13,7 @@ defineProps([
     <div class="rounded-lg border border-stone-200 bg-white p-5 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-6">
       <div class="flex items-start justify-between gap-4">
         <div class="grid h-14 w-14 shrink-0 place-items-center rounded-md bg-court-500 text-white shadow-soft">
-          <Dumbbell class="h-7 w-7" />
+          <Medal class="h-7 w-7" />
         </div>
         <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-bold text-court-600 dark:bg-stone-800 dark:text-court-500">
           Admin only

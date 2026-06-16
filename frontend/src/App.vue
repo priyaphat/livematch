@@ -8,7 +8,7 @@ import {
   Clock3,
   Copy,
   CreditCard,
-  Dumbbell,
+  Medal,
   History,
   Home,
   LogOut,
@@ -69,6 +69,7 @@ const state = reactive({
     levels: ['light', 'middle', 'heavy'],
     allowCrossLevel: true,
     crossLevelRange: 1,
+    randomPriority: 'level',
     showPaymentOnShare: true
   },
   players: [
@@ -203,6 +204,16 @@ watch(
 const playerById = (id) => state.players.find((player) => player.id === id)
 const playerName = (id) => playerById(id)?.name || '-'
 const levelLabel = (level) => ({ light: 'เบา', middle: 'กลาง', heavy: 'หนัก' }[level] || level)
+function matchLevelLabel(match) {
+  const orderedLevels = state.settings.levels
+  const levels = [...new Set(matchPlayers(match).map((id) => playerById(id)?.level || match.level))]
+    .sort((a, b) => {
+      const aIndex = orderedLevels.indexOf(a)
+      const bIndex = orderedLevels.indexOf(b)
+      return (aIndex === -1 ? 999 : aIndex) - (bIndex === -1 ? 999 : bIndex)
+    })
+  return levels.map(levelLabel).join(' + ')
+}
 const isAdmin = computed(() => state.session.unlocked)
 
 const queuedPlayerIds = computed(() => new Set(state.queue.flatMap(matchPlayers)))
@@ -253,7 +264,7 @@ const randomEligibleGroups = computed(() => couponGroups.value.filter((group) =>
 const dashboardCards = computed(() => [
   { label: 'ผู้เล่นวันนี้', value: `${activePlayerCount.value} คน`, icon: Users },
   { label: 'จำนวนแมตช์ที่บันทึก', value: `${totalRecordedMatches.value} เกม`, icon: ClipboardList },
-  { label: 'รวมการลงเล่น', value: `${totalPlays.value} ครั้ง`, icon: Dumbbell },
+  { label: 'รวมการลงเล่น', value: `${totalPlays.value} ครั้ง`, icon: Medal },
   { label: 'เฉลี่ยเกมต่อคน', value: averageGames.value.toFixed(2), icon: BarChart3 },
   { label: 'ลงน้อยสุด', value: `${minGames.value} เกม`, icon: Clock3 },
   { label: 'ลงมากสุด', value: `${maxGames.value} เกม`, icon: Activity },
@@ -319,34 +330,100 @@ function togglePayment(player) {
 }
 
 function randomMatch() {
-  const sameLevel = [...state.settings.levels]
-    .map((level) => randomEligibleGroups.value.filter((group) => group.level === level))
-    .find((groups) => groups.reduce((sum, group) => sum + group.ids.length, 0) >= 4)
+  while (true) {
+    const { selected, level } = pickRandomMatch(randomEligibleGroups.value)
+    if (selected.length < 4) return
 
-  const pool = sameLevel || (state.settings.allowCrossLevel ? randomEligibleGroups.value : [])
+    const couple = state.couples.find((item) => selected.includes(item.a) && selected.includes(item.b))
+    let teams = selected
+    if (couple) {
+      const rest = selected.filter((id) => id !== couple.a && id !== couple.b)
+      teams = [couple.a, couple.b, rest[0], rest[1]]
+    }
+
+    state.queue.push({
+      id: nextGameId(),
+      court: '-',
+      level,
+      a1: teams[0],
+      a2: teams[1],
+      b1: teams[2],
+      b2: teams[3]
+    })
+  }
+}
+
+function pickRandomMatch(groups) {
+  if (state.settings.randomPriority === 'games') return pickRandomMatchByGames(groups)
+  return pickRandomMatchByLevel(groups)
+}
+
+function pickRandomMatchByLevel(groups) {
+  for (const level of state.settings.levels) {
+    const selected = pickFourGroups(groups.filter((group) => group.level === level))
+    if (selected.length === 4) return { selected, level }
+  }
+  if (state.settings.allowCrossLevel) {
+    for (const level of state.settings.levels) {
+      const baseIndex = state.settings.levels.indexOf(level)
+      const selected = pickFourGroups(groups.filter((group) => {
+        const groupIndex = state.settings.levels.indexOf(group.level)
+        return group.level === level || Math.abs(groupIndex - baseIndex) <= state.settings.crossLevelRange
+      }))
+      if (selected.length === 4) return { selected, level }
+    }
+  }
+  return { selected: [], level: '' }
+}
+
+function pickRandomMatchByGames(groups) {
+  const sameLevel = bestMatchForLevels(groups, state.settings.levels)
+  if (sameLevel.selected.length === 4) return sameLevel
+  if (!state.settings.allowCrossLevel) return { selected: [], level: '' }
+
+  let best = { selected: [], level: '', games: Number.POSITIVE_INFINITY }
+  for (const level of state.settings.levels) {
+    const baseIndex = state.settings.levels.indexOf(level)
+    const pool = groups.filter((group) => {
+      const groupIndex = state.settings.levels.indexOf(group.level)
+      return group.level === level || Math.abs(groupIndex - baseIndex) <= state.settings.crossLevelRange
+    })
+    const selected = pickFourGroups(pool)
+    if (selected.length === 4) {
+      const games = selectedGroupGames(pool, selected)
+      if (games < best.games) best = { selected, level, games }
+    }
+  }
+  return best.selected.length === 4 ? best : { selected: [], level: '' }
+}
+
+function bestMatchForLevels(groups, levels) {
+  let best = { selected: [], level: '', games: Number.POSITIVE_INFINITY }
+  for (const level of levels) {
+    const pool = groups.filter((group) => group.level === level)
+    const selected = pickFourGroups(pool)
+    if (selected.length === 4) {
+      const games = selectedGroupGames(pool, selected)
+      if (games < best.games) best = { selected, level, games }
+    }
+  }
+  return best.selected.length === 4 ? best : { selected: [], level: '' }
+}
+
+function selectedGroupGames(groups, selected) {
+  const selectedSet = new Set(selected)
+  return groups.reduce((sum, group) => (
+    group.ids.some((id) => selectedSet.has(id)) ? sum + group.games : sum
+  ), 0)
+}
+
+function pickFourGroups(groups) {
   const selected = []
-  for (const group of pool) {
-    if (selected.length >= 4) break
+  for (const group of groups) {
     if (selected.length + group.ids.length <= 4) selected.push(...group.ids)
+    if (selected.length === 4) return selected
   }
-  if (selected.length < 4) return
-
-  const couple = state.couples.find((item) => selected.includes(item.a) && selected.includes(item.b))
-  let teams = selected
-  if (couple) {
-    const rest = selected.filter((id) => id !== couple.a && id !== couple.b)
-    teams = [couple.a, couple.b, rest[0], rest[1]]
-  }
-
-  state.queue.push({
-    id: nextGameId(),
-    court: '-',
-    level: playerById(teams[0]).level,
-    a1: teams[0],
-    a2: teams[1],
-    b1: teams[2],
-    b2: teams[3]
-  })
+  return selected
 }
 
 function startMatch(match, court = '1') {
@@ -675,6 +752,7 @@ const pageProps = computed(() => ({
   money,
   playerCost,
   levelLabel,
+  matchLevelLabel,
   addPlayer: addPlayerApi,
   sharePlayers,
   togglePayment: togglePaymentApi,
@@ -708,7 +786,7 @@ const pageProps = computed(() => ({
       <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4">
         <button class="flex min-w-0 items-center gap-3 text-left" @click="isAdmin ? state.tab = 'dashboard' : state.tab = 'home'">
           <span class="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-court-500 text-white shadow-soft">
-            <Dumbbell class="h-5 w-5" />
+            <Medal class="h-5 w-5" />
           </span>
           <span class="min-w-0">
             <span class="block truncate text-base font-black leading-5 sm:text-lg">LiveMatch</span>
