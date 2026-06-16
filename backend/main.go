@@ -125,6 +125,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.handleHealth)
+	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
+	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
 	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
 	mux.HandleFunc("/api/sessions", a.handleSessions)
 	mux.HandleFunc("/api/sessions/", a.handleSessionRoutes)
@@ -380,6 +382,290 @@ func (a *app) handleUnlockByPasscode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, state)
 }
 
+func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Username != "superadmin" || body.Password != "12345678" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid supervisor login"})
+		return
+	}
+
+	type supervisorWinner struct {
+		SessionID   string `json:"sessionId"`
+		SessionName string `json:"sessionName"`
+		ID          int    `json:"id"`
+		Name        string `json:"name"`
+		Wins        int    `json:"wins"`
+		Losses      int    `json:"losses"`
+	}
+	type supervisorSession struct {
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		Players        int    `json:"players"`
+		PaidPlayers    int    `json:"paidPlayers"`
+		UnpaidPlayers  int    `json:"unpaidPlayers"`
+		Matches        int    `json:"matches"`
+		QueueMatches   int    `json:"queueMatches"`
+		LiveMatches    int    `json:"liveMatches"`
+		HistoryMatches int    `json:"historyMatches"`
+		Shuttles       int    `json:"shuttles"`
+		Revenue        int    `json:"revenue"`
+		UpdatedAt      string `json:"updatedAt"`
+	}
+	summary := struct {
+		TotalSessions  int                 `json:"totalSessions"`
+		TotalPlayers   int                 `json:"totalPlayers"`
+		TotalMatches   int                 `json:"totalMatches"`
+		QueueMatches   int                 `json:"queueMatches"`
+		LiveMatches    int                 `json:"liveMatches"`
+		HistoryMatches int                 `json:"historyMatches"`
+		TotalShuttles  int                 `json:"totalShuttles"`
+		TotalWins      int                 `json:"totalWins"`
+		AverageGames   float64             `json:"averageGames"`
+		TotalRevenue   int                 `json:"totalRevenue"`
+		PaidRevenue    int                 `json:"paidRevenue"`
+		UnpaidRevenue  int                 `json:"unpaidRevenue"`
+		TopWinners     []supervisorWinner  `json:"topWinners"`
+		Sessions       []supervisorSession `json:"sessions"`
+	}{TopWinners: []supervisorWinner{}, Sessions: []supervisorSession{}}
+
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from sessions`).Scan(&summary.TotalSessions)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players where active`).Scan(&summary.TotalPlayers)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches`).Scan(&summary.TotalMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'queue'`).Scan(&summary.QueueMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'live'`).Scan(&summary.LiveMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'history'`).Scan(&summary.HistoryMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(shuttles), 0) from matches`).Scan(&summary.TotalShuttles)
+	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(wins), 0) from players where active`).Scan(&summary.TotalWins)
+	_ = a.db.QueryRowContext(r.Context(), `select coalesce(avg(games), 0) from players where active`).Scan(&summary.AverageGames)
+	_ = a.db.QueryRowContext(r.Context(), `
+		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
+		from players p
+		join session_settings ss on ss.session_id = p.session_id
+		where p.active
+	`).Scan(&summary.TotalRevenue)
+	_ = a.db.QueryRowContext(r.Context(), `
+		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
+		from players p
+		join session_settings ss on ss.session_id = p.session_id
+		where p.active and p.paid
+	`).Scan(&summary.PaidRevenue)
+	summary.UnpaidRevenue = summary.TotalRevenue - summary.PaidRevenue
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		select p.session_id, coalesce(s.name, p.session_id), p.id, p.name, p.wins, p.losses
+		from players p
+		join sessions s on s.id = p.session_id
+		where p.active
+		order by p.wins desc, p.losses asc, p.games desc, p.id asc
+		limit 5
+	`)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item supervisorWinner
+		if err := rows.Scan(&item.SessionID, &item.SessionName, &item.ID, &item.Name, &item.Wins, &item.Losses); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		summary.TopWinners = append(summary.TopWinners, item)
+	}
+
+	rows, err = a.db.QueryContext(r.Context(), `
+		select s.id, coalesce(s.name, s.id),
+			(select count(*) from players p where p.session_id = s.id and p.active) as players,
+			(select count(*) from players p where p.session_id = s.id and p.active and p.paid) as paid_players,
+			(select count(*) from players p where p.session_id = s.id and p.active and not p.paid) as unpaid_players,
+			(select count(*) from matches m where m.session_id = s.id) as matches,
+			(select count(*) from matches m where m.session_id = s.id and m.phase = 'queue') as queue_matches,
+			(select count(*) from matches m where m.session_id = s.id and m.phase = 'live') as live_matches,
+			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history') as history_matches,
+			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id) as shuttles,
+			(
+				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
+				from players p
+				join session_settings ss on ss.session_id = p.session_id
+				where p.session_id = s.id and p.active
+			) as revenue,
+			to_char(s.updated_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') as updated_at
+		from sessions s
+		order by s.updated_at desc
+		limit 12
+	`)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item supervisorSession
+		if err := rows.Scan(&item.ID, &item.Name, &item.Players, &item.PaidPlayers, &item.UnpaidPlayers, &item.Matches, &item.QueueMatches, &item.LiveMatches, &item.HistoryMatches, &item.Shuttles, &item.Revenue, &item.UpdatedAt); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		summary.Sessions = append(summary.Sessions, item)
+	}
+
+	writeJSON(w, http.StatusOK, summary)
+}
+
+func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	var body struct {
+		Username  string `json:"username"`
+		Password  string `json:"password"`
+		SessionID string `json:"sessionId"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	if body.Username != "superadmin" || body.Password != "12345678" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid supervisor login"})
+		return
+	}
+	if strings.TrimSpace(body.SessionID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id required"})
+		return
+	}
+
+	type paymentPlayer struct {
+		ID       int    `json:"id"`
+		Name     string `json:"name"`
+		Games    int    `json:"games"`
+		Wins     int    `json:"wins"`
+		Losses   int    `json:"losses"`
+		Shuttles int    `json:"shuttles"`
+		Paid     bool   `json:"paid"`
+		Active   bool   `json:"active"`
+		Cost     int    `json:"cost"`
+	}
+	type historyMatch struct {
+		ID         int    `json:"id"`
+		Court      string `json:"court"`
+		Level      string `json:"level"`
+		A1         int    `json:"a1"`
+		A2         int    `json:"a2"`
+		B1         int    `json:"b1"`
+		B2         int    `json:"b2"`
+		A1Name     string `json:"a1Name"`
+		A2Name     string `json:"a2Name"`
+		B1Name     string `json:"b1Name"`
+		B2Name     string `json:"b2Name"`
+		Shuttles   int    `json:"shuttles"`
+		Winner     string `json:"winner"`
+		StartedAt  string `json:"startedAt"`
+		EndedAt    string `json:"endedAt"`
+		Note       string `json:"note"`
+		ShuttleSeq string `json:"shuttleSequence"`
+	}
+	detail := struct {
+		SessionID     string          `json:"sessionId"`
+		SessionName   string          `json:"sessionName"`
+		EntryFee      int             `json:"entryFee"`
+		ShuttleFee    int             `json:"shuttleFee"`
+		Players       []paymentPlayer `json:"players"`
+		History       []historyMatch  `json:"history"`
+		TotalRevenue  int             `json:"totalRevenue"`
+		PaidRevenue   int             `json:"paidRevenue"`
+		UnpaidRevenue int             `json:"unpaidRevenue"`
+	}{Players: []paymentPlayer{}, History: []historyMatch{}}
+
+	if err := a.db.QueryRowContext(r.Context(), `
+		select s.id, coalesce(s.name, s.id), ss.entry_fee, ss.shuttle_fee
+		from sessions s
+		join session_settings ss on ss.session_id = s.id
+		where s.id = $1
+	`, body.SessionID).Scan(&detail.SessionID, &detail.SessionName, &detail.EntryFee, &detail.ShuttleFee); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+
+	rows, err := a.db.QueryContext(r.Context(), `
+		select id, name, games, wins, losses, shuttles, paid, active,
+			$2 + shuttles * $3 as cost
+		from players
+		where session_id = $1
+		order by active desc, paid asc, id asc
+	`, detail.SessionID, detail.EntryFee, detail.ShuttleFee)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var player paymentPlayer
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Cost); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		detail.Players = append(detail.Players, player)
+		detail.TotalRevenue += player.Cost
+		if player.Paid {
+			detail.PaidRevenue += player.Cost
+		}
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	detail.UnpaidRevenue = detail.TotalRevenue - detail.PaidRevenue
+
+	rows, err = a.db.QueryContext(r.Context(), `
+		select m.id, m.court, m.level, m.a1, m.a2, m.b1, m.b2,
+			coalesce(a1.name, '-'), coalesce(a2.name, '-'), coalesce(b1.name, '-'), coalesce(b2.name, '-'),
+			m.shuttles, m.winner, m.started_at, m.ended_at, m.note, m.shuttle_sequence
+		from matches m
+		left join players a1 on a1.session_id = m.session_id and a1.id = m.a1
+		left join players a2 on a2.session_id = m.session_id and a2.id = m.a2
+		left join players b1 on b1.session_id = m.session_id and b1.id = m.b1
+		left join players b2 on b2.session_id = m.session_id and b2.id = m.b2
+		where m.session_id = $1 and m.phase = 'history'
+		order by m.id asc
+	`, detail.SessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var match historyMatch
+		if err := rows.Scan(&match.ID, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.A1Name, &match.A2Name, &match.B1Name, &match.B2Name, &match.Shuttles, &match.Winner, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttleSeq); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		detail.History = append(detail.History, match)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, detail)
+}
+
 func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -422,6 +708,16 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodGet && action == "state":
 		writeJSON(w, http.StatusOK, state)
+	case r.Method == http.MethodGet && action == "players":
+		items := state.Players
+		search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+		if search != "" {
+			items = slices.DeleteFunc(slices.Clone(items), func(player Player) bool {
+				return !strings.Contains(strings.ToLower(player.Name), search) && !strings.Contains(strconv.Itoa(player.ID), search)
+			})
+		}
+		paged, page, pageSize := paginate(items, r)
+		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPost && action == "players":
 		var body struct {
 			Name   string `json:"name"`
@@ -491,6 +787,9 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		state.NextIDs.Couple++
 		state.Couples = append(state.Couples, Couple{ID: state.NextIDs.Couple, A: body.A, B: body.B})
 		a.respondSaved(w, r, state)
+	case r.Method == http.MethodGet && action == "couples":
+		paged, page, pageSize := paginate(state.Couples, r)
+		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(state.Couples), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodDelete && action == "couples" && len(parts) >= 3:
 		coupleID, _ := strconv.Atoi(parts[2])
 		state.Couples = slices.DeleteFunc(state.Couples, func(c Couple) bool { return c.ID == coupleID })
@@ -501,6 +800,39 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.respondSaved(w, r, state)
+	case r.Method == http.MethodGet && action == "coupons":
+		busy := map[int]bool{}
+		for _, match := range append(append([]Match{}, state.Queue...), state.Live...) {
+			for _, id := range matchPlayers(match) {
+				busy[id] = true
+			}
+		}
+		groups := buildAvailableGroups(state, busy)
+		items := []map[string]any{}
+		for _, group := range groups {
+			names := []string{}
+			for _, id := range group.ids {
+				for _, player := range state.Players {
+					if player.ID == id {
+						names = append(names, player.Name)
+					}
+				}
+			}
+			items = append(items, map[string]any{
+				"ids":   group.ids,
+				"name":  strings.Join(names, " + "),
+				"level": group.level,
+				"games": group.games,
+			})
+		}
+		search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
+		if search != "" {
+			items = slices.DeleteFunc(slices.Clone(items), func(item map[string]any) bool {
+				return !strings.Contains(strings.ToLower(fmt.Sprint(item["name"])), search) && !strings.Contains(fmt.Sprint(item["ids"]), search)
+			})
+		}
+		paged, page, pageSize := paginate(items, r)
+		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "start":
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -512,6 +844,13 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !startMatch(&state, matchID, body.Court) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
+			return
+		}
+		a.respondSaved(w, r, state)
+	case r.Method == http.MethodDelete && action == "queue" && len(parts) >= 3:
+		matchID, _ := strconv.Atoi(parts[2])
+		if !cancelQueuedMatch(&state, matchID) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
@@ -1038,6 +1377,16 @@ func startMatch(state *SessionState, matchID int, court string) bool {
 	return false
 }
 
+func cancelQueuedMatch(state *SessionState, matchID int) bool {
+	for i, match := range state.Queue {
+		if match.ID == matchID {
+			state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 func adjustShuttles(state *SessionState, matchID, delta int) {
 	for i := range state.Live {
 		if state.Live[i].ID == matchID {
@@ -1150,6 +1499,29 @@ func firstLevel(state SessionState) string {
 		return "middle"
 	}
 	return state.Settings.Levels[0]
+}
+
+func paginate[T any](items []T, r *http.Request) ([]T, int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	start := (page - 1) * pageSize
+	if start >= len(items) {
+		return []T{}, page, pageSize
+	}
+	end := start + pageSize
+	if end > len(items) {
+		end = len(items)
+	}
+	return items[start:end], page, pageSize
 }
 
 func firstCourt(state SessionState) string {

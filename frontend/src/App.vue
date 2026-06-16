@@ -34,6 +34,7 @@ import LiveMatchPage from './pages/LiveMatchPage.vue'
 import PlayersPage from './pages/PlayersPage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
+import SupervisorPage from './pages/SupervisorPage.vue'
 
 const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080'
 const adminSessionKey = 'livematch.adminSessionId'
@@ -104,6 +105,18 @@ const forms = reactive({
   createdPasscode: '',
   loginError: '',
   newPlayerName: '',
+  playerSearch: '',
+  playerPage: 1,
+  playerPageSize: 8,
+  coupleSearch: '',
+  couplePage: 1,
+  couplePageSize: 8,
+  couponSearch: '',
+  couponPage: 1,
+  couponPageSize: 8,
+  supervisorPassword: '',
+  supervisorError: '',
+  supervisorSummary: null,
   shareLink: '',
   shareStatus: '',
   finishNote: '',
@@ -129,6 +142,11 @@ const share = reactive({
   loading: false,
   error: '',
   showPayment: false
+})
+const supervisor = reactive({
+  isPage: window.location.pathname === '/supervisor',
+  unlocked: false,
+  loading: false
 })
 const selectedLiveId = ref(null)
 
@@ -159,6 +177,7 @@ function applyServerState(nextState) {
 }
 
 onMounted(() => {
+  if (supervisor.isPage) return
   loadSharedPlayers()
   restoreAdminSession()
 })
@@ -168,6 +187,22 @@ async function saveSettings() {
     method: 'PUT',
     body: JSON.stringify(state.settings)
   }))
+}
+
+async function loginSupervisor() {
+  supervisor.loading = true
+  forms.supervisorError = ''
+  try {
+    forms.supervisorSummary = await api('/api/supervisor/summary', {
+      method: 'POST',
+      body: JSON.stringify({ username: 'superadmin', password: forms.supervisorPassword })
+    })
+    supervisor.unlocked = true
+  } catch {
+    forms.supervisorError = 'รหัสผ่านไม่ถูกต้อง'
+  } finally {
+    supervisor.loading = false
+  }
 }
 
 async function restoreAdminSession() {
@@ -446,6 +481,11 @@ function startMatch(match, court = '') {
   state.tab = 'liveboard'
 }
 
+function cancelQueuedMatch(match) {
+  state.queue = state.queue.filter((item) => item.id !== match.id)
+  delete forms.matchCourts[match.id]
+}
+
 function adjustShuttle(match, delta) {
   match.shuttles = Math.max(0, match.shuttles + delta)
 }
@@ -712,6 +752,14 @@ async function startMatchApi(match, court = '') {
   }
 }
 
+async function cancelQueuedMatchApi(match) {
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/queue/${match.id}`, { method: 'DELETE' }))
+  } catch {
+    cancelQueuedMatch(match)
+  }
+}
+
 async function adjustShuttleApi(match, delta) {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/shuttles`, {
@@ -818,6 +866,7 @@ const pageProps = computed(() => ({
   updatePlayerRandomStatus: updatePlayerRandomStatusApi,
   randomMatch: randomMatchApi,
   startMatch: startMatchApi,
+  cancelQueuedMatch: cancelQueuedMatchApi,
   playerName,
   adjustShuttle: adjustShuttleApi,
   closeLive: closeLiveApi,
@@ -832,6 +881,8 @@ const pageProps = computed(() => ({
   addLevel,
   removeLevel,
   saveSettings: saveSettingsApi,
+  supervisor,
+  loginSupervisor,
   createSession: createSessionApi,
   unlockDashboard: unlockDashboardApi
 }))
@@ -839,7 +890,9 @@ const pageProps = computed(() => ({
 
 <template>
   <div class="min-h-screen bg-paper-50 text-stone-900 transition dark:bg-paper-900 dark:text-stone-100">
-    <SharedPlayersPage v-if="share.isPublic" :state="state" :share="share" :money="money" :player-cost="playerCost" />
+    <SupervisorPage v-if="supervisor.isPage" v-bind="pageProps" />
+
+    <SharedPlayersPage v-else-if="share.isPublic" :state="state" :share="share" :money="money" :player-cost="playerCost" />
 
     <template v-else>
     <header class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/95 backdrop-blur dark:border-stone-700 dark:bg-paper-900/95">

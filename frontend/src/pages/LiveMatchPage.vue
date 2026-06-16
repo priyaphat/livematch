@@ -1,5 +1,5 @@
 <script setup>
-import { ClipboardList, Play, Shuffle, Users } from '@lucide/vue'
+import { ClipboardList, Play, Shuffle, Users, X } from '@lucide/vue'
 
 defineProps([
   'state',
@@ -8,6 +8,7 @@ defineProps([
   'matchLevelLabel',
   'randomMatch',
   'startMatch',
+  'cancelQueuedMatch',
   'playerName',
   'availableCourtNames'
 ])
@@ -31,7 +32,15 @@ defineProps([
     </div>
 
     <div class="grid gap-3">
-      <article v-for="match in state.queue" :key="match.id" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+      <article v-for="match in state.queue" :key="match.id" class="relative rounded-lg border border-stone-200 bg-white p-4 pr-14 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+        <button
+          class="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-md border border-stone-200 bg-paper-50 text-stone-500 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:border-stone-700 dark:bg-stone-800 dark:hover:border-red-900 dark:hover:bg-red-950/40 dark:hover:text-red-200"
+          title="ยกเลิกการจับคู่"
+          aria-label="ยกเลิกการจับคู่"
+          @click="cancelQueuedMatch(match)"
+        >
+          <X class="h-4 w-4" />
+        </button>
         <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
           <div>
             <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ matchLevelLabel(match) }}</p>
