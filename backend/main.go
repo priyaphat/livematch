@@ -119,6 +119,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.handleHealth)
+	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
 	mux.HandleFunc("/api/sessions", a.handleSessions)
 	mux.HandleFunc("/api/sessions/", a.handleSessionRoutes)
 
@@ -314,6 +315,52 @@ func (a *app) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, SessionRecord{ID: id, Name: body.Name, AdminPasscode: passcode, State: state})
+}
+
+func (a *app) handleUnlockByPasscode(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	var body struct {
+		Passcode string `json:"passcode"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	passcode := strings.TrimSpace(body.Passcode)
+	if passcode == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "passcode required"})
+		return
+	}
+
+	var id string
+	err := a.db.QueryRowContext(r.Context(), `
+		select id
+		from sessions
+		where admin_passcode = $1
+		order by updated_at desc
+		limit 1
+	`, passcode).Scan(&id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusUnauthorized
+		}
+		writeJSON(w, status, map[string]string{"error": "invalid passcode"})
+		return
+	}
+
+	state, err := a.loadState(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	state.Session.Unlocked = true
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {

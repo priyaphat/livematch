@@ -11,6 +11,7 @@ import {
   Dumbbell,
   History,
   Home,
+  LogOut,
   Moon,
   Play,
   Plus,
@@ -35,6 +36,7 @@ import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 
 const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const adminSessionKey = 'livematch.adminSessionId'
 
 const tabs = [
   { id: 'home', label: 'หน้าแรก', icon: Home },
@@ -154,6 +156,7 @@ function applyServerState(nextState) {
 
 onMounted(() => {
   loadSharedPlayers()
+  restoreAdminSession()
 })
 
 async function saveSettings() {
@@ -161,6 +164,32 @@ async function saveSettings() {
     method: 'PUT',
     body: JSON.stringify(state.settings)
   }))
+}
+
+async function restoreAdminSession() {
+  if (share.isPublic) return
+  const sessionId = localStorage.getItem(adminSessionKey)
+  if (!sessionId) return
+  try {
+    const nextState = await api(`/api/sessions/${sessionId}/state`)
+    applyServerState(nextState)
+    state.session.unlocked = true
+    state.tab = 'dashboard'
+  } catch {
+    localStorage.removeItem(adminSessionKey)
+  }
+}
+
+function rememberAdminSession() {
+  localStorage.setItem(adminSessionKey, state.session.id)
+}
+
+function logout() {
+  localStorage.removeItem(adminSessionKey)
+  state.session.unlocked = false
+  state.tab = 'home'
+  forms.passcodeInput = ''
+  forms.loginError = ''
 }
 
 watch(
@@ -466,11 +495,20 @@ async function createSessionApi() {
 
 async function unlockDashboardApi() {
   try {
-    const nextState = await api(`/api/sessions/${state.session.id}/unlock`, {
-      method: 'POST',
-      body: JSON.stringify({ passcode: forms.passcodeInput })
-    })
+    let nextState
+    try {
+      nextState = await api(`/api/sessions/${state.session.id}/unlock`, {
+        method: 'POST',
+        body: JSON.stringify({ passcode: forms.passcodeInput })
+      })
+    } catch {
+      nextState = await api('/api/sessions/unlock', {
+        method: 'POST',
+        body: JSON.stringify({ passcode: forms.passcodeInput })
+      })
+    }
     applyServerState(nextState)
+    rememberAdminSession()
     forms.loginError = ''
     state.tab = 'dashboard'
   } catch {
@@ -670,6 +708,14 @@ const pageProps = computed(() => ({
             @click="state.tab = 'settings'"
           >
             <Settings class="h-5 w-5" />
+          </button>
+          <button
+            v-if="isAdmin"
+            class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+            title="ออกจากระบบ"
+            @click="logout"
+          >
+            <LogOut class="h-5 w-5" />
           </button>
           <button
             class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
