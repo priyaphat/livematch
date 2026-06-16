@@ -10,12 +10,16 @@ const props = defineProps([
   'playerName',
   'addCouple',
   'removeCouple',
-  'updatePlayerLevel'
+  'updatePlayerRandomStatus'
 ])
 
-function changeGroupLevel(group, event) {
+function groupValue(group) {
+  return group.coupon ? group.level : 'not-ready'
+}
+
+function changeGroupStatus(group, event) {
   const level = event.target.value
-  group.ids.forEach((id) => props.updatePlayerLevel(id, level))
+  group.ids.forEach((id) => props.updatePlayerRandomStatus(id, level))
 }
 </script>
 
@@ -40,17 +44,22 @@ function changeGroupLevel(group, event) {
           class="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
           <span class="font-bold">{{ group.ids.join('/') }}</span>
-          <span>{{ group.name }}</span>
+          <span class="min-w-0 truncate">{{ group.name }}</span>
           <select
-            class="rounded-md border border-stone-200 bg-white px-2 py-1 dark:border-stone-700 dark:bg-stone-900"
-            :value="group.level"
-            @change="changeGroupLevel(group, $event)"
+            class="h-10 rounded-md border border-stone-200 bg-white px-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-900"
+            :value="groupValue(group)"
+            @change="changeGroupStatus(group, $event)"
           >
+            <option value="not-ready">ยังไม่พร้อม</option>
             <option v-for="level in state.settings.levels" :key="level" :value="level">
               {{ levelLabel(level) }}
             </option>
           </select>
         </div>
+
+        <p v-if="!couponGroups.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+          ไม่มีสมาชิกว่างให้เลือก
+        </p>
       </div>
 
       <div v-else class="mt-4 space-y-3">

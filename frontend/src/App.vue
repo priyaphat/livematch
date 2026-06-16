@@ -223,7 +223,7 @@ const topPlayers = computed(() => [...state.players].sort((a, b) => b.games - a.
 const quietPlayers = computed(() => [...state.players].sort((a, b) => a.games - b.games || a.id - b.id).slice(0, 4))
 const availablePlayers = computed(() =>
   state.players
-    .filter((player) => player.active && player.coupon && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
+    .filter((player) => player.active && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
     .sort((a, b) => a.games - b.games || a.id - b.id)
 )
 
@@ -237,17 +237,18 @@ const couponGroups = computed(() => {
       const mateId = couple.a === player.id ? couple.b : couple.a
       const mate = availablePlayers.value.find((item) => item.id === mateId)
       if (mate) {
-        groups.push({ ids: [player.id, mate.id], name: `${player.name} + ${mate.name}`, level: player.level, games: player.games + mate.games })
+        groups.push({ ids: [player.id, mate.id], name: `${player.name} + ${mate.name}`, level: player.level, coupon: player.coupon && mate.coupon, games: player.games + mate.games })
         used.add(player.id)
         used.add(mate.id)
         continue
       }
     }
-    groups.push({ ids: [player.id], name: player.name, level: player.level, games: player.games })
+    groups.push({ ids: [player.id], name: player.name, level: player.level, coupon: player.coupon, games: player.games })
     used.add(player.id)
   }
   return groups.sort((a, b) => a.games - b.games)
 })
+const randomEligibleGroups = computed(() => couponGroups.value.filter((group) => group.coupon))
 
 const dashboardCards = computed(() => [
   { label: 'ผู้เล่นวันนี้', value: `${activePlayerCount.value} คน`, icon: Users },
@@ -309,7 +310,7 @@ function addPlayer() {
   const name = forms.newPlayerName.trim()
   if (!name) return
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
-  state.players.push({ id, name, games: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true })
+  state.players.push({ id, name, games: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
   forms.newPlayerName = ''
 }
 
@@ -319,10 +320,10 @@ function togglePayment(player) {
 
 function randomMatch() {
   const sameLevel = [...state.settings.levels]
-    .map((level) => couponGroups.value.filter((group) => group.level === level))
+    .map((level) => randomEligibleGroups.value.filter((group) => group.level === level))
     .find((groups) => groups.reduce((sum, group) => sum + group.ids.length, 0) >= 4)
 
-  const pool = sameLevel || (state.settings.allowCrossLevel ? couponGroups.value : [])
+  const pool = sameLevel || (state.settings.allowCrossLevel ? randomEligibleGroups.value : [])
   const selected = []
   for (const group of pool) {
     if (selected.length >= 4) break
@@ -522,7 +523,7 @@ async function addPlayerApi() {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players`, {
       method: 'POST',
-      body: JSON.stringify({ name, level: state.settings.levels[0] || 'middle' })
+      body: JSON.stringify({ name, level: state.settings.levels[0] || 'middle', coupon: false })
     }))
     forms.newPlayerName = ''
   } catch {
@@ -550,6 +551,22 @@ async function updatePlayerLevelApi(playerId, level) {
   } catch {
     const player = playerById(playerId)
     if (player) player.level = level
+  }
+}
+
+async function updatePlayerRandomStatusApi(playerId, level) {
+  const ready = level !== 'not-ready'
+  const body = ready ? { level, coupon: true } : { coupon: false }
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${playerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body)
+    }))
+  } catch {
+    const player = playerById(playerId)
+    if (!player) return
+    player.coupon = ready
+    if (ready) player.level = level
   }
 }
 
@@ -662,6 +679,7 @@ const pageProps = computed(() => ({
   sharePlayers,
   togglePayment: togglePaymentApi,
   updatePlayerLevel: updatePlayerLevelApi,
+  updatePlayerRandomStatus: updatePlayerRandomStatusApi,
   randomMatch: randomMatchApi,
   startMatch: startMatchApi,
   playerName,

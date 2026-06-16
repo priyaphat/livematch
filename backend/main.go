@@ -199,9 +199,10 @@ func (a *app) migrate(ctx context.Context) error {
 			paid boolean not null default false,
 			active boolean not null default true,
 			level text not null default 'middle',
-			coupon boolean not null default true,
+			coupon boolean not null default false,
 			primary key (session_id, id)
 		);
+		alter table players alter column coupon set default false;
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -407,8 +408,9 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodPost && action == "players":
 		var body struct {
-			Name  string `json:"name"`
-			Level string `json:"level"`
+			Name   string `json:"name"`
+			Level  string `json:"level"`
+			Coupon *bool  `json:"coupon"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
@@ -417,8 +419,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		if body.Level == "" {
 			body.Level = firstLevel(state)
 		}
+		coupon := false
+		if body.Coupon != nil {
+			coupon = *body.Coupon
+		}
 		state.NextIDs.Player++
-		state.Players = append(state.Players, Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: true})
+		state.Players = append(state.Players, Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon})
 		a.respondSaved(w, r, state)
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
 		playerID, _ := strconv.Atoi(parts[2])
