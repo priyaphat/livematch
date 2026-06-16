@@ -8,7 +8,8 @@ defineProps([
   'matchLevelLabel',
   'randomMatch',
   'startMatch',
-  'playerName'
+  'playerName',
+  'availableCourtNames'
 ])
 </script>
 
@@ -38,14 +39,22 @@ defineProps([
           </div>
           <div class="grid grid-cols-[1fr_auto] gap-2 sm:min-w-72">
             <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
-              <option disabled value="">เลือกสนาม</option>
-              <option v-for="court in state.settings.courtNames" :key="court" :value="court">{{ court }}</option>
+              <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
+              <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
             </select>
-            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="startMatch(match, forms.matchCourts[match.id] || state.settings.courtNames[0])">
+            <button
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"
+              :class="forms.matchCourts[match.id] ? 'bg-court-500' : 'bg-stone-400'"
+              :disabled="!forms.matchCourts[match.id]"
+              @click="startMatch(match, forms.matchCourts[match.id])"
+            >
               <Play class="h-4 w-4" />
               เริ่ม
             </button>
           </div>
+          <p v-if="!forms.matchCourts[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">
+            ต้องเลือกสนามก่อนเริ่มการแข่งขัน
+          </p>
         </div>
       </article>
     </div>

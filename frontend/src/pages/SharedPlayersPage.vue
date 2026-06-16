@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { CheckCircle2, CircleDollarSign, Search, UsersRound, XCircle } from '@lucide/vue'
+import { CheckCircle2, CircleDollarSign, Search, Shield, UsersRound, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'state',
@@ -29,7 +29,7 @@ const filteredPlayers = computed(() => {
         (paymentFilter.value === 'unpaid' && !player.paid)
       return matchesSearch && matchesPayment
     })
-    .sort((a, b) => b.games - a.games || a.name.localeCompare(b.name, 'th-TH'))
+    .sort((a, b) => (b.wins || 0) - (a.wins || 0) || b.games - a.games || a.name.localeCompare(b.name, 'th-TH'))
 })
 
 const filterTabs = computed(() => [
@@ -37,6 +37,42 @@ const filterTabs = computed(() => [
   { id: 'paid', label: 'จ่ายแล้ว', count: paidCount.value, hidden: !props.share.showPayment },
   { id: 'unpaid', label: 'ค้างจ่าย', count: unpaidCount.value, hidden: !props.share.showPayment }
 ].filter((tab) => !tab.hidden))
+
+function rankStyle(index) {
+  const styles = [
+    {
+      wrap: 'h-12 w-12 bg-amber-400 text-stone-950 shadow-[0_10px_24px_rgba(245,158,11,0.34)] ring-4 ring-amber-100 dark:ring-amber-400/20',
+      icon: 'h-7 w-7',
+      label: 'text-[11px]',
+      effect: 'rank-shield rank-shield-1'
+    },
+    {
+      wrap: 'h-11 w-11 bg-stone-300 text-stone-950 shadow-[0_8px_18px_rgba(120,113,108,0.24)] ring-4 ring-stone-100 dark:ring-stone-400/15',
+      icon: 'h-6 w-6',
+      label: 'text-[10px]',
+      effect: 'rank-shield rank-shield-2'
+    },
+    {
+      wrap: 'h-10 w-10 bg-orange-300 text-stone-950 shadow-[0_8px_18px_rgba(251,146,60,0.24)] ring-4 ring-orange-100 dark:ring-orange-400/15',
+      icon: 'h-5 w-5',
+      label: 'text-[10px]',
+      effect: 'rank-shield rank-shield-3'
+    },
+    {
+      wrap: 'h-9 w-9 bg-court-500/15 text-court-700 dark:bg-court-500/20 dark:text-court-300',
+      icon: 'h-4.5 w-4.5',
+      label: 'text-[9px]',
+      effect: 'rank-shield rank-shield-4'
+    },
+    {
+      wrap: 'h-8 w-8 bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300',
+      icon: 'h-4 w-4',
+      label: 'text-[9px]',
+      effect: 'rank-shield rank-shield-5'
+    }
+  ]
+  return styles[index] || null
+}
 </script>
 
 <template>
@@ -123,9 +159,10 @@ const filterTabs = computed(() => [
         </div>
 
         <div
-          v-for="player in filteredPlayers"
+          v-for="(player, index) in filteredPlayers"
           :key="player.id"
           class="border-b border-stone-100 px-3 py-3 last:border-b-0 dark:border-stone-800"
+          :class="index < 5 ? 'bg-[linear-gradient(90deg,rgba(31,154,120,0.08),transparent_62%)] dark:bg-[linear-gradient(90deg,rgba(47,127,143,0.16),transparent_62%)]' : ''"
         >
           <div
             class="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-center gap-2"
@@ -133,10 +170,25 @@ const filterTabs = computed(() => [
           >
             <div class="min-w-0">
               <div class="flex min-w-0 items-center gap-2">
-                <span class="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-court-500/10 text-xs font-black text-court-700 dark:bg-court-500/20 dark:text-court-300">
+                <span
+                  v-if="rankStyle(index)"
+                  class="relative grid shrink-0 place-items-center overflow-hidden rounded-lg"
+                  :class="[rankStyle(index).wrap, rankStyle(index).effect]"
+                  :title="`อันดับ ${index + 1}`"
+                >
+                  <Shield :class="rankStyle(index).icon" />
+                  <span class="absolute font-black leading-none" :class="rankStyle(index).label">{{ index + 1 }}</span>
+                </span>
+                <span
+                  v-else
+                  class="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-court-500/10 text-xs font-black text-court-700 dark:bg-court-500/20 dark:text-court-300"
+                >
                   {{ player.id }}
                 </span>
-                <span class="truncate text-base font-black">{{ player.name }}</span>
+                <span class="min-w-0">
+                  <span class="block truncate text-base font-black">{{ player.name }}</span>
+                  <span v-if="index < 5" class="block truncate text-xs font-bold text-court-700 dark:text-court-300">Top {{ index + 1 }} · ชนะ {{ player.wins || 0 }}</span>
+                </span>
               </div>
             </div>
             <span class="text-right text-base font-black tabular-nums">{{ player.games }}</span>
@@ -158,6 +210,9 @@ const filterTabs = computed(() => [
               <CircleDollarSign class="h-4 w-4 text-court-700 dark:text-court-400" />
               ค่าใช้จ่าย {{ money(playerCost(player)) }}
             </span>
+            <span class="text-sm font-bold text-stone-600 dark:text-stone-300">
+              ชนะ {{ player.wins || 0 }} · แพ้ {{ player.losses || 0 }}
+            </span>
             <span
               v-if="share.showPayment"
               class="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-black sm:hidden"
@@ -173,3 +228,74 @@ const filterTabs = computed(() => [
     </div>
   </section>
 </template>
+
+<style scoped>
+.rank-shield::before {
+  content: "";
+  position: absolute;
+  inset: -40%;
+  transform: translateX(-80%) rotate(18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.62), transparent);
+  animation: shield-shine 3.4s ease-in-out infinite;
+}
+
+.rank-shield-1 {
+  animation: shield-pop 2.4s ease-in-out infinite;
+}
+
+.rank-shield-2 {
+  animation: shield-float 2.8s ease-in-out infinite;
+  animation-delay: 0.12s;
+}
+
+.rank-shield-3 {
+  animation: shield-float 3.1s ease-in-out infinite;
+  animation-delay: 0.24s;
+}
+
+.rank-shield-4::before,
+.rank-shield-5::before {
+  animation-duration: 4.6s;
+  opacity: 0.55;
+}
+
+@keyframes shield-pop {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+    filter: saturate(1);
+  }
+  50% {
+    transform: translateY(-2px) scale(1.07);
+    filter: saturate(1.2);
+  }
+}
+
+@keyframes shield-float {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-1px) rotate(-2deg);
+  }
+}
+
+@keyframes shield-shine {
+  0%,
+  42% {
+    transform: translateX(-90%) rotate(18deg);
+  }
+  58%,
+  100% {
+    transform: translateX(90%) rotate(18deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rank-shield,
+  .rank-shield::before {
+    animation: none;
+  }
+}
+</style>

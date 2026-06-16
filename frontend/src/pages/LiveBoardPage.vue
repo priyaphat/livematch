@@ -7,7 +7,8 @@ defineProps([
   'ui',
   'playerName',
   'adjustShuttle',
-  'closeLive',
+  'requestFinishMatch',
+  'confirmFinishMatch',
   'requestCancelMatch',
   'confirmCancelMatch'
 ])
@@ -27,7 +28,7 @@ defineProps([
       <div class="mt-4 flex flex-wrap gap-2">
         <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700" @click="adjustShuttle(match, -1)">-</button>
         <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700" @click="adjustShuttle(match, 1)">+</button>
-        <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="closeLive(match, false)">
+        <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="requestFinishMatch(match)">
           <Check class="h-4 w-4" />
           จบ
         </button>
@@ -37,6 +38,46 @@ defineProps([
         </button>
       </div>
     </article>
+
+    <div v-if="ui.showFinishModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
+      <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-black">จบการแข่งขัน</h2>
+            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">เลือกทีมที่ชนะสำหรับเกมที่ {{ ui.finishMatch?.id }}</p>
+          </div>
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showFinishModal = false">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-4 grid gap-2">
+          <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
+            <input v-model="forms.finishWinner" type="radio" value="" />
+            <span class="font-bold">ไม่ระบุ</span>
+          </label>
+          <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
+            <input v-model="forms.finishWinner" type="radio" value="A" />
+            <span class="font-bold">{{ playerName(ui.finishMatch?.a1) }} + {{ playerName(ui.finishMatch?.a2) }}</span>
+          </label>
+          <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
+            <input v-model="forms.finishWinner" type="radio" value="B" />
+            <span class="font-bold">{{ playerName(ui.finishMatch?.b1) }} + {{ playerName(ui.finishMatch?.b2) }}</span>
+          </label>
+        </div>
+
+        <textarea
+          v-model="forms.finishNote"
+          class="mt-4 min-h-24 w-full rounded-md border border-stone-200 bg-paper-50 p-3 outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
+          placeholder="หมายเหตุหลังจบเกม"
+        />
+
+        <div class="mt-4 grid grid-cols-2 gap-2">
+          <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showFinishModal = false">กลับ</button>
+          <button class="h-11 rounded-md bg-court-500 font-bold text-white" @click="confirmFinishMatch">บันทึกผล</button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="ui.showCancelModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
       <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">

@@ -1,15 +1,5 @@
 <script setup>
-import {
-  Activity,
-  BarChart3,
-  ClipboardList,
-  Clock3,
-  CreditCard,
-  Dumbbell,
-  RefreshCw,
-  Shuffle,
-  Users
-} from '@lucide/vue'
+import { Activity, BarChart3, ClipboardList, CreditCard, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
 
 defineProps([
   'state',
@@ -27,6 +17,7 @@ defineProps([
   'unpaidPlayers',
   'topPlayers',
   'quietPlayers',
+  'topWinners',
   'playerCost',
   'levelLabel'
 ])
@@ -39,7 +30,7 @@ defineProps([
         <div>
           <p class="text-sm font-semibold text-court-600 dark:text-court-500">ภาพรวมวันนี้</p>
           <h1 class="mt-1 text-2xl font-black leading-tight sm:text-3xl">{{ state.session.name }}</h1>
-          <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">อัปเดตจากผู้เล่น คิวรอลงสนาม เกมที่กำลังเล่น และประวัติการแข่งขัน</p>
+          <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">อัปเดตจากสมาชิก คิว สนามที่กำลังเล่น และประวัติการแข่งขัน</p>
         </div>
         <div class="grid grid-cols-2 gap-2 sm:min-w-64">
           <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-bold text-white" @click="state.tab = 'livematch'">
@@ -112,15 +103,10 @@ defineProps([
             <p class="mt-1 text-xl font-black text-amber-700 dark:text-shuttle-400">{{ money(unpaidRevenue) }}</p>
           </div>
         </div>
-        <div class="mt-4">
-          <div class="flex justify-between text-xs font-semibold text-stone-500 dark:text-stone-400">
-            <span>สถานะรับเงิน</span>
-            <span>{{ unpaidPlayers.length }} คนค้างจ่าย</span>
-          </div>
-          <div class="mt-2 h-3 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800">
-            <div class="h-full rounded-full bg-court-500" :style="{ width: `${paymentPercent}%` }" />
-          </div>
+        <div class="mt-4 h-3 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800">
+          <div class="h-full rounded-full bg-court-500" :style="{ width: `${paymentPercent}%` }" />
         </div>
+        <p class="mt-2 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ unpaidPlayers.length }} คนค้างจ่าย</p>
       </div>
 
       <div class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
@@ -148,33 +134,40 @@ defineProps([
       </div>
     </div>
 
-    <div class="grid gap-4 lg:grid-cols-2">
+    <div class="grid gap-4 lg:grid-cols-3">
       <div class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
         <div class="flex items-center justify-between">
-          <h2 class="font-black">ลงเล่นมากสุด</h2>
-          <Dumbbell class="h-5 w-5 text-court-500" />
+          <h2 class="font-black">ผู้ชนะมากสุด</h2>
+          <Trophy class="h-5 w-5 text-court-500" />
         </div>
         <div class="mt-4 space-y-3">
-          <div v-for="player in topPlayers" :key="player.id" class="flex items-center justify-between gap-3">
+          <div v-for="(player, index) in topWinners" :key="player.id" class="flex items-center justify-between gap-3">
             <div class="min-w-0">
-              <p class="truncate font-bold">{{ player.name }}</p>
-              <p class="text-xs text-stone-500 dark:text-stone-400">ใช้ลูก {{ player.shuttles }} · {{ money(playerCost(player)) }}</p>
+              <p class="truncate font-bold">{{ index + 1 }}. {{ player.name }}</p>
+              <p class="text-xs text-stone-500 dark:text-stone-400">แพ้ {{ player.losses || 0 }} · เล่น {{ player.games }} เกม</p>
             </div>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ player.wins || 0 }} ชนะ</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
+        <h2 class="font-black">ลงเล่นมากสุด</h2>
+        <div class="mt-4 space-y-3">
+          <div v-for="player in topPlayers" :key="player.id" class="flex items-center justify-between gap-3">
+            <p class="truncate font-bold">{{ player.name }}</p>
             <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ player.games }} เกม</span>
           </div>
         </div>
       </div>
 
       <div class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
-        <div class="flex items-center justify-between">
-          <h2 class="font-black">ควรได้ลงรอบถัดไป</h2>
-          <Clock3 class="h-5 w-5 text-court-500" />
-        </div>
+        <h2 class="font-black">ควรได้ลงรอบถัดไป</h2>
         <div class="mt-4 space-y-3">
           <div v-for="player in quietPlayers" :key="player.id" class="flex items-center justify-between gap-3">
             <div class="min-w-0">
               <p class="truncate font-bold">{{ player.name }}</p>
-              <p class="text-xs text-stone-500 dark:text-stone-400">ระดับ {{ levelLabel(player.level) }} · {{ player.paid ? 'จ่ายแล้ว' : 'ยังไม่ได้จ่าย' }}</p>
+              <p class="text-xs text-stone-500 dark:text-stone-400">ระดับ {{ levelLabel(player.level) }}</p>
             </div>
             <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ player.games }} เกม</span>
           </div>

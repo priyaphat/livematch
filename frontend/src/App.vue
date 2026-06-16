@@ -73,18 +73,18 @@ const state = reactive({
     showPaymentOnShare: true
   },
   players: [
-    { id: 1, name: 'ต้น', games: 4, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
-    { id: 2, name: 'แพรว', games: 3, shuttles: 3, paid: false, active: true, level: 'middle', coupon: true },
-    { id: 3, name: 'บอล', games: 2, shuttles: 2, paid: false, active: true, level: 'light', coupon: true },
-    { id: 4, name: 'เมย์', games: 2, shuttles: 2, paid: true, active: true, level: 'light', coupon: true },
-    { id: 5, name: 'ฟ้า', games: 5, shuttles: 5, paid: true, active: true, level: 'heavy', coupon: true },
-    { id: 6, name: 'วิน', games: 1, shuttles: 1, paid: false, active: true, level: 'heavy', coupon: true },
-    { id: 7, name: 'บีม', games: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
-    { id: 8, name: 'นัท', games: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
-    { id: 9, name: 'เจน', games: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
-    { id: 10, name: 'โอ๊ต', games: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
-    { id: 11, name: 'ก้อง', games: 1, shuttles: 1, paid: false, active: true, level: 'light', coupon: true },
-    { id: 12, name: 'พลอย', games: 1, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
+    { id: 1, name: 'ต้น', games: 4, wins: 2, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
+    { id: 2, name: 'แพรว', games: 3, wins: 2, losses: 1, shuttles: 3, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 3, name: 'บอล', games: 2, wins: 1, losses: 1, shuttles: 2, paid: false, active: true, level: 'light', coupon: true },
+    { id: 4, name: 'เมย์', games: 2, wins: 1, losses: 1, shuttles: 2, paid: true, active: true, level: 'light', coupon: true },
+    { id: 5, name: 'ฟ้า', games: 5, wins: 3, losses: 2, shuttles: 5, paid: true, active: true, level: 'heavy', coupon: true },
+    { id: 6, name: 'วิน', games: 1, wins: 0, losses: 1, shuttles: 1, paid: false, active: true, level: 'heavy', coupon: true },
+    { id: 7, name: 'บีม', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 8, name: 'นัท', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 9, name: 'เจน', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
+    { id: 10, name: 'โอ๊ต', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
+    { id: 11, name: 'ก้อง', games: 1, wins: 1, losses: 0, shuttles: 1, paid: false, active: true, level: 'light', coupon: true },
+    { id: 12, name: 'พลอย', games: 1, wins: 1, losses: 0, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
   ],
   couples: [{ id: 1, a: 1, b: 2 }],
   queue: [
@@ -94,7 +94,7 @@ const state = reactive({
     { id: 50, court: '1', level: 'heavy', a1: 5, a2: 6, b1: 3, b2: 4, shuttles: 2, status: 'กำลังเล่น', startedAt: '19:20' }
   ],
   history: [
-    { id: 49, court: '2', level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 2, startedAt: '18:50', endedAt: '19:08', note: 'เกมแรก' }
+    { id: 49, court: '2', level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 2, winner: 'A', shuttleSequence: '1-2', startedAt: '18:50', endedAt: '19:08', note: 'เกมแรก' }
   ]
 })
 
@@ -107,6 +107,7 @@ const forms = reactive({
   shareLink: '',
   shareStatus: '',
   finishNote: '',
+  finishWinner: '',
   cancelNote: '',
   selectedPlayerId: 1,
   coupleAId: 1,
@@ -118,6 +119,8 @@ const forms = reactive({
 const ui = reactive({
   showCouponModal: false,
   showCoupleModal: false,
+  showFinishModal: false,
+  finishMatch: null,
   showCancelModal: false,
   cancelMatch: null
 })
@@ -232,6 +235,16 @@ const minGames = computed(() => (state.players.length ? Math.min(...state.player
 const maxGames = computed(() => (state.players.length ? Math.max(...state.players.map((player) => player.games)) : 0))
 const topPlayers = computed(() => [...state.players].sort((a, b) => b.games - a.games || a.id - b.id).slice(0, 4))
 const quietPlayers = computed(() => [...state.players].sort((a, b) => a.games - b.games || a.id - b.id).slice(0, 4))
+const topWinners = computed(() => [...state.players].sort((a, b) => (b.wins || 0) - (a.wins || 0) || (a.losses || 0) - (b.losses || 0) || a.id - b.id).slice(0, 5))
+const usedCourts = computed(() => new Set(state.live.map((match) => match.court)))
+const availableCourtNames = computed(() => state.settings.courtNames.filter((court) => !usedCourts.value.has(court)))
+const usedCourtNames = computed(() => new Set([...state.queue, ...state.live, ...state.history].map((match) => match.court).filter((court) => court && court !== '-')))
+const usedLevels = computed(() => new Set([
+  ...state.players.map((player) => player.level),
+  ...state.queue.map((match) => match.level),
+  ...state.live.map((match) => match.level),
+  ...state.history.map((match) => match.level)
+].filter(Boolean)))
 const availablePlayers = computed(() =>
   state.players
     .filter((player) => player.active && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
@@ -321,7 +334,7 @@ function addPlayer() {
   const name = forms.newPlayerName.trim()
   if (!name) return
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
-  state.players.push({ id, name, games: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
+  state.players.push({ id, name, games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
   forms.newPlayerName = ''
 }
 
@@ -426,9 +439,10 @@ function pickFourGroups(groups) {
   return selected
 }
 
-function startMatch(match, court = '1') {
+function startMatch(match, court = '') {
+  if (!court) return
   state.queue = state.queue.filter((item) => item.id !== match.id)
-  state.live.push({ ...match, court, shuttles: 0, status: 'กำลังเล่น', startedAt: currentTime() })
+  state.live.push({ ...match, court, shuttles: 1, status: 'กำลังเล่น', startedAt: currentTime() })
   state.tab = 'liveboard'
 }
 
@@ -441,6 +455,8 @@ function closeLive(match, cancelled = false, note = '') {
   const ended = {
     ...match,
     endedAt: currentTime(),
+    winner: cancelled ? '' : forms.finishWinner,
+    shuttleSequence: cancelled ? '' : nextShuttleSequence(match.shuttles),
     note: note || forms.finishNote || (cancelled ? 'ยกเลิกการแข่งขัน' : 'จบการแข่งขัน')
   }
   state.history.unshift(ended)
@@ -449,11 +465,30 @@ function closeLive(match, cancelled = false, note = '') {
     if (player && !cancelled) {
       player.games += 1
       player.shuttles += match.shuttles
+      const won = (ended.winner === 'A' && (id === match.a1 || id === match.a2)) || (ended.winner === 'B' && (id === match.b1 || id === match.b2))
+      if (won) player.wins = (player.wins || 0) + 1
+      else if (ended.winner) player.losses = (player.losses || 0) + 1
     }
   }
   state.live = state.live.filter((item) => item.id !== match.id)
   forms.finishNote = ''
   selectedLiveId.value = null
+}
+
+function requestFinishMatch(match) {
+  ui.finishMatch = match
+  forms.finishNote = ''
+  forms.finishWinner = ''
+  ui.showFinishModal = true
+}
+
+function confirmFinishMatch() {
+  if (!ui.finishMatch) return
+  closeLive(ui.finishMatch, false, forms.finishNote)
+  ui.finishMatch = null
+  forms.finishNote = ''
+  forms.finishWinner = ''
+  ui.showFinishModal = false
 }
 
 function requestCancelMatch(match) {
@@ -468,6 +503,13 @@ function confirmCancelMatch() {
   ui.cancelMatch = null
   forms.cancelNote = ''
   ui.showCancelModal = false
+}
+
+function nextShuttleSequence(used) {
+  if (used <= 0) return ''
+  const start = state.history.reduce((sum, match) => sum + match.shuttles, 1)
+  const end = start + used - 1
+  return start === end ? `${start}` : `${start}-${end}`
 }
 
 function addCouple() {
@@ -487,7 +529,7 @@ function nextGameId() {
 }
 
 function currentTime() {
-  return new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' })
+  return new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })
 }
 
 function addCourt() {
@@ -500,6 +542,7 @@ function addCourt() {
 
 function removeCourt(index) {
   if (state.settings.courtNames.length <= 1) return
+  if (usedCourtNames.value.has(state.settings.courtNames[index])) return
   state.settings.courtNames.splice(index, 1)
   state.settings.courtCount = state.settings.courtNames.length
   saveSettings().catch(() => {})
@@ -515,6 +558,7 @@ function addLevel() {
 
 function removeLevel(index) {
   if (state.settings.levels.length <= 1) return
+  if (usedLevels.value.has(state.settings.levels[index])) return
   state.settings.levels.splice(index, 1)
   saveSettings().catch(() => {})
 }
@@ -655,7 +699,8 @@ async function randomMatchApi() {
   }
 }
 
-async function startMatchApi(match, court = '1') {
+async function startMatchApi(match, court = '') {
+  if (!court) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/queue/${match.id}/start`, {
       method: 'POST',
@@ -682,12 +727,21 @@ async function closeLiveApi(match, cancelled = false, note = '') {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/${cancelled ? 'cancel' : 'finish'}`, {
       method: 'POST',
-      body: JSON.stringify({ note })
+      body: JSON.stringify({ note, winner: forms.finishWinner })
     }))
     forms.finishNote = ''
   } catch {
     closeLive(match, cancelled, note)
   }
+}
+
+async function confirmFinishMatchApi() {
+  if (!ui.finishMatch) return
+  await closeLiveApi(ui.finishMatch, false, forms.finishNote)
+  ui.finishMatch = null
+  forms.finishNote = ''
+  forms.finishWinner = ''
+  ui.showFinishModal = false
 }
 
 async function confirmCancelMatchApi() {
@@ -748,7 +802,11 @@ const pageProps = computed(() => ({
   unpaidPlayers: unpaidPlayers.value,
   topPlayers: topPlayers.value,
   quietPlayers: quietPlayers.value,
+  topWinners: topWinners.value,
   couponGroups: couponGroups.value,
+  availableCourtNames: availableCourtNames.value,
+  usedCourtNames: usedCourtNames.value,
+  usedLevels: usedLevels.value,
   money,
   playerCost,
   levelLabel,
@@ -763,6 +821,8 @@ const pageProps = computed(() => ({
   playerName,
   adjustShuttle: adjustShuttleApi,
   closeLive: closeLiveApi,
+  requestFinishMatch,
+  confirmFinishMatch: confirmFinishMatchApi,
   requestCancelMatch,
   confirmCancelMatch: confirmCancelMatchApi,
   addCouple: addCoupleApi,
@@ -877,4 +937,3 @@ const pageProps = computed(() => ({
     </template>
   </div>
 </template>
-

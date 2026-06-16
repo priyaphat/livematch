@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -72,6 +73,8 @@ type Player struct {
 	ID       int    `json:"id"`
 	Name     string `json:"name"`
 	Games    int    `json:"games"`
+	Wins     int    `json:"wins"`
+	Losses   int    `json:"losses"`
 	Shuttles int    `json:"shuttles"`
 	Paid     bool   `json:"paid"`
 	Active   bool   `json:"active"`
@@ -86,18 +89,20 @@ type Couple struct {
 }
 
 type Match struct {
-	ID        int    `json:"id"`
-	Court     string `json:"court"`
-	Level     string `json:"level"`
-	A1        int    `json:"a1"`
-	A2        int    `json:"a2"`
-	B1        int    `json:"b1"`
-	B2        int    `json:"b2"`
-	Shuttles  int    `json:"shuttles"`
-	Status    string `json:"status"`
-	StartedAt string `json:"startedAt"`
-	EndedAt   string `json:"endedAt"`
-	Note      string `json:"note"`
+	ID         int    `json:"id"`
+	Court      string `json:"court"`
+	Level      string `json:"level"`
+	A1         int    `json:"a1"`
+	A2         int    `json:"a2"`
+	B1         int    `json:"b1"`
+	B2         int    `json:"b2"`
+	Shuttles   int    `json:"shuttles"`
+	Winner     string `json:"winner"`
+	ShuttleSeq string `json:"shuttleSequence"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"startedAt"`
+	EndedAt    string `json:"endedAt"`
+	Note       string `json:"note"`
 }
 
 type NextIDs struct {
@@ -198,6 +203,8 @@ func (a *app) migrate(ctx context.Context) error {
 			id integer not null,
 			name text not null,
 			games integer not null default 0,
+			wins integer not null default 0,
+			losses integer not null default 0,
 			shuttles integer not null default 0,
 			paid boolean not null default false,
 			active boolean not null default true,
@@ -205,6 +212,8 @@ func (a *app) migrate(ctx context.Context) error {
 			coupon boolean not null default false,
 			primary key (session_id, id)
 		);
+		alter table players add column if not exists wins integer not null default 0;
+		alter table players add column if not exists losses integer not null default 0;
 		alter table players alter column coupon set default false;
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
@@ -224,12 +233,16 @@ func (a *app) migrate(ctx context.Context) error {
 			b1 integer not null,
 			b2 integer not null,
 			shuttles integer not null default 0,
+			winner text not null default '',
+			shuttle_sequence text not null default '',
 			status text not null default '',
 			started_at text not null default '',
 			ended_at text not null default '',
 			note text not null default '',
 			primary key (session_id, id)
 		);
+		alter table matches add column if not exists winner text not null default '';
+		alter table matches add column if not exists shuttle_sequence text not null default '';
 		create index if not exists idx_players_session on players(session_id);
 		create index if not exists idx_couples_session on couples(session_id);
 		create index if not exists idx_matches_session_phase on matches(session_id, phase);
@@ -495,7 +508,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body.Court == "" {
-			body.Court = firstCourt(state)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "court is required"})
+			return
 		}
 		if !startMatch(&state, matchID, body.Court) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
@@ -513,10 +527,11 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 4 && (parts[3] == "finish" || parts[3] == "cancel"):
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Note string `json:"note"`
+			Note   string `json:"note"`
+			Winner string `json:"winner"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note) {
+		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note, body.Winner) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
@@ -589,9 +604,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, shuttles, paid, active, level, coupon)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon); err != nil {
+			insert into players (session_id, id, name, games, wins, losses, shuttles, paid, active, level, coupon)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon); err != nil {
 			return err
 		}
 	}
@@ -608,10 +623,10 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	insertMatch := func(phase string, match Match) error {
 		_, err := tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, status, started_at, ended_at, note
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, status, started_at, ended_at, note
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Status, match.StartedAt, match.EndedAt, match.Note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, match.Status, match.StartedAt, match.EndedAt, match.Note)
 		return err
 	}
 	for _, match := range state.Queue {
@@ -674,7 +689,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeSettings(&state.Settings)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, shuttles, paid, active, level, coupon
+		select id, name, games, wins, losses, shuttles, paid, active, level, coupon
 		from players
 		where session_id = $1
 		order by id
@@ -685,7 +700,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon); err != nil {
 			return SessionState{}, err
 		}
 		state.Players = append(state.Players, player)
@@ -722,7 +737,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, status, started_at, ended_at, note
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, status, started_at, ended_at, note
 		from matches
 		where session_id = $1
 		order by id
@@ -734,7 +749,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var phase string
 		var match Match
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
 			return SessionState{}, err
 		}
 		switch phase {
@@ -1013,7 +1028,7 @@ func startMatch(state *SessionState, matchID int, court string) bool {
 		if match.ID == matchID {
 			state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
 			match.Court = court
-			match.Shuttles = 0
+			match.Shuttles = 1
 			match.Status = "กำลังเล่น"
 			match.StartedAt = nowHHMM()
 			state.Live = append(state.Live, match)
@@ -1034,7 +1049,7 @@ func adjustShuttles(state *SessionState, matchID, delta int) {
 	}
 }
 
-func closeLive(state *SessionState, matchID int, cancelled bool, note string) bool {
+func closeLive(state *SessionState, matchID int, cancelled bool, note string, winner string) bool {
 	for i, match := range state.Live {
 		if match.ID != matchID {
 			continue
@@ -1048,16 +1063,45 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string) bo
 		} else {
 			match.Note = "จบการแข่งขัน"
 		}
+		if !cancelled {
+			if winner != "A" && winner != "B" {
+				winner = ""
+			}
+			match.Winner = winner
+			match.ShuttleSeq = nextShuttleSequence(*state, match.Shuttles)
+		}
 		for j := range state.Players {
 			if !cancelled && slices.Contains(matchPlayers(match), state.Players[j].ID) {
 				state.Players[j].Games++
 				state.Players[j].Shuttles += match.Shuttles
+				if winner == "A" && (state.Players[j].ID == match.A1 || state.Players[j].ID == match.A2) {
+					state.Players[j].Wins++
+				} else if winner == "B" && (state.Players[j].ID == match.B1 || state.Players[j].ID == match.B2) {
+					state.Players[j].Wins++
+				} else if winner != "" {
+					state.Players[j].Losses++
+				}
 			}
 		}
 		state.History = append([]Match{match}, state.History...)
 		return true
 	}
 	return false
+}
+
+func nextShuttleSequence(state SessionState, used int) string {
+	if used <= 0 {
+		return ""
+	}
+	start := 1
+	for _, match := range state.History {
+		start += match.Shuttles
+	}
+	end := start + used - 1
+	if start == end {
+		return strconv.Itoa(start)
+	}
+	return fmt.Sprintf("%d-%d", start, end)
 }
 
 func matchPlayers(match Match) []int {
@@ -1123,7 +1167,11 @@ func abs(v int) int {
 }
 
 func nowHHMM() string {
-	return time.Now().Format("15:04")
+	location, err := time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		return time.Now().UTC().Add(7 * time.Hour).Format("15:04")
+	}
+	return time.Now().In(location).Format("15:04")
 }
 
 func randHex(n int) string {

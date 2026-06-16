@@ -67,3 +67,71 @@ func TestRandomPriorityCanPreferLowestGamesOverLevelOrder(t *testing.T) {
 		t.Fatalf("expected games priority to choose lower-games group first, got %q", gamesFirst.Queue[0].Level)
 	}
 }
+
+func TestCloseLiveStoresWinnerStatsAndShuttleSequence(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Name: "a1"},
+			{ID: 2, Name: "a2"},
+			{ID: 3, Name: "b1"},
+			{ID: 4, Name: "b2"},
+		},
+		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 3}},
+	}
+
+	if !closeLive(&state, 1, false, "", "B") {
+		t.Fatal("expected closeLive to close match")
+	}
+	if got := state.History[0].Winner; got != "B" {
+		t.Fatalf("expected winner B, got %q", got)
+	}
+	if got := state.History[0].ShuttleSeq; got != "1-3" {
+		t.Fatalf("expected shuttle sequence 1-3, got %q", got)
+	}
+	if state.Players[0].Losses != 1 || state.Players[1].Losses != 1 || state.Players[2].Wins != 1 || state.Players[3].Wins != 1 {
+		t.Fatalf("unexpected player stats: %#v", state.Players)
+	}
+}
+
+func TestStartMatchUsesOneInitialShuttle(t *testing.T) {
+	state := SessionState{
+		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if !startMatch(&state, 1, "สนาม 1") {
+		t.Fatal("expected match to start")
+	}
+	if len(state.Live) != 1 {
+		t.Fatalf("expected one live match, got %d", len(state.Live))
+	}
+	if state.Live[0].Shuttles != 1 {
+		t.Fatalf("expected initial shuttle count 1, got %d", state.Live[0].Shuttles)
+	}
+}
+
+func TestCloseLiveWithoutWinnerDoesNotStoreWinLoss(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Name: "a1"},
+			{ID: 2, Name: "a2"},
+			{ID: 3, Name: "b1"},
+			{ID: 4, Name: "b2"},
+		},
+		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 1}},
+	}
+
+	if !closeLive(&state, 1, false, "", "") {
+		t.Fatal("expected closeLive to close match")
+	}
+	if got := state.History[0].Winner; got != "" {
+		t.Fatalf("expected empty winner, got %q", got)
+	}
+	for _, player := range state.Players {
+		if player.Games != 1 || player.Shuttles != 1 {
+			t.Fatalf("expected games/shuttles to be counted, got %#v", player)
+		}
+		if player.Wins != 0 || player.Losses != 0 {
+			t.Fatalf("expected win/loss to stay zero, got %#v", player)
+		}
+	}
+}

@@ -8,6 +8,8 @@ defineProps([
   'removeCourt',
   'addLevel',
   'removeLevel',
+  'usedCourtNames',
+  'usedLevels',
   'saveSettings'
 ])
 </script>
@@ -54,7 +56,13 @@ defineProps([
         <div class="mt-4 space-y-2">
           <div v-for="(court, index) in state.settings.courtNames" :key="index" class="grid grid-cols-[1fr_auto] gap-2">
             <input v-model="state.settings.courtNames[index]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
-            <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700" @click="removeCourt(index)">
+            <button
+              class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700"
+              :class="usedCourtNames.has(court) ? 'opacity-40' : ''"
+              :disabled="usedCourtNames.has(court)"
+              :title="usedCourtNames.has(court) ? 'สนามนี้ถูกใช้งานแล้ว' : 'ลบสนาม'"
+              @click="removeCourt(index)"
+            >
               <X class="h-4 w-4" />
             </button>
           </div>
@@ -76,7 +84,13 @@ defineProps([
         <div class="mt-4 space-y-2">
           <div v-for="(level, index) in state.settings.levels" :key="level" class="grid grid-cols-[1fr_auto] gap-2">
             <input v-model="state.settings.levels[index]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
-            <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700" @click="removeLevel(index)">
+            <button
+              class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700"
+              :class="usedLevels.has(level) ? 'opacity-40' : ''"
+              :disabled="usedLevels.has(level)"
+              :title="usedLevels.has(level) ? 'ระดับมือนี้ถูกใช้งานแล้ว' : 'ลบระดับมือ'"
+              @click="removeLevel(index)"
+            >
               <X class="h-4 w-4" />
             </button>
           </div>
