@@ -14,6 +14,14 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('ผู้เล่นวันนี้')
     expect(wrapper.text()).not.toContain('จัดคู่')
   })
+  it('toggles interface language', async () => {
+    localStorage.setItem('livematch.language', 'th')
+    const wrapper = mount(App)
+    const languageButton = wrapper.findAll('button').find((button) => button.text() === 'EN')
+    expect(languageButton.exists()).toBe(true)
+    await languageButton.trigger('click')
+    expect(wrapper.text()).toContain('TH')
+  })
 
   it('defaults random coupon groups to not ready', () => {
     const wrapper = mount(MatchSetupModal, {

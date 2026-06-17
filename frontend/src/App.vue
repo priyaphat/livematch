@@ -35,23 +35,24 @@ import PlayersPage from './pages/PlayersPage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SupervisorPage from './pages/SupervisorPage.vue'
+import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const adminSessionKey = 'livematch.adminSessionId'
 
-const tabs = [
-  { id: 'home', label: 'หน้าแรก', icon: Home },
-  { id: 'dashboard', label: 'แดชบอร์ด', icon: BarChart3 },
-  { id: 'players', label: 'สมาชิก', icon: Users },
-  { id: 'livematch', label: 'จัดคู่', icon: Shuffle },
-  { id: 'liveboard', label: 'แข่งอยู่', icon: Activity },
-  { id: 'history', label: 'ประวัติ', icon: History },
-  { id: 'settings', label: 'ตั้งค่า', icon: Settings }
-]
+const tabs = computed(() => [
+  { id: 'home', label: t('หน้าแรก', 'Home'), icon: Home },
+  { id: 'dashboard', label: t('แดชบอร์ด', 'Dashboard'), icon: BarChart3 },
+  { id: 'players', label: t('สมาชิก', 'Players'), icon: Users },
+  { id: 'livematch', label: t('จัดคู่', 'Pairing'), icon: Shuffle },
+  { id: 'liveboard', label: t('แข่งอยู่', 'Live board'), icon: Activity },
+  { id: 'history', label: t('ประวัติ', 'History'), icon: History },
+  { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: Settings }
+])
 
-const adminTabs = computed(() => tabs.filter((tab) => tab.id !== 'home'))
+const adminTabs = computed(() => tabs.value.filter((tab) => tab.id !== 'home'))
 const mobileTabs = computed(() => adminTabs.value.filter((tab) => tab.id !== 'settings'))
-const currentTab = computed(() => tabs.find((tab) => tab.id === state.tab) || tabs[0])
+const currentTab = computed(() => tabs.value.find((tab) => tab.id === state.tab) || tabs.value[0])
 
 const state = reactive({
   tab: 'home',
@@ -201,6 +202,7 @@ function applyServerState(nextState) {
 }
 
 onMounted(() => {
+  installDomTranslator(() => document.body)
   if (supervisor.isPage) return
   loadSharedPlayers()
   restoreAdminSession()
@@ -223,7 +225,7 @@ async function loginSupervisor() {
     })
     supervisor.unlocked = true
   } catch {
-    forms.supervisorError = 'รหัสผ่านไม่ถูกต้อง'
+    forms.supervisorError = t('รหัสผ่านไม่ถูกต้อง', 'Incorrect password')
   } finally {
     supervisor.loading = false
   }
@@ -265,7 +267,7 @@ watch(
 
 const playerById = (id) => state.players.find((player) => player.id === id)
 const playerName = (id) => playerById(id)?.name || '-'
-const levelLabel = (level) => ({ light: 'เบา', middle: 'กลาง', heavy: 'หนัก' }[level] || level)
+const levelLabel = (level) => levelText(level)
 function matchLevelLabel(match) {
   const orderedLevels = state.settings.levels
   const levels = [...new Set(matchPlayers(match).map((id) => playerById(id)?.level || match.level))]
@@ -353,7 +355,7 @@ function playerCost(player) {
 }
 
 function money(value) {
-  return new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 }).format(value)
+  return new Intl.NumberFormat(language.value === 'en' ? 'en-US' : 'th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 }).format(value)
 }
 
 async function createSession() {
@@ -386,7 +388,7 @@ function unlockDashboard() {
     state.tab = 'dashboard'
     return
   }
-  forms.loginError = 'Passcode ไม่ถูกต้อง'
+  forms.loginError = t('Passcode ไม่ถูกต้อง', 'Incorrect passcode')
 }
 
 function addPlayer() {
@@ -725,7 +727,7 @@ async function loadSharedPlayers() {
     share.showPayment = state.settings.showPaymentOnShare
     state.session.unlocked = false
   } catch {
-    share.error = 'ไม่พบข้อมูล session นี้'
+    share.error = t('ไม่พบข้อมูล session นี้', 'Session not found')
   } finally {
     share.loading = false
   }
@@ -829,7 +831,7 @@ async function randomMatchApi() {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/random`, { method: 'POST' }))
   } catch (error) {
-    forms.randomError = error.message || 'สุ่มจับคู่ไม่สำเร็จ'
+    forms.randomError = error.message || t('สุ่มจับคู่ไม่สำเร็จ', 'Could not randomize pairs')
     showToast(forms.randomError)
   }
 }
@@ -1036,6 +1038,13 @@ const pageProps = computed(() => ({
             @click="state.tab = 'settings'"
           >
             <Settings class="h-5 w-5" />
+          </button>
+          <button
+            class="grid h-10 min-w-10 place-items-center rounded-md border border-stone-200 bg-white px-2 text-xs font-black text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+            :title="language === 'th' ? 'Switch to English' : 'เปลี่ยนเป็นภาษาไทย'"
+            @click="toggleLanguage"
+          >
+            {{ language === 'th' ? 'EN' : 'TH' }}
           </button>
           <button
             v-if="isAdmin"
