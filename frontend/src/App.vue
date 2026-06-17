@@ -36,7 +36,7 @@ import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SupervisorPage from './pages/SupervisorPage.vue'
 
-const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const apiUrl = import.meta.env.VITE_API_URL || ''
 const adminSessionKey = 'livematch.adminSessionId'
 
 const tabs = [

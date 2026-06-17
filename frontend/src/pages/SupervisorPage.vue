@@ -22,7 +22,7 @@ import {
 
 const props = defineProps(['forms', 'supervisor', 'loginSupervisor', 'money'])
 
-const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8080'
+const apiUrl = import.meta.env.VITE_API_URL || ''
 const sessionPage = ref(1)
 const sessionPageSize = 5
 const detail = reactive({
