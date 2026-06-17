@@ -10,9 +10,17 @@ const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.i
 
 function winnerText(match) {
   if (!match.winner) return '-'
+  if (match.winner === 'draw') return 'เสมอ'
   return match.winner === 'A'
     ? `${props.playerName(match.a1)} + ${props.playerName(match.a2)}`
     : `${props.playerName(match.b1)} + ${props.playerName(match.b2)}`
+}
+
+function resultScoreText(match) {
+  if (match.winner === 'A') return 'ทีม A +1 · ทีม B +0'
+  if (match.winner === 'B') return 'ทีม A +0 · ทีม B +1'
+  if (match.winner === 'draw') return 'ทีม A +0.5 · ทีม B +0.5'
+  return '-'
 }
 </script>
 
@@ -39,6 +47,7 @@ function winnerText(match) {
           <div class="flex items-center justify-between gap-3">
             <span class="text-sm font-bold text-stone-500">ทีม A</span>
             <span v-if="match.winner === 'A'" class="rounded-md bg-court-500/10 px-2 py-1 text-xs font-black text-court-700 dark:text-court-300">ชนะ</span>
+            <span v-else-if="match.winner === 'draw'" class="rounded-md bg-shuttle-400/20 px-2 py-1 text-xs font-black text-amber-800 dark:text-shuttle-400">เสมอ</span>
           </div>
           <p class="text-lg font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }}</p>
         </div>
@@ -47,6 +56,7 @@ function winnerText(match) {
           <div class="flex items-center justify-between gap-3">
             <span class="text-sm font-bold text-stone-500">ทีม B</span>
             <span v-if="match.winner === 'B'" class="rounded-md bg-court-500/10 px-2 py-1 text-xs font-black text-court-700 dark:text-court-300">ชนะ</span>
+            <span v-else-if="match.winner === 'draw'" class="rounded-md bg-shuttle-400/20 px-2 py-1 text-xs font-black text-amber-800 dark:text-shuttle-400">เสมอ</span>
           </div>
           <p class="text-lg font-black">{{ playerName(match.b1) }} + {{ playerName(match.b2) }}</p>
         </div>
@@ -71,8 +81,9 @@ function winnerText(match) {
         </div>
 
         <div class="rounded-md bg-paper-100 p-3 text-sm dark:bg-stone-800">
-          <p class="text-xs text-stone-500 dark:text-stone-400">ผู้ชนะ</p>
+          <p class="text-xs text-stone-500 dark:text-stone-400">ผลการแข่งขัน</p>
           <p class="mt-1 font-bold">{{ winnerText(match) }}</p>
+          <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">สกอร์ {{ resultScoreText(match) }}</p>
           <p v-if="match.note" class="mt-2 text-stone-600 dark:text-stone-300">{{ match.note }}</p>
         </div>
       </div>

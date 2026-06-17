@@ -107,7 +107,7 @@ watch(() => props.forms.playerSearch, () => {
         </div>
         <div class="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <span class="font-semibold text-stone-600 dark:text-stone-300">ค่าใช้จ่าย {{ money(playerCost(player)) }}</span>
-          <span class="font-semibold text-stone-600 dark:text-stone-300">ชนะ {{ player.wins || 0 }} · แพ้ {{ player.losses || 0 }}</span>
+          <span class="font-semibold text-stone-600 dark:text-stone-300">ชนะ {{ player.wins || 0 }} · เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses || 0 }}</span>
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
             :class="player.paid ? 'bg-court-500 text-white' : 'bg-shuttle-400 text-stone-900'"

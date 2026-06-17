@@ -19,6 +19,7 @@ defineProps([
   'quietPlayers',
   'topWinners',
   'playerCost',
+  'playerScore',
   'levelLabel'
 ])
 </script>
@@ -144,9 +145,9 @@ defineProps([
           <div v-for="(player, index) in topWinners" :key="player.id" class="flex items-center justify-between gap-3">
             <div class="min-w-0">
               <p class="truncate font-bold">{{ index + 1 }}. {{ player.name }}</p>
-              <p class="text-xs text-stone-500 dark:text-stone-400">แพ้ {{ player.losses || 0 }} · เล่น {{ player.games }} เกม</p>
+              <p class="text-xs text-stone-500 dark:text-stone-400">เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses || 0 }} · เล่น {{ player.games }} เกม</p>
             </div>
-            <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ player.wins || 0 }} ชนะ</span>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ playerScore(player) }} แต้ม</span>
           </div>
         </div>
       </div>

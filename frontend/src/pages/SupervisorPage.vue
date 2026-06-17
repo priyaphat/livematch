@@ -72,8 +72,9 @@ const rankClass = (index) => {
   if (index === 2) return 'bg-amber-700 text-white'
   return 'bg-paper-100 text-stone-700 dark:bg-stone-800 dark:text-stone-200'
 }
-const winnerText = (match) => ({ A: 'ทีม A ชนะ', B: 'ทีม B ชนะ' }[match.winner] || 'ไม่ระบุผู้ชนะ')
+const winnerText = (match) => ({ A: 'ทีม A ชนะ', B: 'ทีม B ชนะ', draw: 'เสมอ' }[match.winner] || 'ไม่ระบุผู้ชนะ')
 const teamText = (match, side) => side === 'A' ? `${match.a1Name} + ${match.a2Name}` : `${match.b1Name} + ${match.b2Name}`
+const playerScore = (player) => (player.wins || 0) + (player.draws || 0) * 0.5
 const paidPlayers = computed(() => detail.data?.players?.filter((player) => player.paid).length || 0)
 const unpaidPlayers = computed(() => detail.data?.players?.filter((player) => !player.paid).length || 0)
 const detailPaymentPercent = computed(() => detail.data ? percent(detail.data.paidRevenue, detail.data.totalRevenue) : 0)
@@ -247,8 +248,8 @@ function closeDetail() {
                   <p class="truncate text-xs font-semibold text-stone-500 dark:text-stone-400">{{ player.sessionName }}</p>
                 </div>
                 <div class="text-right">
-                  <p class="font-black tabular-nums">{{ numberValue(player.wins) }}</p>
-                  <p class="text-xs font-bold text-stone-500 dark:text-stone-400">ชนะ</p>
+                  <p class="font-black tabular-nums">{{ playerScore(player) }}</p>
+                  <p class="text-xs font-bold text-stone-500 dark:text-stone-400">แต้ม</p>
                 </div>
               </div>
               <p v-if="!topWinners.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีข้อมูลผู้ชนะ</p>
@@ -358,7 +359,7 @@ function closeDetail() {
                 <div v-for="player in detail.data.players" :key="player.id" class="grid grid-cols-[1fr_auto] gap-2 border-t border-stone-200 p-3 first:border-t-0 dark:border-stone-700">
                   <div class="min-w-0">
                     <p class="truncate font-black">{{ player.id }}. {{ player.name }}</p>
-                    <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">เกม {{ player.games }} · ลูก {{ player.shuttles }} · ชนะ {{ player.wins }} · แพ้ {{ player.losses }}</p>
+                    <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">เกม {{ player.games }} · ลูก {{ player.shuttles }} · ชนะ {{ player.wins }} · เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses }}</p>
                   </div>
                   <div class="text-right">
                     <p class="font-black">{{ moneyValue(player.cost) }}</p>

@@ -192,6 +192,36 @@ func TestCloseLiveWithoutWinnerDoesNotStoreWinLoss(t *testing.T) {
 	}
 }
 
+func TestCloseLiveWithDrawStoresResultAndDrawStats(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Name: "a1"},
+			{ID: 2, Name: "a2"},
+			{ID: 3, Name: "b1"},
+			{ID: 4, Name: "b2"},
+		},
+		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 2}},
+	}
+
+	if !closeLive(&state, 1, false, "", "draw") {
+		t.Fatal("expected closeLive to close match")
+	}
+	if got := state.History[0].Winner; got != "draw" {
+		t.Fatalf("expected draw winner marker, got %q", got)
+	}
+	for _, player := range state.Players {
+		if player.Games != 1 || player.Shuttles != 2 {
+			t.Fatalf("expected games/shuttles to be counted, got %#v", player)
+		}
+		if player.Draws != 1 {
+			t.Fatalf("expected draw to be counted, got %#v", player)
+		}
+		if player.Wins != 0 || player.Losses != 0 {
+			t.Fatalf("expected draw not to count win/loss, got %#v", player)
+		}
+	}
+}
+
 func TestCloseLiveResetsPlayerReadinessAfterFinishOnly(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{ResetPlayersAfterFinish: true},

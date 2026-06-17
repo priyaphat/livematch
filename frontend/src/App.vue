@@ -39,6 +39,7 @@ import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
 import SupervisorPage from './pages/SupervisorPage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
+import { persistTheme, readStoredTheme } from './theme'
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const adminSessionKey = 'livematch.adminSessionId'
@@ -60,7 +61,7 @@ const currentTab = computed(() => tabs.value.find((tab) => tab.id === state.tab)
 
 const state = reactive({
   tab: 'home',
-  theme: 'light',
+  theme: readStoredTheme(),
   session: {
     id: 'demo-session',
     name: 'แบดวันอังคาร',
@@ -80,18 +81,18 @@ const state = reactive({
     resetPlayersAfterFinish: true
   },
   players: [
-    { id: 1, name: 'ต้น', games: 4, wins: 2, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
-    { id: 2, name: 'แพรว', games: 3, wins: 2, losses: 1, shuttles: 3, paid: false, active: true, level: 'middle', coupon: true },
-    { id: 3, name: 'บอล', games: 2, wins: 1, losses: 1, shuttles: 2, paid: false, active: true, level: 'light', coupon: true },
-    { id: 4, name: 'เมย์', games: 2, wins: 1, losses: 1, shuttles: 2, paid: true, active: true, level: 'light', coupon: true },
-    { id: 5, name: 'ฟ้า', games: 5, wins: 3, losses: 2, shuttles: 5, paid: true, active: true, level: 'heavy', coupon: true },
-    { id: 6, name: 'วิน', games: 1, wins: 0, losses: 1, shuttles: 1, paid: false, active: true, level: 'heavy', coupon: true },
-    { id: 7, name: 'บีม', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
-    { id: 8, name: 'นัท', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
-    { id: 9, name: 'เจน', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
-    { id: 10, name: 'โอ๊ต', games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
-    { id: 11, name: 'ก้อง', games: 1, wins: 1, losses: 0, shuttles: 1, paid: false, active: true, level: 'light', coupon: true },
-    { id: 12, name: 'พลอย', games: 1, wins: 1, losses: 0, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
+    { id: 1, name: 'ต้น', games: 4, wins: 2, draws: 0, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
+    { id: 2, name: 'แพรว', games: 3, wins: 2, draws: 0, losses: 1, shuttles: 3, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 3, name: 'บอล', games: 2, wins: 1, draws: 0, losses: 1, shuttles: 2, paid: false, active: true, level: 'light', coupon: true },
+    { id: 4, name: 'เมย์', games: 2, wins: 1, draws: 0, losses: 1, shuttles: 2, paid: true, active: true, level: 'light', coupon: true },
+    { id: 5, name: 'ฟ้า', games: 5, wins: 3, draws: 0, losses: 2, shuttles: 5, paid: true, active: true, level: 'heavy', coupon: true },
+    { id: 6, name: 'วิน', games: 1, wins: 0, draws: 0, losses: 1, shuttles: 1, paid: false, active: true, level: 'heavy', coupon: true },
+    { id: 7, name: 'บีม', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 8, name: 'นัท', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 9, name: 'เจน', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
+    { id: 10, name: 'โอ๊ต', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'light', coupon: true },
+    { id: 11, name: 'ก้อง', games: 1, wins: 1, draws: 0, losses: 0, shuttles: 1, paid: false, active: true, level: 'light', coupon: true },
+    { id: 12, name: 'พลอย', games: 1, wins: 1, draws: 0, losses: 0, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
   ],
   couples: [{ id: 1, a: 1, b: 2 }],
   pending: [],
@@ -204,16 +205,17 @@ async function api(path, options = {}) {
 
 function applyServerState(nextState) {
   const currentTab = state.tab
-  const currentTheme = state.theme
+  const currentTheme = readStoredTheme()
   Object.assign(state, nextState)
   state.tab = currentTab
-  state.theme = currentTheme
+  state.theme = persistTheme(currentTheme)
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
   }
 }
 
 onMounted(() => {
+  state.theme = persistTheme(readStoredTheme())
   installDomTranslator(() => document.body)
   if (supervisor.isPage) return
   loadSharedView()
@@ -276,10 +278,14 @@ function logout() {
 watch(
   () => state.theme,
   (theme) => {
-    document.documentElement.classList.toggle('dark', theme === 'dark')
+    state.theme = persistTheme(theme)
   },
   { immediate: true }
 )
+
+function toggleTheme() {
+  state.theme = persistTheme(state.theme === 'dark' ? 'light' : 'dark')
+}
 
 const playerById = (id) => state.players.find((player) => player.id === id)
 const playerName = (id) => playerById(id)?.name || '-'
@@ -312,7 +318,8 @@ const minGames = computed(() => (state.players.length ? Math.min(...state.player
 const maxGames = computed(() => (state.players.length ? Math.max(...state.players.map((player) => player.games)) : 0))
 const topPlayers = computed(() => [...state.players].sort((a, b) => b.games - a.games || a.id - b.id).slice(0, 4))
 const quietPlayers = computed(() => [...state.players].sort((a, b) => a.games - b.games || a.id - b.id).slice(0, 4))
-const topWinners = computed(() => [...state.players].sort((a, b) => (b.wins || 0) - (a.wins || 0) || (a.losses || 0) - (b.losses || 0) || a.id - b.id).slice(0, 5))
+const playerScore = (player) => (player.wins || 0) + (player.draws || 0) * 0.5
+const topWinners = computed(() => [...state.players].sort((a, b) => playerScore(b) - playerScore(a) || (b.wins || 0) - (a.wins || 0) || (a.losses || 0) - (b.losses || 0) || a.id - b.id).slice(0, 5))
 const usedCourts = computed(() => new Set(state.live.map((match) => match.court)))
 const availableCourtNames = computed(() => state.settings.courtNames.filter((court) => !usedCourts.value.has(court)))
 const usedCourtNames = computed(() => new Set([...state.queue, ...state.live, ...state.history].map((match) => match.court).filter((court) => court && court !== '-')))
@@ -412,7 +419,7 @@ function addPlayer() {
   const name = forms.newPlayerName.trim()
   if (!name) return
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
-  state.players.push({ id, name, games: 0, wins: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
+  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
   forms.newPlayerName = ''
 }
 
@@ -585,7 +592,8 @@ function closeLive(match, cancelled = false, note = '') {
       if (state.settings.resetPlayersAfterFinish) player.coupon = false
       const won = (ended.winner === 'A' && (id === match.a1 || id === match.a2)) || (ended.winner === 'B' && (id === match.b1 || id === match.b2))
       if (won) player.wins = (player.wins || 0) + 1
-      else if (ended.winner) player.losses = (player.losses || 0) + 1
+      else if (ended.winner === 'draw') player.draws = (player.draws || 0) + 1
+      else if (ended.winner && ended.winner !== 'draw') player.losses = (player.losses || 0) + 1
     }
   }
   state.live = state.live.filter((item) => item.id !== match.id)
@@ -1078,6 +1086,7 @@ const pageProps = computed(() => ({
   usedLevels: usedLevels.value,
   money,
   playerCost,
+  playerScore,
   levelLabel,
   matchLevelLabel,
   addPlayer: addPlayerApi,
@@ -1187,7 +1196,7 @@ const pageProps = computed(() => ({
           <button
             class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
             :title="state.theme === 'dark' ? 'Light mode' : 'Dark mode'"
-            @click="state.theme = state.theme === 'dark' ? 'light' : 'dark'"
+            @click="toggleTheme"
           >
             <Sun v-if="state.theme === 'dark'" class="h-5 w-5" />
             <Moon v-else class="h-5 w-5" />

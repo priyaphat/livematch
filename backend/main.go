@@ -76,6 +76,7 @@ type Player struct {
 	Name     string `json:"name"`
 	Games    int    `json:"games"`
 	Wins     int    `json:"wins"`
+	Draws    int    `json:"draws"`
 	Losses   int    `json:"losses"`
 	Shuttles int    `json:"shuttles"`
 	Paid     bool   `json:"paid"`
@@ -211,6 +212,7 @@ func (a *app) migrate(ctx context.Context) error {
 			name text not null,
 			games integer not null default 0,
 			wins integer not null default 0,
+			draws integer not null default 0,
 			losses integer not null default 0,
 			shuttles integer not null default 0,
 			paid boolean not null default false,
@@ -220,6 +222,7 @@ func (a *app) migrate(ctx context.Context) error {
 			primary key (session_id, id)
 		);
 		alter table players add column if not exists wins integer not null default 0;
+		alter table players add column if not exists draws integer not null default 0;
 		alter table players add column if not exists losses integer not null default 0;
 		alter table players alter column coupon set default false;
 		create table if not exists couples (
@@ -415,6 +418,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 		ID          int    `json:"id"`
 		Name        string `json:"name"`
 		Wins        int    `json:"wins"`
+		Draws       int    `json:"draws"`
 		Losses      int    `json:"losses"`
 	}
 	type supervisorSession struct {
@@ -472,11 +476,11 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 	summary.UnpaidRevenue = summary.TotalRevenue - summary.PaidRevenue
 
 	rows, err := a.db.QueryContext(r.Context(), `
-		select p.session_id, coalesce(s.name, p.session_id), p.id, p.name, p.wins, p.losses
+		select p.session_id, coalesce(s.name, p.session_id), p.id, p.name, p.wins, p.draws, p.losses
 		from players p
 		join sessions s on s.id = p.session_id
 		where p.active
-		order by p.wins desc, p.losses asc, p.games desc, p.id asc
+		order by (p.wins + p.draws * 0.5) desc, p.wins desc, p.losses asc, p.games desc, p.id asc
 		limit 5
 	`)
 	if err != nil {
@@ -486,7 +490,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	for rows.Next() {
 		var item supervisorWinner
-		if err := rows.Scan(&item.SessionID, &item.SessionName, &item.ID, &item.Name, &item.Wins, &item.Losses); err != nil {
+		if err := rows.Scan(&item.SessionID, &item.SessionName, &item.ID, &item.Name, &item.Wins, &item.Draws, &item.Losses); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -560,6 +564,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 		Name     string `json:"name"`
 		Games    int    `json:"games"`
 		Wins     int    `json:"wins"`
+		Draws    int    `json:"draws"`
 		Losses   int    `json:"losses"`
 		Shuttles int    `json:"shuttles"`
 		Paid     bool   `json:"paid"`
@@ -612,7 +617,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	rows, err := a.db.QueryContext(r.Context(), `
-		select id, name, games, wins, losses, shuttles, paid, active,
+		select id, name, games, wins, draws, losses, shuttles, paid, active,
 			$2 + shuttles * $3 as cost
 		from players
 		where session_id = $1
@@ -625,7 +630,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	defer rows.Close()
 	for rows.Next() {
 		var player paymentPlayer
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Cost); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Cost); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -970,9 +975,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, losses, shuttles, paid, active, level, coupon)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon); err != nil {
 			return err
 		}
 	}
@@ -1061,7 +1066,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeSettings(&state.Settings)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, losses, shuttles, paid, active, level, coupon
+		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon
 		from players
 		where session_id = $1
 		order by id
@@ -1072,7 +1077,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon); err != nil {
 			return SessionState{}, err
 		}
 		state.Players = append(state.Players, player)
@@ -1554,7 +1559,7 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 			match.Note = "จบการแข่งขัน"
 		}
 		if !cancelled {
-			if winner != "A" && winner != "B" {
+			if winner != "A" && winner != "B" && winner != "draw" {
 				winner = ""
 			}
 			match.Winner = winner
@@ -1570,7 +1575,9 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 					state.Players[j].Wins++
 				} else if winner == "B" && (state.Players[j].ID == match.B1 || state.Players[j].ID == match.B2) {
 					state.Players[j].Wins++
-				} else if winner != "" {
+				} else if winner == "draw" {
+					state.Players[j].Draws++
+				} else if winner != "" && winner != "draw" {
 					state.Players[j].Losses++
 				}
 			}

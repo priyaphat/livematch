@@ -16,6 +16,7 @@ const activePlayers = computed(() => props.state.players.filter((player) => play
 const paidCount = computed(() => activePlayers.value.filter((player) => player.paid).length)
 const unpaidCount = computed(() => activePlayers.value.length - paidCount.value)
 const totalCost = computed(() => activePlayers.value.reduce((sum, player) => sum + props.playerCost(player), 0))
+const playerScore = (player) => (player.wins || 0) + (player.draws || 0) * 0.5
 
 const filteredPlayers = computed(() => {
   const keyword = searchText.value.trim().toLocaleLowerCase('th-TH')
@@ -29,7 +30,7 @@ const filteredPlayers = computed(() => {
         (paymentFilter.value === 'unpaid' && !player.paid)
       return matchesSearch && matchesPayment
     })
-    .sort((a, b) => (b.wins || 0) - (a.wins || 0) || b.games - a.games || a.name.localeCompare(b.name, 'th-TH'))
+    .sort((a, b) => playerScore(b) - playerScore(a) || (b.wins || 0) - (a.wins || 0) || b.games - a.games || a.name.localeCompare(b.name, 'th-TH'))
 })
 
 const filterTabs = computed(() => [
@@ -142,10 +143,11 @@ function rankStyle(index) {
 
       <div v-else class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
         <div
-          class="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-center gap-2 border-b border-stone-200 bg-paper-100 px-3 py-2 text-xs font-black text-stone-500 dark:border-stone-800 dark:bg-stone-800 dark:text-stone-300"
-          :class="share.showPayment ? 'sm:grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_8rem]' : 'sm:grid-cols-[minmax(0,1fr)_4.5rem_4.5rem]'"
+          class="grid grid-cols-[minmax(0,1fr)_3.25rem_3.25rem_3.25rem] items-center gap-2 border-b border-stone-200 bg-paper-100 px-3 py-2 text-xs font-black text-stone-500 dark:border-stone-800 dark:bg-stone-800 dark:text-stone-300"
+          :class="share.showPayment ? 'sm:grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_8rem]' : 'sm:grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem]'"
         >
           <span>ชื่อ</span>
+          <span class="text-right">แต้ม</span>
           <span class="text-right">เกม</span>
           <span class="text-right">ลูก</span>
           <span v-if="share.showPayment" class="hidden text-right sm:block">สถานะ</span>
@@ -165,8 +167,8 @@ function rankStyle(index) {
           :class="index < 5 ? 'bg-[linear-gradient(90deg,rgba(31,154,120,0.08),transparent_62%)] dark:bg-[linear-gradient(90deg,rgba(47,127,143,0.16),transparent_62%)]' : ''"
         >
           <div
-            class="grid grid-cols-[minmax(0,1fr)_3.5rem_3.5rem] items-center gap-2"
-            :class="share.showPayment ? 'sm:grid-cols-[minmax(0,1fr)_4.5rem_4.5rem_8rem]' : 'sm:grid-cols-[minmax(0,1fr)_4.5rem_4.5rem]'"
+            class="grid grid-cols-[minmax(0,1fr)_3.25rem_3.25rem_3.25rem] items-center gap-2"
+            :class="share.showPayment ? 'sm:grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem_8rem]' : 'sm:grid-cols-[minmax(0,1fr)_4.25rem_4.25rem_4.25rem]'"
           >
             <div class="min-w-0">
               <div class="flex min-w-0 items-center gap-2">
@@ -187,10 +189,13 @@ function rankStyle(index) {
                 </span>
                 <span class="min-w-0">
                   <span class="block truncate text-base font-black">{{ player.name }}</span>
-                  <span v-if="index < 5" class="block truncate text-xs font-bold text-court-700 dark:text-court-300">Top {{ index + 1 }} · ชนะ {{ player.wins || 0 }}</span>
+                  <span class="block truncate text-xs font-bold text-court-700 dark:text-court-300">
+                    ชนะ {{ player.wins || 0 }} · เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses || 0 }}
+                  </span>
                 </span>
               </div>
             </div>
+            <span class="text-right text-base font-black tabular-nums text-court-700 dark:text-court-300">{{ playerScore(player) }}</span>
             <span class="text-right text-base font-black tabular-nums">{{ player.games }}</span>
             <span class="text-right text-base font-black tabular-nums">{{ player.shuttles }}</span>
             <span v-if="share.showPayment" class="hidden justify-self-end sm:block">
@@ -211,7 +216,7 @@ function rankStyle(index) {
               ค่าใช้จ่าย {{ money(playerCost(player)) }}
             </span>
             <span class="text-sm font-bold text-stone-600 dark:text-stone-300">
-              ชนะ {{ player.wins || 0 }} · แพ้ {{ player.losses || 0 }}
+              อันดับ {{ index + 1 }} · สกอร์ {{ playerScore(player) }} แต้ม
             </span>
             <span
               v-if="share.showPayment"

@@ -63,7 +63,7 @@ defineProps([
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="text-lg font-black">จบการแข่งขัน</h2>
-            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">เลือกทีมที่ชนะสำหรับเกมที่ {{ ui.finishMatch?.id }}</p>
+            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">เลือกผลการแข่งขันสำหรับเกมที่ {{ ui.finishMatch?.id }}</p>
           </div>
           <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showFinishModal = false">
             <X class="h-4 w-4" />
@@ -74,6 +74,10 @@ defineProps([
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
             <input v-model="forms.finishWinner" type="radio" value="" />
             <span class="font-bold">ไม่ระบุ</span>
+          </label>
+          <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
+            <input v-model="forms.finishWinner" type="radio" value="draw" />
+            <span class="font-bold">เสมอ</span>
           </label>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
             <input v-model="forms.finishWinner" type="radio" value="A" />

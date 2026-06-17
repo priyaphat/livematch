@@ -2,12 +2,15 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import HistoryPage from './pages/HistoryPage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
 import PlayersPage from './pages/PlayersPage.vue'
 import QueuePage from './pages/QueuePage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
+import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
+import { applyStoredTheme } from './theme'
 
 describe('LiveMatch app', () => {
   it('hides admin screens before passcode access', () => {
@@ -25,6 +28,94 @@ describe('LiveMatch app', () => {
     expect(languageButton.exists()).toBe(true)
     await languageButton.trigger('click')
     expect(wrapper.text()).toContain('TH')
+  })
+
+  it('restores and persists dark mode preference', async () => {
+    localStorage.removeItem('livematch.adminSessionId')
+    localStorage.removeItem('livematch.theme')
+    document.documentElement.classList.remove('dark')
+    const wrapper = mount(App)
+
+    const darkButton = wrapper.findAll('button').find((button) => button.attributes('title') === 'Dark mode')
+    expect(darkButton.exists()).toBe(true)
+    await darkButton.trigger('click')
+
+    expect(localStorage.getItem('livematch.theme')).toBe('dark')
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+    wrapper.unmount()
+    document.documentElement.classList.remove('dark')
+
+    const restoredWrapper = mount(App)
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+
+    const themeButton = restoredWrapper.findAll('button').find((button) => button.attributes('title') === 'Light mode')
+    expect(themeButton.exists()).toBe(true)
+    await themeButton.trigger('click')
+
+    expect(localStorage.getItem('livematch.theme')).toBe('light')
+    expect(document.documentElement.classList.contains('dark')).toBe(false)
+
+    restoredWrapper.unmount()
+    localStorage.removeItem('livematch.theme')
+    document.documentElement.classList.remove('dark')
+  })
+
+  it('creates the theme storage key when the app opens', () => {
+    localStorage.removeItem('livematch.theme')
+    document.documentElement.classList.remove('dark')
+
+    applyStoredTheme()
+
+    expect(localStorage.getItem('livematch.theme')).toBe('light')
+  })
+
+  it('keeps stored dark mode when restored session state says light', async () => {
+    localStorage.setItem('livematch.adminSessionId', 'test-session')
+    localStorage.setItem('livematch.theme', 'dark')
+    document.documentElement.classList.remove('dark')
+    const statePayload = {
+      tab: 'home',
+      theme: 'light',
+      session: { id: 'test-session', name: 'Test Session', adminPasscode: '', unlocked: false },
+      settings: {
+        entryFee: 0,
+        shuttleFee: 0,
+        courtCount: 1,
+        courtNames: ['สนาม 1'],
+        levels: ['light', 'middle', 'heavy'],
+        allowCrossLevel: true,
+        crossLevelRange: 1,
+        randomPriority: 'level',
+        showPaymentOnShare: true,
+        resetPlayersAfterFinish: true
+      },
+      players: [],
+      couples: [],
+      pending: [],
+      queue: [],
+      live: [],
+      history: [],
+      nextIds: { player: 0, match: 0, couple: 0, pending: 0 }
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(statePayload)
+    }))
+
+    const wrapper = mount(App)
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(document.documentElement.classList.contains('dark')).toBe(true)
+    expect(localStorage.getItem('livematch.theme')).toBe('dark')
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+    localStorage.removeItem('livematch.adminSessionId')
+    localStorage.removeItem('livematch.theme')
+    document.documentElement.classList.remove('dark')
   })
 
   it('defaults random coupon groups to not ready', () => {
@@ -97,6 +188,80 @@ describe('LiveMatch app', () => {
     const buttons = wrapper.findAll('button')
     await buttons.at(buttons.length - 1).trigger('click')
     expect(confirmed).toBe(true)
+  })
+
+  it('offers draw when finishing a live match', async () => {
+    const forms = { finishWinner: '', finishNote: '' }
+    const ui = {
+      showShuttleModal: false,
+      showFinishModal: true,
+      finishMatch: { id: 1, a1: 1, a2: 2, b1: 3, b2: 4 },
+      showCancelModal: false
+    }
+    let savedWinner = ''
+    const wrapper = mount(LiveBoardPage, {
+      props: {
+        state: {
+          live: [
+            { id: 1, court: '1', status: 'playing', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 0, shuttleSequence: '' }
+          ]
+        },
+        forms,
+        ui,
+        playerName: (id) => `p${id}`,
+        requestAddShuttle: () => {},
+        confirmAddShuttle: () => {},
+        requestFinishMatch: () => {},
+        confirmFinishMatch: () => {
+          savedWinner = forms.finishWinner
+        },
+        requestCancelMatch: () => {},
+        confirmCancelMatch: () => {}
+      }
+    })
+
+    const drawInput = wrapper.get('input[value="draw"]')
+    await drawInput.setValue(true)
+    await wrapper.findAll('button').at(wrapper.findAll('button').length - 1).trigger('click')
+
+    expect(savedWinner).toBe('draw')
+  })
+
+  it('shows draw result and score in history', () => {
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          history: [
+            { id: 1, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'draw' }
+          ]
+        },
+        playerName: (id) => `p${id}`
+      }
+    })
+
+    expect(wrapper.text()).toContain('เสมอ')
+    expect(wrapper.text()).toContain('ทีม A +0.5')
+    expect(wrapper.text()).toContain('ทีม B +0.5')
+  })
+
+  it('shows score and draw stats in shared players view', () => {
+    const wrapper = mount(SharedPlayersPage, {
+      props: {
+        state: {
+          session: { name: 'Test Session' },
+          players: [
+            { id: 1, name: 'p1', games: 2, wins: 1, draws: 1, losses: 0, shuttles: 2, paid: false, active: true }
+          ]
+        },
+        share: { loading: false, error: '', showPayment: false },
+        money: (value) => `${value}`,
+        playerCost: () => 0
+      }
+    })
+
+    expect(wrapper.text()).toContain('แต้ม')
+    expect(wrapper.text()).toContain('1.5')
+    expect(wrapper.text()).toContain('เสมอ 1')
   })
 
   it('renders reset readiness setting', () => {
