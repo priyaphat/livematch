@@ -19,7 +19,7 @@ defineProps([
     <div class="flex flex-wrap gap-2">
       <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold dark:border-stone-700 dark:bg-stone-900" @click="ui.showCoupleModal = true">
         <Users class="h-4 w-4" />
-        คู่รัก
+        จับคู่
       </button>
       <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold dark:border-stone-700 dark:bg-stone-900" @click="ui.showCouponModal = true">
         <ClipboardList class="h-4 w-4" />

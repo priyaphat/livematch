@@ -71,7 +71,8 @@ const state = reactive({
     allowCrossLevel: true,
     crossLevelRange: 1,
     randomPriority: 'level',
-    showPaymentOnShare: true
+    showPaymentOnShare: true,
+    resetPlayersAfterFinish: true
   },
   players: [
     { id: 1, name: 'ต้น', games: 4, wins: 2, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
@@ -100,7 +101,7 @@ const state = reactive({
 })
 
 const forms = reactive({
-  newSessionName: 'แบดวันอังคาร',
+  newSessionName: '',
   passcodeInput: '',
   createdPasscode: '',
   loginError: '',
@@ -114,6 +115,7 @@ const forms = reactive({
   couponSearch: '',
   couponPage: 1,
   couponPageSize: 8,
+  randomError: '',
   supervisorPassword: '',
   supervisorError: '',
   supervisorSummary: null,
@@ -135,7 +137,10 @@ const ui = reactive({
   showFinishModal: false,
   finishMatch: null,
   showCancelModal: false,
-  cancelMatch: null
+  cancelMatch: null,
+  showShuttleModal: false,
+  shuttleMatch: null,
+  toast: null
 })
 const share = reactive({
   isPublic: false,
@@ -149,6 +154,25 @@ const supervisor = reactive({
   loading: false
 })
 const selectedLiveId = ref(null)
+let toastTimer = null
+
+function showToast(message, type = 'error') {
+  if (!message) return
+  ui.toast = { message, type }
+  if (toastTimer) window.clearTimeout(toastTimer)
+  toastTimer = window.setTimeout(() => {
+    ui.toast = null
+    toastTimer = null
+  }, 4200)
+}
+
+function closeToast() {
+  ui.toast = null
+  if (toastTimer) {
+    window.clearTimeout(toastTimer)
+    toastTimer = null
+  }
+}
 
 async function api(path, options = {}) {
   const response = await fetch(`${apiUrl}${path}`, {
@@ -413,12 +437,10 @@ function pickRandomMatchByLevel(groups) {
   }
   if (state.settings.allowCrossLevel) {
     for (const level of state.settings.levels) {
-      const baseIndex = state.settings.levels.indexOf(level)
-      const selected = pickFourGroups(groups.filter((group) => {
-        const groupIndex = state.settings.levels.indexOf(group.level)
-        return group.level === level || Math.abs(groupIndex - baseIndex) <= state.settings.crossLevelRange
-      }))
-      if (selected.length === 4) return { selected, level }
+      for (const poolLevels of adjacentLevelWindows(level)) {
+        const selected = pickFourGroups(groups.filter((group) => poolLevels.includes(group.level)))
+        if (selected.length === 4) return { selected, level }
+      }
     }
   }
   return { selected: [], level: '' }
@@ -431,15 +453,13 @@ function pickRandomMatchByGames(groups) {
 
   let best = { selected: [], level: '', games: Number.POSITIVE_INFINITY }
   for (const level of state.settings.levels) {
-    const baseIndex = state.settings.levels.indexOf(level)
-    const pool = groups.filter((group) => {
-      const groupIndex = state.settings.levels.indexOf(group.level)
-      return group.level === level || Math.abs(groupIndex - baseIndex) <= state.settings.crossLevelRange
-    })
-    const selected = pickFourGroups(pool)
-    if (selected.length === 4) {
-      const games = selectedGroupGames(pool, selected)
-      if (games < best.games) best = { selected, level, games }
+    for (const poolLevels of adjacentLevelWindows(level)) {
+      const pool = groups.filter((group) => poolLevels.includes(group.level))
+      const selected = pickFourGroups(pool)
+      if (selected.length === 4) {
+        const games = selectedGroupGames(pool, selected)
+        if (games < best.games) best = { selected, level, games }
+      }
     }
   }
   return best.selected.length === 4 ? best : { selected: [], level: '' }
@@ -465,6 +485,15 @@ function selectedGroupGames(groups, selected) {
   ), 0)
 }
 
+function adjacentLevelWindows(level) {
+  const index = state.settings.levels.indexOf(level)
+  if (index < 0) return []
+  return [
+    index > 0 ? [level, state.settings.levels[index - 1]] : null,
+    index < state.settings.levels.length - 1 ? [level, state.settings.levels[index + 1]] : null
+  ].filter(Boolean)
+}
+
 function pickFourGroups(groups) {
   const selected = []
   for (const group of groups) {
@@ -476,9 +505,18 @@ function pickFourGroups(groups) {
 
 function startMatch(match, court = '') {
   if (!court) return
+  if (!matchLevelsAllowed(match)) return
   state.queue = state.queue.filter((item) => item.id !== match.id)
-  state.live.push({ ...match, court, shuttles: 1, status: 'กำลังเล่น', startedAt: currentTime() })
+  state.live.push({ ...match, court, shuttles: 0, shuttleSequence: '', status: 'กำลังเล่น', startedAt: currentTime() })
   state.tab = 'liveboard'
+}
+
+function matchLevelsAllowed(match) {
+  const indexes = matchPlayers(match).map((id) => state.settings.levels.indexOf(playerById(id)?.level || ''))
+  if (indexes.some((index) => index < 0)) return false
+  const min = Math.min(...indexes)
+  const max = Math.max(...indexes)
+  return min === max || (state.settings.allowCrossLevel && max - min <= 1)
 }
 
 function cancelQueuedMatch(match) {
@@ -487,7 +525,12 @@ function cancelQueuedMatch(match) {
 }
 
 function adjustShuttle(match, delta) {
-  match.shuttles = Math.max(0, match.shuttles + delta)
+  if (delta <= 0) return
+  for (let index = 0; index < delta; index += 1) {
+    const nextNumber = nextShuttleNumber()
+    match.shuttles += 1
+    match.shuttleSequence = appendShuttleNumber(match.shuttleSequence || '', nextNumber)
+  }
 }
 
 function closeLive(match, cancelled = false, note = '') {
@@ -496,7 +539,7 @@ function closeLive(match, cancelled = false, note = '') {
     ...match,
     endedAt: currentTime(),
     winner: cancelled ? '' : forms.finishWinner,
-    shuttleSequence: cancelled ? '' : nextShuttleSequence(match.shuttles),
+    shuttleSequence: cancelled ? '' : (match.shuttleSequence || ''),
     note: note || forms.finishNote || (cancelled ? 'ยกเลิกการแข่งขัน' : 'จบการแข่งขัน')
   }
   state.history.unshift(ended)
@@ -505,6 +548,7 @@ function closeLive(match, cancelled = false, note = '') {
     if (player && !cancelled) {
       player.games += 1
       player.shuttles += match.shuttles
+      if (state.settings.resetPlayersAfterFinish) player.coupon = false
       const won = (ended.winner === 'A' && (id === match.a1 || id === match.a2)) || (ended.winner === 'B' && (id === match.b1 || id === match.b2))
       if (won) player.wins = (player.wins || 0) + 1
       else if (ended.winner) player.losses = (player.losses || 0) + 1
@@ -537,6 +581,18 @@ function requestCancelMatch(match) {
   ui.showCancelModal = true
 }
 
+function requestAddShuttle(match) {
+  ui.shuttleMatch = match
+  ui.showShuttleModal = true
+}
+
+async function confirmAddShuttle() {
+  if (!ui.shuttleMatch) return
+  await adjustShuttleApi(ui.shuttleMatch, 1)
+  ui.shuttleMatch = null
+  ui.showShuttleModal = false
+}
+
 function confirmCancelMatch() {
   if (!ui.cancelMatch) return
   closeLive(ui.cancelMatch, true, forms.cancelNote)
@@ -545,11 +601,27 @@ function confirmCancelMatch() {
   ui.showCancelModal = false
 }
 
-function nextShuttleSequence(used) {
-  if (used <= 0) return ''
-  const start = state.history.reduce((sum, match) => sum + match.shuttles, 1)
-  const end = start + used - 1
-  return start === end ? `${start}` : `${start}-${end}`
+function appendShuttleNumber(sequence, number) {
+  return sequence ? `${sequence},${number}` : `${number}`
+}
+
+function nextShuttleNumber() {
+  const matches = [...state.live, ...state.history]
+  const maxSequence = matches.reduce((max, match) => Math.max(max, maxShuttleSequenceNumber(match.shuttleSequence || '')), 0)
+  const legacyCount = matches
+    .filter((match) => !match.shuttleSequence)
+    .reduce((sum, match) => sum + (match.shuttles || 0), 0)
+  return Math.max(maxSequence, legacyCount) + 1
+}
+
+function maxShuttleSequenceNumber(sequence) {
+  return sequence.split(',').reduce((max, part) => {
+    const value = part.trim()
+    if (!value) return max
+    const end = value.split('-').pop()
+    const number = Number.parseInt(end, 10)
+    return Number.isFinite(number) ? Math.max(max, number) : max
+  }, 0)
 }
 
 function addCouple() {
@@ -558,10 +630,29 @@ function addCouple() {
   if (!a || !b || a === b) return
   state.couples = state.couples.filter((couple) => couple.a !== a && couple.b !== a && couple.a !== b && couple.b !== b)
   state.couples.push({ id: Date.now(), a, b })
+  syncNewCouple(a, b)
 }
 
 function removeCouple(id) {
   state.couples = state.couples.filter((couple) => couple.id !== id)
+}
+
+function syncNewCouple(a, b) {
+  const source = playerById(a)
+  const mate = playerById(b)
+  if (!source || !mate) return
+  mate.level = source.level
+  mate.coupon = source.coupon
+}
+
+function syncCoupledPlayerStatus(playerId) {
+  const couple = state.couples.find((item) => item.a === playerId || item.b === playerId)
+  if (!couple) return
+  const source = playerById(playerId)
+  const mate = playerById(couple.a === playerId ? couple.b : couple.a)
+  if (!source || !mate) return
+  mate.level = source.level
+  mate.coupon = source.coupon
 }
 
 function nextGameId() {
@@ -712,6 +803,7 @@ async function updatePlayerLevelApi(playerId, level) {
   } catch {
     const player = playerById(playerId)
     if (player) player.level = level
+    syncCoupledPlayerStatus(playerId)
   }
 }
 
@@ -728,14 +820,17 @@ async function updatePlayerRandomStatusApi(playerId, level) {
     if (!player) return
     player.coupon = ready
     if (ready) player.level = level
+    syncCoupledPlayerStatus(playerId)
   }
 }
 
 async function randomMatchApi() {
+  forms.randomError = ''
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/random`, { method: 'POST' }))
-  } catch {
-    randomMatch()
+  } catch (error) {
+    forms.randomError = error.message || 'สุ่มจับคู่ไม่สำเร็จ'
+    showToast(forms.randomError)
   }
 }
 
@@ -823,6 +918,7 @@ async function removeCoupleApi(id) {
 }
 
 async function saveSettingsApi() {
+  state.settings.crossLevelRange = 1
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/settings`, {
       method: 'PUT',
@@ -868,7 +964,8 @@ const pageProps = computed(() => ({
   startMatch: startMatchApi,
   cancelQueuedMatch: cancelQueuedMatchApi,
   playerName,
-  adjustShuttle: adjustShuttleApi,
+  requestAddShuttle,
+  confirmAddShuttle,
   closeLive: closeLiveApi,
   requestFinishMatch,
   confirmFinishMatch: confirmFinishMatchApi,
@@ -890,6 +987,28 @@ const pageProps = computed(() => ({
 
 <template>
   <div class="min-h-screen bg-paper-50 text-stone-900 transition dark:bg-paper-900 dark:text-stone-100">
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="translate-y-2 opacity-0"
+      enter-to-class="translate-y-0 opacity-100"
+      leave-active-class="transition duration-150 ease-in"
+      leave-from-class="translate-y-0 opacity-100"
+      leave-to-class="translate-y-2 opacity-0"
+    >
+      <div
+        v-if="ui.toast"
+        class="fixed inset-x-3 top-3 z-50 mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
+        :class="ui.toast.type === 'error' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100' : 'border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100'"
+        role="status"
+        aria-live="polite"
+      >
+        <span class="text-sm font-bold leading-6">{{ ui.toast.message }}</span>
+        <button class="grid h-7 w-7 shrink-0 place-items-center rounded-md hover:bg-black/5 dark:hover:bg-white/10" aria-label="ปิดแจ้งเตือน" @click="closeToast">
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+    </Transition>
+
     <SupervisorPage v-if="supervisor.isPage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic" :state="state" :share="share" :money="money" :player-cost="playerCost" />

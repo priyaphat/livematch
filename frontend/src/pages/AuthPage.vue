@@ -99,7 +99,7 @@ defineProps([
         </div>
 
         <div class="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
-          <input
+          <input placeholder="live match name"
             v-model="forms.newSessionName"
             class="h-12 rounded-md border border-stone-200 bg-paper-50 px-4 outline-none transition focus:border-court-500 focus:ring-4 focus:ring-court-500/10 dark:border-stone-700 dark:bg-stone-800"
           />

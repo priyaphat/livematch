@@ -110,7 +110,7 @@ function changeGroupStatus(group, event) {
   <div class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
     <div class="max-h-[86vh] w-full max-w-xl overflow-auto rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
       <div class="flex items-center justify-between">
-        <h2 class="text-lg font-bold">{{ ui.showCouponModal ? 'คูปองระดับมือ / สิทธิ์สุ่ม' : 'คู่รัก' }}</h2>
+        <h2 class="text-lg font-bold">{{ ui.showCouponModal ? 'คูปองระดับมือ / สิทธิ์สุ่ม' : 'จับคู่' }}</h2>
         <button
           class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700"
           aria-label="ปิด modal"
@@ -210,7 +210,7 @@ function changeGroupStatus(group, event) {
 
           <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="addCouple">
             <Plus class="h-4 w-4" />
-            สร้างคู่รัก
+            สร้างคู่
           </button>
         </div>
 
@@ -220,13 +220,13 @@ function changeGroupStatus(group, event) {
           class="flex items-center justify-between rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
           <span>{{ playerName(couple.a) }} + {{ playerName(couple.b) }}</span>
-          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ลบคู่รัก" @click="removeCouple(couple.id)">
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ลบคู่" @click="removeCouple(couple.id)">
             <X class="h-4 w-4" />
           </button>
         </div>
 
         <p v-if="!state.couples.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">
-          ยังไม่มีคู่รัก
+          ยังไม่มีคู่จับ
         </p>
       </div>
     </div>

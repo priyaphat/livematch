@@ -58,15 +58,16 @@ type SessionInfo struct {
 }
 
 type Settings struct {
-	EntryFee           int      `json:"entryFee"`
-	ShuttleFee         int      `json:"shuttleFee"`
-	CourtCount         int      `json:"courtCount"`
-	CourtNames         []string `json:"courtNames"`
-	Levels             []string `json:"levels"`
-	AllowCrossLevel    bool     `json:"allowCrossLevel"`
-	CrossLevelRange    int      `json:"crossLevelRange"`
-	RandomPriority     string   `json:"randomPriority"`
-	ShowPaymentOnShare bool     `json:"showPaymentOnShare"`
+	EntryFee                int      `json:"entryFee"`
+	ShuttleFee              int      `json:"shuttleFee"`
+	CourtCount              int      `json:"courtCount"`
+	CourtNames              []string `json:"courtNames"`
+	Levels                  []string `json:"levels"`
+	AllowCrossLevel         bool     `json:"allowCrossLevel"`
+	CrossLevelRange         int      `json:"crossLevelRange"`
+	RandomPriority          string   `json:"randomPriority"`
+	ShowPaymentOnShare      bool     `json:"showPaymentOnShare"`
+	ResetPlayersAfterFinish bool     `json:"resetPlayersAfterFinish"`
 }
 
 type Player struct {
@@ -196,10 +197,12 @@ func (a *app) migrate(ctx context.Context) error {
 			allow_cross_level boolean not null default true,
 			cross_level_range integer not null default 1,
 			random_priority text not null default 'level',
-			show_payment_on_share boolean not null default true
+			show_payment_on_share boolean not null default true,
+			reset_players_after_finish boolean not null default true
 		);
 		alter table session_settings add column if not exists random_priority text not null default 'level';
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
+		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		create table if not exists players (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -283,6 +286,7 @@ func (a *app) backfillJSONStates(ctx context.Context) error {
 		if state.Session.ID == "" {
 			state.Session.ID = id
 		}
+		state.Settings.ResetPlayersAfterFinish = true
 		states = append(states, state)
 	}
 	if err := rows.Err(); err != nil {
@@ -761,6 +765,9 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				if body.Active != nil {
 					state.Players[i].Active = *body.Active
 				}
+				if body.Level != nil || body.Coupon != nil {
+					syncCoupledPlayerStatus(&state, state.Players[i].ID)
+				}
 			}
 		}
 		a.respondSaved(w, r, state)
@@ -786,6 +793,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		state.Couples = removeCouplesForPlayers(state.Couples, body.A, body.B)
 		state.NextIDs.Couple++
 		state.Couples = append(state.Couples, Couple{ID: state.NextIDs.Couple, A: body.A, B: body.B})
+		syncNewCouple(&state, body.A, body.B)
 		a.respondSaved(w, r, state)
 	case r.Method == http.MethodGet && action == "couples":
 		paged, page, pageSize := paginate(state.Couples, r)
@@ -918,9 +926,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, shuttle_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share
+			session_id, entry_fee, shuttle_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			shuttle_fee = excluded.shuttle_fee,
@@ -930,8 +938,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			allow_cross_level = excluded.allow_cross_level,
 			cross_level_range = excluded.cross_level_range,
 			random_priority = excluded.random_priority,
-			show_payment_on_share = excluded.show_payment_on_share
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ShuttleFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare); err != nil {
+			show_payment_on_share = excluded.show_payment_on_share,
+			reset_players_after_finish = excluded.reset_players_after_finish
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ShuttleFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish); err != nil {
 		return err
 	}
 
@@ -1002,7 +1011,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, shuttle_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share
+		select entry_fee, shuttle_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -1015,6 +1024,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.CrossLevelRange,
 		&state.Settings.RandomPriority,
 		&state.Settings.ShowPaymentOnShare,
+		&state.Settings.ResetPlayersAfterFinish,
 	)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return SessionState{}, err
@@ -1121,15 +1131,16 @@ func defaultState(id, name, passcode string) SessionState {
 			Unlocked:      false,
 		},
 		Settings: Settings{
-			EntryFee:           120,
-			ShuttleFee:         85,
-			CourtCount:         4,
-			CourtNames:         []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
-			Levels:             []string{"light", "middle", "heavy"},
-			AllowCrossLevel:    true,
-			CrossLevelRange:    1,
-			RandomPriority:     "level",
-			ShowPaymentOnShare: true,
+			EntryFee:                120,
+			ShuttleFee:              85,
+			CourtCount:              4,
+			CourtNames:              []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
+			Levels:                  []string{"light", "middle", "heavy"},
+			AllowCrossLevel:         true,
+			CrossLevelRange:         1,
+			RandomPriority:          "level",
+			ShowPaymentOnShare:      true,
+			ResetPlayersAfterFinish: true,
 		},
 		Players: []Player{},
 		Couples: []Couple{},
@@ -1259,15 +1270,17 @@ func pickRandomMatchByLevel(groups []group, settings Settings, levelIndex map[st
 	}
 	if settings.AllowCrossLevel {
 		for _, base := range settings.Levels {
-			pool := []group{}
-			for _, g := range groups {
-				if g.level == base || abs(levelIndex[g.level]-levelIndex[base]) <= settings.CrossLevelRange {
-					pool = append(pool, g)
+			for _, poolLevels := range adjacentLevelWindows(base, levelIndex) {
+				pool := []group{}
+				for _, g := range groups {
+					if slices.Contains(poolLevels, g.level) {
+						pool = append(pool, g)
+					}
 				}
-			}
-			selected := pickFour(pool)
-			if len(selected) == 4 {
-				return selected, base
+				selected := pickFour(pool)
+				if len(selected) == 4 {
+					return selected, base
+				}
 			}
 		}
 	}
@@ -1283,18 +1296,20 @@ func pickRandomMatchByGames(groups []group, settings Settings, levelIndex map[st
 		bestLevel := ""
 		bestGames := int(^uint(0) >> 1)
 		for _, base := range settings.Levels {
-			pool := []group{}
-			for _, g := range groups {
-				if g.level == base || abs(levelIndex[g.level]-levelIndex[base]) <= settings.CrossLevelRange {
-					pool = append(pool, g)
+			for _, poolLevels := range adjacentLevelWindows(base, levelIndex) {
+				pool := []group{}
+				for _, g := range groups {
+					if slices.Contains(poolLevels, g.level) {
+						pool = append(pool, g)
+					}
 				}
-			}
-			if selected := pickFour(pool); len(selected) == 4 {
-				games := selectedGroupGames(pool, selected)
-				if games < bestGames {
-					best = selected
-					bestLevel = base
-					bestGames = games
+				if selected := pickFour(pool); len(selected) == 4 {
+					games := selectedGroupGames(pool, selected)
+					if games < bestGames {
+						best = selected
+						bestLevel = base
+						bestGames = games
+					}
 				}
 			}
 		}
@@ -1347,6 +1362,30 @@ func selectedGroupGames(groups []group, selected []int) int {
 	return total
 }
 
+func adjacentLevelWindows(base string, levelIndex map[string]int) [][]string {
+	basePos, ok := levelIndex[base]
+	if !ok {
+		return nil
+	}
+	windows := [][]string{}
+	if basePos > 0 {
+		windows = append(windows, []string{base, levelByIndex(levelIndex, basePos-1)})
+	}
+	if levelByIndex(levelIndex, basePos+1) != "" {
+		windows = append(windows, []string{base, levelByIndex(levelIndex, basePos+1)})
+	}
+	return windows
+}
+
+func levelByIndex(levelIndex map[string]int, index int) string {
+	for level, candidate := range levelIndex {
+		if candidate == index {
+			return level
+		}
+	}
+	return ""
+}
+
 func keepCouplesTogether(ids []int, couples []Couple) []int {
 	for _, c := range couples {
 		if slices.Contains(ids, c.A) && slices.Contains(ids, c.B) {
@@ -1365,9 +1404,13 @@ func keepCouplesTogether(ids []int, couples []Couple) []int {
 func startMatch(state *SessionState, matchID int, court string) bool {
 	for i, match := range state.Queue {
 		if match.ID == matchID {
+			if !matchLevelsAllowed(*state, match) {
+				return false
+			}
 			state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
 			match.Court = court
-			match.Shuttles = 1
+			match.Shuttles = 0
+			match.ShuttleSeq = ""
 			match.Status = "กำลังเล่น"
 			match.StartedAt = nowHHMM()
 			state.Live = append(state.Live, match)
@@ -1375,6 +1418,35 @@ func startMatch(state *SessionState, matchID int, court string) bool {
 		}
 	}
 	return false
+}
+
+func matchLevelsAllowed(state SessionState, match Match) bool {
+	levelIndex := map[string]int{}
+	for i, level := range state.Settings.Levels {
+		levelIndex[level] = i
+	}
+	minIndex := 1 << 30
+	maxIndex := -1
+	for _, id := range matchPlayers(match) {
+		player := playerByID(state.Players, id)
+		if player == nil {
+			return false
+		}
+		index, ok := levelIndex[player.Level]
+		if !ok {
+			return false
+		}
+		if index < minIndex {
+			minIndex = index
+		}
+		if index > maxIndex {
+			maxIndex = index
+		}
+	}
+	if minIndex == maxIndex {
+		return true
+	}
+	return state.Settings.AllowCrossLevel && maxIndex-minIndex <= 1
 }
 
 func cancelQueuedMatch(state *SessionState, matchID int) bool {
@@ -1390,10 +1462,15 @@ func cancelQueuedMatch(state *SessionState, matchID int) bool {
 func adjustShuttles(state *SessionState, matchID, delta int) {
 	for i := range state.Live {
 		if state.Live[i].ID == matchID {
-			state.Live[i].Shuttles += delta
-			if state.Live[i].Shuttles < 0 {
-				state.Live[i].Shuttles = 0
+			if delta <= 0 {
+				return
 			}
+			for range delta {
+				nextNumber := nextShuttleNumber(*state)
+				state.Live[i].Shuttles++
+				state.Live[i].ShuttleSeq = appendShuttleNumber(state.Live[i].ShuttleSeq, nextNumber)
+			}
+			return
 		}
 	}
 }
@@ -1417,12 +1494,14 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 				winner = ""
 			}
 			match.Winner = winner
-			match.ShuttleSeq = nextShuttleSequence(*state, match.Shuttles)
 		}
 		for j := range state.Players {
 			if !cancelled && slices.Contains(matchPlayers(match), state.Players[j].ID) {
 				state.Players[j].Games++
 				state.Players[j].Shuttles += match.Shuttles
+				if state.Settings.ResetPlayersAfterFinish {
+					state.Players[j].Coupon = false
+				}
 				if winner == "A" && (state.Players[j].ID == match.A1 || state.Players[j].ID == match.A2) {
 					state.Players[j].Wins++
 				} else if winner == "B" && (state.Players[j].ID == match.B1 || state.Players[j].ID == match.B2) {
@@ -1438,19 +1517,44 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 	return false
 }
 
-func nextShuttleSequence(state SessionState, used int) string {
-	if used <= 0 {
-		return ""
+func appendShuttleNumber(sequence string, number int) string {
+	if sequence == "" {
+		return strconv.Itoa(number)
 	}
-	start := 1
-	for _, match := range state.History {
-		start += match.Shuttles
+	return sequence + "," + strconv.Itoa(number)
+}
+
+func nextShuttleNumber(state SessionState) int {
+	maxNumber := 0
+	legacyCount := 0
+	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
+		if sequenceMax := maxShuttleSequenceNumber(match.ShuttleSeq); sequenceMax > maxNumber {
+			maxNumber = sequenceMax
+		}
+		if match.ShuttleSeq == "" {
+			legacyCount += match.Shuttles
+		}
 	}
-	end := start + used - 1
-	if start == end {
-		return strconv.Itoa(start)
+	if legacyCount > maxNumber {
+		return legacyCount + 1
 	}
-	return fmt.Sprintf("%d-%d", start, end)
+	return maxNumber + 1
+}
+
+func maxShuttleSequenceNumber(sequence string) int {
+	maxNumber := 0
+	for _, part := range strings.Split(sequence, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		bounds := strings.Split(part, "-")
+		number, err := strconv.Atoi(strings.TrimSpace(bounds[len(bounds)-1]))
+		if err == nil && number > maxNumber {
+			maxNumber = number
+		}
+	}
+	return maxNumber
 }
 
 func matchPlayers(match Match) []int {
@@ -1472,6 +1576,51 @@ func removeCouplesForPlayers(couples []Couple, a, b int) []Couple {
 	})
 }
 
+func syncNewCouple(state *SessionState, a, b int) {
+	source := playerByID(state.Players, a)
+	if source == nil {
+		return
+	}
+	for i := range state.Players {
+		if state.Players[i].ID == b {
+			state.Players[i].Level = source.Level
+			state.Players[i].Coupon = source.Coupon
+			return
+		}
+	}
+}
+
+func syncCoupledPlayerStatus(state *SessionState, id int) {
+	couple, ok := coupleForPlayer(state.Couples, id)
+	if !ok {
+		return
+	}
+	source := playerByID(state.Players, id)
+	if source == nil {
+		return
+	}
+	mateID := couple.A
+	if mateID == id {
+		mateID = couple.B
+	}
+	for i := range state.Players {
+		if state.Players[i].ID == mateID {
+			state.Players[i].Level = source.Level
+			state.Players[i].Coupon = source.Coupon
+			return
+		}
+	}
+}
+
+func playerByID(players []Player, id int) *Player {
+	for i := range players {
+		if players[i].ID == id {
+			return &players[i]
+		}
+	}
+	return nil
+}
+
 func normalizeSettings(settings *Settings) {
 	if settings.EntryFee < 0 {
 		settings.EntryFee = 0
@@ -1486,9 +1635,7 @@ func normalizeSettings(settings *Settings) {
 	if len(settings.Levels) == 0 {
 		settings.Levels = []string{"light", "middle", "heavy"}
 	}
-	if settings.CrossLevelRange < 0 {
-		settings.CrossLevelRange = 0
-	}
+	settings.CrossLevelRange = 1
 	if settings.RandomPriority != "games" {
 		settings.RandomPriority = "level"
 	}

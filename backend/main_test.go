@@ -76,7 +76,7 @@ func TestCloseLiveStoresWinnerStatsAndShuttleSequence(t *testing.T) {
 			{ID: 3, Name: "b1"},
 			{ID: 4, Name: "b2"},
 		},
-		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 3}},
+		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 3, ShuttleSeq: "1-3"}},
 	}
 
 	if !closeLive(&state, 1, false, "", "B") {
@@ -93,8 +93,15 @@ func TestCloseLiveStoresWinnerStatsAndShuttleSequence(t *testing.T) {
 	}
 }
 
-func TestStartMatchUsesOneInitialShuttle(t *testing.T) {
+func TestStartMatchUsesNoInitialShuttle(t *testing.T) {
 	state := SessionState{
+		Settings: Settings{Levels: []string{"light", "middle", "heavy"}},
+		Players: []Player{
+			{ID: 1, Level: "middle"},
+			{ID: 2, Level: "middle"},
+			{ID: 3, Level: "middle"},
+			{ID: 4, Level: "middle"},
+		},
 		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
 	}
 
@@ -104,8 +111,28 @@ func TestStartMatchUsesOneInitialShuttle(t *testing.T) {
 	if len(state.Live) != 1 {
 		t.Fatalf("expected one live match, got %d", len(state.Live))
 	}
-	if state.Live[0].Shuttles != 1 {
-		t.Fatalf("expected initial shuttle count 1, got %d", state.Live[0].Shuttles)
+	if state.Live[0].Shuttles != 0 {
+		t.Fatalf("expected initial shuttle count 0, got %d", state.Live[0].Shuttles)
+	}
+}
+
+func TestStartMatchRejectsNonAdjacentLevels(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, AllowCrossLevel: true},
+		Players: []Player{
+			{ID: 1, Level: "light"},
+			{ID: 2, Level: "light"},
+			{ID: 3, Level: "heavy"},
+			{ID: 4, Level: "heavy"},
+		},
+		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if startMatch(&state, 1, "court 1") {
+		t.Fatal("expected non-adjacent level match to be rejected")
+	}
+	if len(state.Queue) != 1 || len(state.Live) != 0 {
+		t.Fatalf("expected invalid match to stay queued and not start, queue=%#v live=%#v", state.Queue, state.Live)
 	}
 }
 
@@ -133,5 +160,108 @@ func TestCloseLiveWithoutWinnerDoesNotStoreWinLoss(t *testing.T) {
 		if player.Wins != 0 || player.Losses != 0 {
 			t.Fatalf("expected win/loss to stay zero, got %#v", player)
 		}
+	}
+}
+
+func TestCloseLiveResetsPlayerReadinessAfterFinishOnly(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{ResetPlayersAfterFinish: true},
+		Players: []Player{
+			{ID: 1, Name: "a1", Coupon: true},
+			{ID: 2, Name: "a2", Coupon: true},
+			{ID: 3, Name: "b1", Coupon: true},
+			{ID: 4, Name: "b2", Coupon: true},
+			{ID: 5, Name: "waiting", Coupon: true},
+		},
+		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if !closeLive(&state, 1, false, "", "") {
+		t.Fatal("expected closeLive to finish match")
+	}
+	for _, player := range state.Players[:4] {
+		if player.Coupon {
+			t.Fatalf("expected match player %d to be not ready", player.ID)
+		}
+	}
+	if !state.Players[4].Coupon {
+		t.Fatal("expected waiting player to remain ready")
+	}
+
+	cancelState := SessionState{
+		Settings: Settings{ResetPlayersAfterFinish: true},
+		Players:  []Player{{ID: 1, Coupon: true}, {ID: 2, Coupon: true}, {ID: 3, Coupon: true}, {ID: 4, Coupon: true}},
+		Live:     []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+	if !closeLive(&cancelState, 1, true, "", "") {
+		t.Fatal("expected closeLive to cancel match")
+	}
+	for _, player := range cancelState.Players {
+		if !player.Coupon {
+			t.Fatalf("expected cancelled match player %d to remain ready", player.ID)
+		}
+	}
+}
+
+func TestCoupledPlayersShareRandomStatus(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Level: "middle", Coupon: true},
+			{ID: 2, Level: "heavy", Coupon: false},
+		},
+		Couples: []Couple{{ID: 1, A: 1, B: 2}},
+	}
+
+	syncNewCouple(&state, 1, 2)
+	if state.Players[1].Level != "middle" || !state.Players[1].Coupon {
+		t.Fatalf("expected new couple to sync from player 1, got %#v", state.Players[1])
+	}
+
+	state.Players[1].Level = "light"
+	state.Players[1].Coupon = false
+	syncCoupledPlayerStatus(&state, 2)
+	if state.Players[0].Level != "light" || state.Players[0].Coupon {
+		t.Fatalf("expected coupled status to sync back to player 1, got %#v", state.Players[0])
+	}
+}
+
+func TestCrossLevelOnlyUsesAdjacentConfiguredLevels(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{
+			Levels:          []string{"light", "middle", "heavy"},
+			AllowCrossLevel: true,
+			CrossLevelRange: 5,
+		},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Level: "light"},
+			{ID: 2, Active: true, Coupon: true, Level: "light"},
+			{ID: 3, Active: true, Coupon: true, Level: "heavy"},
+			{ID: 4, Active: true, Coupon: true, Level: "heavy"},
+		},
+	}
+
+	if err := randomMatch(&state); err == nil {
+		t.Fatalf("expected non-adjacent levels to wait, queued %#v", state.Queue)
+	}
+}
+
+func TestAdjustShuttlesAssignsGlobalSequenceOnAdd(t *testing.T) {
+	state := SessionState{
+		Live: []Match{
+			{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4},
+			{ID: 2, A1: 5, A2: 6, B1: 7, B2: 8},
+		},
+	}
+
+	adjustShuttles(&state, 1, 1)
+	adjustShuttles(&state, 2, 1)
+	adjustShuttles(&state, 1, 1)
+	adjustShuttles(&state, 1, -1)
+
+	if state.Live[0].Shuttles != 2 || state.Live[0].ShuttleSeq != "1,3" {
+		t.Fatalf("expected match 1 sequence 1,3, got %#v", state.Live[0])
+	}
+	if state.Live[1].Shuttles != 1 || state.Live[1].ShuttleSeq != "2" {
+		t.Fatalf("expected match 2 sequence 2, got %#v", state.Live[1])
 	}
 }
