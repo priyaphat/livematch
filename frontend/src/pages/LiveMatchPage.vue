@@ -1,16 +1,14 @@
 <script setup>
-import { ClipboardList, Play, Shuffle, Users, X } from '@lucide/vue'
+import { Check, ClipboardList, Shuffle, Users, X } from '@lucide/vue'
 
 defineProps([
   'state',
-  'forms',
   'ui',
   'matchLevelLabel',
   'randomMatch',
-  'startMatch',
-  'cancelQueuedMatch',
-  'playerName',
-  'availableCourtNames'
+  'confirmPendingMatch',
+  'cancelPendingMatch',
+  'playerName'
 ])
 </script>
 
@@ -31,39 +29,40 @@ defineProps([
       </button>
     </div>
 
+    <div v-if="!state.pending.length" class="rounded-lg border border-stone-200 bg-white p-6 text-center shadow-soft dark:border-stone-700 dark:bg-stone-900">
+      <p class="font-black">ยังไม่มีคู่ที่รอยืนยัน</p>
+      <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เลือกสิทธิ์สุ่มแล้วกด Random เพื่อสร้างคู่ก่อนส่งไปรอคิว</p>
+    </div>
+
     <div class="grid gap-3">
-      <article v-for="match in state.queue" :key="match.id" class="relative rounded-lg border border-stone-200 bg-white p-4 pr-14 shadow-soft dark:border-stone-700 dark:bg-stone-900">
-        <button
-          class="absolute right-3 top-3 grid h-9 w-9 place-items-center rounded-md border border-stone-200 bg-paper-50 text-stone-500 transition hover:border-red-200 hover:bg-red-50 hover:text-red-600 dark:border-stone-700 dark:bg-stone-800 dark:hover:border-red-900 dark:hover:bg-red-950/40 dark:hover:text-red-200"
-          title="ยกเลิกการจับคู่"
-          aria-label="ยกเลิกการจับคู่"
-          @click="cancelQueuedMatch(match)"
-        >
-          <X class="h-4 w-4" />
-        </button>
-        <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
+      <article v-for="match in state.pending" :key="match.id" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+        <div class="grid gap-4">
           <div>
-            <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ matchLevelLabel(match) }}</p>
+            <p class="text-sm font-bold text-stone-500">ระดับ {{ matchLevelLabel(match) }}</p>
             <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
           </div>
-          <div class="grid grid-cols-[1fr_auto] gap-2 sm:min-w-72">
-            <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
-              <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
-              <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
-            </select>
-            <button
-              class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"
-              :class="forms.matchCourts[match.id] ? 'bg-court-500' : 'bg-stone-400'"
-              :disabled="!forms.matchCourts[match.id]"
-              @click="startMatch(match, forms.matchCourts[match.id])"
-            >
-              <Play class="h-4 w-4" />
-              เริ่ม
+
+          <div class="grid gap-2 sm:grid-cols-2">
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+              <p class="text-xs font-black text-stone-500 dark:text-stone-400">ทีม A</p>
+              <p class="mt-1 font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }}</p>
+            </div>
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+              <p class="text-xs font-black text-stone-500 dark:text-stone-400">ทีม B</p>
+              <p class="mt-1 font-black">{{ playerName(match.b1) }} + {{ playerName(match.b2) }}</p>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="cancelPendingMatch(match)">
+              <X class="h-4 w-4" />
+              ยกเลิกจับคู่
+            </button>
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 font-bold text-white" @click="confirmPendingMatch(match)">
+              <Check class="h-4 w-4" />
+              ยืนยัน
             </button>
           </div>
-          <p v-if="!forms.matchCourts[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">
-            ต้องเลือกสนามก่อนเริ่มการแข่งขัน
-          </p>
         </div>
       </article>
     </div>

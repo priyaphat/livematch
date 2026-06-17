@@ -1,6 +1,6 @@
 <script setup>
 import { computed, watch } from 'vue'
-import { Check, Copy, Plus, Search } from '@lucide/vue'
+import { Check, Copy, Plus, QrCode, Search } from '@lucide/vue'
 
 const props = defineProps([
   'state',
@@ -9,6 +9,7 @@ const props = defineProps([
   'playerCost',
   'addPlayer',
   'sharePlayers',
+  'openPlayersQr',
   'saveSettings',
   'togglePayment'
 ])
@@ -51,10 +52,16 @@ watch(() => props.forms.playerSearch, () => {
         <input v-model="state.settings.showPaymentOnShare" type="checkbox" @change="saveSettings" />
         แสดงสถานะจ่ายเงินในลิงก์แชร์
       </label>
-      <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-stone-900" @click="sharePlayers">
-        <Copy class="h-4 w-4" />
-        คัดลอกลิงก์สมาชิก
-      </button>
+      <div class="grid gap-2 sm:grid-cols-2">
+        <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-stone-900" @click="sharePlayers">
+          <Copy class="h-4 w-4" />
+          คัดลอกลิงก์สมาชิก
+        </button>
+        <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-semibold text-white" @click="openPlayersQr">
+          <QrCode class="h-4 w-4" />
+          QR ลิงก์สมาชิก
+        </button>
+      </div>
       <input
         v-if="forms.shareLink"
         :value="forms.shareLink"

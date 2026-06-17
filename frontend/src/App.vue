@@ -1,5 +1,6 @@
 ﻿<script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 import {
   Activity,
   BarChart3,
@@ -32,8 +33,10 @@ import HomePage from './pages/HomePage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
 import PlayersPage from './pages/PlayersPage.vue'
+import QueuePage from './pages/QueuePage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
+import SharedQueuePage from './pages/SharedQueuePage.vue'
 import SupervisorPage from './pages/SupervisorPage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 
@@ -45,6 +48,7 @@ const tabs = computed(() => [
   { id: 'dashboard', label: t('แดชบอร์ด', 'Dashboard'), icon: BarChart3 },
   { id: 'players', label: t('สมาชิก', 'Players'), icon: Users },
   { id: 'livematch', label: t('จัดคู่', 'Pairing'), icon: Shuffle },
+  { id: 'queue', label: t('รอคิว', 'Queue'), icon: Clock3 },
   { id: 'liveboard', label: t('แข่งอยู่', 'Live board'), icon: Activity },
   { id: 'history', label: t('ประวัติ', 'History'), icon: History },
   { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: Settings }
@@ -90,6 +94,7 @@ const state = reactive({
     { id: 12, name: 'พลอย', games: 1, wins: 1, losses: 0, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
   ],
   couples: [{ id: 1, a: 1, b: 2 }],
+  pending: [],
   queue: [
     { id: 1, court: '-', level: 'middle', a1: 1, a2: 2, b1: 7, b2: 8 }
   ],
@@ -117,6 +122,10 @@ const forms = reactive({
   couponPage: 1,
   couponPageSize: 8,
   randomError: '',
+  qrLink: '',
+  qrTitle: '',
+  qrDataUrl: '',
+  qrStatus: '',
   supervisorPassword: '',
   supervisorError: '',
   supervisorSummary: null,
@@ -141,10 +150,12 @@ const ui = reactive({
   cancelMatch: null,
   showShuttleModal: false,
   shuttleMatch: null,
+  showQrModal: false,
   toast: null
 })
 const share = reactive({
   isPublic: false,
+  view: '',
   loading: false,
   error: '',
   showPayment: false
@@ -156,6 +167,7 @@ const supervisor = reactive({
 })
 const selectedLiveId = ref(null)
 let toastTimer = null
+let sharedRefreshTimer = null
 
 function showToast(message, type = 'error') {
   if (!message) return
@@ -204,8 +216,12 @@ function applyServerState(nextState) {
 onMounted(() => {
   installDomTranslator(() => document.body)
   if (supervisor.isPage) return
-  loadSharedPlayers()
+  loadSharedView()
   restoreAdminSession()
+})
+
+onUnmounted(() => {
+  stopSharedRefresh()
 })
 
 async function saveSettings() {
@@ -280,7 +296,7 @@ function matchLevelLabel(match) {
 }
 const isAdmin = computed(() => state.session.unlocked)
 
-const queuedPlayerIds = computed(() => new Set(state.queue.flatMap(matchPlayers)))
+const queuedPlayerIds = computed(() => new Set([...state.pending, ...state.queue].flatMap(matchPlayers)))
 const livePlayerIds = computed(() => new Set(state.live.flatMap(matchPlayers)))
 const activePlayerCount = computed(() => state.players.filter((player) => player.active).length)
 const totalShuttles = computed(() => state.live.reduce((sum, match) => sum + match.shuttles, 0) + state.history.reduce((sum, match) => sum + match.shuttles, 0))
@@ -302,6 +318,7 @@ const availableCourtNames = computed(() => state.settings.courtNames.filter((cou
 const usedCourtNames = computed(() => new Set([...state.queue, ...state.live, ...state.history].map((match) => match.court).filter((court) => court && court !== '-')))
 const usedLevels = computed(() => new Set([
   ...state.players.map((player) => player.level),
+  ...state.pending.map((match) => match.level),
   ...state.queue.map((match) => match.level),
   ...state.live.map((match) => match.level),
   ...state.history.map((match) => match.level)
@@ -415,8 +432,8 @@ function randomMatch() {
       teams = [couple.a, couple.b, rest[0], rest[1]]
     }
 
-    state.queue.push({
-      id: nextGameId(),
+    state.pending.push({
+      id: nextPendingId(),
       court: '-',
       level,
       a1: teams[0],
@@ -497,12 +514,18 @@ function adjacentLevelWindows(level) {
 }
 
 function pickFourGroups(groups) {
-  const selected = []
-  for (const group of groups) {
-    if (selected.length + group.ids.length <= 4) selected.push(...group.ids)
-    if (selected.length === 4) return selected
+  return pickFourGroupsFrom(groups, 0, [])
+}
+
+function pickFourGroupsFrom(groups, index, selected) {
+  if (selected.length === 4) return selected
+  if (selected.length > 4 || index >= groups.length) return selected
+  const group = groups[index]
+  if (selected.length + group.ids.length <= 4) {
+    const withGroup = pickFourGroupsFrom(groups, index + 1, [...selected, ...group.ids])
+    if (withGroup.length === 4) return withGroup
   }
-  return selected
+  return pickFourGroupsFrom(groups, index + 1, selected)
 }
 
 function startMatch(match, court = '') {
@@ -519,6 +542,15 @@ function matchLevelsAllowed(match) {
   const min = Math.min(...indexes)
   const max = Math.max(...indexes)
   return min === max || (state.settings.allowCrossLevel && max - min <= 1)
+}
+
+function confirmPendingMatch(match) {
+  state.pending = state.pending.filter((item) => item.id !== match.id)
+  state.queue.push({ ...match, id: nextGameId(), court: '-' })
+}
+
+function cancelPendingMatch(match) {
+  state.pending = state.pending.filter((item) => item.id !== match.id)
 }
 
 function cancelQueuedMatch(match) {
@@ -661,6 +693,10 @@ function nextGameId() {
   return Math.max(0, ...state.queue.map((m) => m.id), ...state.live.map((m) => m.id), ...state.history.map((m) => m.id)) + 1
 }
 
+function nextPendingId() {
+  return Math.min(0, ...state.pending.map((m) => m.id)) - 1
+}
+
 function currentTime() {
   return new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Bangkok' })
 }
@@ -704,6 +740,14 @@ function playerShareLink() {
   return `${window.location.origin}${window.location.pathname}?${params.toString()}`
 }
 
+function queueShareLink() {
+  const params = new URLSearchParams({
+    view: 'queue',
+    session: state.session.id
+  })
+  return `${window.location.origin}${window.location.pathname}?${params.toString()}`
+}
+
 async function sharePlayers() {
   forms.shareLink = playerShareLink()
   forms.shareStatus = ''
@@ -715,21 +759,82 @@ async function sharePlayers() {
   }
 }
 
-async function loadSharedPlayers() {
+async function copyQueueLink() {
+  forms.shareLink = queueShareLink()
+  forms.shareStatus = ''
+  try {
+    await navigator.clipboard.writeText(forms.shareLink)
+    forms.shareStatus = 'คัดลอกลิงก์แล้ว'
+    showToast('คัดลอกลิงก์แล้ว', 'success')
+  } catch {
+    forms.shareStatus = 'คัดลอกอัตโนมัติไม่ได้ ใช้ลิงก์ด้านล่างได้เลย'
+    showToast(forms.shareStatus)
+  }
+}
+
+async function openQr(title, link) {
+  forms.qrTitle = title
+  forms.qrLink = link
+  forms.qrStatus = ''
+  forms.qrDataUrl = await QRCode.toDataURL(link, {
+    width: 320,
+    margin: 2,
+    color: {
+      dark: '#191b18',
+      light: '#fbfaf4'
+    }
+  })
+  ui.showQrModal = true
+}
+
+function openPlayersQr() {
+  return openQr('QR ลิงก์สมาชิก', playerShareLink())
+}
+
+function openQueueQr() {
+  return openQr('QR ลิงก์คิวจัดคู่', queueShareLink())
+}
+
+async function copyQrLink() {
+  try {
+    await navigator.clipboard.writeText(forms.qrLink)
+    forms.qrStatus = 'คัดลอกลิงก์แล้ว'
+  } catch {
+    forms.qrStatus = 'คัดลอกอัตโนมัติไม่ได้ ใช้ลิงก์ด้านล่างได้เลย'
+  }
+}
+
+function startSharedRefresh() {
+  if (sharedRefreshTimer) return
+  sharedRefreshTimer = window.setInterval(() => {
+    loadSharedView({ silent: true })
+  }, 30000)
+}
+
+function stopSharedRefresh() {
+  if (!sharedRefreshTimer) return
+  window.clearInterval(sharedRefreshTimer)
+  sharedRefreshTimer = null
+}
+
+async function loadSharedView({ silent = false } = {}) {
   const params = new URLSearchParams(window.location.search)
-  if (params.get('view') !== 'players' || !params.get('session')) return
+  const view = params.get('view')
+  if (!['players', 'queue'].includes(view) || !params.get('session')) return
   share.isPublic = true
-  share.loading = true
+  share.view = view
+  if (!silent) share.loading = true
   share.error = ''
   try {
     const nextState = await api(`/api/sessions/${params.get('session')}/state`)
     applyServerState(nextState)
     share.showPayment = state.settings.showPaymentOnShare
     state.session.unlocked = false
+    startSharedRefresh()
   } catch {
     share.error = t('ไม่พบข้อมูล session นี้', 'Session not found')
   } finally {
-    share.loading = false
+    if (!silent) share.loading = false
   }
 }
 
@@ -849,6 +954,24 @@ async function startMatchApi(match, court = '') {
   }
 }
 
+async function confirmPendingMatchApi(match) {
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/pending/${match.id}/confirm`, { method: 'POST' }))
+    state.tab = 'queue'
+  } catch {
+    confirmPendingMatch(match)
+    state.tab = 'queue'
+  }
+}
+
+async function cancelPendingMatchApi(match) {
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/pending/${match.id}`, { method: 'DELETE' }))
+  } catch {
+    cancelPendingMatch(match)
+  }
+}
+
 async function cancelQueuedMatchApi(match) {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/queue/${match.id}`, { method: 'DELETE' }))
@@ -959,10 +1082,16 @@ const pageProps = computed(() => ({
   matchLevelLabel,
   addPlayer: addPlayerApi,
   sharePlayers,
+  copyQueueLink,
+  openPlayersQr,
+  openQueueQr,
+  copyQrLink,
   togglePayment: togglePaymentApi,
   updatePlayerLevel: updatePlayerLevelApi,
   updatePlayerRandomStatus: updatePlayerRandomStatusApi,
   randomMatch: randomMatchApi,
+  confirmPendingMatch: confirmPendingMatchApi,
+  cancelPendingMatch: cancelPendingMatchApi,
   startMatch: startMatchApi,
   cancelQueuedMatch: cancelQueuedMatchApi,
   playerName,
@@ -1013,7 +1142,8 @@ const pageProps = computed(() => ({
 
     <SupervisorPage v-if="supervisor.isPage" v-bind="pageProps" />
 
-    <SharedPlayersPage v-else-if="share.isPublic" :state="state" :share="share" :money="money" :player-cost="playerCost" />
+    <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
+    <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :player-name="playerName" :match-level-label="matchLevelLabel" />
 
     <template v-else>
     <header class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/95 backdrop-blur dark:border-stone-700 dark:bg-paper-900/95">
@@ -1089,6 +1219,8 @@ const pageProps = computed(() => ({
 
       <LiveMatchPage v-if="isAdmin && state.tab === 'livematch'" v-bind="pageProps" />
 
+      <QueuePage v-if="isAdmin && state.tab === 'queue'" v-bind="pageProps" />
+
       <LiveBoardPage v-if="isAdmin && state.tab === 'liveboard'" v-bind="pageProps" />
 
       <HistoryPage v-if="isAdmin && state.tab === 'history'" v-bind="pageProps" />
@@ -1100,11 +1232,11 @@ const pageProps = computed(() => ({
       v-if="isAdmin"
       class="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-paper-50/95 px-2 pb-[max(0.65rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(34,41,37,0.08)] backdrop-blur dark:border-stone-700 dark:bg-paper-900/95 md:hidden"
     >
-      <div class="mx-auto grid max-w-md grid-cols-5 gap-1">
+      <div class="mx-auto flex max-w-lg gap-1 overflow-x-auto">
         <button
           v-for="tab in mobileTabs"
           :key="tab.id"
-          class="flex h-14 min-w-0 flex-col items-center justify-center gap-1 rounded-md text-[11px] font-semibold leading-none transition"
+          class="flex h-14 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-md text-[11px] font-semibold leading-none transition"
           :class="state.tab === tab.id ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-500 active:bg-stone-100 dark:text-stone-400 dark:active:bg-stone-800'"
           @click="state.tab = tab.id"
         >
@@ -1115,6 +1247,39 @@ const pageProps = computed(() => ({
     </nav>
 
     <MatchSetupModal v-if="isAdmin && (ui.showCouponModal || ui.showCoupleModal)" v-bind="pageProps" />
+
+    <div v-if="ui.showQrModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
+      <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-black">{{ forms.qrTitle }}</h2>
+            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">สแกนเพื่อเปิดลิงก์ หรือคัดลอกลิงก์ด้านล่าง</p>
+          </div>
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showQrModal = false">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-4 grid place-items-center rounded-lg bg-paper-100 p-4 dark:bg-stone-800">
+          <img v-if="forms.qrDataUrl" :src="forms.qrDataUrl" alt="QR code" class="h-64 w-64 rounded-md bg-white p-2" />
+        </div>
+
+        <input
+          :value="forms.qrLink"
+          readonly
+          class="mt-3 h-10 w-full rounded-md border border-stone-200 bg-paper-50 px-3 text-xs text-stone-500 dark:border-stone-700 dark:bg-stone-800"
+        />
+        <p v-if="forms.qrStatus" class="mt-2 text-sm font-bold text-court-700 dark:text-court-300">{{ forms.qrStatus }}</p>
+
+        <div class="mt-4 grid grid-cols-2 gap-2">
+          <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showQrModal = false">กลับ</button>
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 font-bold text-white" @click="copyQrLink">
+            <Copy class="h-4 w-4" />
+            คัดลอกลิงก์
+          </button>
+        </div>
+      </div>
+    </div>
     </template>
   </div>
 </template>

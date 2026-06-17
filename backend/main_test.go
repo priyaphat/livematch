@@ -1,8 +1,11 @@
 package main
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
-func TestRandomMatchCreatesAllPossibleQueuedMatches(t *testing.T) {
+func TestRandomMatchCreatesAllPossiblePendingMatches(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{
 			Levels:          []string{"light", "middle", "heavy"},
@@ -25,11 +28,14 @@ func TestRandomMatchCreatesAllPossibleQueuedMatches(t *testing.T) {
 	if err := randomMatch(&state); err != nil {
 		t.Fatalf("randomMatch returned error: %v", err)
 	}
-	if got := len(state.Queue); got != 2 {
-		t.Fatalf("expected 2 queued matches, got %d: %#v", got, state.Queue)
+	if got := len(state.Pending); got != 2 {
+		t.Fatalf("expected 2 pending matches, got %d: %#v", got, state.Pending)
 	}
-	if state.Queue[0].A1 != 6 || state.Queue[0].A2 != 7 {
-		t.Fatalf("expected couple 6/7 to stay together in first team, got %#v", state.Queue[0])
+	if state.Pending[0].ID >= 0 || state.NextIDs.Match != 0 {
+		t.Fatalf("expected pending draft ids not to consume match ids, got pending=%#v next=%#v", state.Pending, state.NextIDs)
+	}
+	if state.Pending[0].A1 != 6 || state.Pending[0].A2 != 7 {
+		t.Fatalf("expected couple 6/7 to stay together in first team, got %#v", state.Pending[0])
 	}
 }
 
@@ -52,8 +58,8 @@ func TestRandomPriorityCanPreferLowestGamesOverLevelOrder(t *testing.T) {
 	if err := randomMatch(&levelFirst); err != nil {
 		t.Fatalf("level-first randomMatch returned error: %v", err)
 	}
-	if levelFirst.Queue[0].Level != "light" {
-		t.Fatalf("expected level priority to keep level order first, got %q", levelFirst.Queue[0].Level)
+	if levelFirst.Pending[0].Level != "light" {
+		t.Fatalf("expected level priority to keep level order first, got %q", levelFirst.Pending[0].Level)
 	}
 
 	gamesFirst := SessionState{
@@ -63,8 +69,8 @@ func TestRandomPriorityCanPreferLowestGamesOverLevelOrder(t *testing.T) {
 	if err := randomMatch(&gamesFirst); err != nil {
 		t.Fatalf("games-first randomMatch returned error: %v", err)
 	}
-	if gamesFirst.Queue[0].Level != "middle" {
-		t.Fatalf("expected games priority to choose lower-games group first, got %q", gamesFirst.Queue[0].Level)
+	if gamesFirst.Pending[0].Level != "middle" {
+		t.Fatalf("expected games priority to choose lower-games group first, got %q", gamesFirst.Pending[0].Level)
 	}
 }
 
@@ -113,6 +119,29 @@ func TestStartMatchUsesNoInitialShuttle(t *testing.T) {
 	}
 	if state.Live[0].Shuttles != 0 {
 		t.Fatalf("expected initial shuttle count 0, got %d", state.Live[0].Shuttles)
+	}
+}
+
+func TestConfirmPendingMatchCreatesStableSequentialQueueIDs(t *testing.T) {
+	state := SessionState{
+		NextIDs: NextIDs{Match: 7, Pending: 2},
+		Pending: []Match{
+			{ID: -1, A1: 1, A2: 2, B1: 3, B2: 4, Level: "middle"},
+			{ID: -2, A1: 5, A2: 6, B1: 7, B2: 8, Level: "middle"},
+		},
+	}
+
+	if !cancelPendingMatch(&state, -1) {
+		t.Fatal("expected pending match to cancel")
+	}
+	if state.NextIDs.Match != 7 {
+		t.Fatalf("expected cancel not to consume match id, got %d", state.NextIDs.Match)
+	}
+	if !confirmPendingMatch(&state, -2) {
+		t.Fatal("expected pending match to confirm")
+	}
+	if len(state.Queue) != 1 || state.Queue[0].ID != 8 {
+		t.Fatalf("expected confirmed queue game id 8, got %#v", state.Queue)
 	}
 }
 
@@ -242,6 +271,34 @@ func TestCrossLevelOnlyUsesAdjacentConfiguredLevels(t *testing.T) {
 
 	if err := randomMatch(&state); err == nil {
 		t.Fatalf("expected non-adjacent levels to wait, queued %#v", state.Queue)
+	}
+}
+
+func TestCrossLevelCanBacktrackToFitCoupleGroup(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{
+			Levels:          []string{"light", "middle", "heavy"},
+			AllowCrossLevel: true,
+		},
+		Couples: []Couple{{ID: 1, A: 1, B: 2}},
+		Players: []Player{
+			{ID: 1, Games: 8, Active: true, Coupon: true, Level: "middle"},
+			{ID: 2, Games: 8, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Games: 1, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Games: 2, Active: true, Coupon: true, Level: "light"},
+			{ID: 5, Games: 3, Active: true, Coupon: true, Level: "light"},
+		},
+	}
+
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("expected adjacent cross-level match with a couple to be created: %v", err)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("expected one pending match, got %#v", state.Pending)
+	}
+	selected := matchPlayers(state.Pending[0])
+	if !slices.Contains(selected, 1) || !slices.Contains(selected, 2) {
+		t.Fatalf("expected couple to stay in selected match, got %#v", state.Pending[0])
 	}
 }
 

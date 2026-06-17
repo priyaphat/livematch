@@ -43,6 +43,7 @@ type SessionState struct {
 	Settings  Settings    `json:"settings"`
 	Players   []Player    `json:"players"`
 	Couples   []Couple    `json:"couples"`
+	Pending   []Match     `json:"pending"`
 	Queue     []Match     `json:"queue"`
 	Live      []Match     `json:"live"`
 	History   []Match     `json:"history"`
@@ -107,9 +108,10 @@ type Match struct {
 }
 
 type NextIDs struct {
-	Player int `json:"player"`
-	Couple int `json:"couple"`
-	Match  int `json:"match"`
+	Player  int `json:"player"`
+	Couple  int `json:"couple"`
+	Match   int `json:"match"`
+	Pending int `json:"pending"`
 }
 
 func main() {
@@ -230,7 +232,7 @@ func (a *app) migrate(ctx context.Context) error {
 		create table if not exists matches (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
-			phase text not null check (phase in ('queue', 'live', 'history')),
+			phase text not null check (phase in ('pending', 'queue', 'live', 'history')),
 			court text not null default '-',
 			level text not null,
 			a1 integer not null,
@@ -246,6 +248,8 @@ func (a *app) migrate(ctx context.Context) error {
 			note text not null default '',
 			primary key (session_id, id)
 		);
+		alter table matches drop constraint if exists matches_phase_check;
+		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
 		alter table matches add column if not exists winner text not null default '';
 		alter table matches add column if not exists shuttle_sequence text not null default '';
 		create index if not exists idx_players_session on players(session_id);
@@ -446,7 +450,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from sessions`).Scan(&summary.TotalSessions)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players where active`).Scan(&summary.TotalPlayers)
-	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches`).Scan(&summary.TotalMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase <> 'pending'`).Scan(&summary.TotalMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'queue'`).Scan(&summary.QueueMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'live'`).Scan(&summary.LiveMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'history'`).Scan(&summary.HistoryMatches)
@@ -494,7 +498,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 			(select count(*) from players p where p.session_id = s.id and p.active) as players,
 			(select count(*) from players p where p.session_id = s.id and p.active and p.paid) as paid_players,
 			(select count(*) from players p where p.session_id = s.id and p.active and not p.paid) as unpaid_players,
-			(select count(*) from matches m where m.session_id = s.id) as matches,
+			(select count(*) from matches m where m.session_id = s.id and m.phase <> 'pending') as matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'queue') as queue_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'live') as live_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history') as history_matches,
@@ -808,9 +812,23 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.respondSaved(w, r, state)
+	case r.Method == http.MethodPost && action == "pending" && len(parts) >= 4 && parts[3] == "confirm":
+		matchID, _ := strconv.Atoi(parts[2])
+		if !confirmPendingMatch(&state, matchID) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
+			return
+		}
+		a.respondSaved(w, r, state)
+	case r.Method == http.MethodDelete && action == "pending" && len(parts) >= 3:
+		matchID, _ := strconv.Atoi(parts[2])
+		if !cancelPendingMatch(&state, matchID) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
+			return
+		}
+		a.respondSaved(w, r, state)
 	case r.Method == http.MethodGet && action == "coupons":
 		busy := map[int]bool{}
-		for _, match := range append(append([]Match{}, state.Queue...), state.Live...) {
+		for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
 			for _, id := range matchPlayers(match) {
 				busy[id] = true
 			}
@@ -977,6 +995,11 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, match.Status, match.StartedAt, match.EndedAt, match.Note)
 		return err
 	}
+	for _, match := range state.Pending {
+		if err = insertMatch("pending", match); err != nil {
+			return err
+		}
+	}
 	for _, match := range state.Queue {
 		if err = insertMatch("queue", match); err != nil {
 			return err
@@ -1102,12 +1125,17 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 			return SessionState{}, err
 		}
 		switch phase {
+		case "pending":
+			state.Pending = append(state.Pending, match)
 		case "queue":
 			state.Queue = append(state.Queue, match)
 		case "live":
 			state.Live = append(state.Live, match)
 		case "history":
 			state.History = append([]Match{match}, state.History...)
+		}
+		if match.ID < 0 && -match.ID > state.NextIDs.Pending {
+			state.NextIDs.Pending = -match.ID
 		}
 		if match.ID > state.NextIDs.Match {
 			state.NextIDs.Match = match.ID
@@ -1144,16 +1172,17 @@ func defaultState(id, name, passcode string) SessionState {
 		},
 		Players: []Player{},
 		Couples: []Couple{},
+		Pending: []Match{},
 		Queue:   []Match{},
 		Live:    []Match{},
 		History: []Match{},
-		NextIDs: NextIDs{Player: 0, Couple: 0, Match: 0},
+		NextIDs: NextIDs{Player: 0, Couple: 0, Match: 0, Pending: 0},
 	}
 }
 
 func randomMatch(state *SessionState) error {
 	busy := map[int]bool{}
-	for _, match := range append(append([]Match{}, state.Queue...), state.Live...) {
+	for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
 		for _, id := range matchPlayers(match) {
 			busy[id] = true
 		}
@@ -1173,9 +1202,9 @@ func randomMatch(state *SessionState) error {
 		}
 
 		teams := keepCouplesTogether(selected, state.Couples)
-		state.NextIDs.Match++
-		state.Queue = append(state.Queue, Match{
-			ID:    state.NextIDs.Match,
+		state.NextIDs.Pending++
+		state.Pending = append(state.Pending, Match{
+			ID:    -state.NextIDs.Pending,
 			Court: "-",
 			Level: level,
 			A1:    teams[0],
@@ -1236,16 +1265,27 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 }
 
 func pickFour(groups []group) []int {
-	var selected []int
-	for _, g := range groups {
-		if len(selected)+len(g.ids) <= 4 {
-			selected = append(selected, g.ids...)
-		}
-		if len(selected) == 4 {
-			return selected
-		}
+	selected, ok := pickFourFrom(groups, 0, nil)
+	if !ok {
+		return selected
 	}
 	return selected
+}
+
+func pickFourFrom(groups []group, index int, selected []int) ([]int, bool) {
+	if len(selected) == 4 {
+		return selected, true
+	}
+	if len(selected) > 4 || index >= len(groups) {
+		return selected, false
+	}
+	if len(selected)+len(groups[index].ids) <= 4 {
+		with := append(append([]int{}, selected...), groups[index].ids...)
+		if result, ok := pickFourFrom(groups, index+1, with); ok {
+			return result, true
+		}
+	}
+	return pickFourFrom(groups, index+1, selected)
 }
 
 func pickRandomMatch(groups []group, settings Settings, levelIndex map[string]int) ([]int, string) {
@@ -1414,6 +1454,30 @@ func startMatch(state *SessionState, matchID int, court string) bool {
 			match.Status = "กำลังเล่น"
 			match.StartedAt = nowHHMM()
 			state.Live = append(state.Live, match)
+			return true
+		}
+	}
+	return false
+}
+
+func confirmPendingMatch(state *SessionState, matchID int) bool {
+	for i, match := range state.Pending {
+		if match.ID == matchID {
+			state.Pending = append(state.Pending[:i], state.Pending[i+1:]...)
+			state.NextIDs.Match++
+			match.ID = state.NextIDs.Match
+			match.Court = "-"
+			state.Queue = append(state.Queue, match)
+			return true
+		}
+	}
+	return false
+}
+
+func cancelPendingMatch(state *SessionState, matchID int) bool {
+	for i, match := range state.Pending {
+		if match.ID == matchID {
+			state.Pending = append(state.Pending[:i], state.Pending[i+1:]...)
 			return true
 		}
 	}
