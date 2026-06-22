@@ -5,6 +5,7 @@ defineProps([
   'state',
   'activePlayerCount',
   'totalRecordedMatches',
+  'cancelledMatches',
   'averageGames',
   'minGames',
   'maxGames',
@@ -20,7 +21,8 @@ defineProps([
   'topWinners',
   'playerCost',
   'playerScore',
-  'levelLabel'
+  'levelLabel',
+  'selectAdminTab'
 ])
 </script>
 
@@ -34,11 +36,11 @@ defineProps([
           <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">อัปเดตจากสมาชิก คิว สนามที่กำลังเล่น และประวัติการแข่งขัน</p>
         </div>
         <div class="grid grid-cols-2 gap-2 sm:min-w-64">
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-bold text-white" @click="state.tab = 'livematch'">
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-bold text-white" @click="selectAdminTab('livematch')">
             <Shuffle class="h-4 w-4" />
             จัดคู่
           </button>
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" @click="state.tab = 'players'">
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" @click="selectAdminTab('players')">
             <Users class="h-4 w-4" />
             สมาชิก
           </button>
@@ -60,7 +62,7 @@ defineProps([
             <ClipboardList class="h-5 w-5 text-court-500" />
           </div>
           <p class="mt-2 text-3xl font-black">{{ totalRecordedMatches }}</p>
-          <p class="text-xs text-stone-500 dark:text-stone-400">คิว {{ state.queue.length }} · กำลังเล่น {{ state.live.length }} · จบแล้ว {{ state.history.length }}</p>
+          <p class="text-xs text-stone-500 dark:text-stone-400">คิว {{ state.queue.length }} · กำลังเล่น {{ state.live.length }} · เกมจริง {{ state.history.length - cancelledMatches.length }} · ยกเลิก {{ cancelledMatches.length }}</p>
         </div>
         <div class="rounded-md bg-paper-100 p-4 dark:bg-stone-800">
           <div class="flex items-center justify-between gap-3">
@@ -77,6 +79,24 @@ defineProps([
           </div>
           <p class="mt-2 text-3xl font-black">{{ totalShuttles }}</p>
           <p class="text-xs text-stone-500 dark:text-stone-400">ลูกแบดรวม {{ totalShuttles * 4 }} ลูก</p>
+        </div>
+      </div>
+
+      <div class="mt-4 grid gap-3 sm:grid-cols-3">
+        <div class="rounded-md border border-court-200 bg-court-500/10 p-4 dark:border-court-900/60 dark:bg-court-500/10">
+          <p class="text-sm font-bold text-court-700 dark:text-court-300">ยอดเกมจริง</p>
+          <p class="mt-1 text-3xl font-black">{{ totalRecordedMatches }}</p>
+          <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">กำลังเล่น + ประวัติที่ไม่ยกเลิก</p>
+        </div>
+        <div class="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/20">
+          <p class="text-sm font-bold text-amber-800 dark:text-amber-300">รอคิว</p>
+          <p class="mt-1 text-3xl font-black">{{ state.queue.length }}</p>
+          <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">ยังไม่รวมในยอดเกมจริง</p>
+        </div>
+        <div class="rounded-md border border-rose-200 bg-rose-50 p-4 dark:border-rose-900/60 dark:bg-rose-950/20">
+          <p class="text-sm font-bold text-rose-700 dark:text-rose-300">ยกเลิก</p>
+          <p class="mt-1 text-3xl font-black">{{ cancelledMatches.length }}</p>
+          <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">หักออกจากเกมทั้งหมดแล้ว</p>
         </div>
       </div>
     </div>
@@ -131,6 +151,9 @@ defineProps([
             <p class="text-2xl font-black">{{ state.settings.courtNames.length }}</p>
             <p class="text-xs text-stone-500 dark:text-stone-400">สนาม</p>
           </div>
+        </div>
+        <div class="mt-3 rounded-md border border-rose-100 bg-rose-50 p-3 text-sm font-bold text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300">
+          ยกเลิก {{ cancelledMatches.length }} เกม · ไม่รวมในเกมทั้งหมด
         </div>
       </div>
     </div>

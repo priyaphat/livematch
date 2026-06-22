@@ -2,6 +2,7 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import DashboardPage from './pages/DashboardPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
@@ -116,6 +117,69 @@ describe('LiveMatch app', () => {
     localStorage.removeItem('livematch.adminSessionId')
     localStorage.removeItem('livematch.theme')
     document.documentElement.classList.remove('dark')
+  })
+
+  it('reloads only the selected admin menu endpoint', async () => {
+    localStorage.setItem('livematch.adminSessionId', 'test-session')
+    const statePayload = {
+      tab: 'home',
+      theme: 'light',
+      session: { id: 'test-session', name: 'Test Session', adminPasscode: '', unlocked: false },
+      settings: {
+        entryFee: 0,
+        shuttleFee: 0,
+        courtCount: 1,
+        courtNames: ['สนาม 1'],
+        levels: ['light', 'middle', 'heavy'],
+        allowCrossLevel: true,
+        crossLevelRange: 1,
+        randomPriority: 'level',
+        showPaymentOnShare: true,
+        resetPlayersAfterFinish: true
+      },
+      players: [],
+      couples: [],
+      pending: [],
+      queue: [],
+      live: [],
+      history: [],
+      nextIds: { player: 0, match: 0, couple: 0, pending: 0 }
+    }
+    const calls = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((url) => {
+      calls.push(String(url))
+      if (String(url).includes('/players?all=1')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            items: [{ id: 9, name: 'Fresh Player', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }],
+            total: 1,
+            page: 1,
+            pageSize: 1
+          })
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(statePayload)
+      })
+    })
+
+    const wrapper = mount(App)
+    for (let index = 0; index < 5; index += 1) await Promise.resolve()
+    const desktopNav = wrapper.findAll('nav').at(0)
+    await desktopNav.findAll('button').at(1).trigger('click')
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(calls.some((call) => call.includes('/api/sessions/test-session/players?all=1'))).toBe(true)
+    expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(1)
+    expect(wrapper.text()).toContain('Fresh Player')
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+    localStorage.removeItem('livematch.adminSessionId')
   })
 
   it('defaults random coupon groups to not ready', () => {
@@ -235,13 +299,39 @@ describe('LiveMatch app', () => {
             { id: 1, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'draw' }
           ]
         },
-        playerName: (id) => `p${id}`
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner: () => {}
       }
     })
 
     expect(wrapper.text()).toContain('เสมอ')
     expect(wrapper.text()).toContain('ทีม A +0.5')
     expect(wrapper.text()).toContain('ทีม B +0.5')
+  })
+
+  it('renders cancelled history and result edit controls', async () => {
+    let nextWinner = ''
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          history: [
+            { id: 13, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'A', status: 'finished' },
+            { id: 14, court: '-', a1: 5, a2: 6, b1: 7, b2: 8, shuttles: 0, winner: '', status: 'cancelled', note: 'ยกเลิกคิว' }
+          ]
+        },
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner: (_match, winner) => {
+          nextWinner = winner
+        }
+      }
+    })
+
+    const selects = wrapper.findAll('select[aria-label="เปลี่ยนผลการแข่งขัน"]')
+    await selects[0].setValue('B')
+
+    expect(nextWinner).toBe('B')
+    expect(selects[1].element.disabled).toBe(true)
+    expect(wrapper.text()).toContain('ยกเลิก')
   })
 
   it('shows score and draw stats in shared players view', () => {
@@ -310,7 +400,10 @@ describe('LiveMatch app', () => {
         },
         money: (value) => value,
         playerCost: () => 0,
+        playerDeleteBlockReasons: () => [],
         addPlayer: () => {},
+        renamePlayer: () => {},
+        deletePlayer: () => {},
         sharePlayers: () => {},
         openPlayersQr: () => {},
         saveSettings: () => {},
@@ -321,6 +414,96 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('คัดลอกลิงก์สมาชิก')
     expect(wrapper.text()).toContain('QR ลิงก์สมาชิก')
     expect(wrapper.text()).not.toContain('????')
+  })
+
+  it('renders member rename and delete controls', async () => {
+    let renamed = ''
+    let deleted = null
+    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const wrapper = mount(PlayersPage, {
+      props: {
+        state: {
+          settings: { showPaymentOnShare: true },
+          players: [player]
+        },
+        forms: {
+          newPlayerName: '',
+          playerSearch: '',
+          playerPage: 1,
+          playerPageSize: 8,
+          selectedPlayerId: null,
+          shareLink: '',
+          shareStatus: ''
+        },
+        money: (value) => value,
+        playerCost: () => 0,
+        playerDeleteBlockReasons: () => [],
+        addPlayer: () => {},
+        renamePlayer: (_player, name) => {
+          renamed = name
+        },
+        deletePlayer: (_player) => {
+          deleted = _player
+        },
+        sharePlayers: () => {},
+        openPlayersQr: () => {},
+        saveSettings: () => {},
+        togglePayment: () => {}
+      }
+    })
+
+    await wrapper.get('button[aria-label="แก้ไขสมาชิก"]').trigger('click')
+    expect(wrapper.text()).toContain('แก้ไข')
+
+    const nameInput = wrapper.get('div[role="dialog"] input[aria-label="แก้ชื่อสมาชิก"]')
+    await nameInput.setValue('p1 edited')
+    await wrapper.findAll('div[role="dialog"] button').at(1).trigger('click')
+
+    expect(renamed).toBe('p1 edited')
+
+    await wrapper.get('button[aria-label="แก้ไขสมาชิก"]').trigger('click')
+    await wrapper.findAll('div[role="dialog"] button').at(2).trigger('click')
+    expect(deleted?.id).toBe(player.id)
+  })
+
+  it('disables member delete when the player has references', async () => {
+    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const wrapper = mount(PlayersPage, {
+      props: {
+        state: {
+          settings: { showPaymentOnShare: true },
+          players: [player]
+        },
+        forms: {
+          newPlayerName: '',
+          playerSearch: '',
+          playerPage: 1,
+          playerPageSize: 8,
+          selectedPlayerId: null,
+          shareLink: '',
+          shareStatus: ''
+        },
+        money: (value) => value,
+        playerCost: () => 0,
+        playerDeleteBlockReasons: () => ['มีประวัติ'],
+        addPlayer: () => {},
+        renamePlayer: () => {},
+        deletePlayer: () => {
+          throw new Error('should not delete')
+        },
+        sharePlayers: () => {},
+        openPlayersQr: () => {},
+        saveSettings: () => {},
+        togglePayment: () => {}
+      }
+    })
+
+    await wrapper.get('button[aria-label="แก้ไขสมาชิก"]').trigger('click')
+    const deleteButton = wrapper.findAll('div[role="dialog"] button').at(2)
+
+    expect(deleteButton.element.disabled).toBe(true)
+    expect(wrapper.text()).toContain('ลบไม่ได้')
+    expect(wrapper.text()).toContain('มีประวัติ')
   })
 
   it('keeps pairing drafts separate from queue controls', () => {
@@ -347,7 +530,8 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('select').exists()).toBe(false)
   })
 
-  it('renders queue controls for confirmed games', () => {
+  it('renders queue controls for confirmed games', async () => {
+    let cancelled = null
     const wrapper = mount(QueuePage, {
       props: {
         state: {
@@ -360,7 +544,9 @@ describe('LiveMatch app', () => {
         copyQueueLink: () => {},
         openQueueQr: () => {},
         startMatch: () => {},
-        cancelQueuedMatch: () => {},
+        cancelQueuedMatch: (match) => {
+          cancelled = match
+        },
         playerName: (id) => `p${id}`,
         availableCourtNames: ['สนาม 1', 'สนาม 2']
       }
@@ -372,6 +558,47 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('คัดลอกคิว')
     expect(wrapper.find('[aria-label="ยกเลิกการจับคู่"]').exists()).toBe(false)
     expect(wrapper.find('select').exists()).toBe(true)
+    await wrapper.get('button[title="ยกเลิกคิวเกม"]').trigger('click')
+    expect(cancelled?.id).toBe(9)
+  })
+
+  it('shows dashboard game total after cancelled games are excluded', () => {
+    const wrapper = mount(DashboardPage, {
+      props: {
+        state: {
+          session: { name: 'Test Session' },
+          queue: [{ id: 15 }],
+          live: [{ id: 16 }],
+          history: [
+            { id: 13, status: 'finished' },
+            { id: 14, status: 'cancelled' }
+          ],
+          settings: { courtNames: ['court 1', 'court 2'] }
+        },
+        activePlayerCount: 4,
+        totalRecordedMatches: 2,
+        cancelledMatches: [{ id: 14, status: 'cancelled' }],
+        averageGames: 1,
+        minGames: 0,
+        maxGames: 2,
+        totalShuttles: 2,
+        paymentPercent: 50,
+        money: (value) => `${value}`,
+        totalRevenue: 400,
+        paidRevenue: 200,
+        unpaidRevenue: 200,
+        unpaidPlayers: [{ id: 1 }],
+        topPlayers: [],
+        quietPlayers: [],
+        topWinners: [],
+        playerCost: () => 0,
+        playerScore: () => 0,
+        levelLabel: (level) => level
+      }
+    })
+
+    expect(wrapper.text()).toContain('2')
+    expect(wrapper.text()).toContain('ยกเลิก 1')
   })
 
   it('refreshes shared views every 30 seconds', async () => {

@@ -115,6 +115,8 @@ type NextIDs struct {
 	Pending int `json:"pending"`
 }
 
+var errPlayerNotFound = errors.New("player not found")
+
 func main() {
 	db, err := openDB()
 	if err != nil {
@@ -454,11 +456,11 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from sessions`).Scan(&summary.TotalSessions)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players where active`).Scan(&summary.TotalPlayers)
-	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase <> 'pending'`).Scan(&summary.TotalMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase in ('live', 'history') and status <> 'cancelled'`).Scan(&summary.TotalMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'queue'`).Scan(&summary.QueueMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'live'`).Scan(&summary.LiveMatches)
-	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'history'`).Scan(&summary.HistoryMatches)
-	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(shuttles), 0) from matches`).Scan(&summary.TotalShuttles)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'history' and status <> 'cancelled'`).Scan(&summary.HistoryMatches)
+	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(shuttles), 0) from matches where status <> 'cancelled'`).Scan(&summary.TotalShuttles)
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(wins), 0) from players where active`).Scan(&summary.TotalWins)
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(avg(games), 0) from players where active`).Scan(&summary.AverageGames)
 	_ = a.db.QueryRowContext(r.Context(), `
@@ -502,11 +504,11 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 			(select count(*) from players p where p.session_id = s.id and p.active) as players,
 			(select count(*) from players p where p.session_id = s.id and p.active and p.paid) as paid_players,
 			(select count(*) from players p where p.session_id = s.id and p.active and not p.paid) as unpaid_players,
-			(select count(*) from matches m where m.session_id = s.id and m.phase <> 'pending') as matches,
+			(select count(*) from matches m where m.session_id = s.id and m.phase in ('live', 'history') and m.status <> 'cancelled') as matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'queue') as queue_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'live') as live_matches,
-			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history') as history_matches,
-			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id) as shuttles,
+			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history' and m.status <> 'cancelled') as history_matches,
+			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and m.status <> 'cancelled') as shuttles,
 			(
 				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
 				from players p
@@ -721,6 +723,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodGet && action == "state":
 		writeJSON(w, http.StatusOK, state)
+	case r.Method == http.MethodGet && action == "dashboard":
+		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "players":
 		items := state.Players
 		search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
@@ -728,6 +732,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			items = slices.DeleteFunc(slices.Clone(items), func(player Player) bool {
 				return !strings.Contains(strings.ToLower(player.Name), search) && !strings.Contains(strconv.Itoa(player.ID), search)
 			})
+		}
+		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
+			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
+			return
 		}
 		paged, page, pageSize := paginate(items, r)
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
@@ -754,6 +762,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
 		playerID, _ := strconv.Atoi(parts[2])
 		var body struct {
+			Name   *string `json:"name"`
 			Paid   *bool   `json:"paid"`
 			Level  *string `json:"level"`
 			Coupon *bool   `json:"coupon"`
@@ -762,6 +771,14 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		for i := range state.Players {
 			if state.Players[i].ID == playerID {
+				if body.Name != nil {
+					name := strings.TrimSpace(*body.Name)
+					if name == "" {
+						writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player name"})
+						return
+					}
+					state.Players[i].Name = name
+				}
 				if body.Paid != nil {
 					state.Players[i].Paid = *body.Paid
 				}
@@ -780,6 +797,25 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		a.respondSaved(w, r, state)
+	case r.Method == http.MethodDelete && action == "players" && len(parts) >= 3:
+		playerID, _ := strconv.Atoi(parts[2])
+		if err := deletePlayer(&state, playerID); err != nil {
+			status := http.StatusConflict
+			if errors.Is(err, errPlayerNotFound) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		a.respondSaved(w, r, state)
+	case r.Method == http.MethodGet && action == "settings":
+		writeJSON(w, http.StatusOK, map[string]any{"settings": state.Settings})
+	case r.Method == http.MethodGet && action == "queue":
+		writeJSON(w, http.StatusOK, queuePayload(state))
+	case r.Method == http.MethodGet && action == "live":
+		writeJSON(w, http.StatusOK, map[string]any{"live": state.Live, "players": state.Players})
+	case r.Method == http.MethodGet && action == "history":
+		writeJSON(w, http.StatusOK, map[string]any{"history": state.History, "players": state.Players})
 	case r.Method == http.MethodPut && action == "settings":
 		var settings Settings
 		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
@@ -805,6 +841,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		syncNewCouple(&state, body.A, body.B)
 		a.respondSaved(w, r, state)
 	case r.Method == http.MethodGet && action == "couples":
+		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
+			writeJSON(w, http.StatusOK, map[string]any{"items": state.Couples, "total": len(state.Couples), "page": 1, "pageSize": len(state.Couples)})
+			return
+		}
 		paged, page, pageSize := paginate(state.Couples, r)
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(state.Couples), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodDelete && action == "couples" && len(parts) >= 3:
@@ -862,6 +902,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				return !strings.Contains(strings.ToLower(fmt.Sprint(item["name"])), search) && !strings.Contains(fmt.Sprint(item["ids"]), search)
 			})
 		}
+		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
+			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
+			return
+		}
 		paged, page, pageSize := paginate(items, r)
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "start":
@@ -902,6 +946,17 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note, body.Winner) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
+			return
+		}
+		a.respondSaved(w, r, state)
+	case r.Method == http.MethodPatch && action == "history" && len(parts) >= 3:
+		matchID, _ := strconv.Atoi(parts[2])
+		var body struct {
+			Winner string `json:"winner"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !updateHistoryWinner(&state, matchID, body.Winner) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
@@ -1518,10 +1573,70 @@ func matchLevelsAllowed(state SessionState, match Match) bool {
 	return state.Settings.AllowCrossLevel && maxIndex-minIndex <= 1
 }
 
+func deletePlayer(state *SessionState, playerID int) error {
+	for i := range state.Players {
+		if state.Players[i].ID != playerID {
+			continue
+		}
+		reasons := playerDeleteBlockReasons(*state, playerID)
+		if len(reasons) > 0 {
+			return fmt.Errorf("cannot delete player: %s", strings.Join(reasons, ", "))
+		}
+		state.Players = append(state.Players[:i], state.Players[i+1:]...)
+		return nil
+	}
+	return errPlayerNotFound
+}
+
+func playerReferenced(state SessionState, playerID int) bool {
+	return len(playerDeleteBlockReasons(state, playerID)) > 0
+}
+
+func playerDeleteBlockReasons(state SessionState, playerID int) []string {
+	reasons := []string{}
+	for _, couple := range state.Couples {
+		if couple.A == playerID || couple.B == playerID {
+			reasons = append(reasons, "couple")
+			break
+		}
+	}
+	if matchListContainsPlayer(state.Pending, playerID) {
+		reasons = append(reasons, "pending")
+	}
+	if matchListContainsPlayer(state.Queue, playerID) {
+		reasons = append(reasons, "queue")
+	}
+	if matchListContainsPlayer(state.Live, playerID) {
+		reasons = append(reasons, "live")
+	}
+	if matchListContainsPlayer(state.History, playerID) {
+		reasons = append(reasons, "history")
+	}
+	return reasons
+}
+
+func matchListContainsPlayer(matches []Match, playerID int) bool {
+	for _, match := range matches {
+		if slices.Contains(matchPlayers(match), playerID) {
+			return true
+		}
+	}
+	return false
+}
+
 func cancelQueuedMatch(state *SessionState, matchID int) bool {
 	for i, match := range state.Queue {
 		if match.ID == matchID {
 			state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
+			match.Status = "cancelled"
+			match.Winner = ""
+			match.Shuttles = 0
+			match.ShuttleSeq = ""
+			match.EndedAt = nowHHMM()
+			if match.Note == "" {
+				match.Note = "ยกเลิกคิว"
+			}
+			state.History = append([]Match{match}, state.History...)
 			return true
 		}
 	}
@@ -1563,6 +1678,10 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 				winner = ""
 			}
 			match.Winner = winner
+			match.Status = "finished"
+		} else {
+			match.Winner = ""
+			match.Status = "cancelled"
 		}
 		for j := range state.Players {
 			if !cancelled && slices.Contains(matchPlayers(match), state.Players[j].ID) {
@@ -1586,6 +1705,228 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 		return true
 	}
 	return false
+}
+
+func updateHistoryWinner(state *SessionState, matchID int, winner string) bool {
+	if winner != "A" && winner != "B" && winner != "draw" {
+		winner = ""
+	}
+	for i := range state.History {
+		if state.History[i].ID != matchID {
+			continue
+		}
+		if isCancelledMatch(state.History[i]) {
+			return true
+		}
+		applyResultStats(state, state.History[i], state.History[i].Winner, -1)
+		state.History[i].Winner = winner
+		applyResultStats(state, state.History[i], winner, 1)
+		return true
+	}
+	return false
+}
+
+func applyResultStats(state *SessionState, match Match, winner string, delta int) {
+	if winner != "A" && winner != "B" && winner != "draw" {
+		return
+	}
+	for i := range state.Players {
+		playerID := state.Players[i].ID
+		if !slices.Contains(matchPlayers(match), playerID) {
+			continue
+		}
+		switch {
+		case winner == "draw":
+			state.Players[i].Draws = clampStat(state.Players[i].Draws + delta)
+		case winner == "A" && (playerID == match.A1 || playerID == match.A2):
+			state.Players[i].Wins = clampStat(state.Players[i].Wins + delta)
+		case winner == "B" && (playerID == match.B1 || playerID == match.B2):
+			state.Players[i].Wins = clampStat(state.Players[i].Wins + delta)
+		default:
+			state.Players[i].Losses = clampStat(state.Players[i].Losses + delta)
+		}
+	}
+}
+
+func clampStat(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func isCancelledMatch(match Match) bool {
+	return match.Status == "cancelled"
+}
+
+func realRecordedMatchCount(state SessionState) int {
+	total := len(state.Live)
+	for _, match := range state.History {
+		if !isCancelledMatch(match) {
+			total++
+		}
+	}
+	return total
+}
+
+func dashboardPayload(state SessionState) map[string]any {
+	return map[string]any{
+		"players":  state.Players,
+		"queue":    state.Queue,
+		"live":     state.Live,
+		"history":  state.History,
+		"settings": state.Settings,
+		"summary": map[string]any{
+			"activePlayers":       activePlayerCount(state),
+			"recordedMatches":     realRecordedMatchCount(state),
+			"cancelledMatches":    cancelledMatchCount(state),
+			"totalShuttles":       totalRealShuttles(state),
+			"totalPlays":          totalPlays(state),
+			"averageGames":        averageGames(state),
+			"minGames":            minGames(state),
+			"maxGames":            maxGames(state),
+			"totalRevenue":        totalRevenue(state),
+			"paidRevenue":         paidRevenue(state),
+			"unpaidRevenue":       totalRevenue(state) - paidRevenue(state),
+			"paymentPercent":      paymentPercent(state),
+			"queueMatches":        len(state.Queue),
+			"liveMatches":         len(state.Live),
+			"realHistoryMatches":  len(state.History) - cancelledMatchCount(state),
+			"historyMatches":      len(state.History),
+			"availableCourtCount": len(state.Settings.CourtNames),
+		},
+	}
+}
+
+func queuePayload(state SessionState) map[string]any {
+	return map[string]any{
+		"pending":             state.Pending,
+		"queue":               state.Queue,
+		"live":                state.Live,
+		"players":             state.Players,
+		"settings":            state.Settings,
+		"availableCourtNames": availableCourtNames(state),
+	}
+}
+
+func activePlayerCount(state SessionState) int {
+	count := 0
+	for _, player := range state.Players {
+		if player.Active {
+			count++
+		}
+	}
+	return count
+}
+
+func totalRealShuttles(state SessionState) int {
+	total := 0
+	for _, match := range state.Live {
+		total += match.Shuttles
+	}
+	for _, match := range state.History {
+		if !isCancelledMatch(match) {
+			total += match.Shuttles
+		}
+	}
+	return total
+}
+
+func totalPlays(state SessionState) int {
+	total := 0
+	for _, player := range state.Players {
+		if player.Active {
+			total += player.Games
+		}
+	}
+	return total
+}
+
+func averageGames(state SessionState) float64 {
+	count := activePlayerCount(state)
+	if count == 0 {
+		return 0
+	}
+	return float64(totalPlays(state)) / float64(count)
+}
+
+func minGames(state SessionState) int {
+	minimum := 0
+	found := false
+	for _, player := range state.Players {
+		if !player.Active {
+			continue
+		}
+		if !found || player.Games < minimum {
+			minimum = player.Games
+			found = true
+		}
+	}
+	return minimum
+}
+
+func maxGames(state SessionState) int {
+	maximum := 0
+	for _, player := range state.Players {
+		if player.Active && player.Games > maximum {
+			maximum = player.Games
+		}
+	}
+	return maximum
+}
+
+func totalRevenue(state SessionState) int {
+	total := 0
+	for _, player := range state.Players {
+		if player.Active {
+			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee
+		}
+	}
+	return total
+}
+
+func paidRevenue(state SessionState) int {
+	total := 0
+	for _, player := range state.Players {
+		if player.Active && player.Paid {
+			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee
+		}
+	}
+	return total
+}
+
+func paymentPercent(state SessionState) int {
+	total := totalRevenue(state)
+	if total == 0 {
+		return 0
+	}
+	return paidRevenue(state) * 100 / total
+}
+
+func cancelledMatchCount(state SessionState) int {
+	count := 0
+	for _, match := range state.History {
+		if isCancelledMatch(match) {
+			count++
+		}
+	}
+	return count
+}
+
+func availableCourtNames(state SessionState) []string {
+	used := map[string]bool{}
+	for _, match := range state.Live {
+		if match.Court != "" {
+			used[match.Court] = true
+		}
+	}
+	available := []string{}
+	for _, court := range state.Settings.CourtNames {
+		if !used[court] {
+			available = append(available, court)
+		}
+	}
+	return available
 }
 
 func appendShuttleNumber(sequence string, number int) string {

@@ -139,6 +139,7 @@ const forms = reactive({
   coupleAId: 1,
   coupleBId: 2,
   matchCourts: {},
+  playerNameEdits: {},
   newCourtName: '',
   newLevelName: ''
 })
@@ -152,7 +153,8 @@ const ui = reactive({
   showShuttleModal: false,
   shuttleMatch: null,
   showQrModal: false,
-  toast: null
+  toast: null,
+  loadingTab: ''
 })
 const share = reactive({
   isPublic: false,
@@ -198,7 +200,9 @@ async function api(path, options = {}) {
   })
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'request failed' }))
-    throw new Error(error.error || 'request failed')
+    const requestError = new Error(error.error || 'request failed')
+    requestError.status = response.status
+    throw requestError
   }
   return response.json()
 }
@@ -211,6 +215,75 @@ function applyServerState(nextState) {
   state.theme = persistTheme(currentTheme)
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
+  }
+}
+
+function mergeSessionPatch(patch = {}) {
+  if (Array.isArray(patch.players)) state.players = patch.players
+  if (Array.isArray(patch.couples)) state.couples = patch.couples
+  if (Array.isArray(patch.pending)) state.pending = patch.pending
+  if (Array.isArray(patch.queue)) state.queue = patch.queue
+  if (Array.isArray(patch.live)) state.live = patch.live
+  if (Array.isArray(patch.history)) state.history = patch.history
+  if (patch.settings) state.settings = patch.settings
+  if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
+    forms.selectedPlayerId = state.players[0].id
+  }
+}
+
+async function reloadAdminTab(tabId) {
+  if (!state.session.id || !state.session.unlocked) return
+  switch (tabId) {
+  case 'dashboard': {
+    const payload = await api(`/api/sessions/${state.session.id}/dashboard`)
+    mergeSessionPatch(payload)
+    break
+  }
+  case 'players': {
+    const payload = await api(`/api/sessions/${state.session.id}/players?all=1`)
+    mergeSessionPatch({ players: payload.items || [] })
+    break
+  }
+  case 'livematch': {
+    const [couponsPayload, couplesPayload, queuePayload] = await Promise.all([
+      api(`/api/sessions/${state.session.id}/coupons?all=1`),
+      api(`/api/sessions/${state.session.id}/couples?all=1`),
+      api(`/api/sessions/${state.session.id}/queue`)
+    ])
+    void couponsPayload
+    mergeSessionPatch({ couples: couplesPayload.items || [], ...queuePayload })
+    break
+  }
+  case 'queue':
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/queue`))
+    break
+  case 'liveboard':
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/live`))
+    break
+  case 'history':
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/history`))
+    break
+  case 'settings':
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/settings`))
+    break
+  default:
+    break
+  }
+}
+
+async function selectAdminTab(tabId) {
+  if (state.tab === tabId && ui.loadingTab) return
+  const previousTab = state.tab
+  state.tab = tabId
+  if (!state.session.unlocked || tabId === 'home') return
+  ui.loadingTab = tabId
+  try {
+    await reloadAdminTab(tabId)
+  } catch (error) {
+    state.tab = tabId || previousTab
+    showToast(error.message || 'โหลดข้อมูลล่าสุดไม่สำเร็จ')
+  } finally {
+    ui.loadingTab = ''
   }
 }
 
@@ -304,22 +377,25 @@ const isAdmin = computed(() => state.session.unlocked)
 
 const queuedPlayerIds = computed(() => new Set([...state.pending, ...state.queue].flatMap(matchPlayers)))
 const livePlayerIds = computed(() => new Set(state.live.flatMap(matchPlayers)))
-const activePlayerCount = computed(() => state.players.filter((player) => player.active).length)
-const totalShuttles = computed(() => state.live.reduce((sum, match) => sum + match.shuttles, 0) + state.history.reduce((sum, match) => sum + match.shuttles, 0))
-const totalRecordedMatches = computed(() => state.live.length + state.history.length + state.queue.length)
-const totalPlays = computed(() => state.players.reduce((sum, player) => sum + player.games, 0))
+const activePlayers = computed(() => state.players.filter((player) => player.active))
+const realHistoryMatches = computed(() => state.history.filter((match) => !isCancelledMatch(match)))
+const cancelledMatches = computed(() => state.history.filter(isCancelledMatch))
+const activePlayerCount = computed(() => activePlayers.value.length)
+const totalShuttles = computed(() => state.live.reduce((sum, match) => sum + match.shuttles, 0) + realHistoryMatches.value.reduce((sum, match) => sum + match.shuttles, 0))
+const totalRecordedMatches = computed(() => state.live.length + realHistoryMatches.value.length)
+const totalPlays = computed(() => activePlayers.value.reduce((sum, player) => sum + player.games, 0))
 const averageGames = computed(() => activePlayerCount.value ? totalPlays.value / activePlayerCount.value : 0)
-const totalRevenue = computed(() => state.players.reduce((sum, player) => sum + playerCost(player), 0))
-const paidRevenue = computed(() => state.players.filter((player) => player.paid).reduce((sum, player) => sum + playerCost(player), 0))
+const totalRevenue = computed(() => activePlayers.value.reduce((sum, player) => sum + playerCost(player), 0))
+const paidRevenue = computed(() => activePlayers.value.filter((player) => player.paid).reduce((sum, player) => sum + playerCost(player), 0))
 const unpaidRevenue = computed(() => Math.max(0, totalRevenue.value - paidRevenue.value))
 const paymentPercent = computed(() => totalRevenue.value ? Math.round((paidRevenue.value / totalRevenue.value) * 100) : 0)
-const unpaidPlayers = computed(() => state.players.filter((player) => player.active && !player.paid))
-const minGames = computed(() => (state.players.length ? Math.min(...state.players.map((player) => player.games)) : 0))
-const maxGames = computed(() => (state.players.length ? Math.max(...state.players.map((player) => player.games)) : 0))
-const topPlayers = computed(() => [...state.players].sort((a, b) => b.games - a.games || a.id - b.id).slice(0, 4))
-const quietPlayers = computed(() => [...state.players].sort((a, b) => a.games - b.games || a.id - b.id).slice(0, 4))
+const unpaidPlayers = computed(() => activePlayers.value.filter((player) => !player.paid))
+const minGames = computed(() => (activePlayers.value.length ? Math.min(...activePlayers.value.map((player) => player.games)) : 0))
+const maxGames = computed(() => (activePlayers.value.length ? Math.max(...activePlayers.value.map((player) => player.games)) : 0))
+const topPlayers = computed(() => [...activePlayers.value].sort((a, b) => b.games - a.games || a.id - b.id).slice(0, 4))
+const quietPlayers = computed(() => [...activePlayers.value].sort((a, b) => a.games - b.games || a.id - b.id).slice(0, 4))
 const playerScore = (player) => (player.wins || 0) + (player.draws || 0) * 0.5
-const topWinners = computed(() => [...state.players].sort((a, b) => playerScore(b) - playerScore(a) || (b.wins || 0) - (a.wins || 0) || (a.losses || 0) - (b.losses || 0) || a.id - b.id).slice(0, 5))
+const topWinners = computed(() => [...activePlayers.value].sort((a, b) => playerScore(b) - playerScore(a) || (b.wins || 0) - (a.wins || 0) || (a.losses || 0) - (b.losses || 0) || a.id - b.id).slice(0, 5))
 const usedCourts = computed(() => new Set(state.live.map((match) => match.court)))
 const availableCourtNames = computed(() => state.settings.courtNames.filter((court) => !usedCourts.value.has(court)))
 const usedCourtNames = computed(() => new Set([...state.queue, ...state.live, ...state.history].map((match) => match.court).filter((court) => court && court !== '-')))
@@ -421,6 +497,34 @@ function addPlayer() {
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
   state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
   forms.newPlayerName = ''
+}
+
+function renamePlayer(player, name) {
+  const nextName = name.trim()
+  if (!nextName) return
+  player.name = nextName
+}
+
+function deletePlayer(player) {
+  const reasons = playerDeleteBlockReasons(player.id)
+  if (reasons.length) {
+    throw new Error(`ลบไม่ได้: ${reasons.join(', ')}`)
+  }
+  state.players = state.players.filter((item) => item.id !== player.id)
+}
+
+function playerReferenced(playerId) {
+  return playerDeleteBlockReasons(playerId).length > 0
+}
+
+function playerDeleteBlockReasons(playerId) {
+  const reasons = []
+  if (state.couples.some((couple) => couple.a === playerId || couple.b === playerId)) reasons.push('มีคู่รัก')
+  if (state.pending.some((match) => matchPlayers(match).includes(playerId))) reasons.push('อยู่ในรายการจับคู่')
+  if (state.queue.some((match) => matchPlayers(match).includes(playerId))) reasons.push('รอคิว')
+  if (state.live.some((match) => matchPlayers(match).includes(playerId))) reasons.push('กำลังแข่ง')
+  if (state.history.some((match) => matchPlayers(match).includes(playerId))) reasons.push('มีประวัติ')
+  return reasons
 }
 
 function togglePayment(player) {
@@ -562,6 +666,15 @@ function cancelPendingMatch(match) {
 
 function cancelQueuedMatch(match) {
   state.queue = state.queue.filter((item) => item.id !== match.id)
+  state.history.unshift({
+    ...match,
+    status: 'cancelled',
+    winner: '',
+    shuttles: 0,
+    shuttleSequence: '',
+    endedAt: currentTime(),
+    note: match.note || 'ยกเลิกคิว'
+  })
   delete forms.matchCourts[match.id]
 }
 
@@ -581,6 +694,7 @@ function closeLive(match, cancelled = false, note = '') {
     endedAt: currentTime(),
     winner: cancelled ? '' : forms.finishWinner,
     shuttleSequence: cancelled ? '' : (match.shuttleSequence || ''),
+    status: cancelled ? 'cancelled' : 'finished',
     note: note || forms.finishNote || (cancelled ? 'ยกเลิกการแข่งขัน' : 'จบการแข่งขัน')
   }
   state.history.unshift(ended)
@@ -599,6 +713,33 @@ function closeLive(match, cancelled = false, note = '') {
   state.live = state.live.filter((item) => item.id !== match.id)
   forms.finishNote = ''
   selectedLiveId.value = null
+}
+
+function updateHistoryWinner(match, winner) {
+  const normalizedWinner = ['A', 'B', 'draw'].includes(winner) ? winner : ''
+  if (isCancelledMatch(match)) return
+  applyResultStats(match, match.winner, -1)
+  match.winner = normalizedWinner
+  applyResultStats(match, normalizedWinner, 1)
+}
+
+function applyResultStats(match, winner, delta) {
+  if (!['A', 'B', 'draw'].includes(winner)) return
+  for (const id of matchPlayers(match)) {
+    const player = playerById(id)
+    if (!player) continue
+    if (winner === 'draw') {
+      player.draws = Math.max(0, (player.draws || 0) + delta)
+      continue
+    }
+    const won = (winner === 'A' && (id === match.a1 || id === match.a2)) || (winner === 'B' && (id === match.b1 || id === match.b2))
+    if (won) player.wins = Math.max(0, (player.wins || 0) + delta)
+    else player.losses = Math.max(0, (player.losses || 0) + delta)
+  }
+}
+
+function isCancelledMatch(match) {
+  return match.status === 'cancelled'
 }
 
 function requestFinishMatch(match) {
@@ -898,6 +1039,36 @@ async function addPlayerApi() {
   }
 }
 
+async function renamePlayerApi(player, name) {
+  const nextName = name.trim()
+  if (!nextName || nextName === player.name) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name: nextName })
+    }))
+  } catch {
+    renamePlayer(player, nextName)
+  }
+}
+
+async function deletePlayerApi(player) {
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, { method: 'DELETE' }))
+  } catch (error) {
+    if (error.status === 409) {
+      showToast(error.message)
+      throw error
+    }
+    try {
+      deletePlayer(player)
+    } catch (localError) {
+      showToast(localError.message)
+      throw localError
+    }
+  }
+}
+
 async function togglePaymentApi(player) {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
@@ -1011,6 +1182,17 @@ async function closeLiveApi(match, cancelled = false, note = '') {
   }
 }
 
+async function updateHistoryWinnerApi(match, winner) {
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/history/${match.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ winner })
+    }))
+  } catch {
+    updateHistoryWinner(match, winner)
+  }
+}
+
 async function confirmFinishMatchApi() {
   if (!ui.finishMatch) return
   await closeLiveApi(ui.finishMatch, false, forms.finishNote)
@@ -1068,6 +1250,7 @@ const pageProps = computed(() => ({
   ui,
   activePlayerCount: activePlayerCount.value,
   totalRecordedMatches: totalRecordedMatches.value,
+  cancelledMatches: cancelledMatches.value,
   averageGames: averageGames.value,
   minGames: minGames.value,
   maxGames: maxGames.value,
@@ -1086,10 +1269,13 @@ const pageProps = computed(() => ({
   usedLevels: usedLevels.value,
   money,
   playerCost,
+  playerDeleteBlockReasons,
   playerScore,
   levelLabel,
   matchLevelLabel,
   addPlayer: addPlayerApi,
+  renamePlayer: renamePlayerApi,
+  deletePlayer: deletePlayerApi,
   sharePlayers,
   copyQueueLink,
   openPlayersQr,
@@ -1111,6 +1297,7 @@ const pageProps = computed(() => ({
   confirmFinishMatch: confirmFinishMatchApi,
   requestCancelMatch,
   confirmCancelMatch: confirmCancelMatchApi,
+  updateHistoryWinner: updateHistoryWinnerApi,
   addCouple: addCoupleApi,
   removeCouple: removeCoupleApi,
   addCourt,
@@ -1118,6 +1305,7 @@ const pageProps = computed(() => ({
   addLevel,
   removeLevel,
   saveSettings: saveSettingsApi,
+  selectAdminTab,
   supervisor,
   loginSupervisor,
   createSession: createSessionApi,
@@ -1157,7 +1345,7 @@ const pageProps = computed(() => ({
     <template v-else>
     <header class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/95 backdrop-blur dark:border-stone-700 dark:bg-paper-900/95">
       <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4">
-        <button class="flex min-w-0 items-center gap-3 text-left" @click="isAdmin ? state.tab = 'dashboard' : state.tab = 'home'">
+        <button class="flex min-w-0 items-center gap-3 text-left" @click="isAdmin ? selectAdminTab('dashboard') : state.tab = 'home'">
           <span class="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-court-500 text-white shadow-soft">
             <Medal class="h-5 w-5" />
           </span>
@@ -1174,7 +1362,7 @@ const pageProps = computed(() => ({
             v-if="isAdmin"
             class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 md:hidden"
             title="ตั้งค่า"
-            @click="state.tab = 'settings'"
+            @click="selectAdminTab('settings')"
           >
             <Settings class="h-5 w-5" />
           </button>
@@ -1209,7 +1397,7 @@ const pageProps = computed(() => ({
           :key="tab.id"
           class="flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-medium transition"
           :class="state.tab === tab.id ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-white dark:text-stone-300 dark:hover:bg-stone-800'"
-          @click="state.tab = tab.id"
+          @click="selectAdminTab(tab.id)"
         >
           <component :is="tab.icon" class="h-4 w-4" />
           {{ tab.label }}
@@ -1219,6 +1407,10 @@ const pageProps = computed(() => ({
 
     <main class="mx-auto max-w-7xl px-4 pb-28 pt-4 md:pb-8 md:pt-5">
       <AuthPage v-if="!isAdmin" v-bind="pageProps" />
+
+      <div v-if="ui.loadingTab" class="mb-3 rounded-md border border-court-200 bg-court-500/10 p-3 text-sm font-bold text-court-700 dark:border-court-900/60 dark:text-court-300">
+        กำลังโหลดข้อมูลล่าสุด...
+      </div>
 
       <HomePage v-if="isAdmin && state.tab === 'home'" v-bind="pageProps" />
 
@@ -1247,7 +1439,7 @@ const pageProps = computed(() => ({
           :key="tab.id"
           class="flex h-14 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-md text-[11px] font-semibold leading-none transition"
           :class="state.tab === tab.id ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-500 active:bg-stone-100 dark:text-stone-400 dark:active:bg-stone-800'"
-          @click="state.tab = tab.id"
+          @click="selectAdminTab(tab.id)"
         >
           <component :is="tab.icon" class="h-5 w-5 shrink-0" />
           <span class="max-w-full truncate">{{ tab.label }}</span>

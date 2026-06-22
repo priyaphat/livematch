@@ -1,5 +1,5 @@
 <script setup>
-import { Clock3, Play, QrCode } from '@lucide/vue'
+import { Clock3, Play, QrCode, XCircle } from '@lucide/vue'
 
 defineProps([
   'state',
@@ -7,6 +7,7 @@ defineProps([
   'matchLevelLabel',
   'openQueueQr',
   'startMatch',
+  'cancelQueuedMatch',
   'playerName',
   'availableCourtNames'
 ])
@@ -44,7 +45,7 @@ defineProps([
             <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ matchLevelLabel(match) }}</p>
             <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
           </div>
-          <div class="grid grid-cols-[1fr_auto] gap-2 sm:min-w-72">
+          <div class="grid gap-2 sm:min-w-96 sm:grid-cols-[1fr_auto_auto]">
             <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
               <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
               <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
@@ -57,6 +58,15 @@ defineProps([
             >
               <Play class="h-4 w-4" />
               เริ่ม
+            </button>
+            <button
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-bold text-rose-700 transition hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300 dark:hover:bg-rose-950/30"
+              aria-label="ยกเลิกคิวเกม"
+              title="ยกเลิกคิวเกม"
+              @click="cancelQueuedMatch(match)"
+            >
+              <XCircle class="h-4 w-4" />
+              ยกเลิกคิว
             </button>
           </div>
           <p v-if="!forms.matchCourts[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">

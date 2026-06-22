@@ -352,3 +352,174 @@ func TestAdjustShuttlesAssignsGlobalSequenceOnAdd(t *testing.T) {
 		t.Fatalf("expected match 2 sequence 2, got %#v", state.Live[1])
 	}
 }
+
+func TestDeletePlayerHardDeletesUnreferencedPlayer(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Name: "new", Active: true},
+			{ID: 2, Name: "kept", Active: true},
+		},
+	}
+
+	if err := deletePlayer(&state, 1); err != nil {
+		t.Fatalf("expected player delete to succeed: %v", err)
+	}
+	if len(state.Players) != 1 || state.Players[0].ID != 2 {
+		t.Fatalf("expected unreferenced player to be removed, got %#v", state.Players)
+	}
+}
+
+func TestDeletePlayerRejectsReferencedPlayer(t *testing.T) {
+	state := SessionState{
+		Players: []Player{{ID: 1, Name: "referenced", Active: true, Coupon: true}},
+		History: []Match{
+			{ID: 9, A1: 1, A2: 2, B1: 3, B2: 4},
+		},
+	}
+
+	if err := deletePlayer(&state, 1); err == nil {
+		t.Fatal("expected referenced player delete to be rejected")
+	}
+	if len(state.Players) != 1 || !state.Players[0].Active || !state.Players[0].Coupon {
+		t.Fatalf("expected referenced player to remain unchanged, got %#v", state.Players)
+	}
+	reasons := playerDeleteBlockReasons(state, 1)
+	if len(reasons) != 1 || reasons[0] != "history" {
+		t.Fatalf("expected history delete block reason, got %#v", reasons)
+	}
+}
+
+func TestCancelQueuedMatchMovesToCancelledHistory(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Games: 2, Wins: 1, Shuttles: 3},
+			{ID: 2, Games: 2, Wins: 1, Shuttles: 3},
+			{ID: 3, Games: 2, Losses: 1, Shuttles: 3},
+			{ID: 4, Games: 2, Losses: 1, Shuttles: 3},
+		},
+		Queue: []Match{{ID: 14, Court: "-", Level: "middle", A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if !cancelQueuedMatch(&state, 14) {
+		t.Fatal("expected queued match to cancel")
+	}
+	if len(state.Queue) != 0 || len(state.History) != 1 {
+		t.Fatalf("expected queue to move into history, queue=%#v history=%#v", state.Queue, state.History)
+	}
+	cancelled := state.History[0]
+	if cancelled.ID != 14 || cancelled.Status != "cancelled" || cancelled.Winner != "" || cancelled.Note != "ยกเลิกคิว" {
+		t.Fatalf("unexpected cancelled history match: %#v", cancelled)
+	}
+	for _, player := range state.Players {
+		if player.Games != 2 || player.Shuttles != 3 {
+			t.Fatalf("expected cancelled queue not to change player stats, got %#v", player)
+		}
+	}
+}
+
+func TestUpdateHistoryWinnerRecalculatesPlayerResultStats(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Wins: 1},
+			{ID: 2, Wins: 1},
+			{ID: 3, Losses: 1},
+			{ID: 4, Losses: 1},
+		},
+		History: []Match{{ID: 7, A1: 1, A2: 2, B1: 3, B2: 4, Winner: "A"}},
+	}
+
+	if !updateHistoryWinner(&state, 7, "draw") {
+		t.Fatal("expected history winner update to succeed")
+	}
+	for _, player := range state.Players {
+		if player.Draws != 1 || player.Wins != 0 || player.Losses != 0 {
+			t.Fatalf("expected draw stats after result edit, got %#v", state.Players)
+		}
+	}
+	if state.History[0].Winner != "draw" {
+		t.Fatalf("expected history winner draw, got %q", state.History[0].Winner)
+	}
+}
+
+func TestUpdateHistoryWinnerLeavesCancelledMatchNonScoring(t *testing.T) {
+	state := SessionState{
+		Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+		History: []Match{{ID: 14, A1: 1, A2: 2, B1: 3, B2: 4, Status: "cancelled"}},
+	}
+
+	if !updateHistoryWinner(&state, 14, "A") {
+		t.Fatal("expected cancelled history match to be found")
+	}
+	if state.History[0].Winner != "" {
+		t.Fatalf("expected cancelled match winner to remain empty, got %q", state.History[0].Winner)
+	}
+	for _, player := range state.Players {
+		if player.Wins != 0 || player.Draws != 0 || player.Losses != 0 {
+			t.Fatalf("expected cancelled match not to score players, got %#v", state.Players)
+		}
+	}
+}
+
+func TestRealRecordedMatchCountExcludesCancelledHistory(t *testing.T) {
+	state := SessionState{
+		Queue: []Match{{ID: 15}},
+		Live:  []Match{{ID: 16}},
+		History: []Match{
+			{ID: 13, Status: "finished"},
+			{ID: 14, Status: "cancelled"},
+		},
+	}
+
+	if got := realRecordedMatchCount(state); got != 2 {
+		t.Fatalf("expected live + non-cancelled history count 2, got %d", got)
+	}
+}
+
+func TestDashboardPayloadIncludesMenuSummaryOnly(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{EntryFee: 100, ShuttleFee: 50, CourtNames: []string{"1", "2"}},
+		Players: []Player{
+			{ID: 1, Active: true, Games: 2, Shuttles: 3, Paid: true},
+			{ID: 2, Active: true, Games: 0, Shuttles: 0, Paid: false},
+		},
+		Live: []Match{{ID: 12, Shuttles: 1}},
+		History: []Match{
+			{ID: 10, Shuttles: 2, Status: "finished"},
+			{ID: 11, Status: "cancelled"},
+		},
+	}
+
+	payload := dashboardPayload(state)
+	summary := payload["summary"].(map[string]any)
+	if summary["recordedMatches"] != 2 || summary["cancelledMatches"] != 1 {
+		t.Fatalf("unexpected dashboard match summary: %#v", summary)
+	}
+	if summary["totalShuttles"] != 3 {
+		t.Fatalf("expected live + real history shuttles 3, got %#v", summary["totalShuttles"])
+	}
+	if _, exists := payload["pending"]; exists {
+		t.Fatal("dashboard payload should not include pending matches")
+	}
+}
+
+func TestQueuePayloadIncludesPendingQueueAndCourtAvailability(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{CourtNames: []string{"1", "2"}},
+		Pending:  []Match{{ID: -1}},
+		Queue:    []Match{{ID: 1}},
+		Live:     []Match{{ID: 2, Court: "1"}},
+		History:  []Match{{ID: 3}},
+	}
+
+	payload := queuePayload(state)
+	if len(payload["pending"].([]Match)) != 1 || len(payload["queue"].([]Match)) != 1 {
+		t.Fatalf("unexpected queue payload: %#v", payload)
+	}
+	available := payload["availableCourtNames"].([]string)
+	if len(available) != 1 || available[0] != "2" {
+		t.Fatalf("expected only court 2 available, got %#v", available)
+	}
+	if _, exists := payload["history"]; exists {
+		t.Fatal("queue payload should not include history")
+	}
+}

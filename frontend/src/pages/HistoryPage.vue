@@ -3,7 +3,8 @@ import { computed } from 'vue'
 
 const props = defineProps([
   'state',
-  'playerName'
+  'playerName',
+  'updateHistoryWinner'
 ])
 
 const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
@@ -17,10 +18,15 @@ function winnerText(match) {
 }
 
 function resultScoreText(match) {
+  if (isCancelled(match)) return 'ยกเลิก'
   if (match.winner === 'A') return 'ทีม A +1 · ทีม B +0'
   if (match.winner === 'B') return 'ทีม A +0 · ทีม B +1'
   if (match.winner === 'draw') return 'ทีม A +0.5 · ทีม B +0.5'
   return '-'
+}
+
+function isCancelled(match) {
+  return match.status === 'cancelled'
 }
 </script>
 
@@ -35,6 +41,12 @@ function resultScoreText(match) {
         <div>
           <p class="text-xs font-bold text-stone-500 dark:text-stone-400">เกมที่</p>
           <h2 class="text-2xl font-black">{{ match.id }}</h2>
+          <span
+            class="mt-2 inline-flex rounded-md px-2 py-1 text-xs font-black"
+            :class="isCancelled(match) ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300' : 'bg-court-500/10 text-court-700 dark:text-court-300'"
+          >
+            {{ isCancelled(match) ? 'สถานะ ยกเลิก' : 'สถานะ บันทึกผล' }}
+          </span>
         </div>
         <div class="text-right">
           <p class="text-xs font-bold text-stone-500 dark:text-stone-400">สนาม</p>
@@ -81,8 +93,24 @@ function resultScoreText(match) {
         </div>
 
         <div class="rounded-md bg-paper-100 p-3 text-sm dark:bg-stone-800">
-          <p class="text-xs text-stone-500 dark:text-stone-400">ผลการแข่งขัน</p>
-          <p class="mt-1 font-bold">{{ winnerText(match) }}</p>
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p class="text-xs text-stone-500 dark:text-stone-400">ผลการแข่งขัน / แก้ย้อนหลัง</p>
+              <p class="mt-1 font-bold">{{ isCancelled(match) ? 'ยกเลิกคิว' : winnerText(match) }}</p>
+            </div>
+            <select
+              :value="match.winner || ''"
+              class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-bold disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900"
+              :disabled="isCancelled(match)"
+              aria-label="เปลี่ยนผลการแข่งขัน"
+              @change="updateHistoryWinner(match, $event.target.value)"
+            >
+              <option value="">ไม่ระบุผล</option>
+              <option value="A">ทีม A ชนะ</option>
+              <option value="B">ทีม B ชนะ</option>
+              <option value="draw">เสมอ</option>
+            </select>
+          </div>
           <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">สกอร์ {{ resultScoreText(match) }}</p>
           <p v-if="match.note" class="mt-2 text-stone-600 dark:text-stone-300">{{ match.note }}</p>
         </div>
