@@ -99,9 +99,35 @@ func TestCloseLiveStoresWinnerStatsAndShuttleSequence(t *testing.T) {
 	}
 }
 
-func TestStartMatchUsesNoInitialShuttle(t *testing.T) {
+func TestStartMatchUsesInitialShuttleWhenSettingEnabled(t *testing.T) {
 	state := SessionState{
-		Settings: Settings{Levels: []string{"light", "middle", "heavy"}},
+		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, StartMatchWithShuttle: true},
+		Players: []Player{
+			{ID: 1, Level: "middle"},
+			{ID: 2, Level: "middle"},
+			{ID: 3, Level: "middle"},
+			{ID: 4, Level: "middle"},
+		},
+		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if !startMatch(&state, 1, "สนาม 1") {
+		t.Fatal("expected match to start")
+	}
+	if len(state.Live) != 1 {
+		t.Fatalf("expected one live match, got %d", len(state.Live))
+	}
+	if state.Live[0].Shuttles != 1 {
+		t.Fatalf("expected initial shuttle count 1, got %d", state.Live[0].Shuttles)
+	}
+	if state.Live[0].ShuttleSeq == "" {
+		t.Fatal("expected initial shuttle sequence")
+	}
+}
+
+func TestStartMatchUsesNoInitialShuttleWhenSettingDisabled(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, StartMatchWithShuttle: false},
 		Players: []Player{
 			{ID: 1, Level: "middle"},
 			{ID: 2, Level: "middle"},
@@ -119,6 +145,9 @@ func TestStartMatchUsesNoInitialShuttle(t *testing.T) {
 	}
 	if state.Live[0].Shuttles != 0 {
 		t.Fatalf("expected initial shuttle count 0, got %d", state.Live[0].Shuttles)
+	}
+	if state.Live[0].ShuttleSeq != "" {
+		t.Fatalf("expected empty shuttle sequence, got %q", state.Live[0].ShuttleSeq)
 	}
 }
 

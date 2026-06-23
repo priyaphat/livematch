@@ -78,7 +78,8 @@ const state = reactive({
     crossLevelRange: 1,
     randomPriority: 'level',
     showPaymentOnShare: true,
-    resetPlayersAfterFinish: true
+    resetPlayersAfterFinish: true,
+    startMatchWithShuttle: true
   },
   players: [
     { id: 1, name: 'ต้น', games: 4, wins: 2, draws: 0, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
@@ -136,8 +137,8 @@ const forms = reactive({
   finishWinner: '',
   cancelNote: '',
   selectedPlayerId: 1,
-  coupleAId: 1,
-  coupleBId: 2,
+  coupleAId: '',
+  coupleBId: '',
   matchCourts: {},
   playerNameEdits: {},
   newCourtName: '',
@@ -211,6 +212,7 @@ function applyServerState(nextState) {
   const currentTab = state.tab
   const currentTheme = readStoredTheme()
   Object.assign(state, nextState)
+  normalizeClientSettings()
   state.tab = currentTab
   state.theme = persistTheme(currentTheme)
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
@@ -226,8 +228,15 @@ function mergeSessionPatch(patch = {}) {
   if (Array.isArray(patch.live)) state.live = patch.live
   if (Array.isArray(patch.history)) state.history = patch.history
   if (patch.settings) state.settings = patch.settings
+  normalizeClientSettings()
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
+  }
+}
+
+function normalizeClientSettings() {
+  if (state.settings.startMatchWithShuttle === undefined) {
+    state.settings.startMatchWithShuttle = true
   }
 }
 
@@ -519,7 +528,7 @@ function playerReferenced(playerId) {
 
 function playerDeleteBlockReasons(playerId) {
   const reasons = []
-  if (state.couples.some((couple) => couple.a === playerId || couple.b === playerId)) reasons.push('มีคู่รัก')
+  if (state.couples.some((couple) => couple.a === playerId || couple.b === playerId)) reasons.push('มีคู่จับ')
   if (state.pending.some((match) => matchPlayers(match).includes(playerId))) reasons.push('อยู่ในรายการจับคู่')
   if (state.queue.some((match) => matchPlayers(match).includes(playerId))) reasons.push('รอคิว')
   if (state.live.some((match) => matchPlayers(match).includes(playerId))) reasons.push('กำลังแข่ง')
@@ -643,7 +652,12 @@ function startMatch(match, court = '') {
   if (!court) return
   if (!matchLevelsAllowed(match)) return
   state.queue = state.queue.filter((item) => item.id !== match.id)
-  state.live.push({ ...match, court, shuttles: 0, shuttleSequence: '', status: 'กำลังเล่น', startedAt: currentTime() })
+  const started = { ...match, court, shuttles: 0, shuttleSequence: '', status: 'กำลังเล่น', startedAt: currentTime() }
+  if (state.settings.startMatchWithShuttle) {
+    started.shuttles = 1
+    started.shuttleSequence = appendShuttleNumber(started.shuttleSequence, nextShuttleNumber())
+  }
+  state.live.push(started)
   state.tab = 'liveboard'
 }
 
@@ -814,6 +828,8 @@ function addCouple() {
   state.couples = state.couples.filter((couple) => couple.a !== a && couple.b !== a && couple.a !== b && couple.b !== b)
   state.couples.push({ id: Date.now(), a, b })
   syncNewCouple(a, b)
+  forms.coupleAId = ''
+  forms.coupleBId = ''
 }
 
 function removeCouple(id) {
@@ -1219,6 +1235,8 @@ async function addCoupleApi() {
       method: 'POST',
       body: JSON.stringify({ a, b })
     }))
+    forms.coupleAId = ''
+    forms.coupleBId = ''
   } catch {
     addCouple()
   }

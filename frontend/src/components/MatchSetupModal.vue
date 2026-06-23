@@ -46,13 +46,28 @@ function selectedPlayer(id) {
 }
 
 function syncCoupleQueries() {
+  if (props.ui.showCoupleModal && !props.forms.coupleAId && !props.forms.coupleBId) {
+    coupleAQuery.value = ''
+    coupleBQuery.value = ''
+    return
+  }
   coupleAQuery.value = optionLabel(selectedPlayer(props.forms.coupleAId))
   coupleBQuery.value = optionLabel(selectedPlayer(props.forms.coupleBId))
 }
 
 watch(
   () => [props.forms.coupleAId, props.forms.coupleBId, props.ui.showCoupleModal],
-  syncCoupleQueries,
+  ([, , showCouple], [, , oldShowCouple] = []) => {
+    if (showCouple && !oldShowCouple) {
+      props.forms.coupleAId = ''
+      props.forms.coupleBId = ''
+      coupleAQuery.value = ''
+      coupleBQuery.value = ''
+      openCoupleSelect.value = ''
+      return
+    }
+    syncCoupleQueries()
+  },
   { immediate: true }
 )
 

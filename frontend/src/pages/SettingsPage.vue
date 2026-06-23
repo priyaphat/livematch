@@ -42,6 +42,16 @@ defineProps([
         </span>
       </label>
 
+      <label class="grid gap-3 rounded-lg border border-court-200 bg-white p-4 shadow-soft dark:border-court-900 dark:bg-stone-900">
+        <span class="flex items-center justify-between gap-4">
+          <span>
+            <span class="block font-black">ลูกแบดตอนเริ่มเกม</span>
+            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">เริ่มเกมแล้วนับลูกแบด 1 ลูกอัตโนมัติ</span>
+          </span>
+          <input v-model="state.settings.startMatchWithShuttle" type="checkbox" class="h-5 w-5 shrink-0" @change="saveSettings" />
+        </span>
+      </label>
+
       <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
         <span class="font-bold">ลำดับการสุ่ม</span>
         <select v-model="state.settings.randomPriority" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings">

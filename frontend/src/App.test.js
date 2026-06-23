@@ -89,7 +89,8 @@ describe('LiveMatch app', () => {
         crossLevelRange: 1,
         randomPriority: 'level',
         showPaymentOnShare: true,
-        resetPlayersAfterFinish: true
+        resetPlayersAfterFinish: true,
+        startMatchWithShuttle: true
       },
       players: [],
       couples: [],
@@ -135,7 +136,8 @@ describe('LiveMatch app', () => {
         crossLevelRange: 1,
         randomPriority: 'level',
         showPaymentOnShare: true,
-        resetPlayersAfterFinish: true
+        resetPlayersAfterFinish: true,
+        startMatchWithShuttle: true
       },
       players: [],
       couples: [],
@@ -211,6 +213,44 @@ describe('LiveMatch app', () => {
     expect(select.element.value).toBe('not-ready')
     expect(wrapper.text()).toContain('ยังไม่พร้อม')
   })
+
+  it('opens couple modal with empty player inputs', async () => {
+    const forms = { coupleAId: 1, coupleBId: 2 }
+    const wrapper = mount(MatchSetupModal, {
+      props: {
+        state: {
+          settings: {
+            levels: ['light', 'middle', 'heavy']
+          },
+          players: [
+            { id: 1, name: 'p1', active: true },
+            { id: 2, name: 'p2', active: true }
+          ],
+          couples: []
+        },
+        forms,
+        ui: {
+          showCouponModal: false,
+          showCoupleModal: true
+        },
+        couponGroups: [],
+        levelLabel: (level) => level,
+        playerName: (id) => `p${id}`,
+        addCouple: () => {},
+        removeCouple: () => {},
+        updatePlayerRandomStatus: () => {}
+      }
+    })
+
+    await Promise.resolve()
+    const inputs = wrapper.findAll('input')
+
+    expect(inputs.at(0).element.value).toBe('')
+    expect(inputs.at(1).element.value).toBe('')
+    expect(forms.coupleAId).toBe('')
+    expect(forms.coupleBId).toBe('')
+  })
+
   it('confirms shuttle add without rendering a decrement button', async () => {
     let requested = null
     let confirmed = false
@@ -363,6 +403,7 @@ describe('LiveMatch app', () => {
             shuttleFee: 85,
             allowCrossLevel: true,
             resetPlayersAfterFinish: true,
+            startMatchWithShuttle: true,
             randomPriority: 'level',
             courtNames: ['court 1'],
             levels: ['light']
@@ -380,7 +421,9 @@ describe('LiveMatch app', () => {
     })
 
     expect(wrapper.text()).toContain('จบเกมแล้วตั้งผู้เล่นเป็นยังไม่พร้อม')
+    expect(wrapper.text()).toContain('เริ่มเกมแล้วนับลูกแบด 1 ลูกอัตโนมัติ')
     expect(wrapper.findAll('input[type="checkbox"]').at(1).element.checked).toBe(true)
+    expect(wrapper.findAll('input[type="checkbox"]').at(2).element.checked).toBe(true)
   })
   it('renders readable member share labels', () => {
     const wrapper = mount(PlayersPage, {
@@ -485,7 +528,7 @@ describe('LiveMatch app', () => {
         },
         money: (value) => value,
         playerCost: () => 0,
-        playerDeleteBlockReasons: () => ['มีประวัติ'],
+        playerDeleteBlockReasons: () => ['มีคู่จับ'],
         addPlayer: () => {},
         renamePlayer: () => {},
         deletePlayer: () => {
@@ -503,7 +546,7 @@ describe('LiveMatch app', () => {
 
     expect(deleteButton.element.disabled).toBe(true)
     expect(wrapper.text()).toContain('ลบไม่ได้')
-    expect(wrapper.text()).toContain('มีประวัติ')
+    expect(wrapper.text()).toContain('มีคู่จับ')
   })
 
   it('keeps pairing drafts separate from queue controls', () => {
@@ -619,7 +662,8 @@ describe('LiveMatch app', () => {
         crossLevelRange: 1,
         randomPriority: 'level',
         showPaymentOnShare: true,
-        resetPlayersAfterFinish: true
+        resetPlayersAfterFinish: true,
+        startMatchWithShuttle: true
       },
       players: [],
       couples: [],
