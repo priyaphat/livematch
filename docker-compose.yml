@@ -22,6 +22,15 @@ services:
     environment:
       - PORT=8080
       - DATABASE_URL=postgres://livematch:livematch@postgres:5432/livematch?sslmode=disable
+      - APP_BASE_URL=http://localhost:5173
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-LiveMatch}
+      - SUPERADMIN_USERNAME=${SUPERADMIN_USERNAME:-superadmin}
+      - SUPERADMIN_PASSWORD=${SUPERADMIN_PASSWORD:-12345678}
     depends_on:
       postgres:
         condition: service_healthy

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type app struct {
@@ -61,6 +62,7 @@ type SessionInfo struct {
 type Settings struct {
 	EntryFee                int      `json:"entryFee"`
 	ShuttleFee              int      `json:"shuttleFee"`
+	SessionFee              int      `json:"sessionFee"`
 	CourtCount              int      `json:"courtCount"`
 	CourtNames              []string `json:"courtNames"`
 	Levels                  []string `json:"levels"`
@@ -132,6 +134,9 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.handleHealth)
+	mux.HandleFunc("/api/auth/", a.handleAuthRoutes)
+	mux.HandleFunc("/api/admin/", a.handleAdminSupervisorRoutes)
+	mux.HandleFunc("/api/backoffice/", a.handleBackofficeRoutes)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
 	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
 	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
@@ -179,6 +184,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table sessions add column if not exists name text;
 		alter table sessions add column if not exists admin_passcode text;
 		alter table sessions add column if not exists state jsonb;
+		alter table sessions add column if not exists admin_id text;
 		alter table sessions add column if not exists created_at timestamptz not null default now();
 		alter table sessions add column if not exists updated_at timestamptz not null default now();
 		alter table sessions alter column name drop not null;
@@ -197,6 +203,7 @@ func (a *app) migrate(ctx context.Context) error {
 			session_id text primary key references sessions(id) on delete cascade,
 			entry_fee integer not null default 120,
 			shuttle_fee integer not null default 85,
+			session_fee integer not null default 0,
 			court_count integer not null default 4,
 			court_names jsonb not null default '["สนาม 1","สนาม 2","สนาม 3","สนาม 4"]'::jsonb,
 			levels jsonb not null default '["light","middle","heavy"]'::jsonb,
@@ -211,6 +218,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
+		alter table session_settings add column if not exists session_fee integer not null default 0;
 		create table if not exists players (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -263,11 +271,136 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_players_session on players(session_id);
 		create index if not exists idx_couples_session on couples(session_id);
 		create index if not exists idx_matches_session_phase on matches(session_id, phase);
+		create table if not exists admin_users (
+			id text primary key,
+			email text not null unique,
+			name text not null,
+			password_hash text not null,
+			verified_at timestamptz,
+			coins integer not null default 0,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists backoffice_users (
+			username text primary key,
+			name text not null,
+			password_hash text not null,
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists admin_sessions (
+			token_hash text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			created_at timestamptz not null default now(),
+			expires_at timestamptz not null
+		);
+		create table if not exists email_verification_tokens (
+			token_hash text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			created_at timestamptz not null default now(),
+			expires_at timestamptz not null,
+			used_at timestamptz
+		);
+		create table if not exists password_reset_tokens (
+			token_hash text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			created_at timestamptz not null default now(),
+			expires_at timestamptz not null,
+			used_at timestamptz
+		);
+		create table if not exists system_settings (
+			key text primary key,
+			value text not null,
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists coin_ledger (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			delta integer not null,
+			balance integer not null,
+			reason text not null,
+			note text not null default '',
+			created_at timestamptz not null default now()
+		);
+		create table if not exists coin_packages (
+			id text primary key,
+			name text not null,
+			price_thb integer not null,
+			coins integer not null,
+			bonus_text text not null default '',
+			active boolean not null default true,
+			sort_order integer not null default 0,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists coin_purchase_orders (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			package_id text not null,
+			price_thb integer not null,
+			coins integer not null,
+			slip_image text not null,
+			status text not null default 'pending',
+			note text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			reviewed_at timestamptz
+		);
+		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_status_check;
+		alter table coin_purchase_orders add constraint coin_purchase_orders_status_check check (status in ('pending', 'approved', 'rejected'));
+		create table if not exists activity_logs (
+			id bigserial primary key,
+			actor_type text not null,
+			actor_id text not null,
+			action text not null,
+			target_type text not null default '',
+			target_id text not null default '',
+			details text not null default '{}',
+			created_at timestamptz not null default now()
+		);
+		create index if not exists idx_sessions_admin on sessions(admin_id);
+		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
+		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
+		create index if not exists idx_coin_purchase_orders_admin on coin_purchase_orders(admin_id);
+		create index if not exists idx_coin_purchase_orders_status on coin_purchase_orders(status);
+		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
 	`)
 	if err != nil {
 		return err
 	}
+	if err := a.seedBackofficeSuperadmin(ctx); err != nil {
+		return err
+	}
+	if _, err := a.db.ExecContext(ctx, `
+		insert into system_settings (key, value)
+		values ('liveMatchSessionCoinCost', '49')
+		on conflict (key) do nothing
+	`); err != nil {
+		return err
+	}
 	return a.backfillJSONStates(ctx)
+}
+
+func (a *app) seedBackofficeSuperadmin(ctx context.Context) error {
+	username := os.Getenv("SUPERADMIN_USERNAME")
+	if username == "" {
+		username = "superadmin"
+	}
+	password := os.Getenv("SUPERADMIN_PASSWORD")
+	if password == "" {
+		password = "12345678"
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	_, err = a.db.ExecContext(ctx, `
+		insert into backoffice_users (username, name, password_hash, active)
+		values ($1, 'Superadmin', $2, true)
+		on conflict (username) do nothing
+	`, username, string(hash))
+	return err
 }
 
 func (a *app) backfillJSONStates(ctx context.Context) error {
@@ -329,6 +462,8 @@ func (a *app) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	writeJSON(w, http.StatusGone, map[string]string{"error": "use admin session creation"})
+	return
 
 	var body struct {
 		Name string `json:"name"`
@@ -361,6 +496,8 @@ func (a *app) handleUnlockByPasscode(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	writeJSON(w, http.StatusGone, map[string]string{"error": "passcode login removed"})
+	return
 
 	var body struct {
 		Passcode string `json:"passcode"`
@@ -467,13 +604,13 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(wins), 0) from players where active`).Scan(&summary.TotalWins)
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(avg(games), 0) from players where active`).Scan(&summary.AverageGames)
 	_ = a.db.QueryRowContext(r.Context(), `
-		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
+		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 		from players p
 		join session_settings ss on ss.session_id = p.session_id
 		where p.active
 	`).Scan(&summary.TotalRevenue)
 	_ = a.db.QueryRowContext(r.Context(), `
-		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
+		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 		from players p
 		join session_settings ss on ss.session_id = p.session_id
 		where p.active and p.paid
@@ -513,7 +650,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history' and m.status <> 'cancelled') as history_matches,
 			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and m.status <> 'cancelled') as shuttles,
 			(
-				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee), 0)
+				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 				from players p
 				join session_settings ss on ss.session_id = p.session_id
 				where p.session_id = s.id and p.active
@@ -600,6 +737,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 		SessionName   string          `json:"sessionName"`
 		EntryFee      int             `json:"entryFee"`
 		ShuttleFee    int             `json:"shuttleFee"`
+		SessionFee    int             `json:"sessionFee"`
 		Players       []paymentPlayer `json:"players"`
 		History       []historyMatch  `json:"history"`
 		TotalRevenue  int             `json:"totalRevenue"`
@@ -608,11 +746,11 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	}{Players: []paymentPlayer{}, History: []historyMatch{}}
 
 	if err := a.db.QueryRowContext(r.Context(), `
-		select s.id, coalesce(s.name, s.id), ss.entry_fee, ss.shuttle_fee
+		select s.id, coalesce(s.name, s.id), ss.entry_fee, ss.shuttle_fee, ss.session_fee
 		from sessions s
 		join session_settings ss on ss.session_id = s.id
 		where s.id = $1
-	`, body.SessionID).Scan(&detail.SessionID, &detail.SessionName, &detail.EntryFee, &detail.ShuttleFee); err != nil {
+	`, body.SessionID).Scan(&detail.SessionID, &detail.SessionName, &detail.EntryFee, &detail.ShuttleFee, &detail.SessionFee); err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, sql.ErrNoRows) {
 			status = http.StatusNotFound
@@ -623,11 +761,11 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 
 	rows, err := a.db.QueryContext(r.Context(), `
 		select id, name, games, wins, draws, losses, shuttles, paid, active,
-			$2 + shuttles * $3 as cost
+			$2 + shuttles * $3 + ceiling($4::numeric / nullif((select count(*) from players ap where ap.session_id = $1 and ap.active), 0))::int as cost
 		from players
 		where session_id = $1
 		order by active desc, paid asc, id asc
-	`, detail.SessionID, detail.EntryFee, detail.ShuttleFee)
+	`, detail.SessionID, detail.EntryFee, detail.ShuttleFee, detail.SessionFee)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -711,19 +849,26 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	if len(parts) > 1 {
 		action = parts[1]
 	}
+	if action != "state" {
+		user, ok := a.currentAdmin(r.Context(), r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not logged in"})
+			return
+		}
+		owned, err := a.sessionOwnedBy(r.Context(), id, user.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if !owned {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "session owner required"})
+			return
+		}
+	}
 
 	switch {
 	case r.Method == http.MethodPost && action == "unlock":
-		var body struct {
-			Passcode string `json:"passcode"`
-		}
-		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.Passcode != state.Session.AdminPasscode {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid passcode"})
-			return
-		}
-		state.Session.Unlocked = true
-		writeJSON(w, http.StatusOK, state)
+		writeJSON(w, http.StatusGone, map[string]string{"error": "passcode login removed"})
 	case r.Method == http.MethodGet && action == "state":
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodGet && action == "dashboard":
@@ -1007,12 +1152,13 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, shuttle_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
+			session_id, entry_fee, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			shuttle_fee = excluded.shuttle_fee,
+			session_fee = excluded.session_fee,
 			court_count = excluded.court_count,
 			court_names = excluded.court_names,
 			levels = excluded.levels,
@@ -1022,7 +1168,7 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			show_payment_on_share = excluded.show_payment_on_share,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ShuttleFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
 		return err
 	}
 
@@ -1098,12 +1244,13 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, shuttle_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
+		select entry_fee, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
 		&state.Settings.EntryFee,
 		&state.Settings.ShuttleFee,
+		&state.Settings.SessionFee,
 		&state.Settings.CourtCount,
 		&courtNamesRaw,
 		&levelsRaw,
@@ -1226,6 +1373,7 @@ func defaultState(id, name, passcode string) SessionState {
 		Settings: Settings{
 			EntryFee:                120,
 			ShuttleFee:              85,
+			SessionFee:              0,
 			CourtCount:              4,
 			CourtNames:              []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
 			Levels:                  []string{"light", "middle", "heavy"},
@@ -1887,9 +2035,10 @@ func maxGames(state SessionState) int {
 
 func totalRevenue(state SessionState) int {
 	total := 0
+	share := sessionFeeShare(state)
 	for _, player := range state.Players {
 		if player.Active {
-			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee
+			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee + share
 		}
 	}
 	return total
@@ -1897,12 +2046,21 @@ func totalRevenue(state SessionState) int {
 
 func paidRevenue(state SessionState) int {
 	total := 0
+	share := sessionFeeShare(state)
 	for _, player := range state.Players {
 		if player.Active && player.Paid {
-			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee
+			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee + share
 		}
 	}
 	return total
+}
+
+func sessionFeeShare(state SessionState) int {
+	count := activePlayerCount(state)
+	if count == 0 || state.Settings.SessionFee <= 0 {
+		return 0
+	}
+	return (state.Settings.SessionFee + count - 1) / count
 }
 
 func paymentPercent(state SessionState) int {
@@ -2050,6 +2208,9 @@ func normalizeSettings(settings *Settings) {
 	if settings.ShuttleFee < 0 {
 		settings.ShuttleFee = 0
 	}
+	if settings.SessionFee < 0 {
+		settings.SessionFee = 0
+	}
 	if len(settings.CourtNames) == 0 {
 		settings.CourtNames = []string{"สนาม 1"}
 	}
@@ -2125,8 +2286,13 @@ func randHex(n int) string {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Backoffice-Username, X-Backoffice-Password")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

@@ -7,11 +7,14 @@ import {
   Check,
   ClipboardList,
   Clock3,
+  Coins,
   Copy,
   CreditCard,
+  Database,
   Medal,
   History,
   Home,
+  ImagePlus,
   LogOut,
   Moon,
   Play,
@@ -22,11 +25,14 @@ import {
   Share2,
   Shuffle,
   Sun,
+  Upload,
   Users,
   X
 } from '@lucide/vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import AuthPage from './pages/AuthPage.vue'
+import BackofficePage from './pages/BackofficePage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import HomePage from './pages/HomePage.vue'
@@ -38,11 +44,11 @@ import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
 import SupervisorPage from './pages/SupervisorPage.vue'
+import VerifyEmailPage from './pages/VerifyEmailPage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 import { persistTheme, readStoredTheme } from './theme'
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
-const adminSessionKey = 'livematch.adminSessionId'
 
 const tabs = computed(() => [
   { id: 'home', label: t('หน้าแรก', 'Home'), icon: Home },
@@ -71,6 +77,7 @@ const state = reactive({
   settings: {
     entryFee: 120,
     shuttleFee: 85,
+    sessionFee: 0,
     courtCount: 4,
     courtNames: ['สนาม 1', 'สนาม 2', 'สนาม 3', 'สนาม 4'],
     levels: ['light', 'middle', 'heavy'],
@@ -131,6 +138,33 @@ const forms = reactive({
   supervisorPassword: '',
   supervisorError: '',
   supervisorSummary: null,
+  authMode: 'login',
+  authName: '',
+  authEmail: '',
+  authPassword: '',
+  authMessage: '',
+  authError: '',
+  resetToken: '',
+  sessionCreateName: '',
+  sessionCreateType: 'liveMatch',
+  backofficeUsername: '',
+  backofficePassword: '',
+  backofficeError: '',
+  backofficeTab: 'overview',
+  backofficeSummary: null,
+  backofficeAdminDetail: null,
+  backofficeCoinAdminId: '',
+  backofficeCoinDelta: 0,
+  backofficeCoinNote: '',
+  backofficeLiveMatchCost: null,
+  backofficeCoinPackages: [],
+  backofficeCoinPaymentQrImage: '',
+  backofficeRejectOrderId: '',
+  backofficeRejectNote: '',
+  coinModalMode: 'shop',
+  coinSelectedPackageId: '',
+  coinSlipImage: '',
+  coinOrderStatus: '',
   shareLink: '',
   shareStatus: '',
   finishNote: '',
@@ -154,6 +188,9 @@ const ui = reactive({
   showShuttleModal: false,
   shuttleMatch: null,
   showQrModal: false,
+  showCreateSessionModal: false,
+  showCoinModal: false,
+  showBackofficeAdminModal: false,
   toast: null,
   loadingTab: ''
 })
@@ -168,6 +205,26 @@ const supervisor = reactive({
   isPage: window.location.pathname === '/supervisor',
   unlocked: false,
   loading: false
+})
+const auth = reactive({
+  loading: false,
+  user: null,
+  sessions: [],
+  coinLedger: [],
+  liveMatchSessionCost: null,
+  coinPackages: [],
+  coinPaymentQrImage: '',
+  coinOrders: []
+})
+const backoffice = reactive({
+  isPage: window.location.pathname === '/backoffice',
+  unlocked: false,
+  loading: false
+})
+const verifyEmail = reactive({
+  isPage: window.location.pathname === '/verify-email',
+  status: 'loading',
+  message: 'กรุณารอสักครู่ ระบบกำลังตรวจสอบลิงก์ยืนยันอีเมลของคุณ'
 })
 const selectedLiveId = ref(null)
 let toastTimer = null
@@ -194,8 +251,10 @@ function closeToast() {
 async function api(path, options = {}) {
   const response = await fetch(`${apiUrl}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
+      'Accept': 'application/json',
       ...(options.headers || {})
     }
   })
@@ -206,6 +265,12 @@ async function api(path, options = {}) {
     throw requestError
   }
   return response.json()
+}
+
+function backofficeAuthHeaders() {
+  return {
+    Authorization: `Basic ${btoa(`${forms.backofficeUsername}:${forms.backofficePassword}`)}`
+  }
 }
 
 function applyServerState(nextState) {
@@ -235,6 +300,9 @@ function mergeSessionPatch(patch = {}) {
 }
 
 function normalizeClientSettings() {
+  if (state.settings.sessionFee === undefined) {
+    state.settings.sessionFee = 0
+  }
   if (state.settings.startMatchWithShuttle === undefined) {
     state.settings.startMatchWithShuttle = true
   }
@@ -299,10 +367,41 @@ async function selectAdminTab(tabId) {
 onMounted(() => {
   state.theme = persistTheme(readStoredTheme())
   installDomTranslator(() => document.body)
-  if (supervisor.isPage) return
+  const params = new URLSearchParams(window.location.search)
+  if (params.get('mode')) {
+    forms.authMode = params.get('mode')
+  }
+  if (verifyEmail.isPage) {
+    confirmVerifyEmail(params.get('token'))
+    return
+  }
+  if (backoffice.isPage || supervisor.isPage) return
+  const resetToken = params.get('token')
+  if (window.location.pathname === '/reset-password' && resetToken) {
+    forms.authMode = 'reset'
+    forms.resetToken = resetToken
+  }
   loadSharedView()
-  restoreAdminSession()
+  restoreAdminAccount()
 })
+
+async function confirmVerifyEmail(token) {
+  if (!token) {
+    verifyEmail.status = 'error'
+    verifyEmail.message = 'ไม่พบ token สำหรับยืนยันอีเมล กรุณาเปิดลิงก์จากอีเมลอีกครั้ง'
+    return
+  }
+  verifyEmail.status = 'loading'
+  verifyEmail.message = 'กรุณารอสักครู่ ระบบกำลังตรวจสอบลิงก์ยืนยันอีเมลของคุณ'
+  try {
+    await api(`/api/auth/verify-email?token=${encodeURIComponent(token)}`)
+    verifyEmail.status = 'success'
+    verifyEmail.message = 'บัญชี admin ของคุณพร้อมใช้งานแล้ว สามารถเข้าสู่ระบบและสร้าง session ได้เลย'
+  } catch (error) {
+    verifyEmail.status = 'error'
+    verifyEmail.message = error.message || 'ลิงก์ยืนยันอีเมลหมดอายุหรือถูกใช้งานไปแล้ว'
+  }
+}
 
 onUnmounted(() => {
   stopSharedRefresh()
@@ -331,29 +430,292 @@ async function loginSupervisor() {
   }
 }
 
-async function restoreAdminSession() {
-  if (share.isPublic) return
-  const sessionId = localStorage.getItem(adminSessionKey)
-  if (!sessionId) return
+async function loginAdmin() {
+  forms.authError = ''
+  forms.authMessage = ''
+  auth.loading = true
   try {
-    const nextState = await api(`/api/sessions/${sessionId}/state`)
-    applyServerState(nextState)
-    state.session.unlocked = true
-    state.tab = 'dashboard'
-  } catch {
-    localStorage.removeItem(adminSessionKey)
+    applyAdminPayload(await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: forms.authEmail, password: forms.authPassword })
+    }))
+    forms.authPassword = ''
+  } catch (error) {
+    forms.authError = error.message || 'เข้าสู่ระบบไม่สำเร็จ'
+  } finally {
+    auth.loading = false
   }
 }
 
-function rememberAdminSession() {
-  localStorage.setItem(adminSessionKey, state.session.id)
+async function registerAdmin() {
+  forms.authError = ''
+  forms.authMessage = ''
+  auth.loading = true
+  try {
+    await api('/api/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({ name: forms.authName, email: forms.authEmail, password: forms.authPassword })
+    })
+    forms.authMessage = 'ส่งอีเมลยืนยันแล้ว กรุณาตรวจสอบกล่องอีเมล'
+    forms.authPassword = ''
+    forms.authMode = 'login'
+  } catch (error) {
+    forms.authError = error.message || 'สมัครสมาชิกไม่สำเร็จ'
+  } finally {
+    auth.loading = false
+  }
 }
 
-function logout() {
-  localStorage.removeItem(adminSessionKey)
+async function forgotPassword() {
+  forms.authError = ''
+  forms.authMessage = ''
+  auth.loading = true
+  try {
+    await api('/api/auth/forgot-password', {
+      method: 'POST',
+      body: JSON.stringify({ email: forms.authEmail })
+    })
+    forms.authMessage = 'ส่งอีเมลรีเซ็ตรหัสผ่านแล้ว'
+  } catch (error) {
+    forms.authError = error.message || 'ส่งอีเมลรีเซ็ตไม่สำเร็จ'
+  } finally {
+    auth.loading = false
+  }
+}
+
+async function resetPassword() {
+  forms.authError = ''
+  forms.authMessage = ''
+  auth.loading = true
+  try {
+    await api('/api/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ token: forms.resetToken, password: forms.authPassword })
+    })
+    forms.authMessage = 'รีเซ็ตรหัสผ่านแล้ว กรุณาเข้าสู่ระบบ'
+    forms.authPassword = ''
+    forms.authMode = 'login'
+  } catch (error) {
+    forms.authError = error.message || 'รีเซ็ตรหัสผ่านไม่สำเร็จ'
+  } finally {
+    auth.loading = false
+  }
+}
+
+async function openOwnedSession(sessionId) {
+  try {
+    const nextState = await api(`/api/sessions/${sessionId}/dashboard`)
+    mergeSessionPatch(nextState)
+    const fullState = await api(`/api/sessions/${sessionId}/state`)
+    applyServerState(fullState)
+    state.session.unlocked = true
+    state.tab = 'dashboard'
+  } catch (error) {
+    showToast(error.message || 'เปิด session ไม่สำเร็จ')
+  }
+}
+
+async function refreshAdminSupervisor() {
+  try {
+    applyAdminPayload(await api('/api/admin/supervisor'))
+  } catch (error) {
+    showToast(error.message || 'โหลด dashboard admin ไม่สำเร็จ')
+  }
+}
+
+async function backToAdminDashboard() {
   state.session.unlocked = false
   state.tab = 'home'
-  forms.passcodeInput = ''
+  await refreshAdminSupervisor()
+}
+
+async function loadBackoffice() {
+  forms.backofficeError = ''
+  backoffice.loading = true
+  try {
+    forms.backofficeSummary = await api('/api/backoffice/summary', {
+      headers: backofficeAuthHeaders()
+    })
+    forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
+    syncBackofficeCoinShopForms()
+    backoffice.unlocked = true
+  } catch (error) {
+    forms.backofficeError = error.message || 'เข้าสู่หลังบ้านไม่สำเร็จ'
+  } finally {
+    backoffice.loading = false
+  }
+}
+
+async function openBackofficeAdminDetail(adminId) {
+  forms.backofficeError = ''
+  try {
+    forms.backofficeAdminDetail = await api(`/api/backoffice/admins/${adminId}`, {
+      headers: backofficeAuthHeaders()
+    })
+    ui.showBackofficeAdminModal = true
+  } catch (error) {
+    forms.backofficeError = error.message || 'โหลดรายละเอียด admin ไม่สำเร็จ'
+  }
+}
+
+function syncBackofficeCoinShopForms() {
+  const summary = forms.backofficeSummary || {}
+  forms.backofficeCoinPackages = (summary.coinPackages || []).map((item) => ({ ...item }))
+  forms.backofficeCoinPaymentQrImage = summary.coinPaymentQrImage || ''
+}
+
+async function saveBackofficeSettings() {
+  forms.backofficeError = ''
+  try {
+    forms.backofficeSummary = await api('/api/backoffice/settings', {
+      method: 'PUT',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({ liveMatchSessionCost: Number(forms.backofficeLiveMatchCost) })
+    })
+  } catch (error) {
+    forms.backofficeError = error.message || 'บันทึกราคา coin ไม่สำเร็จ'
+  }
+}
+
+async function saveBackofficeCoinShop() {
+  forms.backofficeError = ''
+  try {
+    forms.backofficeSummary = await api('/api/backoffice/coin-shop', {
+      method: 'PUT',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({
+        packages: forms.backofficeCoinPackages,
+        paymentQrImage: forms.backofficeCoinPaymentQrImage
+      })
+    })
+    syncBackofficeCoinShopForms()
+  } catch (error) {
+    forms.backofficeError = error.message || 'บันทึกโปรโมชัน coin ไม่สำเร็จ'
+  }
+}
+
+function addBackofficeCoinPackage() {
+  forms.backofficeCoinPackages.push({
+    id: '',
+    name: 'แพ็กเกจใหม่',
+    priceThb: 100,
+    coins: 100,
+    bonusText: '',
+    active: true,
+    sortOrder: forms.backofficeCoinPackages.length + 1
+  })
+}
+
+function removeBackofficeCoinPackage(index) {
+  forms.backofficeCoinPackages.splice(index, 1)
+}
+
+async function adjustBackofficeCoins() {
+  forms.backofficeError = ''
+  try {
+    forms.backofficeSummary = await api('/api/backoffice/coins', {
+      method: 'POST',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({
+        adminId: forms.backofficeCoinAdminId,
+        delta: Number(forms.backofficeCoinDelta),
+        note: forms.backofficeCoinNote
+      })
+    })
+    forms.backofficeCoinDelta = 0
+    forms.backofficeCoinNote = ''
+  } catch (error) {
+    forms.backofficeError = error.message || 'ปรับ coin ไม่สำเร็จ'
+  }
+}
+
+async function reviewBackofficeCoinOrder(orderId, status) {
+  forms.backofficeError = ''
+  try {
+    forms.backofficeSummary = await api(`/api/backoffice/coin-orders/${orderId}/${status === 'approved' ? 'approve' : 'reject'}`, {
+      method: 'POST',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({ note: status === 'rejected' ? forms.backofficeRejectNote : '' })
+    })
+    forms.backofficeRejectOrderId = ''
+    forms.backofficeRejectNote = ''
+    syncBackofficeCoinShopForms()
+  } catch (error) {
+    forms.backofficeError = error.message || 'อัปเดตรายการซื้อ coin ไม่สำเร็จ'
+  }
+}
+
+function applyAdminPayload(payload) {
+  auth.user = payload.user || null
+  auth.sessions = payload.sessions || []
+  auth.coinLedger = payload.coinLedger || []
+  auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
+}
+
+function applyCoinShopPayload(payload) {
+  auth.coinPackages = payload.packages || []
+  auth.coinPaymentQrImage = payload.paymentQrImage || ''
+  auth.coinOrders = payload.orders || []
+  if (!forms.coinSelectedPackageId && auth.coinPackages.length) {
+    forms.coinSelectedPackageId = auth.coinPackages[0].id
+  }
+}
+
+async function openCoinModal(mode = 'shop') {
+  forms.coinModalMode = mode
+  ui.showCoinModal = true
+  if (mode === 'shop') await loadCoinShop()
+}
+
+async function loadCoinShop() {
+  if (!auth.user) return
+  try {
+    applyCoinShopPayload(await api('/api/admin/coin-shop'))
+  } catch (error) {
+    showToast(error.message || 'โหลดร้าน coin ไม่สำเร็จ')
+  }
+}
+
+async function submitCoinOrder() {
+  forms.coinOrderStatus = ''
+  try {
+    const payload = await api('/api/admin/coin-orders', {
+      method: 'POST',
+      body: JSON.stringify({
+        packageId: forms.coinSelectedPackageId,
+        slipImage: forms.coinSlipImage
+      })
+    })
+    applyCoinShopPayload(payload)
+    forms.coinSlipImage = ''
+    forms.coinOrderStatus = 'ส่งรายการซื้อแล้ว รอ backoffice ตรวจสอบ'
+    await restoreAdminAccount()
+  } catch (error) {
+    forms.coinOrderStatus = error.message || 'ส่งรายการซื้อ coin ไม่สำเร็จ'
+  }
+}
+
+async function restoreAdminAccount() {
+  if (share.isPublic) return
+  try {
+    applyAdminPayload(await api('/api/auth/me'))
+  } catch {
+    auth.user = null
+  }
+}
+
+async function logout() {
+  try {
+    await api('/api/auth/logout', { method: 'POST' })
+  } catch {
+    // Local state is still cleared if the backend session is already gone.
+  }
+  auth.user = null
+  auth.sessions = []
+  auth.coinLedger = []
+  state.session.unlocked = false
+  state.tab = 'home'
+  forms.authPassword = ''
   forms.loginError = ''
 }
 
@@ -460,11 +822,68 @@ function matchPlayers(match) {
 }
 
 function playerCost(player) {
-  return state.settings.entryFee + player.shuttles * state.settings.shuttleFee
+  return state.settings.entryFee + player.shuttles * state.settings.shuttleFee + sessionFeeShare.value
 }
+
+const sessionFeeShare = computed(() => {
+  if (!activePlayerCount.value || !state.settings.sessionFee) return 0
+  return Math.ceil(Number(state.settings.sessionFee || 0) / activePlayerCount.value)
+})
 
 function money(value) {
   return new Intl.NumberFormat(language.value === 'en' ? 'en-US' : 'th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 }).format(value)
+}
+
+function coinReasonText(item) {
+  if (item.reason === 'create_session') return 'ใช้สร้าง session'
+  if (item.reason === 'coin_purchase') return 'ซื้อ coin'
+  if (item.reason === 'manual_adjustment' && item.delta > 0) return 'เติม coin โดยแอดมิน'
+  if (item.reason === 'manual_adjustment' && item.delta < 0) return 'หัก coin โดยแอดมิน'
+  return item.reason || 'รายการ coin'
+}
+
+function requestBuyCoin() {
+  openCoinModal()
+}
+
+function coinOrderStatusText(status) {
+  if (status === 'approved') return 'อนุมัติแล้ว'
+  if (status === 'rejected') return 'ไม่อนุมัติ'
+  return 'รอตรวจสอบ'
+}
+
+function coinOrderStatusClass(status) {
+  if (status === 'approved') return 'bg-court-500/10 text-court-700 dark:text-court-300'
+  if (status === 'rejected') return 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-200'
+  return 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+}
+
+function selectedCoinPackage() {
+  return auth.coinPackages.find((item) => item.id === forms.coinSelectedPackageId) || auth.coinPackages[0] || null
+}
+
+function readImageFile(file, callback) {
+  if (!file) return
+  if (!file.type.startsWith('image/')) {
+    showToast('กรุณาเลือกไฟล์รูปภาพ')
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => callback(String(reader.result || ''))
+  reader.onerror = () => showToast('อ่านไฟล์รูปไม่สำเร็จ')
+  reader.readAsDataURL(file)
+}
+
+function handleCoinSlipFile(event) {
+  readImageFile(event.target.files?.[0], (dataUrl) => {
+    forms.coinSlipImage = dataUrl
+  })
+}
+
+function handleBackofficeQrFile(event) {
+  readImageFile(event.target.files?.[0], (dataUrl) => {
+    forms.backofficeCoinPaymentQrImage = dataUrl
+  })
 }
 
 async function createSession() {
@@ -1005,40 +1424,25 @@ async function loadSharedView({ silent = false } = {}) {
 
 async function createSessionApi() {
   try {
-    const record = await api('/api/sessions', {
+    const record = await api('/api/admin/sessions', {
       method: 'POST',
-      body: JSON.stringify({ name: forms.newSessionName })
+      body: JSON.stringify({ name: forms.sessionCreateName || forms.newSessionName, type: forms.sessionCreateType || 'liveMatch' })
     })
     applyServerState(record.state)
-    forms.createdPasscode = record.adminPasscode
-    forms.passcodeInput = ''
+    applyAdminPayload(await api('/api/admin/supervisor'))
+    ui.showCreateSessionModal = false
+    forms.sessionCreateName = ''
+    forms.sessionCreateType = 'liveMatch'
     forms.loginError = ''
-  } catch {
-    await createSession()
+    state.session.unlocked = true
+    state.tab = 'dashboard'
+  } catch (error) {
+    showToast(error.message || 'สร้าง session ไม่สำเร็จ')
   }
 }
 
 async function unlockDashboardApi() {
-  try {
-    let nextState
-    try {
-      nextState = await api(`/api/sessions/${state.session.id}/unlock`, {
-        method: 'POST',
-        body: JSON.stringify({ passcode: forms.passcodeInput })
-      })
-    } catch {
-      nextState = await api('/api/sessions/unlock', {
-        method: 'POST',
-        body: JSON.stringify({ passcode: forms.passcodeInput })
-      })
-    }
-    applyServerState(nextState)
-    rememberAdminSession()
-    forms.loginError = ''
-    state.tab = 'dashboard'
-  } catch {
-    unlockDashboard()
-  }
+  forms.loginError = 'ระบบ passcode ถูกยกเลิกแล้ว กรุณา login ด้วยบัญชี admin'
 }
 
 async function addPlayerApi() {
@@ -1324,10 +1728,39 @@ const pageProps = computed(() => ({
   removeLevel,
   saveSettings: saveSettingsApi,
   selectAdminTab,
+  auth,
+  backoffice,
+  verifyEmail,
   supervisor,
   loginSupervisor,
+  loginAdmin,
+  registerAdmin,
+  forgotPassword,
+  resetPassword,
+  openOwnedSession,
+  refreshAdminSupervisor,
+  backToAdminDashboard,
+  logout,
+  coinReasonText,
+  coinOrderStatusText,
+  coinOrderStatusClass,
+  selectedCoinPackage,
+  requestBuyCoin,
+  openCoinModal,
+  loadCoinShop,
+  submitCoinOrder,
+  handleCoinSlipFile,
+  handleBackofficeQrFile,
   createSession: createSessionApi,
-  unlockDashboard: unlockDashboardApi
+  unlockDashboard: unlockDashboardApi,
+  loadBackoffice,
+  openBackofficeAdminDetail,
+  saveBackofficeSettings,
+  saveBackofficeCoinShop,
+  addBackofficeCoinPackage,
+  removeBackofficeCoinPackage,
+  adjustBackofficeCoins,
+  reviewBackofficeCoinOrder
 }))
 </script>
 
@@ -1355,7 +1788,9 @@ const pageProps = computed(() => ({
       </div>
     </Transition>
 
-    <SupervisorPage v-if="supervisor.isPage" v-bind="pageProps" />
+    <VerifyEmailPage v-if="verifyEmail.isPage" v-bind="pageProps" />
+    <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
+    <SupervisorPage v-else-if="supervisor.isPage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
     <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :player-name="playerName" :match-level-label="matchLevelLabel" />
@@ -1369,13 +1804,57 @@ const pageProps = computed(() => ({
           </span>
           <span class="min-w-0">
             <span class="block truncate text-base font-black leading-5 sm:text-lg">LiveMatch</span>
-            <span class="block truncate text-xs text-stone-500 dark:text-stone-400">{{ isAdmin ? currentTab.label : 'Admin access' }}</span>
+            <span class="block truncate text-xs text-stone-500 dark:text-stone-400">{{ isAdmin ? currentTab.label : (auth.user ? 'Supervisor' : 'Admin access') }}</span>
           </span>
         </button>
         <div class="flex items-center gap-2">
+          <button
+            v-if="auth.user && !isAdmin"
+            class="inline-flex h-10 items-center gap-2 rounded-md border border-shuttle-500 bg-shuttle-400 px-3 text-xs font-black uppercase text-stone-950 shadow-[0_8px_24px_rgba(245,197,66,0.28)] transition hover:bg-shuttle-300 dark:border-shuttle-600 dark:bg-shuttle-400 dark:text-stone-950"
+            title="ดูประวัติ coin"
+            @click="openCoinModal('history')"
+          >
+            <CreditCard class="h-4 w-4" />
+            <span>COIN :</span>
+            <span class="tabular-nums">{{ Number(auth.user.coins || 0).toLocaleString('th-TH') }}</span>
+          </button>
+          <button
+            v-if="auth.user && !isAdmin"
+            class="hidden h-10 items-center gap-2 rounded-md border border-court-200 bg-white px-3 text-xs font-black text-court-700 transition hover:bg-court-50 dark:border-court-900 dark:bg-stone-800 dark:text-court-300 sm:inline-flex"
+            title="ซื้อ coin"
+            @click="openCoinModal('shop')"
+          >
+            <Coins class="h-4 w-4" />
+            ซื้อ coin
+          </button>
+          <button
+            v-if="auth.user && !isAdmin"
+            class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+            title="ออกจากระบบ"
+            @click="logout"
+          >
+            <LogOut class="h-5 w-5" />
+          </button>
           <span v-if="isAdmin" class="hidden rounded-md border border-stone-200 bg-white px-3 py-1 text-xs text-stone-500 dark:border-stone-700 dark:bg-stone-900 md:inline">
             {{ state.session.name }}
           </span>
+          <button
+            v-if="isAdmin && auth.user"
+            class="hidden h-10 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-black text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 dark:hover:bg-stone-700 sm:inline-flex"
+            title="กลับ Admin dashboard"
+            @click="backToAdminDashboard"
+          >
+            <Database class="h-4 w-4" />
+            Admin DB
+          </button>
+          <button
+            v-if="isAdmin && auth.user"
+            class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 sm:hidden"
+            title="กลับ Admin dashboard"
+            @click="backToAdminDashboard"
+          >
+            <Database class="h-5 w-5" />
+          </button>
           <button
             v-if="isAdmin"
             class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 md:hidden"
@@ -1390,14 +1869,6 @@ const pageProps = computed(() => ({
             @click="toggleLanguage"
           >
             {{ language === 'th' ? 'EN' : 'TH' }}
-          </button>
-          <button
-            v-if="isAdmin"
-            class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
-            title="ออกจากระบบ"
-            @click="logout"
-          >
-            <LogOut class="h-5 w-5" />
           </button>
           <button
             class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
@@ -1424,7 +1895,9 @@ const pageProps = computed(() => ({
     </header>
 
     <main class="mx-auto max-w-7xl px-4 pb-28 pt-4 md:pb-8 md:pt-5">
-      <AuthPage v-if="!isAdmin" v-bind="pageProps" />
+      <AuthPage v-if="!auth.user && !isAdmin" v-bind="pageProps" />
+
+      <AdminSupervisorPage v-else-if="auth.user && !isAdmin" v-bind="pageProps" />
 
       <div v-if="ui.loadingTab" class="mb-3 rounded-md border border-court-200 bg-court-500/10 p-3 text-sm font-bold text-court-700 dark:border-court-900/60 dark:text-court-300">
         กำลังโหลดข้อมูลล่าสุด...
@@ -1466,6 +1939,108 @@ const pageProps = computed(() => ({
     </nav>
 
     <MatchSetupModal v-if="isAdmin && (ui.showCouponModal || ui.showCoupleModal)" v-bind="pageProps" />
+
+    <div v-if="ui.showCoinModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
+      <div class="w-full max-w-4xl rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-black text-shuttle-700 dark:text-shuttle-300">Coin</p>
+            <h2 class="mt-1 text-xl font-black">COIN : {{ Number(auth.user?.coins || 0).toLocaleString('th-TH') }}</h2>
+            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ forms.coinModalMode === 'shop' ? 'เลือกโปรโมชัน โอนเงินตาม QR แล้วอัปโหลดสลิปเพื่อรอตรวจสอบ' : 'ประวัติการเติมและการใช้ coin ของบัญชีนี้' }}</p>
+          </div>
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showCoinModal = false">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-4 grid max-h-[72vh] gap-4 overflow-auto pr-1 lg:grid-cols-[1.15fr_0.85fr]">
+          <section v-if="forms.coinModalMode === 'shop'" class="grid gap-3">
+            <div class="grid gap-3 sm:grid-cols-2">
+              <button
+                v-for="pkg in auth.coinPackages"
+                :key="pkg.id"
+                type="button"
+                class="rounded-lg border p-4 text-left transition"
+                :class="forms.coinSelectedPackageId === pkg.id ? 'border-shuttle-500 bg-shuttle-400/15 ring-2 ring-shuttle-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'"
+                @click="forms.coinSelectedPackageId = pkg.id"
+              >
+                <div class="flex items-start justify-between gap-3">
+                  <div>
+                    <p class="text-lg font-black">{{ pkg.name }}</p>
+                    <p class="mt-2 text-3xl font-black tabular-nums">฿{{ Number(pkg.priceThb || 0).toLocaleString('th-TH') }}</p>
+                  </div>
+                  <span v-if="pkg.bonusText" class="rounded-md bg-court-500/10 px-2 py-1 text-xs font-black text-court-700 dark:text-court-300">{{ pkg.bonusText }}</span>
+                </div>
+                <p class="mt-4 text-sm font-bold text-stone-500 dark:text-stone-400">ได้รับ</p>
+                <p class="mt-1 text-xl font-black text-shuttle-700 dark:text-shuttle-300">{{ Number(pkg.coins || 0).toLocaleString('th-TH') }} coin</p>
+              </button>
+            </div>
+            <p v-if="!auth.coinPackages.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีโปรโมชัน coin</p>
+
+            <div class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
+              <h3 class="font-black">ชำระเงิน</h3>
+              <div class="mt-3 grid gap-3 sm:grid-cols-[12rem_1fr]">
+                <div class="grid min-h-48 place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
+                  <img v-if="auth.coinPaymentQrImage" :src="auth.coinPaymentQrImage" alt="QR ชำระเงิน" class="max-h-44 rounded-md bg-white object-contain p-2" />
+                  <p v-else class="text-center text-sm font-bold text-stone-500">backoffice ยังไม่ได้อัปโหลด QR</p>
+                </div>
+                <div class="grid gap-3">
+                  <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+                    <p class="text-xs font-bold text-stone-500 dark:text-stone-400">แพ็กเกจที่เลือก</p>
+                    <p class="mt-1 font-black">{{ selectedCoinPackage()?.name || '-' }}</p>
+                    <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ราคา ฿{{ Number(selectedCoinPackage()?.priceThb || 0).toLocaleString('th-TH') }} ได้ {{ Number(selectedCoinPackage()?.coins || 0).toLocaleString('th-TH') }} coin</p>
+                  </div>
+                  <label class="grid cursor-pointer place-items-center gap-2 rounded-md border border-dashed border-stone-300 p-4 text-center text-sm font-black transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800">
+                    <Upload class="h-5 w-5" />
+                    อัปโหลดสลิป
+                    <input type="file" accept="image/*" class="hidden" @change="handleCoinSlipFile" />
+                  </label>
+                  <img v-if="forms.coinSlipImage" :src="forms.coinSlipImage" alt="สลิปที่เลือก" class="max-h-32 rounded-md border border-stone-200 object-contain dark:border-stone-700" />
+                  <button class="h-11 rounded-md bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:opacity-50" :disabled="!forms.coinSelectedPackageId || !forms.coinSlipImage || !auth.coinPaymentQrImage" @click="submitCoinOrder">
+                    ส่งตรวจสอบ
+                  </button>
+                  <p v-if="forms.coinOrderStatus" class="rounded-md bg-paper-100 px-3 py-2 text-sm font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.coinOrderStatus }}</p>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="grid content-start gap-3">
+            <div v-if="forms.coinModalMode === 'shop'" class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
+              <h3 class="font-black">รายการซื้อ coin</h3>
+              <div class="mt-3 grid gap-2">
+                <div v-for="order in auth.coinOrders" :key="order.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="font-black">฿{{ Number(order.priceThb || 0).toLocaleString('th-TH') }} / {{ Number(order.coins || 0).toLocaleString('th-TH') }} coin</p>
+                    <span class="rounded-md px-2 py-1 text-xs font-black" :class="coinOrderStatusClass(order.status)">{{ coinOrderStatusText(order.status) }}</span>
+                  </div>
+                  <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ order.createdAt }}</p>
+                  <p v-if="order.note" class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ order.note }}</p>
+                </div>
+                <p v-if="!auth.coinOrders.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีรายการซื้อ coin</p>
+              </div>
+            </div>
+
+            <div v-if="forms.coinModalMode === 'history'" class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
+              <h3 class="font-black">ประวัติ coin</h3>
+              <div class="mt-3 grid gap-2">
+                <div v-for="item in auth.coinLedger" :key="item.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+                  <div class="flex items-center justify-between gap-3">
+                    <p class="font-black" :class="item.delta > 0 ? 'text-court-700 dark:text-court-300' : 'text-red-700 dark:text-red-300'">{{ coinReasonText(item) }}</p>
+                    <p class="text-sm font-black tabular-nums" :class="item.delta > 0 ? 'text-court-700 dark:text-court-300' : 'text-red-700 dark:text-red-300'">{{ item.delta > 0 ? '+' : '' }}{{ item.delta }}</p>
+                  </div>
+                  <div class="mt-1 flex items-center justify-between gap-3 text-xs font-semibold text-stone-500 dark:text-stone-400">
+                    <span>{{ item.createdAt }}</span>
+                    <span>คงเหลือ {{ Number(item.balance || 0).toLocaleString('th-TH') }}</span>
+                  </div>
+                </div>
+                <p v-if="!auth.coinLedger.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีประวัติ coin</p>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
 
     <div v-if="ui.showQrModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
       <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">

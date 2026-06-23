@@ -14,11 +14,12 @@ import SharedQueuePage from './pages/SharedQueuePage.vue'
 import { applyStoredTheme } from './theme'
 
 describe('LiveMatch app', () => {
-  it('hides admin screens before passcode access', () => {
+  it('hides admin screens before admin account login', () => {
     const wrapper = mount(App)
 
     expect(wrapper.text()).toContain('LiveMatch')
-    expect(wrapper.text()).toContain('เข้าสู่ระบบผู้ดูแล')
+    expect(wrapper.text()).toContain('เข้าสู่ระบบ')
+    expect(wrapper.text()).toContain('สมัครสมาชิก')
     expect(wrapper.text()).not.toContain('ผู้เล่นวันนี้')
     expect(wrapper.text()).not.toContain('จัดคู่')
   })
@@ -120,12 +121,11 @@ describe('LiveMatch app', () => {
     document.documentElement.classList.remove('dark')
   })
 
-  it('reloads only the selected admin menu endpoint', async () => {
-    localStorage.setItem('livematch.adminSessionId', 'test-session')
+  it('opens an owned session from the admin supervisor', async () => {
     const statePayload = {
       tab: 'home',
       theme: 'light',
-      session: { id: 'test-session', name: 'Test Session', adminPasscode: '', unlocked: false },
+      session: { id: 'test-session', name: 'Test Session', adminPasscode: '', unlocked: true },
       settings: {
         entryFee: 0,
         shuttleFee: 0,
@@ -151,15 +151,21 @@ describe('LiveMatch app', () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn((url) => {
       calls.push(String(url))
-      if (String(url).includes('/players?all=1')) {
+      if (String(url).includes('/api/auth/me')) {
         return Promise.resolve({
           ok: true,
           json: () => Promise.resolve({
-            items: [{ id: 9, name: 'Fresh Player', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }],
-            total: 1,
-            page: 1,
-            pageSize: 1
+            user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', verified: true, coins: 5 },
+            sessions: [{ id: 'test-session', name: 'Test Session', updatedAt: '2026-06-23 21:00' }],
+            coinLedger: [],
+            liveMatchSessionCost: 1
           })
+        })
+      }
+      if (String(url).includes('/dashboard')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ players: [] })
         })
       }
       return Promise.resolve({
@@ -170,18 +176,15 @@ describe('LiveMatch app', () => {
 
     const wrapper = mount(App)
     for (let index = 0; index < 5; index += 1) await Promise.resolve()
-    const desktopNav = wrapper.findAll('nav').at(0)
-    await desktopNav.findAll('button').at(1).trigger('click')
-    await Promise.resolve()
-    await Promise.resolve()
+    await wrapper.findAll('button').find((button) => button.text().includes('เปิด')).trigger('click')
+    for (let index = 0; index < 5; index += 1) await Promise.resolve()
 
-    expect(calls.some((call) => call.includes('/api/sessions/test-session/players?all=1'))).toBe(true)
+    expect(calls.some((call) => call.includes('/api/sessions/test-session/dashboard'))).toBe(true)
     expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(1)
-    expect(wrapper.text()).toContain('Fresh Player')
+    expect(wrapper.text()).toContain('Test Session')
 
     wrapper.unmount()
     globalThis.fetch = originalFetch
-    localStorage.removeItem('livematch.adminSessionId')
   })
 
   it('defaults random coupon groups to not ready', () => {
