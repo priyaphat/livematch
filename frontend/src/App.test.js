@@ -4,6 +4,7 @@ import App from './App.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
 import BackofficePage from './pages/BackofficePage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
+import HelpPage from './pages/HelpPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
@@ -14,6 +15,75 @@ import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
 import { applyStoredTheme } from './theme'
+
+function sessionStatePayload(type = 'liveMatch', extraSession = {}) {
+  return {
+    tab: 'home',
+    theme: 'light',
+    session: { id: 'test-session', name: 'Test Session', type, adminPasscode: '', unlocked: true, ...extraSession },
+    settings: {
+      entryFee: 0,
+      courtFeePerHour: 150,
+      shuttleFee: 0,
+      sessionFee: 0,
+      courtCount: 1,
+      courtNames: ['สนาม 1'],
+      levels: ['light', 'middle', 'heavy'],
+      allowCrossLevel: true,
+      crossLevelRange: 1,
+      randomPriority: 'level',
+      showPaymentOnShare: true,
+      resetPlayersAfterFinish: true,
+      startMatchWithShuttle: type !== 'liveShare'
+    },
+    players: [],
+    couples: [],
+    pending: [],
+    queue: [],
+    live: [],
+    history: [],
+    liveShare: { courtHours: {}, playerHours: {}, shuttleHours: {} },
+    nextIds: { player: 0, match: 0, couple: 0, pending: 0 }
+  }
+}
+
+async function openMockedOwnedSession(type = 'liveMatch', extraSession = {}) {
+  const statePayload = sessionStatePayload(type, extraSession)
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = vi.fn((url) => {
+    const target = String(url)
+    if (target.includes('/api/auth/me')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', verified: true, coins: 5 },
+          sessions: [{ id: 'test-session', name: 'Test Session', type, updatedAt: '2026-06-23 21:00' }],
+          coinLedger: [],
+          liveMatchSessionCost: 1,
+          liveShareSessionCost: 1
+        })
+      })
+    }
+    if (target.includes('/dashboard')) {
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ players: [] })
+      })
+    }
+    return Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(statePayload)
+    })
+  })
+
+  const wrapper = mount(App)
+  for (let index = 0; index < 5; index += 1) await Promise.resolve()
+  const openButton = wrapper.findAll('button').find((button) => ['เปิด', 'Open'].some((label) => button.text().includes(label)))
+  expect(openButton?.exists()).toBe(true)
+  await openButton.trigger('click')
+  for (let index = 0; index < 5; index += 1) await Promise.resolve()
+  return { wrapper, originalFetch }
+}
 
 describe('LiveMatch app', () => {
   it('hides admin screens before admin account login', () => {
@@ -220,6 +290,87 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('button').element.disabled).toBe(true)
     expect(wrapper.find('input[type="checkbox"]').element.disabled).toBe(true)
     expect(wrapper.find('input[type="number"]').element.disabled).toBe(true)
+  })
+
+  it('renders LiveMatch guide content', () => {
+    const wrapper = mount(HelpPage, {
+      props: {
+        state: { session: { name: 'Test Match', type: 'liveMatch' } },
+        isLiveShare: false
+      }
+    })
+
+    expect(wrapper.text()).toContain('วิธีใช้ LiveMatch')
+    expect(wrapper.text()).toContain('ตั้งค่า')
+    expect(wrapper.text()).toContain('จัดคู่')
+    expect(wrapper.text()).toContain('QR คิว')
+    expect(wrapper.text()).toContain('read-only')
+    expect(wrapper.text()).not.toContain('วิธีใช้ LiveShare')
+  })
+
+  it('renders LiveShare guide content with hour instructions', () => {
+    const wrapper = mount(HelpPage, {
+      props: {
+        state: { session: { name: 'Test Share', type: 'liveShare' } },
+        isLiveShare: true
+      }
+    })
+
+    expect(wrapper.text()).toContain('วิธีใช้ LiveShare')
+    expect(wrapper.text()).toContain('ชั่วโมงเล่น')
+    expect(wrapper.text()).toContain('คำนวณแยกทีละชั่วโมง')
+    expect(wrapper.text()).toContain('ค่าสนามต่อชั่วโมง')
+    expect(wrapper.text()).not.toContain('วิธีใช้ LiveMatch')
+  })
+
+  it('shows the guide tab after settings for liveMatch sessions', async () => {
+    localStorage.setItem('livematch.language', 'th')
+    const { wrapper, originalFetch } = await openMockedOwnedSession('liveMatch')
+    const labels = wrapper.findAll('header nav button').map((button) => button.text().trim())
+    const settingsIndex = labels.findIndex((label) => label.includes('ตั้งค่า') || label.includes('Settings'))
+    const guideIndex = labels.findIndex((label) => label.includes('วิธีใช้') || label.includes('Guide'))
+    const hoursIndex = labels.findIndex((label) => label.includes('ชั่วโมงเล่น') || label.includes('Hours'))
+
+    expect(settingsIndex).toBeGreaterThan(-1)
+    expect(guideIndex).toBe(settingsIndex + 1)
+    expect(hoursIndex).toBe(-1)
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+    localStorage.removeItem('livematch.language')
+  })
+
+  it('shows the guide tab after liveShare hours for liveShare sessions', async () => {
+    localStorage.setItem('livematch.language', 'th')
+    const { wrapper, originalFetch } = await openMockedOwnedSession('liveShare')
+    const labels = wrapper.findAll('header nav button').map((button) => button.text().trim())
+    const settingsIndex = labels.findIndex((label) => label.includes('ตั้งค่า') || label.includes('Settings'))
+    const hoursIndex = labels.findIndex((label) => label.includes('ชั่วโมงเล่น') || label.includes('Hours'))
+    const guideIndex = labels.findIndex((label) => label.includes('วิธีใช้') || label.includes('Guide'))
+
+    expect(settingsIndex).toBeGreaterThan(-1)
+    expect(hoursIndex).toBe(settingsIndex + 1)
+    expect(guideIndex).toBe(hoursIndex + 1)
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+    localStorage.removeItem('livematch.language')
+  })
+
+  it('keeps the guide tab available for read-only sessions', async () => {
+    const { wrapper, originalFetch } = await openMockedOwnedSession('liveMatch', {
+      expired: true,
+      readOnly: true,
+      readOnlyReason: 'paid_complete_24h'
+    })
+    const guideButton = wrapper.findAll('header nav button').find((button) => button.text().includes('วิธีใช้') || button.text().includes('Guide'))
+    expect(guideButton?.exists()).toBe(true)
+    await guideButton.trigger('click')
+    await Promise.resolve()
+    expect(wrapper.text()).toContain('วิธีใช้ LiveMatch')
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
   })
 
   it('opens an owned session from the admin supervisor', async () => {

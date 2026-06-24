@@ -4,6 +4,7 @@ import QRCode from 'qrcode'
 import {
   Activity,
   BarChart3,
+  BookOpen,
   Check,
   ClipboardList,
   Clock3,
@@ -36,6 +37,7 @@ import BackofficePage from './pages/BackofficePage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import HomePage from './pages/HomePage.vue'
+import HelpPage from './pages/HelpPage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
 import LiveShareHoursPage from './pages/LiveShareHoursPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
@@ -59,7 +61,8 @@ const tabs = computed(() => [
   { id: 'liveboard', label: t('แข่งอยู่', 'Live board'), icon: Activity },
   { id: 'history', label: t('ประวัติ', 'History'), icon: History },
   { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: Settings },
-  ...(isLiveShare.value ? [{ id: 'liveShareHours', label: t('ชั่วโมงเล่น', 'Hours'), icon: Clock3 }] : [])
+  ...(isLiveShare.value ? [{ id: 'liveShareHours', label: t('ชั่วโมงเล่น', 'Hours'), icon: Clock3 }] : []),
+  { id: 'help', label: t('วิธีใช้', 'Guide'), icon: BookOpen }
 ])
 
 const adminTabs = computed(() => tabs.value.filter((tab) => tab.id !== 'home'))
@@ -1922,6 +1925,7 @@ const pageProps = computed(() => ({
   usedCourtNames: usedCourtNames.value,
   usedLevels: usedLevels.value,
   isSessionReadOnly: isSessionReadOnly.value,
+  isLiveShare: isLiveShare.value,
   money,
   playerCost,
   playerLiveShareHours,
@@ -2163,6 +2167,8 @@ const pageProps = computed(() => ({
       <SettingsPage v-if="isAdmin && state.tab === 'settings'" v-bind="pageProps" />
 
       <LiveShareHoursPage v-if="isAdmin && state.tab === 'liveShareHours' && isLiveShare" v-bind="pageProps" />
+
+      <HelpPage v-if="isAdmin && state.tab === 'help'" v-bind="pageProps" />
     </main>
 
     <nav
