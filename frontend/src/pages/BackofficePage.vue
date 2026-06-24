@@ -171,7 +171,7 @@ function closeSlipPreview() {
                 </label>
                 <label class="grid gap-2 text-sm font-bold">
                   Webhook secret
-                  <input v-model="forms.backofficeTelegramWebhookSecret" type="password" autocomplete="off" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ตั้ง secret สำหรับปุ่ม approve/reject" />
+                  <input v-model="forms.backofficeTelegramWebhookSecret" readonly class="h-11 rounded-md border border-stone-200 bg-paper-100 px-3 text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300" placeholder="ระบบสร้างให้อัตโนมัติ" />
                 </label>
                 <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">Webhook URL: {{ forms.backofficeTelegramWebhookSecret ? `/api/telegram/webhook/${forms.backofficeTelegramWebhookSecret}` : '/api/telegram/webhook/{secret}' }}</p>
               </div>

@@ -692,6 +692,9 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
 	promptPay := a.promptPaySettings(r.Context())
 	telegramSettings := a.telegramNotifySettings(r.Context())
+	if telegramSettings.WebhookSecret == "" {
+		telegramSettings.WebhookSecret = a.ensureTelegramWebhookSecret(r.Context())
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"users":                 users,
 		"coinLedger":            ledger,
@@ -772,6 +775,10 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 			return
 		}
 	}
+	telegramWebhookSecret := strings.TrimSpace(body.TelegramWebhookSecret)
+	if telegramWebhookSecret == "" {
+		telegramWebhookSecret = a.ensureTelegramWebhookSecret(r.Context())
+	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -792,7 +799,7 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 		"promptPayReceiverName": strings.TrimSpace(body.PromptPayReceiverName),
 		"telegramBotToken":      strings.TrimSpace(body.TelegramBotToken),
 		"telegramChatId":        strings.TrimSpace(body.TelegramChatID),
-		"telegramWebhookSecret": strings.TrimSpace(body.TelegramWebhookSecret),
+		"telegramWebhookSecret": telegramWebhookSecret,
 	} {
 		if _, err = tx.ExecContext(r.Context(), `
 			insert into system_settings (key, value)

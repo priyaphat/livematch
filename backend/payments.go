@@ -87,6 +87,20 @@ func (settings telegramNotifySettings) enabled() bool {
 	return strings.TrimSpace(settings.BotToken) != "" && strings.TrimSpace(settings.ChatID) != ""
 }
 
+func (a *app) ensureTelegramWebhookSecret(ctx context.Context) string {
+	settings := a.telegramNotifySettings(ctx)
+	if settings.WebhookSecret != "" {
+		return settings.WebhookSecret
+	}
+	secret := "tg-" + randHex(24)
+	_, _ = a.db.ExecContext(ctx, `
+		insert into system_settings (key, value)
+		values ('telegramWebhookSecret', $1)
+		on conflict (key) do update set value = excluded.value, updated_at = now()
+	`, secret)
+	return secret
+}
+
 func promptPayPayloadsForPackages(settings promptPaySettings, packages []coinPackage) map[string]string {
 	payloads := map[string]string{}
 	if strings.TrimSpace(settings.ID) == "" {
