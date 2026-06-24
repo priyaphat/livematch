@@ -118,10 +118,11 @@ watch(() => props.forms.playerSearch, () => {
         </select>
       </div>
 
-      <div class="grid grid-cols-[1fr_4rem_4rem] gap-2 border-b border-stone-200 bg-paper-100 p-3 text-sm font-black text-stone-600 dark:border-stone-800 dark:bg-stone-800 dark:text-stone-200">
+      <div class="grid grid-cols-[1fr_4rem_4rem_6rem] gap-2 border-b border-stone-200 bg-paper-100 p-3 text-sm font-black text-stone-600 dark:border-stone-800 dark:bg-stone-800 dark:text-stone-200">
         <span>ชื่อ</span>
         <span class="text-right">เกม</span>
         <span class="text-right">ลูก</span>
+        <span class="text-right">ค่าใช้จ่าย</span>
       </div>
 
       <div v-if="!pagedPlayers.length" class="p-4 text-sm text-stone-500">
@@ -134,10 +135,11 @@ watch(() => props.forms.playerSearch, () => {
         class="block w-full border-b border-stone-100 p-3 text-left last:border-b-0 dark:border-stone-800"
         @click="forms.selectedPlayerId = player.id"
       >
-        <div class="grid grid-cols-[1fr_4rem_4rem] items-baseline gap-2">
+        <div class="grid grid-cols-[1fr_4rem_4rem_6rem] items-baseline gap-2">
           <span class="truncate text-base font-black">{{ player.name }}</span>
           <span class="text-right font-bold">{{ player.games }}</span>
           <span class="text-right font-bold">{{ player.shuttles }}</span>
+          <span class="text-right font-black tabular-nums text-court-700 dark:text-court-300">{{ money(playerCost(player)) }}</span>
         </div>
         <div class="mt-2 flex flex-wrap items-center gap-2 text-sm">
           <span class="font-semibold text-stone-600 dark:text-stone-300">ค่าใช้จ่าย {{ money(playerCost(player)) }}</span>

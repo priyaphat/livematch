@@ -57,6 +57,9 @@ type SessionInfo struct {
 	Name          string `json:"name"`
 	AdminPasscode string `json:"adminPasscode"`
 	Unlocked      bool   `json:"unlocked"`
+	CreatedAt     string `json:"createdAt"`
+	ExpiresAt     string `json:"expiresAt"`
+	Expired       bool   `json:"expired"`
 }
 
 type Settings struct {
@@ -540,6 +543,8 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	writeJSON(w, http.StatusGone, map[string]string{"error": "supervisor removed; use backoffice"})
+	return
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
@@ -682,6 +687,8 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	writeJSON(w, http.StatusGone, map[string]string{"error": "supervisor removed; use backoffice"})
+	return
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
@@ -864,6 +871,14 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "session owner required"})
 			return
 		}
+		if r.Method == http.MethodGet && action == "dashboard" && r.URL.Query().Get("open") == "1" {
+			a.insertActivityLog(r.Context(), "admin", user.ID, "open_session", "session", id, map[string]any{"name": state.Session.Name, "expired": state.Session.Expired})
+		}
+		if isSessionWrite(r.Method) && action != "unlock" && state.Session.Expired {
+			a.insertActivityLog(r.Context(), "admin", user.ID, "blocked_expired_session_action", "session", id, map[string]any{"name": state.Session.Name, "method": r.Method, "action": action, "path": r.URL.Path})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "session นี้ครบ 3 วันแล้ว กรุณาสร้าง session ใหม่เพื่อใช้งานต่อ"})
+			return
+		}
 	}
 
 	switch {
@@ -905,8 +920,9 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			coupon = *body.Coupon
 		}
 		state.NextIDs.Player++
-		state.Players = append(state.Players, Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon})
-		a.respondSaved(w, r, state)
+		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon}
+		state.Players = append(state.Players, player)
+		a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon})
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
 		playerID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -917,6 +933,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Active *bool   `json:"active"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		logDetails := map[string]any{}
+		actionName := "update_player"
 		for i := range state.Players {
 			if state.Players[i].ID == playerID {
 				if body.Name != nil {
@@ -925,18 +943,26 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 						writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player name"})
 						return
 					}
+					logDetails["fromName"] = state.Players[i].Name
+					logDetails["toName"] = name
+					actionName = "rename_player"
 					state.Players[i].Name = name
 				}
 				if body.Paid != nil {
+					logDetails["paid"] = *body.Paid
+					actionName = "toggle_player_paid"
 					state.Players[i].Paid = *body.Paid
 				}
 				if body.Level != nil {
+					logDetails["level"] = *body.Level
 					state.Players[i].Level = *body.Level
 				}
 				if body.Coupon != nil {
+					logDetails["coupon"] = *body.Coupon
 					state.Players[i].Coupon = *body.Coupon
 				}
 				if body.Active != nil {
+					logDetails["active"] = *body.Active
 					state.Players[i].Active = *body.Active
 				}
 				if body.Level != nil || body.Coupon != nil {
@@ -944,7 +970,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, actionName, "player", strconv.Itoa(playerID), logDetails)
 	case r.Method == http.MethodDelete && action == "players" && len(parts) >= 3:
 		playerID, _ := strconv.Atoi(parts[2])
 		if err := deletePlayer(&state, playerID); err != nil {
@@ -955,7 +981,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "delete_player", "player", strconv.Itoa(playerID), map[string]any{})
 	case r.Method == http.MethodGet && action == "settings":
 		writeJSON(w, http.StatusOK, map[string]any{"settings": state.Settings})
 	case r.Method == http.MethodGet && action == "queue":
@@ -972,7 +998,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		normalizeSettings(&settings)
 		state.Settings = settings
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "update_session_settings", "session", state.Session.ID, map[string]any{"entryFee": settings.EntryFee, "shuttleFee": settings.ShuttleFee, "courtCount": settings.CourtCount, "allowCrossLevel": settings.AllowCrossLevel})
 	case r.Method == http.MethodPost && action == "couples":
 		var body struct {
 			A int `json:"a"`
@@ -987,7 +1013,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		state.NextIDs.Couple++
 		state.Couples = append(state.Couples, Couple{ID: state.NextIDs.Couple, A: body.A, B: body.B})
 		syncNewCouple(&state, body.A, body.B)
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "add_couple", "couple", strconv.Itoa(state.NextIDs.Couple), map[string]any{"a": body.A, "b": body.B})
 	case r.Method == http.MethodGet && action == "couples":
 		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
 			writeJSON(w, http.StatusOK, map[string]any{"items": state.Couples, "total": len(state.Couples), "page": 1, "pageSize": len(state.Couples)})
@@ -998,27 +1024,27 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && action == "couples" && len(parts) >= 3:
 		coupleID, _ := strconv.Atoi(parts[2])
 		state.Couples = slices.DeleteFunc(state.Couples, func(c Couple) bool { return c.ID == coupleID })
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "delete_couple", "couple", strconv.Itoa(coupleID), map[string]any{})
 	case r.Method == http.MethodPost && action == "random":
 		if err := randomMatch(&state); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "random_matches", "session", state.Session.ID, map[string]any{"pending": len(state.Pending)})
 	case r.Method == http.MethodPost && action == "pending" && len(parts) >= 4 && parts[3] == "confirm":
 		matchID, _ := strconv.Atoi(parts[2])
 		if !confirmPendingMatch(&state, matchID) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "confirm_pending_match", "match", strconv.Itoa(matchID), map[string]any{})
 	case r.Method == http.MethodDelete && action == "pending" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		if !cancelPendingMatch(&state, matchID) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "cancel_pending_match", "match", strconv.Itoa(matchID), map[string]any{})
 	case r.Method == http.MethodGet && action == "coupons":
 		busy := map[int]bool{}
 		for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
@@ -1070,14 +1096,14 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "start_match", "match", strconv.Itoa(matchID), map[string]any{"court": body.Court})
 	case r.Method == http.MethodDelete && action == "queue" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		if !cancelQueuedMatch(&state, matchID) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "cancel_queued_match", "match", strconv.Itoa(matchID), map[string]any{})
 	case r.Method == http.MethodPatch && action == "live" && len(parts) >= 4 && parts[3] == "shuttles":
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -1085,7 +1111,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		adjustShuttles(&state, matchID, body.Delta)
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "adjust_match_shuttles", "match", strconv.Itoa(matchID), map[string]any{"delta": body.Delta})
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 4 && (parts[3] == "finish" || parts[3] == "cancel"):
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -1097,7 +1123,11 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSaved(w, r, state)
+		actionName := "finish_match"
+		if parts[3] == "cancel" {
+			actionName = "cancel_live_match"
+		}
+		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "note": body.Note})
 	case r.Method == http.MethodPatch && action == "history" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -1108,7 +1138,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSaved(w, r, state)
+		a.respondSavedWithActivity(w, r, state, "update_history_winner", "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner})
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -1118,6 +1148,22 @@ func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state Session
 	if err := a.saveState(r.Context(), state); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, state SessionState, action, targetType, targetID string, details map[string]any) {
+	if err := a.saveState(r.Context(), state); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if user, ok := a.currentAdmin(r.Context(), r); ok {
+		if details == nil {
+			details = map[string]any{}
+		}
+		details["sessionId"] = state.Session.ID
+		details["sessionName"] = state.Session.Name
+		a.insertActivityLog(r.Context(), "admin", user.ID, action, targetType, targetID, details)
 	}
 	writeJSON(w, http.StatusOK, state)
 }
@@ -1231,16 +1277,17 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	var name, passcode string
-	var updatedAt time.Time
+	var createdAt, updatedAt time.Time
 	if err := a.db.QueryRowContext(ctx, `
-		select name, admin_passcode, updated_at from sessions where id = $1
-	`, id).Scan(&name, &passcode, &updatedAt); err != nil {
+		select name, admin_passcode, created_at, updated_at from sessions where id = $1
+	`, id).Scan(&name, &passcode, &createdAt, &updatedAt); err != nil {
 		return SessionState{}, err
 	}
 
 	state := defaultState(id, name, passcode)
 	state.Session.Unlocked = true
 	state.UpdatedAt = updatedAt
+	applySessionValidity(&state, createdAt)
 
 	var courtNamesRaw, levelsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
@@ -1361,7 +1408,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 }
 
 func defaultState(id, name, passcode string) SessionState {
-	return SessionState{
+	state := SessionState{
 		Tab:   "home",
 		Theme: "light",
 		Session: SessionInfo{
@@ -1392,6 +1439,8 @@ func defaultState(id, name, passcode string) SessionState {
 		History: []Match{},
 		NextIDs: NextIDs{Player: 0, Couple: 0, Match: 0, Pending: 0},
 	}
+	applySessionValidity(&state, time.Now().UTC())
+	return state
 }
 
 func randomMatch(state *SessionState) error {
@@ -2222,6 +2271,28 @@ func normalizeSettings(settings *Settings) {
 	if settings.RandomPriority != "games" {
 		settings.RandomPriority = "level"
 	}
+}
+
+func applySessionValidity(state *SessionState, createdAt time.Time) {
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	expiresAt := createdAt.Add(72 * time.Hour)
+	state.Session.CreatedAt = formatBangkokTime(createdAt)
+	state.Session.ExpiresAt = formatBangkokTime(expiresAt)
+	state.Session.Expired = time.Now().UTC().After(expiresAt)
+}
+
+func formatBangkokTime(value time.Time) string {
+	location, err := time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		return value.UTC().Add(7 * time.Hour).Format("2006-01-02 15:04")
+	}
+	return value.In(location).Format("2006-01-02 15:04")
+}
+
+func isSessionWrite(method string) bool {
+	return method == http.MethodPost || method == http.MethodPut || method == http.MethodPatch || method == http.MethodDelete
 }
 
 func firstLevel(state SessionState) string {

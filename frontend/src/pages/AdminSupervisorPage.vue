@@ -109,7 +109,7 @@ const changeSessionPage = (nextPage) => {
       <div class="min-w-0">
         <div class="inline-flex items-center gap-2 rounded-md bg-court-500/10 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">
           <ShieldCheck class="h-4 w-4" />
-          Admin Supervisor
+          Admin dashboard
         </div>
         <h1 class="mt-3 truncate text-2xl font-black leading-tight sm:text-3xl">สวัสดี {{ auth.user?.name || auth.user?.email }}</h1>
         <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ภาพรวม session, รายรับ และสถานะเกมของบัญชี admin นี้</p>
@@ -127,7 +127,12 @@ const changeSessionPage = (nextPage) => {
     </header>
 
     <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
-      <article v-for="stat in visiblePrimaryStats" :key="stat.label" class="rounded-lg border border-stone-200 bg-white p-3 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-4">
+      <article
+        v-for="stat in visiblePrimaryStats"
+        :key="stat.label"
+        class="rounded-lg border border-stone-200 bg-white p-3 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-4"
+        :class="stat.icon === CreditCard ? 'col-span-2' : ''"
+      >
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0">
             <p class="text-xs font-bold text-stone-500 dark:text-stone-400 sm:text-sm">{{ stat.label }}</p>
@@ -278,6 +283,7 @@ const changeSessionPage = (nextPage) => {
           <button type="button" class="rounded-md border p-4 text-left transition" :class="forms.sessionCreateType === 'liveMatch' ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveMatch'">
             <Radio class="h-6 w-6 text-court-600 dark:text-court-300" />
             <p class="mt-3 text-lg font-black">liveMatch</p>
+            <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">ใช้งานได้ 3 วันนับจากเวลาสร้าง session</p>
             <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ liveMatchCost === null ? 'ยังไม่ได้ตั้งราคา coin' : `${liveMatchCost} coin` }}</p>
             <p v-if="forms.sessionCreateType === 'liveMatch' && createBlockedText" class="mt-2 text-xs font-black text-red-700 dark:text-red-300">{{ createBlockedText }}</p>
           </button>

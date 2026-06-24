@@ -1,5 +1,5 @@
 <script setup>
-import { Check, KeyRound, Mail, ShieldCheck, Sparkles, Trophy, UserPlus, Zap } from '@lucide/vue'
+import { Check, KeyRound, Mail, Moon, ShieldCheck, Sparkles, Sun, Trophy, UserPlus, Zap } from '@lucide/vue'
 
 defineProps([
   'forms',
@@ -7,7 +7,11 @@ defineProps([
   'loginAdmin',
   'registerAdmin',
   'forgotPassword',
-  'resetPassword'
+  'resetPassword',
+  'language',
+  'toggleLanguage',
+  'toggleTheme',
+  'state'
 ])
 
 const tabs = [
@@ -82,11 +86,48 @@ const highlights = [
         <div>
           <p class="text-sm font-black text-court-700 dark:text-court-300">Admin account</p>
           <h2 class="mt-1 text-2xl font-black">เริ่มใช้งาน LiveMatch</h2>
-          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">สมัคร ยืนยันอีเมล แล้วเข้า Supervisor เพื่อสร้าง session ด้วย coin</p>
+          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">สมัคร ยืนยันอีเมล แล้วเข้า Admin dashboard เพื่อสร้าง session ด้วย coin</p>
         </div>
-        <span class="grid h-11 w-11 shrink-0 place-items-center rounded-md bg-court-500 text-white">
-          <ShieldCheck class="h-6 w-6" />
-        </span>
+        <div class="flex shrink-0 items-center gap-2">
+          <button
+            class="hidden"
+            :title="language === 'th' ? 'Switch to English' : 'เปลี่ยนเป็นภาษาไทย'"
+            @click="toggleLanguage"
+          >
+            {{ language === 'th' ? 'EN' : 'TH' }}
+          </button>
+          <button
+            class="hidden"
+            :title="state.theme === 'dark' ? 'Light mode' : 'Dark mode'"
+            @click="toggleTheme"
+          >
+            <Sun v-if="state.theme === 'dark'" class="h-5 w-5" />
+            <Moon v-else class="h-5 w-5" />
+          </button>
+          <span class="grid h-11 w-11 place-items-center rounded-md bg-court-500 text-white">
+            <ShieldCheck class="h-6 w-6" />
+          </span>
+        </div>
+      </div>
+
+      <div class="mt-4 grid grid-cols-2 gap-2 rounded-md bg-paper-100 p-1 dark:bg-stone-800">
+        <button
+          class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-white px-3 text-xs font-black text-stone-700 transition hover:bg-paper-50 dark:bg-stone-900 dark:text-stone-100 dark:hover:bg-stone-950"
+          :title="language === 'th' ? 'Switch to English' : 'เปลี่ยนเป็นภาษาไทย'"
+          @click="toggleLanguage"
+        >
+          <span>Language</span>
+          <span>{{ language === 'th' ? 'EN' : 'TH' }}</span>
+        </button>
+        <button
+          class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-white px-3 text-xs font-black text-stone-700 transition hover:bg-paper-50 dark:bg-stone-900 dark:text-stone-100 dark:hover:bg-stone-950"
+          :title="state.theme === 'dark' ? 'Light mode' : 'Dark mode'"
+          @click="toggleTheme"
+        >
+          <Sun v-if="state.theme === 'dark'" class="h-5 w-5" />
+          <Moon v-else class="h-5 w-5" />
+          <span>{{ state.theme === 'dark' ? 'Light' : 'Dark' }}</span>
+        </button>
       </div>
 
       <div v-if="forms.authMode !== 'reset'" class="mt-5 grid grid-cols-3 gap-2 rounded-md bg-paper-100 p-1 dark:bg-stone-800">

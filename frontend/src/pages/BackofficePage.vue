@@ -47,7 +47,37 @@ function activityText(action) {
     approve_coin_purchase: 'อนุมัติรายการซื้อ coin',
     reject_coin_purchase: 'ไม่อนุมัติรายการซื้อ coin'
   }
-  return map[action] || action
+  const sessionMap = {
+    open_session: 'เปิด session เดิม',
+    blocked_expired_session_action: 'บล็อก action เพราะ session ครบ 3 วัน',
+    add_player: 'เพิ่มสมาชิก',
+    rename_player: 'แก้ชื่อสมาชิก',
+    update_player: 'แก้ไขสมาชิก',
+    toggle_player_paid: 'อัปเดตสถานะจ่ายเงิน',
+    delete_player: 'ลบสมาชิก',
+    update_session_settings: 'แก้ตั้งค่า session',
+    add_couple: 'เพิ่มคู่รัก',
+    delete_couple: 'ลบคู่รัก',
+    random_matches: 'สุ่มจัดคู่',
+    confirm_pending_match: 'ยืนยันเกมเข้าคิว',
+    cancel_pending_match: 'ยกเลิกเกมที่สุ่มไว้',
+    start_match: 'เริ่มการแข่งขัน',
+    cancel_queued_match: 'ยกเลิกคิว',
+    adjust_match_shuttles: 'ปรับจำนวนลูกแบด',
+    finish_match: 'จบการแข่งขัน',
+    cancel_live_match: 'ยกเลิกการแข่งขัน',
+    update_history_winner: 'แก้ผลย้อนหลัง'
+  }
+  return sessionMap[action] || map[action] || action
+}
+
+function activityDetails(details) {
+  try {
+    const parsed = JSON.parse(details || '{}')
+    return Object.entries(parsed).map(([key, value]) => `${key}: ${value}`).join(' · ')
+  } catch {
+    return details
+  }
 }
 </script>
 
@@ -308,7 +338,7 @@ function activityText(action) {
                 </div>
                 <span class="rounded-md bg-white px-2 py-1 text-xs font-black text-stone-500 dark:bg-stone-900 dark:text-stone-300">{{ item.createdAt }}</span>
               </div>
-              <pre class="mt-2 overflow-auto rounded-md bg-white p-2 text-xs text-stone-500 dark:bg-stone-900 dark:text-stone-300">{{ item.details }}</pre>
+              <p class="mt-2 rounded-md bg-white p-2 text-xs font-semibold text-stone-500 dark:bg-stone-900 dark:text-stone-300">{{ activityDetails(item.details) }}</p>
             </article>
             <p v-if="!logs.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มี Activity log</p>
           </div>

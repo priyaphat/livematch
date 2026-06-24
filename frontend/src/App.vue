@@ -43,7 +43,6 @@ import QueuePage from './pages/QueuePage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
-import SupervisorPage from './pages/SupervisorPage.vue'
 import VerifyEmailPage from './pages/VerifyEmailPage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 import { persistTheme, readStoredTheme } from './theme'
@@ -62,7 +61,7 @@ const tabs = computed(() => [
 ])
 
 const adminTabs = computed(() => tabs.value.filter((tab) => tab.id !== 'home'))
-const mobileTabs = computed(() => adminTabs.value.filter((tab) => tab.id !== 'settings'))
+const mobileTabs = computed(() => adminTabs.value)
 const currentTab = computed(() => tabs.value.find((tab) => tab.id === state.tab) || tabs.value[0])
 
 const state = reactive({
@@ -72,7 +71,10 @@ const state = reactive({
     id: 'demo-session',
     name: 'แบดวันอังคาร',
     adminPasscode: 'LM-2406',
-    unlocked: false
+    unlocked: false,
+    createdAt: '',
+    expiresAt: '',
+    expired: false
   },
   settings: {
     entryFee: 120,
@@ -201,11 +203,6 @@ const share = reactive({
   error: '',
   showPayment: false
 })
-const supervisor = reactive({
-  isPage: window.location.pathname === '/supervisor',
-  unlocked: false,
-  loading: false
-})
 const auth = reactive({
   loading: false,
   user: null,
@@ -217,7 +214,7 @@ const auth = reactive({
   coinOrders: []
 })
 const backoffice = reactive({
-  isPage: window.location.pathname === '/backoffice',
+  isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
   unlocked: false,
   loading: false
 })
@@ -375,7 +372,7 @@ onMounted(() => {
     confirmVerifyEmail(params.get('token'))
     return
   }
-  if (backoffice.isPage || supervisor.isPage) return
+  if (backoffice.isPage) return
   const resetToken = params.get('token')
   if (window.location.pathname === '/reset-password' && resetToken) {
     forms.authMode = 'reset'
@@ -408,26 +405,11 @@ onUnmounted(() => {
 })
 
 async function saveSettings() {
+  if (!ensureSessionActive()) return
   applyServerState(await api(`/api/sessions/${state.session.id}/settings`, {
     method: 'PUT',
     body: JSON.stringify(state.settings)
   }))
-}
-
-async function loginSupervisor() {
-  supervisor.loading = true
-  forms.supervisorError = ''
-  try {
-    forms.supervisorSummary = await api('/api/supervisor/summary', {
-      method: 'POST',
-      body: JSON.stringify({ username: 'superadmin', password: forms.supervisorPassword })
-    })
-    supervisor.unlocked = true
-  } catch {
-    forms.supervisorError = t('รหัสผ่านไม่ถูกต้อง', 'Incorrect password')
-  } finally {
-    supervisor.loading = false
-  }
 }
 
 async function loginAdmin() {
@@ -504,12 +486,15 @@ async function resetPassword() {
 
 async function openOwnedSession(sessionId) {
   try {
-    const nextState = await api(`/api/sessions/${sessionId}/dashboard`)
+    const nextState = await api(`/api/sessions/${sessionId}/dashboard?open=1`)
     mergeSessionPatch(nextState)
     const fullState = await api(`/api/sessions/${sessionId}/state`)
     applyServerState(fullState)
     state.session.unlocked = true
     state.tab = 'dashboard'
+    if (state.session.expired) {
+      showToast('session นี้ครบ 3 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดต่อ', 'info')
+    }
   } catch (error) {
     showToast(error.message || 'เปิด session ไม่สำเร็จ')
   }
@@ -745,6 +730,8 @@ function matchLevelLabel(match) {
   return levels.map(levelLabel).join(' + ')
 }
 const isAdmin = computed(() => state.session.unlocked)
+const isSessionExpired = computed(() => Boolean(state.session.expired))
+const showAppHeader = computed(() => !((isAdmin.value && state.tab === 'home') || (!auth.user && !isAdmin.value)))
 
 const queuedPlayerIds = computed(() => new Set([...state.pending, ...state.queue].flatMap(matchPlayers)))
 const livePlayerIds = computed(() => new Set(state.live.flatMap(matchPlayers)))
@@ -1286,6 +1273,7 @@ function currentTime() {
 }
 
 function addCourt() {
+  if (!ensureSessionActive()) return
   const name = forms.newCourtName.trim()
   state.settings.courtNames.push(name || `สนาม ${state.settings.courtNames.length + 1}`)
   state.settings.courtCount = state.settings.courtNames.length
@@ -1294,6 +1282,7 @@ function addCourt() {
 }
 
 function removeCourt(index) {
+  if (!ensureSessionActive()) return
   if (state.settings.courtNames.length <= 1) return
   if (usedCourtNames.value.has(state.settings.courtNames[index])) return
   state.settings.courtNames.splice(index, 1)
@@ -1302,6 +1291,7 @@ function removeCourt(index) {
 }
 
 function addLevel() {
+  if (!ensureSessionActive()) return
   const level = forms.newLevelName.trim()
   if (!level || state.settings.levels.includes(level)) return
   state.settings.levels.push(level)
@@ -1310,6 +1300,7 @@ function addLevel() {
 }
 
 function removeLevel(index) {
+  if (!ensureSessionActive()) return
   if (state.settings.levels.length <= 1) return
   if (usedLevels.value.has(state.settings.levels[index])) return
   state.settings.levels.splice(index, 1)
@@ -1445,7 +1436,14 @@ async function unlockDashboardApi() {
   forms.loginError = 'ระบบ passcode ถูกยกเลิกแล้ว กรุณา login ด้วยบัญชี admin'
 }
 
+function ensureSessionActive() {
+  if (!state.session.expired) return true
+  showToast('session นี้ครบ 3 วันแล้ว กรุณาสร้าง session ใหม่เพื่อใช้งานต่อ')
+  return false
+}
+
 async function addPlayerApi() {
+  if (!ensureSessionActive()) return
   const name = forms.newPlayerName.trim()
   if (!name) return
   try {
@@ -1460,6 +1458,7 @@ async function addPlayerApi() {
 }
 
 async function renamePlayerApi(player, name) {
+  if (!ensureSessionActive()) return
   const nextName = name.trim()
   if (!nextName || nextName === player.name) return
   try {
@@ -1473,6 +1472,7 @@ async function renamePlayerApi(player, name) {
 }
 
 async function deletePlayerApi(player) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, { method: 'DELETE' }))
   } catch (error) {
@@ -1490,6 +1490,7 @@ async function deletePlayerApi(player) {
 }
 
 async function togglePaymentApi(player) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
       method: 'PATCH',
@@ -1501,6 +1502,7 @@ async function togglePaymentApi(player) {
 }
 
 async function updatePlayerLevelApi(playerId, level) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${playerId}`, {
       method: 'PATCH',
@@ -1514,6 +1516,7 @@ async function updatePlayerLevelApi(playerId, level) {
 }
 
 async function updatePlayerRandomStatusApi(playerId, level) {
+  if (!ensureSessionActive()) return
   const ready = level !== 'not-ready'
   const body = ready ? { level, coupon: true } : { coupon: false }
   try {
@@ -1531,6 +1534,7 @@ async function updatePlayerRandomStatusApi(playerId, level) {
 }
 
 async function randomMatchApi() {
+  if (!ensureSessionActive()) return
   forms.randomError = ''
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/random`, { method: 'POST' }))
@@ -1541,6 +1545,7 @@ async function randomMatchApi() {
 }
 
 async function startMatchApi(match, court = '') {
+  if (!ensureSessionActive()) return
   if (!court) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/queue/${match.id}/start`, {
@@ -1554,6 +1559,7 @@ async function startMatchApi(match, court = '') {
 }
 
 async function confirmPendingMatchApi(match) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/pending/${match.id}/confirm`, { method: 'POST' }))
     state.tab = 'queue'
@@ -1564,6 +1570,7 @@ async function confirmPendingMatchApi(match) {
 }
 
 async function cancelPendingMatchApi(match) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/pending/${match.id}`, { method: 'DELETE' }))
   } catch {
@@ -1572,6 +1579,7 @@ async function cancelPendingMatchApi(match) {
 }
 
 async function cancelQueuedMatchApi(match) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/queue/${match.id}`, { method: 'DELETE' }))
   } catch {
@@ -1580,6 +1588,7 @@ async function cancelQueuedMatchApi(match) {
 }
 
 async function adjustShuttleApi(match, delta) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/shuttles`, {
       method: 'PATCH',
@@ -1591,6 +1600,7 @@ async function adjustShuttleApi(match, delta) {
 }
 
 async function closeLiveApi(match, cancelled = false, note = '') {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/${cancelled ? 'cancel' : 'finish'}`, {
       method: 'POST',
@@ -1603,6 +1613,7 @@ async function closeLiveApi(match, cancelled = false, note = '') {
 }
 
 async function updateHistoryWinnerApi(match, winner) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/history/${match.id}`, {
       method: 'PATCH',
@@ -1631,6 +1642,7 @@ async function confirmCancelMatchApi() {
 }
 
 async function addCoupleApi() {
+  if (!ensureSessionActive()) return
   const a = Number(forms.coupleAId)
   const b = Number(forms.coupleBId)
   if (!a || !b || a === b) return
@@ -1647,6 +1659,7 @@ async function addCoupleApi() {
 }
 
 async function removeCoupleApi(id) {
+  if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/couples/${id}`, { method: 'DELETE' }))
   } catch {
@@ -1655,6 +1668,7 @@ async function removeCoupleApi(id) {
 }
 
 async function saveSettingsApi() {
+  if (!ensureSessionActive()) return
   state.settings.crossLevelRange = 1
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/settings`, {
@@ -1728,11 +1742,12 @@ const pageProps = computed(() => ({
   removeLevel,
   saveSettings: saveSettingsApi,
   selectAdminTab,
+  language: language.value,
+  toggleLanguage,
+  toggleTheme,
   auth,
   backoffice,
   verifyEmail,
-  supervisor,
-  loginSupervisor,
   loginAdmin,
   registerAdmin,
   forgotPassword,
@@ -1790,46 +1805,45 @@ const pageProps = computed(() => ({
 
     <VerifyEmailPage v-if="verifyEmail.isPage" v-bind="pageProps" />
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
-    <SupervisorPage v-else-if="supervisor.isPage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
     <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :player-name="playerName" :match-level-label="matchLevelLabel" />
 
     <template v-else>
-    <header class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/95 backdrop-blur dark:border-stone-700 dark:bg-paper-900/95">
-      <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4">
-        <button class="flex min-w-0 items-center gap-3 text-left" @click="isAdmin ? selectAdminTab('dashboard') : state.tab = 'home'">
+    <header v-if="showAppHeader" class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/95 backdrop-blur dark:border-stone-700 dark:bg-paper-900/95">
+      <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-2 px-3 sm:gap-3 sm:px-4">
+        <button class="flex min-w-0 items-center gap-2 text-left sm:gap-3" @click="isAdmin ? selectAdminTab('dashboard') : state.tab = 'home'">
           <span class="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-court-500 text-white shadow-soft">
             <Medal class="h-5 w-5" />
           </span>
-          <span class="min-w-0">
+          <span class="hidden min-w-0 xs:block sm:block">
             <span class="block truncate text-base font-black leading-5 sm:text-lg">LiveMatch</span>
-            <span class="block truncate text-xs text-stone-500 dark:text-stone-400">{{ isAdmin ? currentTab.label : (auth.user ? 'Supervisor' : 'Admin access') }}</span>
+            <span class="block truncate text-xs text-stone-500 dark:text-stone-400">{{ isAdmin ? currentTab.label : (auth.user ? 'Admin dashboard' : 'Admin access') }}</span>
           </span>
         </button>
-        <div class="flex items-center gap-2">
+        <div class="flex min-w-0 items-center gap-1.5 sm:gap-2">
           <button
             v-if="auth.user && !isAdmin"
-            class="inline-flex h-10 items-center gap-2 rounded-md border border-shuttle-500 bg-shuttle-400 px-3 text-xs font-black uppercase text-stone-950 shadow-[0_8px_24px_rgba(245,197,66,0.28)] transition hover:bg-shuttle-300 dark:border-shuttle-600 dark:bg-shuttle-400 dark:text-stone-950"
+            class="inline-flex h-9 max-w-[4rem] items-center justify-center gap-1 rounded-md border border-shuttle-500 bg-shuttle-400 px-1.5 text-xs font-black uppercase text-stone-950 shadow-[0_8px_24px_rgba(245,197,66,0.28)] transition hover:bg-shuttle-300 dark:border-shuttle-600 dark:bg-shuttle-400 dark:text-stone-950 sm:h-10 sm:max-w-none sm:gap-2 sm:px-3"
             title="ดูประวัติ coin"
             @click="openCoinModal('history')"
           >
             <CreditCard class="h-4 w-4" />
-            <span>COIN :</span>
-            <span class="tabular-nums">{{ Number(auth.user.coins || 0).toLocaleString('th-TH') }}</span>
+            <span class="hidden sm:inline">COIN :</span>
+            <span class="truncate tabular-nums">{{ Number(auth.user.coins || 0).toLocaleString('th-TH') }}</span>
           </button>
           <button
             v-if="auth.user && !isAdmin"
-            class="hidden h-10 items-center gap-2 rounded-md border border-court-200 bg-white px-3 text-xs font-black text-court-700 transition hover:bg-court-50 dark:border-court-900 dark:bg-stone-800 dark:text-court-300 sm:inline-flex"
+            class="grid h-9 w-9 place-items-center rounded-md border border-court-200 bg-white text-court-700 transition hover:bg-court-50 dark:border-court-900 dark:bg-stone-800 dark:text-court-300 sm:inline-flex sm:h-10 sm:w-auto sm:gap-2 sm:px-3 sm:text-xs sm:font-black"
             title="ซื้อ coin"
             @click="openCoinModal('shop')"
           >
             <Coins class="h-4 w-4" />
-            ซื้อ coin
+            <span class="hidden sm:inline">ซื้อ coin</span>
           </button>
           <button
             v-if="auth.user && !isAdmin"
-            class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+            class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 sm:h-10 sm:w-10"
             title="ออกจากระบบ"
             @click="logout"
           >
@@ -1864,14 +1878,14 @@ const pageProps = computed(() => ({
             <Settings class="h-5 w-5" />
           </button>
           <button
-            class="grid h-10 min-w-10 place-items-center rounded-md border border-stone-200 bg-white px-2 text-xs font-black text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+            class="grid h-9 min-w-9 place-items-center rounded-md border border-stone-200 bg-white px-1.5 text-xs font-black text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 sm:h-10 sm:min-w-10 sm:px-2"
             :title="language === 'th' ? 'Switch to English' : 'เปลี่ยนเป็นภาษาไทย'"
             @click="toggleLanguage"
           >
             {{ language === 'th' ? 'EN' : 'TH' }}
           </button>
           <button
-            class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+            class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 sm:h-10 sm:w-10"
             :title="state.theme === 'dark' ? 'Light mode' : 'Dark mode'"
             @click="toggleTheme"
           >
@@ -1901,6 +1915,13 @@ const pageProps = computed(() => ({
 
       <div v-if="ui.loadingTab" class="mb-3 rounded-md border border-court-200 bg-court-500/10 p-3 text-sm font-bold text-court-700 dark:border-court-900/60 dark:text-court-300">
         กำลังโหลดข้อมูลล่าสุด...
+      </div>
+
+      <div v-if="isAdmin && isSessionExpired" class="mb-3 grid gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 sm:grid-cols-[1fr_auto] sm:items-center">
+        <span>session นี้ครบ 3 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดผู้เล่นหรือบันทึกเกมต่อ</span>
+        <button class="h-10 rounded-md bg-court-500 px-4 text-white" @click="backToAdminDashboard">
+          สร้าง session ใหม่
+        </button>
       </div>
 
       <HomePage v-if="isAdmin && state.tab === 'home'" v-bind="pageProps" />

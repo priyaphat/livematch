@@ -1,8 +1,11 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestRandomMatchCreatesAllPossiblePendingMatches(t *testing.T) {
@@ -550,5 +553,33 @@ func TestQueuePayloadIncludesPendingQueueAndCourtAvailability(t *testing.T) {
 	}
 	if _, exists := payload["history"]; exists {
 		t.Fatal("queue payload should not include history")
+	}
+}
+
+func TestSessionValidityExpiresAfterThreeDays(t *testing.T) {
+	state := defaultState("session-test", "test", "")
+	applySessionValidity(&state, time.Now().UTC().Add(-73*time.Hour))
+	if !state.Session.Expired {
+		t.Fatal("expected session older than 72 hours to be expired")
+	}
+
+	applySessionValidity(&state, time.Now().UTC().Add(-71*time.Hour))
+	if state.Session.Expired {
+		t.Fatal("expected session younger than 72 hours to remain active")
+	}
+	if state.Session.CreatedAt == "" || state.Session.ExpiresAt == "" {
+		t.Fatalf("expected created/expires labels to be set, got %#v", state.Session)
+	}
+}
+
+func TestSupervisorRoutesReturnGone(t *testing.T) {
+	a := &app{}
+	req := httptest.NewRequest(http.MethodPost, "/api/supervisor/summary", nil)
+	rec := httptest.NewRecorder()
+
+	a.handleSupervisorSummary(rec, req)
+
+	if rec.Code != http.StatusGone {
+		t.Fatalf("expected supervisor summary to return 410, got %d", rec.Code)
 	}
 }

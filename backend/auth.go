@@ -1055,6 +1055,17 @@ func (a *app) insertActivityLogTx(ctx context.Context, tx *sql.Tx, actorType, ac
 	return err
 }
 
+func (a *app) insertActivityLog(ctx context.Context, actorType, actorID, action, targetType, targetID string, details map[string]any) {
+	rawDetails, err := json.Marshal(details)
+	if err != nil {
+		return
+	}
+	_, _ = a.db.ExecContext(ctx, `
+		insert into activity_logs (actor_type, actor_id, action, target_type, target_id, details)
+		values ($1, $2, $3, $4, $5, $6)
+	`, actorType, actorID, action, targetType, targetID, string(rawDetails))
+}
+
 func (a *app) activityLogs(ctx context.Context, limit int) ([]activityLogItem, error) {
 	items := []activityLogItem{}
 	rows, err := a.db.QueryContext(ctx, `
