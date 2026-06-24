@@ -34,15 +34,18 @@ const props = defineProps([
 const sessionPage = ref(1)
 const sessionPageSize = 6
 const liveMatchCost = computed(() => props.auth.liveMatchSessionCost)
+const liveShareCost = computed(() => props.auth.liveShareSessionCost)
 const sessions = computed(() => props.auth.sessions || [])
 const canCreateLiveMatch = computed(() => liveMatchCost.value !== null && Number(props.auth.user?.coins || 0) >= Number(liveMatchCost.value || 0))
+const canCreateLiveShare = computed(() => liveShareCost.value !== null && Number(props.auth.user?.coins || 0) >= Number(liveShareCost.value || 0))
 const createBlockedText = computed(() => {
-  if (props.forms.sessionCreateType === 'liveShare') return 'liveShare เร็ว ๆ นี้'
+  if (props.forms.sessionCreateType === 'liveShare' && liveShareCost.value === null) return 'ยังไม่ได้ตั้งราคา liveShare coin'
+  if (props.forms.sessionCreateType === 'liveShare' && !canCreateLiveShare.value) return 'coin ไม่พอ'
   if (liveMatchCost.value === null) return 'ยังไม่ได้ตั้งราคา coin'
   if (!canCreateLiveMatch.value) return 'coin ไม่พอ'
   return ''
 })
-const canCreateSelectedSession = computed(() => props.forms.sessionCreateType === 'liveMatch' && canCreateLiveMatch.value)
+const canCreateSelectedSession = computed(() => props.forms.sessionCreateType === 'liveShare' ? canCreateLiveShare.value : canCreateLiveMatch.value)
 
 const sessionPages = computed(() => Math.max(1, Math.ceil(sessions.value.length / sessionPageSize)))
 const pagedSessions = computed(() => {
@@ -227,7 +230,10 @@ const changeSessionPage = (nextPage) => {
           <div v-for="session in pagedSessions" :key="session.id" class="border-t border-stone-200 p-3 first:border-t-0 dark:border-stone-800 md:grid md:grid-cols-[1.2fr_0.65fr_0.8fr_0.65fr_0.75fr_5rem] md:items-center md:gap-3">
             <div class="min-w-0">
               <p class="truncate font-black">{{ session.name }}</p>
-              <p class="mt-1 truncate text-xs font-semibold text-stone-500 dark:text-stone-400">{{ session.id }} · อัปเดต {{ session.updatedAt || '-' }}</p>
+              <p class="mt-1 truncate text-xs font-semibold text-stone-500 dark:text-stone-400">
+                <span class="rounded bg-paper-100 px-1.5 py-0.5 font-black dark:bg-stone-800">{{ session.type || 'liveMatch' }}</span>
+                · อัปเดต {{ session.updatedAt || '-' }}
+              </p>
             </div>
             <div class="mt-3 grid grid-cols-2 gap-2 text-sm md:mt-0 md:block">
               <p class="font-black tabular-nums">{{ numberValue(session.players) }} คน</p>
@@ -291,8 +297,8 @@ const changeSessionPage = (nextPage) => {
           <button type="button" class="rounded-md border p-4 text-left transition" :class="forms.sessionCreateType === 'liveShare' ? 'border-shuttle-500 bg-shuttle-400/15 ring-2 ring-shuttle-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveShare'">
             <Share2 class="h-6 w-6 text-stone-500" />
             <p class="mt-3 text-lg font-black">liveShare</p>
-            <p v-if="forms.sessionCreateType === 'liveShare'" class="mt-2 text-xs font-black text-amber-700 dark:text-amber-300">mockup ไว้ก่อน</p>
-            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เร็ว ๆ นี้</p>
+            <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">คิดค่าสนามและลูกแบดตามชั่วโมงเล่น</p>
+            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ liveShareCost === null ? 'ยังไม่ได้ตั้งราคา coin' : `${liveShareCost} coin` }}</p>
           </button>
         </div>
 

@@ -148,6 +148,10 @@ function closeSlipPreview() {
                 liveMatch session cost
                 <input v-model.number="forms.backofficeLiveMatchCost" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
               </label>
+              <label class="mt-3 grid gap-2 text-sm font-bold">
+                liveShare session cost
+                <input v-model.number="forms.backofficeLiveShareCost" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+              </label>
               <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeSettings">
                 <Save class="h-4 w-4" />
                 บันทึกราคา
@@ -484,7 +488,7 @@ function closeSlipPreview() {
               <div v-for="session in adminDetailSessions" :key="session.id" class="grid gap-2 border-t border-stone-200 p-3 first:border-t-0 dark:border-stone-800 md:grid-cols-[1fr_0.7fr_0.7fr_0.7fr] md:items-center">
                 <div class="min-w-0">
                   <p class="truncate font-black">{{ session.name }}</p>
-                  <p class="mt-1 truncate text-xs font-semibold text-stone-500">{{ session.id }} · {{ session.updatedAt || '-' }}</p>
+                  <p class="mt-1 truncate text-xs font-semibold text-stone-500">{{ session.type || 'liveMatch' }} · {{ session.updatedAt || '-' }}</p>
                 </div>
                 <p class="text-sm font-black">{{ Number(session.players || 0).toLocaleString('th-TH') }} สมาชิก</p>
                 <p class="text-sm font-black">{{ Number(session.matches || 0).toLocaleString('th-TH') }} เกม</p>

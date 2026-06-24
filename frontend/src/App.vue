@@ -37,6 +37,7 @@ import DashboardPage from './pages/DashboardPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import HomePage from './pages/HomePage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
+import LiveShareHoursPage from './pages/LiveShareHoursPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
 import PlayersPage from './pages/PlayersPage.vue'
 import QueuePage from './pages/QueuePage.vue'
@@ -57,7 +58,8 @@ const tabs = computed(() => [
   { id: 'queue', label: t('รอคิว', 'Queue'), icon: Clock3 },
   { id: 'liveboard', label: t('แข่งอยู่', 'Live board'), icon: Activity },
   { id: 'history', label: t('ประวัติ', 'History'), icon: History },
-  { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: Settings }
+  { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: Settings },
+  ...(isLiveShare.value ? [{ id: 'liveShareHours', label: t('ชั่วโมงเล่น', 'Hours'), icon: Clock3 }] : [])
 ])
 
 const adminTabs = computed(() => tabs.value.filter((tab) => tab.id !== 'home'))
@@ -70,6 +72,7 @@ const state = reactive({
   session: {
     id: 'demo-session',
     name: 'แบดวันอังคาร',
+    type: 'liveMatch',
     adminPasscode: 'LM-2406',
     unlocked: false,
     createdAt: '',
@@ -78,6 +81,7 @@ const state = reactive({
   },
   settings: {
     entryFee: 120,
+    courtFeePerHour: 150,
     shuttleFee: 85,
     sessionFee: 0,
     courtCount: 4,
@@ -114,7 +118,12 @@ const state = reactive({
   ],
   history: [
     { id: 49, court: '2', level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 2, winner: 'A', shuttleSequence: '1-2', startedAt: '18:50', endedAt: '19:08', note: 'เกมแรก' }
-  ]
+  ],
+  liveShare: {
+    courtHours: {},
+    playerHours: {},
+    shuttleHours: {}
+  }
 })
 
 const forms = reactive({
@@ -159,6 +168,7 @@ const forms = reactive({
   backofficeCoinDelta: 0,
   backofficeCoinNote: '',
   backofficeLiveMatchCost: null,
+  backofficeLiveShareCost: null,
   backofficeCoinPackages: [],
   backofficeCoinPaymentQrImage: '',
   backofficePromptPayId: '',
@@ -218,6 +228,7 @@ const auth = reactive({
   sessions: [],
   coinLedger: [],
   liveMatchSessionCost: null,
+  liveShareSessionCost: null,
   coinPackages: [],
   coinPaymentQrImage: '',
   promptPayId: '',
@@ -303,6 +314,7 @@ function mergeSessionPatch(patch = {}) {
   if (Array.isArray(patch.queue)) state.queue = patch.queue
   if (Array.isArray(patch.live)) state.live = patch.live
   if (Array.isArray(patch.history)) state.history = patch.history
+  if (patch.liveShare) state.liveShare = patch.liveShare
   if (patch.settings) state.settings = patch.settings
   normalizeClientSettings()
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
@@ -311,11 +323,26 @@ function mergeSessionPatch(patch = {}) {
 }
 
 function normalizeClientSettings() {
+  if (!state.session.type) {
+    state.session.type = 'liveMatch'
+  }
   if (state.settings.sessionFee === undefined) {
     state.settings.sessionFee = 0
   }
+  if (state.settings.courtFeePerHour === undefined || state.settings.courtFeePerHour === null) {
+    state.settings.courtFeePerHour = 150
+  }
   if (state.settings.startMatchWithShuttle === undefined) {
     state.settings.startMatchWithShuttle = true
+  }
+  if (!state.liveShare) {
+    state.liveShare = { courtHours: {}, playerHours: {}, shuttleHours: {} }
+  }
+  if (!state.liveShare.courtHours) state.liveShare.courtHours = {}
+  if (!state.liveShare.playerHours) state.liveShare.playerHours = {}
+  if (!state.liveShare.shuttleHours) state.liveShare.shuttleHours = {}
+  if (state.session.type === 'liveShare') {
+    state.settings.startMatchWithShuttle = false
   }
 }
 
@@ -353,6 +380,9 @@ async function reloadAdminTab(tabId) {
     break
   case 'settings':
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/settings`))
+    break
+  case 'liveShareHours':
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/live-share-hours`))
     break
   default:
     break
@@ -532,10 +562,11 @@ async function loadBackoffice() {
   forms.backofficeError = ''
   backoffice.loading = true
   try {
-    forms.backofficeSummary = await api('/api/backoffice/summary', {
+  forms.backofficeSummary = await api('/api/backoffice/summary', {
       headers: backofficeAuthHeaders()
     })
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
+    forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
     syncBackofficeCoinShopForms()
     backoffice.unlocked = true
   } catch (error) {
@@ -575,7 +606,10 @@ async function saveBackofficeSettings() {
     forms.backofficeSummary = await api('/api/backoffice/settings', {
       method: 'PUT',
       headers: backofficeAuthHeaders(),
-      body: JSON.stringify({ liveMatchSessionCost: Number(forms.backofficeLiveMatchCost) })
+      body: JSON.stringify({
+        liveMatchSessionCost: Number(forms.backofficeLiveMatchCost),
+        liveShareSessionCost: Number(forms.backofficeLiveShareCost)
+      })
     })
   } catch (error) {
     forms.backofficeError = error.message || 'บันทึกราคา coin ไม่สำเร็จ'
@@ -661,6 +695,7 @@ function applyAdminPayload(payload) {
   auth.sessions = payload.sessions || []
   auth.coinLedger = payload.coinLedger || []
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
+  auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
 }
 
 function applyCoinShopPayload(payload) {
@@ -762,6 +797,7 @@ function matchLevelLabel(match) {
   return levels.map(levelLabel).join(' + ')
 }
 const isAdmin = computed(() => state.session.unlocked)
+const isLiveShare = computed(() => state.session.type === 'liveShare')
 const isSessionExpired = computed(() => Boolean(state.session.expired))
 const showAppHeader = computed(() => !((isAdmin.value && state.tab === 'home') || (!auth.user && !isAdmin.value)))
 
@@ -771,10 +807,21 @@ const activePlayers = computed(() => state.players.filter((player) => player.act
 const realHistoryMatches = computed(() => state.history.filter((match) => !isCancelledMatch(match)))
 const cancelledMatches = computed(() => state.history.filter(isCancelledMatch))
 const activePlayerCount = computed(() => activePlayers.value.length)
-const totalShuttles = computed(() => state.live.reduce((sum, match) => sum + match.shuttles, 0) + realHistoryMatches.value.reduce((sum, match) => sum + match.shuttles, 0))
+const liveShareShuttleCount = computed(() => Object.values(state.liveShare?.shuttleHours || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0))
+const totalShuttles = computed(() => (
+  isLiveShare.value
+    ? liveShareShuttleCount.value
+    : state.live.reduce((sum, match) => sum + match.shuttles, 0) + realHistoryMatches.value.reduce((sum, match) => sum + match.shuttles, 0)
+))
 const totalRecordedMatches = computed(() => state.live.length + realHistoryMatches.value.length)
 const totalPlays = computed(() => activePlayers.value.reduce((sum, player) => sum + player.games, 0))
 const averageGames = computed(() => activePlayerCount.value ? totalPlays.value / activePlayerCount.value : 0)
+const liveShareCourtHours = computed(() => Object.values(state.liveShare?.courtHours || {}).reduce((sum, hours) => sum + normalizedHours(hours).length, 0))
+const liveSharePlayerHours = computed(() => activePlayers.value.reduce((sum, player) => sum + playerLiveShareHours(player.id), 0))
+const liveShareCourtCost = computed(() => liveShareCourtHours.value * Number(state.settings.courtFeePerHour || 0))
+const liveShareShuttleCost = computed(() => liveShareShuttleCount.value * Number(state.settings.shuttleFee || 0))
+const liveShareSessionCost = computed(() => Math.max(0, Number(state.settings.sessionFee || 0)))
+const liveShareTotalCost = computed(() => liveShareCourtCost.value + liveShareShuttleCost.value + liveShareSessionCost.value)
 const totalRevenue = computed(() => activePlayers.value.reduce((sum, player) => sum + playerCost(player), 0))
 const paidRevenue = computed(() => activePlayers.value.filter((player) => player.paid).reduce((sum, player) => sum + playerCost(player), 0))
 const unpaidRevenue = computed(() => Math.max(0, totalRevenue.value - paidRevenue.value))
@@ -833,6 +880,7 @@ const dashboardCards = computed(() => [
   { label: 'ลงน้อยสุด', value: `${minGames.value} เกม`, icon: Clock3 },
   { label: 'ลงมากสุด', value: `${maxGames.value} เกม`, icon: Activity },
   { label: 'ใช้ลูกแบดที่เบิก', value: `${totalShuttles.value} ลูก`, icon: RefreshCw },
+  ...(isLiveShare.value ? [{ label: 'ค่าคอร์ด/ค่าสนาม', value: money(liveShareCourtCost.value), icon: Coins }] : []),
   { label: 'รายรับรวม', value: money(totalRevenue.value), icon: CreditCard }
 ])
 
@@ -840,7 +888,54 @@ function matchPlayers(match) {
   return [match.a1, match.a2, match.b1, match.b2]
 }
 
+function normalizedHours(hours = []) {
+  return [...new Set((hours || []).map((hour) => Number(hour)).filter((hour) => Number.isInteger(hour) && hour > 0))].sort((a, b) => a - b)
+}
+
+function playerLiveShareHours(playerId) {
+  return normalizedHours(state.liveShare?.playerHours?.[String(playerId)] || []).length
+}
+
+function liveShareActiveHoursList() {
+  const hours = new Set()
+  for (const item of Object.values(state.liveShare?.courtHours || {})) {
+    normalizedHours(item).forEach((hour) => hours.add(hour))
+  }
+  for (const item of Object.values(state.liveShare?.playerHours || {})) {
+    normalizedHours(item).forEach((hour) => hours.add(hour))
+  }
+  for (const [hour, quantity] of Object.entries(state.liveShare?.shuttleHours || {})) {
+    if (Number(quantity || 0) > 0) hours.add(Number(hour))
+  }
+  return [...hours].sort((a, b) => a - b)
+}
+
+function liveShareCourtCountForHour(hour) {
+  return Object.values(state.liveShare?.courtHours || {}).filter((hours) => normalizedHours(hours).includes(hour)).length
+}
+
+function liveSharePlayerCountForHour(hour) {
+  return activePlayers.value.filter((player) => normalizedHours(state.liveShare?.playerHours?.[String(player.id)] || []).includes(hour)).length
+}
+
+function liveShareHourlyPlayerCost(player) {
+  const activeHours = liveShareActiveHoursList()
+  if (!activeHours.length) return 0
+  return normalizedHours(state.liveShare?.playerHours?.[String(player.id)] || []).reduce((sum, hour) => {
+    const playerCount = liveSharePlayerCountForHour(hour)
+    if (!playerCount) return sum
+    const hourCourtCost = liveShareCourtCountForHour(hour) * Number(state.settings.courtFeePerHour || 0)
+    const hourShuttleCost = Math.max(0, Number(state.liveShare?.shuttleHours?.[String(hour)] || 0)) * Number(state.settings.shuttleFee || 0)
+    const numerator = (hourCourtCost + hourShuttleCost) * activeHours.length + liveShareSessionCost.value
+    const denominator = activeHours.length * playerCount
+    return sum + Math.ceil(numerator / denominator)
+  }, 0)
+}
+
 function playerCost(player) {
+  if (isLiveShare.value) {
+    return liveShareHourlyPlayerCost(player)
+  }
   return state.settings.entryFee + player.shuttles * state.settings.shuttleFee + sessionFeeShare.value
 }
 
@@ -1730,6 +1825,9 @@ async function removeCoupleApi(id) {
 async function saveSettingsApi() {
   if (!ensureSessionActive()) return
   state.settings.crossLevelRange = 1
+  if (isLiveShare.value) {
+    state.settings.startMatchWithShuttle = false
+  }
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/settings`, {
       method: 'PUT',
@@ -1737,6 +1835,30 @@ async function saveSettingsApi() {
     }))
   } catch {
     // Local fallback keeps manual testing usable if the backend is offline.
+  }
+}
+
+async function saveLiveShareHoursApi() {
+  if (!ensureSessionActive() || !isLiveShare.value) return
+  state.liveShare.courtHours = Object.fromEntries(
+    Object.entries(state.liveShare.courtHours || {}).map(([key, hours]) => [key, normalizedHours(hours)])
+  )
+  state.liveShare.playerHours = Object.fromEntries(
+    Object.entries(state.liveShare.playerHours || {}).map(([key, hours]) => [key, normalizedHours(hours)])
+  )
+  state.liveShare.shuttleHours = Object.fromEntries(
+    Object.entries(state.liveShare.shuttleHours || {})
+      .map(([key, value]) => [String(Number(key)), Math.max(0, Math.floor(Number(value || 0)))])
+      .filter(([key, value]) => Number(key) > 0 && value > 0)
+  )
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/live-share-hours`, {
+      method: 'PUT',
+      body: JSON.stringify(state.liveShare)
+    }))
+    showToast('บันทึกชั่วโมงเล่นแล้ว', 'info')
+  } catch (error) {
+    showToast(error.message || 'บันทึกชั่วโมงเล่นไม่สำเร็จ')
   }
 }
 
@@ -1755,6 +1877,13 @@ const pageProps = computed(() => ({
   totalRevenue: totalRevenue.value,
   paidRevenue: paidRevenue.value,
   unpaidRevenue: unpaidRevenue.value,
+  liveShareCourtHours: liveShareCourtHours.value,
+  liveSharePlayerHours: liveSharePlayerHours.value,
+  liveShareCourtCost: liveShareCourtCost.value,
+  liveShareShuttleCount: liveShareShuttleCount.value,
+  liveShareShuttleCost: liveShareShuttleCost.value,
+  liveShareSessionCost: liveShareSessionCost.value,
+  liveShareTotalCost: liveShareTotalCost.value,
   unpaidPlayers: unpaidPlayers.value,
   topPlayers: topPlayers.value,
   quietPlayers: quietPlayers.value,
@@ -1765,6 +1894,7 @@ const pageProps = computed(() => ({
   usedLevels: usedLevels.value,
   money,
   playerCost,
+  playerLiveShareHours,
   playerDeleteBlockReasons,
   playerScore,
   levelLabel,
@@ -1801,6 +1931,7 @@ const pageProps = computed(() => ({
   addLevel,
   removeLevel,
   saveSettings: saveSettingsApi,
+  saveLiveShareHours: saveLiveShareHoursApi,
   selectAdminTab,
   language: language.value,
   toggleLanguage,
@@ -1999,6 +2130,8 @@ const pageProps = computed(() => ({
       <HistoryPage v-if="isAdmin && state.tab === 'history'" v-bind="pageProps" />
 
       <SettingsPage v-if="isAdmin && state.tab === 'settings'" v-bind="pageProps" />
+
+      <LiveShareHoursPage v-if="isAdmin && state.tab === 'liveShareHours' && isLiveShare" v-bind="pageProps" />
     </main>
 
     <nav

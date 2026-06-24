@@ -38,23 +38,25 @@ type SessionRecord struct {
 }
 
 type SessionState struct {
-	Tab       string      `json:"tab"`
-	Theme     string      `json:"theme"`
-	Session   SessionInfo `json:"session"`
-	Settings  Settings    `json:"settings"`
-	Players   []Player    `json:"players"`
-	Couples   []Couple    `json:"couples"`
-	Pending   []Match     `json:"pending"`
-	Queue     []Match     `json:"queue"`
-	Live      []Match     `json:"live"`
-	History   []Match     `json:"history"`
-	NextIDs   NextIDs     `json:"nextIds"`
-	UpdatedAt time.Time   `json:"updatedAt"`
+	Tab       string         `json:"tab"`
+	Theme     string         `json:"theme"`
+	Session   SessionInfo    `json:"session"`
+	Settings  Settings       `json:"settings"`
+	Players   []Player       `json:"players"`
+	Couples   []Couple       `json:"couples"`
+	Pending   []Match        `json:"pending"`
+	Queue     []Match        `json:"queue"`
+	Live      []Match        `json:"live"`
+	History   []Match        `json:"history"`
+	LiveShare LiveShareHours `json:"liveShare"`
+	NextIDs   NextIDs        `json:"nextIds"`
+	UpdatedAt time.Time      `json:"updatedAt"`
 }
 
 type SessionInfo struct {
 	ID            string `json:"id"`
 	Name          string `json:"name"`
+	Type          string `json:"type"`
 	AdminPasscode string `json:"adminPasscode"`
 	Unlocked      bool   `json:"unlocked"`
 	CreatedAt     string `json:"createdAt"`
@@ -64,6 +66,7 @@ type SessionInfo struct {
 
 type Settings struct {
 	EntryFee                int      `json:"entryFee"`
+	CourtFeePerHour         int      `json:"courtFeePerHour"`
 	ShuttleFee              int      `json:"shuttleFee"`
 	SessionFee              int      `json:"sessionFee"`
 	CourtCount              int      `json:"courtCount"`
@@ -112,6 +115,12 @@ type Match struct {
 	StartedAt  string `json:"startedAt"`
 	EndedAt    string `json:"endedAt"`
 	Note       string `json:"note"`
+}
+
+type LiveShareHours struct {
+	CourtHours   map[string][]int `json:"courtHours"`
+	PlayerHours  map[string][]int `json:"playerHours"`
+	ShuttleHours map[string]int   `json:"shuttleHours"`
 }
 
 type NextIDs struct {
@@ -180,12 +189,14 @@ func (a *app) migrate(ctx context.Context) error {
 		create table if not exists sessions (
 			id text primary key,
 			name text not null,
+			session_type text not null default 'liveMatch',
 			admin_passcode text not null,
 			state jsonb not null,
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);
 		alter table sessions add column if not exists name text;
+		alter table sessions add column if not exists session_type text not null default 'liveMatch';
 		alter table sessions add column if not exists admin_passcode text;
 		alter table sessions add column if not exists state jsonb;
 		alter table sessions add column if not exists admin_id text;
@@ -206,6 +217,7 @@ func (a *app) migrate(ctx context.Context) error {
 		create table if not exists session_settings (
 			session_id text primary key references sessions(id) on delete cascade,
 			entry_fee integer not null default 120,
+			court_fee_per_hour integer not null default 150,
 			shuttle_fee integer not null default 85,
 			session_fee integer not null default 0,
 			court_count integer not null default 4,
@@ -219,6 +231,7 @@ func (a *app) migrate(ctx context.Context) error {
 			start_match_with_shuttle boolean not null default true
 		);
 		alter table session_settings add column if not exists random_priority text not null default 'level';
+		alter table session_settings add column if not exists court_fee_per_hour integer not null default 150;
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
@@ -272,9 +285,21 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
 		alter table matches add column if not exists winner text not null default '';
 		alter table matches add column if not exists shuttle_sequence text not null default '';
+		create table if not exists live_share_hours (
+			session_id text not null references sessions(id) on delete cascade,
+			kind text not null check (kind in ('court', 'player', 'shuttle')),
+			target text not null,
+			hour integer not null,
+			quantity integer not null default 1,
+			primary key (session_id, kind, target, hour)
+		);
+		alter table live_share_hours add column if not exists quantity integer not null default 1;
+		alter table live_share_hours drop constraint if exists live_share_hours_kind_check;
+		alter table live_share_hours add constraint live_share_hours_kind_check check (kind in ('court', 'player', 'shuttle'));
 		create index if not exists idx_players_session on players(session_id);
 		create index if not exists idx_couples_session on couples(session_id);
 		create index if not exists idx_matches_session_phase on matches(session_id, phase);
+		create index if not exists idx_live_share_hours_session on live_share_hours(session_id);
 		create table if not exists admin_users (
 			id text primary key,
 			email text not null unique,
@@ -389,6 +414,13 @@ func (a *app) migrate(ctx context.Context) error {
 	if _, err := a.db.ExecContext(ctx, `
 		insert into system_settings (key, value)
 		values ('liveMatchSessionCoinCost', '49')
+		on conflict (key) do nothing
+	`); err != nil {
+		return err
+	}
+	if _, err := a.db.ExecContext(ctx, `
+		insert into system_settings (key, value)
+		values ('liveShareSessionCoinCost', '49')
 		on conflict (key) do nothing
 	`); err != nil {
 		return err
@@ -995,6 +1027,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		a.respondSavedWithActivity(w, r, state, "delete_player", "player", strconv.Itoa(playerID), map[string]any{})
 	case r.Method == http.MethodGet && action == "settings":
 		writeJSON(w, http.StatusOK, map[string]any{"settings": state.Settings})
+	case r.Method == http.MethodGet && action == "live-share-hours":
+		writeJSON(w, http.StatusOK, map[string]any{"liveShare": state.LiveShare})
 	case r.Method == http.MethodGet && action == "queue":
 		writeJSON(w, http.StatusOK, queuePayload(state))
 	case r.Method == http.MethodGet && action == "live":
@@ -1008,8 +1042,23 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		normalizeSettings(&settings)
+		if isLiveShare(state) {
+			settings.StartMatchWithShuttle = false
+		}
 		state.Settings = settings
 		a.respondSavedWithActivity(w, r, state, "update_session_settings", "session", state.Session.ID, map[string]any{"entryFee": settings.EntryFee, "shuttleFee": settings.ShuttleFee, "courtCount": settings.CourtCount, "allowCrossLevel": settings.AllowCrossLevel})
+	case r.Method == http.MethodPut && action == "live-share-hours":
+		if !isLiveShare(state) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "liveShare only"})
+			return
+		}
+		var body LiveShareHours
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid liveShare hours"})
+			return
+		}
+		state.LiveShare = sanitizeLiveShareHours(body, state)
+		a.respondSavedWithActivity(w, r, state, "update_live_share_hours", "session", state.Session.ID, map[string]any{"courtHours": liveShareCourtHours(state), "playerHours": liveSharePlayerHours(state)})
 	case r.Method == http.MethodPost && action == "couples":
 		var body struct {
 			A int `json:"a"`
@@ -1180,6 +1229,7 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 }
 
 func (a *app) saveState(ctx context.Context, state SessionState) error {
+	normalizeLiveShareState(&state)
 	state.UpdatedAt = time.Now().UTC()
 	courtNames, err := json.Marshal(state.Settings.CourtNames)
 	if err != nil {
@@ -1197,23 +1247,25 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	defer tx.Rollback()
 
 	if _, err = tx.ExecContext(ctx, `
-		insert into sessions (id, name, admin_passcode, updated_at)
-		values ($1, $2, $3, now())
+		insert into sessions (id, name, session_type, admin_passcode, updated_at)
+		values ($1, $2, $3, $4, now())
 		on conflict (id) do update set
 			name = excluded.name,
+			session_type = excluded.session_type,
 			admin_passcode = excluded.admin_passcode,
 			updated_at = now()
-	`, state.Session.ID, state.Session.Name, state.Session.AdminPasscode); err != nil {
+	`, state.Session.ID, state.Session.Name, sessionType(state), state.Session.AdminPasscode); err != nil {
 		return err
 	}
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
+			session_id, entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
+			court_fee_per_hour = excluded.court_fee_per_hour,
 			shuttle_fee = excluded.shuttle_fee,
 			session_fee = excluded.session_fee,
 			court_count = excluded.court_count,
@@ -1225,11 +1277,11 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			show_payment_on_share = excluded.show_payment_on_share,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
 		return err
 	}
 
-	for _, table := range []string{"players", "couples", "matches"} {
+	for _, table := range []string{"players", "couples", "matches", "live_share_hours"} {
 		if _, err = tx.ExecContext(ctx, "delete from "+table+" where session_id = $1", state.Session.ID); err != nil {
 			return err
 		}
@@ -1282,31 +1334,64 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			return err
 		}
 	}
+	for target, hours := range state.LiveShare.CourtHours {
+		for _, hour := range normalizedHourSet(hours) {
+			if _, err = tx.ExecContext(ctx, `
+				insert into live_share_hours (session_id, kind, target, hour, quantity)
+				values ($1, 'court', $2, $3, 1)
+			`, state.Session.ID, target, hour); err != nil {
+				return err
+			}
+		}
+	}
+	for target, hours := range state.LiveShare.PlayerHours {
+		for _, hour := range normalizedHourSet(hours) {
+			if _, err = tx.ExecContext(ctx, `
+				insert into live_share_hours (session_id, kind, target, hour, quantity)
+				values ($1, 'player', $2, $3, 1)
+			`, state.Session.ID, target, hour); err != nil {
+				return err
+			}
+		}
+	}
+	for hour, quantity := range state.LiveShare.ShuttleHours {
+		if quantity <= 0 {
+			continue
+		}
+		if _, err = tx.ExecContext(ctx, `
+			insert into live_share_hours (session_id, kind, target, hour, quantity)
+			values ($1, 'shuttle', 'shuttle', $2, $3)
+		`, state.Session.ID, hour, quantity); err != nil {
+			return err
+		}
+	}
 
 	return tx.Commit()
 }
 
 func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
-	var name, passcode string
+	var name, sessionTypeValue, passcode string
 	var createdAt, updatedAt time.Time
 	if err := a.db.QueryRowContext(ctx, `
-		select name, admin_passcode, created_at, updated_at from sessions where id = $1
-	`, id).Scan(&name, &passcode, &createdAt, &updatedAt); err != nil {
+		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at from sessions where id = $1
+	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt); err != nil {
 		return SessionState{}, err
 	}
 
 	state := defaultState(id, name, passcode)
+	state.Session.Type = normalizeSessionType(sessionTypeValue)
 	state.Session.Unlocked = true
 	state.UpdatedAt = updatedAt
 	applySessionValidity(&state, createdAt)
 
 	var courtNamesRaw, levelsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
+		select entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
 		&state.Settings.EntryFee,
+		&state.Settings.CourtFeePerHour,
 		&state.Settings.ShuttleFee,
 		&state.Settings.SessionFee,
 		&state.Settings.CourtCount,
@@ -1329,6 +1414,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		_ = json.Unmarshal(levelsRaw, &state.Settings.Levels)
 	}
 	normalizeSettings(&state.Settings)
+	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
 		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon
@@ -1415,6 +1501,37 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		return SessionState{}, err
 	}
 
+	rows, err = a.db.QueryContext(ctx, `
+		select kind, target, hour, quantity
+		from live_share_hours
+		where session_id = $1
+		order by kind, target, hour
+	`, id)
+	if err != nil {
+		return SessionState{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var kind, target string
+		var hour, quantity int
+		if err := rows.Scan(&kind, &target, &hour, &quantity); err != nil {
+			return SessionState{}, err
+		}
+		switch kind {
+		case "court":
+			state.LiveShare.CourtHours[target] = append(state.LiveShare.CourtHours[target], hour)
+		case "player":
+			state.LiveShare.PlayerHours[target] = append(state.LiveShare.PlayerHours[target], hour)
+		case "shuttle":
+			if quantity > 0 {
+				state.LiveShare.ShuttleHours[strconv.Itoa(hour)] = quantity
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return SessionState{}, err
+	}
+
 	return state, nil
 }
 
@@ -1425,11 +1542,13 @@ func defaultState(id, name, passcode string) SessionState {
 		Session: SessionInfo{
 			ID:            id,
 			Name:          name,
+			Type:          "liveMatch",
 			AdminPasscode: passcode,
 			Unlocked:      false,
 		},
 		Settings: Settings{
 			EntryFee:                120,
+			CourtFeePerHour:         150,
 			ShuttleFee:              85,
 			SessionFee:              0,
 			CourtCount:              4,
@@ -1448,6 +1567,11 @@ func defaultState(id, name, passcode string) SessionState {
 		Queue:   []Match{},
 		Live:    []Match{},
 		History: []Match{},
+		LiveShare: LiveShareHours{
+			CourtHours:   map[string][]int{},
+			PlayerHours:  map[string][]int{},
+			ShuttleHours: map[string]int{},
+		},
 		NextIDs: NextIDs{Player: 0, Couple: 0, Match: 0, Pending: 0},
 	}
 	applySessionValidity(&state, time.Now().UTC())
@@ -1995,23 +2119,29 @@ func dashboardPayload(state SessionState) map[string]any {
 		"history":  state.History,
 		"settings": state.Settings,
 		"summary": map[string]any{
-			"activePlayers":       activePlayerCount(state),
-			"recordedMatches":     realRecordedMatchCount(state),
-			"cancelledMatches":    cancelledMatchCount(state),
-			"totalShuttles":       totalRealShuttles(state),
-			"totalPlays":          totalPlays(state),
-			"averageGames":        averageGames(state),
-			"minGames":            minGames(state),
-			"maxGames":            maxGames(state),
-			"totalRevenue":        totalRevenue(state),
-			"paidRevenue":         paidRevenue(state),
-			"unpaidRevenue":       totalRevenue(state) - paidRevenue(state),
-			"paymentPercent":      paymentPercent(state),
-			"queueMatches":        len(state.Queue),
-			"liveMatches":         len(state.Live),
-			"realHistoryMatches":  len(state.History) - cancelledMatchCount(state),
-			"historyMatches":      len(state.History),
-			"availableCourtCount": len(state.Settings.CourtNames),
+			"activePlayers":         activePlayerCount(state),
+			"recordedMatches":       realRecordedMatchCount(state),
+			"cancelledMatches":      cancelledMatchCount(state),
+			"totalShuttles":         totalSessionShuttles(state),
+			"totalPlays":            totalPlays(state),
+			"averageGames":          averageGames(state),
+			"minGames":              minGames(state),
+			"maxGames":              maxGames(state),
+			"totalRevenue":          totalRevenue(state),
+			"paidRevenue":           paidRevenue(state),
+			"unpaidRevenue":         totalRevenue(state) - paidRevenue(state),
+			"paymentPercent":        paymentPercent(state),
+			"liveShareCourtHours":   liveShareCourtHours(state),
+			"liveSharePlayerHours":  liveSharePlayerHours(state),
+			"liveShareCourtCost":    liveShareCourtCost(state),
+			"liveShareShuttleCount": liveShareShuttleCount(state),
+			"liveShareShuttleCost":  liveShareShuttleCost(state),
+			"liveShareSessionCost":  liveShareSessionCost(state),
+			"queueMatches":          len(state.Queue),
+			"liveMatches":           len(state.Live),
+			"realHistoryMatches":    len(state.History) - cancelledMatchCount(state),
+			"historyMatches":        len(state.History),
+			"availableCourtCount":   len(state.Settings.CourtNames),
 		},
 	}
 }
@@ -2048,6 +2178,13 @@ func totalRealShuttles(state SessionState) int {
 		}
 	}
 	return total
+}
+
+func totalSessionShuttles(state SessionState) int {
+	if isLiveShare(state) {
+		return liveShareShuttleCount(state)
+	}
+	return totalRealShuttles(state)
 }
 
 func totalPlays(state SessionState) int {
@@ -2094,6 +2231,9 @@ func maxGames(state SessionState) int {
 }
 
 func totalRevenue(state SessionState) int {
+	if isLiveShare(state) {
+		return liveShareTotalCost(state)
+	}
 	total := 0
 	share := sessionFeeShare(state)
 	for _, player := range state.Players {
@@ -2105,6 +2245,15 @@ func totalRevenue(state SessionState) int {
 }
 
 func paidRevenue(state SessionState) int {
+	if isLiveShare(state) {
+		total := 0
+		for _, player := range state.Players {
+			if player.Active && player.Paid {
+				total += liveSharePlayerCost(state, player)
+			}
+		}
+		return total
+	}
 	total := 0
 	share := sessionFeeShare(state)
 	for _, player := range state.Players {
@@ -2113,6 +2262,162 @@ func paidRevenue(state SessionState) int {
 		}
 	}
 	return total
+}
+
+func liveShareCourtHours(state SessionState) int {
+	total := 0
+	for _, hours := range state.LiveShare.CourtHours {
+		total += len(normalizedHourSet(hours))
+	}
+	return total
+}
+
+func liveSharePlayerHours(state SessionState) int {
+	total := 0
+	for _, player := range state.Players {
+		if !player.Active {
+			continue
+		}
+		total += liveShareHoursForPlayer(state, player.ID)
+	}
+	return total
+}
+
+func liveShareActiveHours(state SessionState) []int {
+	seen := map[int]bool{}
+	for _, hours := range state.LiveShare.CourtHours {
+		for _, hour := range normalizedHourSet(hours) {
+			seen[hour] = true
+		}
+	}
+	for _, hours := range state.LiveShare.PlayerHours {
+		for _, hour := range normalizedHourSet(hours) {
+			seen[hour] = true
+		}
+	}
+	for hourText, quantity := range state.LiveShare.ShuttleHours {
+		hour, err := strconv.Atoi(hourText)
+		if err == nil && hour > 0 && quantity > 0 {
+			seen[hour] = true
+		}
+	}
+	out := []int{}
+	for hour := range seen {
+		out = append(out, hour)
+	}
+	slices.Sort(out)
+	return out
+}
+
+func liveShareCourtCountForHour(state SessionState, hour int) int {
+	total := 0
+	for _, hours := range state.LiveShare.CourtHours {
+		if slices.Contains(normalizedHourSet(hours), hour) {
+			total++
+		}
+	}
+	return total
+}
+
+func liveSharePlayerCountForHour(state SessionState, hour int) int {
+	total := 0
+	for _, player := range state.Players {
+		if !player.Active {
+			continue
+		}
+		if slices.Contains(normalizedHourSet(state.LiveShare.PlayerHours[strconv.Itoa(player.ID)]), hour) {
+			total++
+		}
+	}
+	return total
+}
+
+func liveShareHoursForPlayer(state SessionState, playerID int) int {
+	return len(normalizedHourSet(state.LiveShare.PlayerHours[strconv.Itoa(playerID)]))
+}
+
+func liveShareCourtCost(state SessionState) int {
+	return liveShareCourtHours(state) * state.Settings.CourtFeePerHour
+}
+
+func liveShareShuttleCost(state SessionState) int {
+	return liveShareShuttleCount(state) * state.Settings.ShuttleFee
+}
+
+func liveShareShuttleCount(state SessionState) int {
+	total := 0
+	for _, quantity := range state.LiveShare.ShuttleHours {
+		if quantity > 0 {
+			total += quantity
+		}
+	}
+	return total
+}
+
+func liveShareSessionCost(state SessionState) int {
+	if state.Settings.SessionFee < 0 {
+		return 0
+	}
+	return state.Settings.SessionFee
+}
+
+func liveShareTotalCost(state SessionState) int {
+	return liveShareCourtCost(state) + liveShareShuttleCost(state) + liveShareSessionCost(state)
+}
+
+func liveSharePlayerCost(state SessionState, player Player) int {
+	activeHours := liveShareActiveHours(state)
+	if len(activeHours) == 0 {
+		return 0
+	}
+	sessionCost := liveShareSessionCost(state)
+	total := 0
+	playerHours := normalizedHourSet(state.LiveShare.PlayerHours[strconv.Itoa(player.ID)])
+	for _, hour := range playerHours {
+		playerCount := liveSharePlayerCountForHour(state, hour)
+		if playerCount == 0 {
+			continue
+		}
+		hourCourtCost := liveShareCourtCountForHour(state, hour) * state.Settings.CourtFeePerHour
+		hourShuttleCost := state.LiveShare.ShuttleHours[strconv.Itoa(hour)] * state.Settings.ShuttleFee
+		// Session cost is not timestamped, so spread it across occupied hours before splitting that hour.
+		numerator := (hourCourtCost+hourShuttleCost)*len(activeHours) + sessionCost
+		denominator := len(activeHours) * playerCount
+		total += (numerator + denominator - 1) / denominator
+	}
+	return total
+}
+
+func sanitizeLiveShareHours(input LiveShareHours, state SessionState) LiveShareHours {
+	out := LiveShareHours{CourtHours: map[string][]int{}, PlayerHours: map[string][]int{}, ShuttleHours: map[string]int{}}
+	courts := map[string]bool{}
+	for _, court := range state.Settings.CourtNames {
+		courts[court] = true
+	}
+	for court, hours := range input.CourtHours {
+		if courts[court] {
+			out.CourtHours[court] = normalizedHourSet(hours)
+		}
+	}
+	players := map[string]bool{}
+	for _, player := range state.Players {
+		if player.Active {
+			players[strconv.Itoa(player.ID)] = true
+		}
+	}
+	for playerID, hours := range input.PlayerHours {
+		if players[playerID] {
+			out.PlayerHours[playerID] = normalizedHourSet(hours)
+		}
+	}
+	for hourText, quantity := range input.ShuttleHours {
+		hour, err := strconv.Atoi(hourText)
+		if err != nil || hour < 1 || quantity <= 0 {
+			continue
+		}
+		out.ShuttleHours[strconv.Itoa(hour)] = quantity
+	}
+	return out
 }
 
 func sessionFeeShare(state SessionState) int {
@@ -2265,6 +2570,12 @@ func normalizeSettings(settings *Settings) {
 	if settings.EntryFee < 0 {
 		settings.EntryFee = 0
 	}
+	if settings.CourtFeePerHour < 0 {
+		settings.CourtFeePerHour = 0
+	}
+	if settings.CourtFeePerHour == 0 {
+		settings.CourtFeePerHour = 150
+	}
 	if settings.ShuttleFee < 0 {
 		settings.ShuttleFee = 0
 	}
@@ -2282,6 +2593,51 @@ func normalizeSettings(settings *Settings) {
 	if settings.RandomPriority != "games" {
 		settings.RandomPriority = "level"
 	}
+}
+
+func normalizeSessionType(value string) string {
+	if value == "liveShare" {
+		return "liveShare"
+	}
+	return "liveMatch"
+}
+
+func sessionType(state SessionState) string {
+	return normalizeSessionType(state.Session.Type)
+}
+
+func isLiveShare(state SessionState) bool {
+	return sessionType(state) == "liveShare"
+}
+
+func normalizeLiveShareState(state *SessionState) {
+	state.Session.Type = sessionType(*state)
+	if state.LiveShare.CourtHours == nil {
+		state.LiveShare.CourtHours = map[string][]int{}
+	}
+	if state.LiveShare.PlayerHours == nil {
+		state.LiveShare.PlayerHours = map[string][]int{}
+	}
+	if state.LiveShare.ShuttleHours == nil {
+		state.LiveShare.ShuttleHours = map[string]int{}
+	}
+	if isLiveShare(*state) {
+		state.Settings.StartMatchWithShuttle = false
+	}
+}
+
+func normalizedHourSet(hours []int) []int {
+	seen := map[int]bool{}
+	out := []int{}
+	for _, hour := range hours {
+		if hour < 1 || seen[hour] {
+			continue
+		}
+		seen[hour] = true
+		out = append(out, hour)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func applySessionValidity(state *SessionState, createdAt time.Time) {

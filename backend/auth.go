@@ -39,6 +39,7 @@ type adminUser struct {
 type adminSessionItem struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
+	Type           string `json:"type"`
 	Players        int    `json:"players"`
 	PaidPlayers    int    `json:"paidPlayers"`
 	UnpaidPlayers  int    `json:"unpaidPlayers"`
@@ -237,12 +238,14 @@ func (a *app) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUser) {
 	sessions, _ := a.adminSessions(r.Context(), user.ID)
 	ledger, _ := a.coinLedger(r.Context(), user.ID, 8)
-	cost, hasCost, _ := a.liveMatchCost(r.Context())
+	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
+	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
 		"coinLedger":           ledger,
-		"liveMatchSessionCost": nullableCost(cost, hasCost),
+		"liveMatchSessionCost": nullableCost(liveMatchCost, hasLiveMatchCost),
+		"liveShareSessionCost": nullableCost(liveShareCost, hasLiveShareCost),
 	})
 }
 
@@ -394,11 +397,8 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	if sessionType == "" {
 		sessionType = "liveMatch"
 	}
-	if sessionType != "liveMatch" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "liveShare ยังไม่เปิดใช้งาน"})
-		return
-	}
-	cost, hasCost, err := a.liveMatchCost(r.Context())
+	sessionType = normalizeSessionType(sessionType)
+	cost, hasCost, err := a.sessionCoinCost(r.Context(), sessionType)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -413,6 +413,10 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	id := "session-" + randHex(6)
 	state := defaultState(id, name, "")
+	state.Session.Type = sessionType
+	if sessionType == "liveShare" {
+		state.Settings.StartMatchWithShuttle = false
+	}
 	state.Session.Unlocked = true
 	stateJSON, _ := json.Marshal(state)
 	courtNames, _ := json.Marshal(state.Settings.CourtNames)
@@ -439,28 +443,28 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `
-		insert into sessions (id, name, admin_passcode, state, admin_id, updated_at)
-		values ($1, $2, '', $3, $4, now())
-	`, id, name, stateJSON, user.ID); err != nil {
+		insert into sessions (id, name, session_type, admin_passcode, state, admin_id, updated_at)
+		values ($1, $2, $3, '', $4, $5, now())
+	`, id, name, sessionType, stateJSON, user.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into session_settings (
-			session_id, entry_fee, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-	`, id, state.Settings.EntryFee, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
+			session_id, entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+	`, id, state.Settings.EntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into coin_ledger (admin_id, delta, balance, reason, note)
 		values ($1, $2, $3, 'create_session', $4)
-	`, user.ID, -cost, newBalance, "liveMatch "+id); err != nil {
+	`, user.ID, -cost, newBalance, sessionType+" "+id); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "create_session_spend_coin", "session", id, map[string]any{"cost": cost, "balance": newBalance, "name": name}); err != nil {
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "create_session_spend_coin", "session", id, map[string]any{"cost": cost, "balance": newBalance, "name": name, "type": sessionType}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -685,7 +689,8 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 		users = append(users, map[string]any{"id": id, "email": email, "name": name, "verified": verified, "coins": coins, "sessions": sessions, "createdAt": createdAt})
 	}
 	ledger, _ := a.coinLedger(r.Context(), "", 30)
-	cost, hasCost, _ := a.liveMatchCost(r.Context())
+	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
+	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	packages, _ := a.coinPackages(r.Context(), false)
 	orders, _ := a.coinPurchaseOrders(r.Context(), "", true, 50)
 	logs, _ := a.activityLogs(r.Context(), 80)
@@ -698,7 +703,8 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"users":                 users,
 		"coinLedger":            ledger,
-		"liveMatchSessionCost":  nullableCost(cost, hasCost),
+		"liveMatchSessionCost":  nullableCost(liveMatchCost, hasLiveMatchCost),
+		"liveShareSessionCost":  nullableCost(liveShareCost, hasLiveShareCost),
 		"coinPackages":          packages,
 		"coinPaymentQrImage":    qrImage,
 		"promptPayId":           promptPay.ID,
@@ -717,9 +723,10 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, actor string) {
 	var body struct {
 		LiveMatchSessionCost *int `json:"liveMatchSessionCost"`
+		LiveShareSessionCost *int `json:"liveShareSessionCost"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	if body.LiveMatchSessionCost == nil || *body.LiveMatchSessionCost < 0 {
+	if body.LiveMatchSessionCost == nil || *body.LiveMatchSessionCost < 0 || body.LiveShareSessionCost == nil || *body.LiveShareSessionCost < 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid coin price"})
 		return
 	}
@@ -737,7 +744,15 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_session_coin_cost", "system_settings", "liveMatchSessionCoinCost", map[string]any{"cost": *body.LiveMatchSessionCost}); err != nil {
+	if _, err := tx.ExecContext(r.Context(), `
+		insert into system_settings (key, value)
+		values ('liveShareSessionCoinCost', $1)
+		on conflict (key) do update set value = excluded.value, updated_at = now()
+	`, strconv.Itoa(*body.LiveShareSessionCost)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_session_coin_cost", "system_settings", "sessionCoinCost", map[string]any{"liveMatchCost": *body.LiveMatchSessionCost, "liveShareCost": *body.LiveShareSessionCost}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1019,7 +1034,7 @@ func (a *app) adminByEmail(ctx context.Context, email string) (adminUser, string
 func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSessionItem, error) {
 	items := []adminSessionItem{}
 	rows, err := a.db.QueryContext(ctx, `
-		select s.id, coalesce(s.name, s.id),
+		select s.id, coalesce(s.name, s.id), coalesce(s.session_type, 'liveMatch'),
 			(select count(*) from players p where p.session_id = s.id and p.active) as players,
 			(select count(*) from players p where p.session_id = s.id and p.active and p.paid) as paid_players,
 			(select count(*) from players p where p.session_id = s.id and p.active and not p.paid) as unpaid_players,
@@ -1027,13 +1042,25 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'queue') as queue_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'live') as live_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history' and m.status <> 'cancelled') as history_matches,
-			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and m.status <> 'cancelled') as shuttles,
-			(
+			case when coalesce(s.session_type, 'liveMatch') = 'liveShare' then
+				(select coalesce(sum(h.quantity), 0) from live_share_hours h where h.session_id = s.id and h.kind = 'shuttle')
+			else
+				(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and m.status <> 'cancelled')
+			end as shuttles,
+			case when coalesce(s.session_type, 'liveMatch') = 'liveShare' then
+				(
+					(select count(*) from live_share_hours h where h.session_id = s.id and h.kind = 'court') * coalesce((select ss.court_fee_per_hour from session_settings ss where ss.session_id = s.id), 0)
+				) + (
+					(select coalesce(sum(h.quantity), 0) from live_share_hours h where h.session_id = s.id and h.kind = 'shuttle') * coalesce((select ss.shuttle_fee from session_settings ss where ss.session_id = s.id), 0)
+				) + (
+					coalesce((select ss.session_fee from session_settings ss where ss.session_id = s.id), 0)
+				)
+			else (
 				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 				from players p
 				join session_settings ss on ss.session_id = p.session_id
 				where p.session_id = s.id and p.active
-			) as revenue,
+			) end as revenue,
 			to_char(s.updated_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') as updated_at
 		from sessions s
 		where s.admin_id = $1
@@ -1045,7 +1072,7 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 	defer rows.Close()
 	for rows.Next() {
 		var item adminSessionItem
-		if err := rows.Scan(&item.ID, &item.Name, &item.Players, &item.PaidPlayers, &item.UnpaidPlayers, &item.Matches, &item.QueueMatches, &item.LiveMatches, &item.HistoryMatches, &item.Shuttles, &item.Revenue, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.Players, &item.PaidPlayers, &item.UnpaidPlayers, &item.Matches, &item.QueueMatches, &item.LiveMatches, &item.HistoryMatches, &item.Shuttles, &item.Revenue, &item.UpdatedAt); err != nil {
 			return items, err
 		}
 		items = append(items, item)
@@ -1209,8 +1236,23 @@ func (a *app) activityLogs(ctx context.Context, limit int) ([]activityLogItem, e
 }
 
 func (a *app) liveMatchCost(ctx context.Context) (int, bool, error) {
+	return a.systemIntSetting(ctx, "liveMatchSessionCoinCost")
+}
+
+func (a *app) liveShareCost(ctx context.Context) (int, bool, error) {
+	return a.systemIntSetting(ctx, "liveShareSessionCoinCost")
+}
+
+func (a *app) sessionCoinCost(ctx context.Context, sessionType string) (int, bool, error) {
+	if normalizeSessionType(sessionType) == "liveShare" {
+		return a.liveShareCost(ctx)
+	}
+	return a.liveMatchCost(ctx)
+}
+
+func (a *app) systemIntSetting(ctx context.Context, key string) (int, bool, error) {
 	var raw string
-	err := a.db.QueryRowContext(ctx, `select value from system_settings where key = 'liveMatchSessionCoinCost'`).Scan(&raw)
+	err := a.db.QueryRowContext(ctx, `select value from system_settings where key = $1`, key).Scan(&raw)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}

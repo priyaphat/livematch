@@ -15,6 +15,11 @@ defineProps([
   'totalRevenue',
   'paidRevenue',
   'unpaidRevenue',
+  'liveShareCourtHours',
+  'liveSharePlayerHours',
+  'liveShareCourtCost',
+  'liveShareShuttleCost',
+  'liveShareSessionCost',
   'unpaidPlayers',
   'topPlayers',
   'quietPlayers',
@@ -111,6 +116,11 @@ defineProps([
           <CreditCard class="h-6 w-6 text-court-500" />
         </div>
         <div class="mt-4 grid gap-3 sm:grid-cols-3">
+          <div v-if="state.session.type === 'liveShare'" class="rounded-md border border-stone-200 p-3 dark:border-stone-700">
+            <p class="text-xs text-stone-500 dark:text-stone-400">ค่าคอร์ด/ค่าสนาม</p>
+            <p class="mt-1 text-xl font-black">{{ money(liveShareCourtCost) }}</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ liveShareCourtHours }} ชม.สนาม · session {{ money(liveShareSessionCost) }}</p>
+          </div>
           <div class="rounded-md border border-stone-200 p-3 dark:border-stone-700">
             <p class="text-xs text-stone-500 dark:text-stone-400">รายรับรวม</p>
             <p class="mt-1 text-xl font-black">{{ money(totalRevenue) }}</p>
