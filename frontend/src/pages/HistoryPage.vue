@@ -4,7 +4,8 @@ import { computed } from 'vue'
 const props = defineProps([
   'state',
   'playerName',
-  'updateHistoryWinner'
+  'updateHistoryWinner',
+  'isSessionReadOnly'
 ])
 
 const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
@@ -101,7 +102,7 @@ function isCancelled(match) {
             <select
               :value="match.winner || ''"
               class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-bold disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900"
-              :disabled="isCancelled(match)"
+              :disabled="isSessionReadOnly || isCancelled(match)"
               aria-label="เปลี่ยนผลการแข่งขัน"
               @change="updateHistoryWinner(match, $event.target.value)"
             >

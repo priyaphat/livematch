@@ -77,7 +77,9 @@ const state = reactive({
     unlocked: false,
     createdAt: '',
     expiresAt: '',
-    expired: false
+    expired: false,
+    readOnly: false,
+    readOnlyReason: ''
   },
   settings: {
     entryFee: 120,
@@ -177,6 +179,8 @@ const forms = reactive({
   backofficeTelegramBotToken: '',
   backofficeTelegramChatId: '',
   backofficeTelegramWebhookSecret: '',
+  backofficeTelegramWebhookUrl: '',
+  backofficeTelegramWebhookStatus: '',
   backofficeRejectOrderId: '',
   backofficeRejectNote: '',
   backofficeSlipPreview: null,
@@ -536,8 +540,8 @@ async function openOwnedSession(sessionId) {
     applyServerState(fullState)
     state.session.unlocked = true
     state.tab = 'dashboard'
-    if (state.session.expired) {
-      showToast('session นี้ครบ 3 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดต่อ', 'info')
+    if (state.session.readOnly || state.session.expired) {
+      showToast(sessionReadOnlyMessage.value, 'info')
     }
   } catch (error) {
     showToast(error.message || 'เปิด session ไม่สำเร็จ')
@@ -598,6 +602,7 @@ function syncBackofficeCoinShopForms() {
   forms.backofficeTelegramBotToken = summary.telegramBotToken || ''
   forms.backofficeTelegramChatId = summary.telegramChatId || ''
   forms.backofficeTelegramWebhookSecret = summary.telegramWebhookSecret || ''
+  forms.backofficeTelegramWebhookUrl = summary.telegramWebhookUrl || ''
 }
 
 async function saveBackofficeSettings() {
@@ -636,6 +641,21 @@ async function saveBackofficeCoinShop() {
     syncBackofficeCoinShopForms()
   } catch (error) {
     forms.backofficeError = error.message || 'บันทึกโปรโมชัน coin ไม่สำเร็จ'
+  }
+}
+
+async function setupBackofficeTelegramWebhook() {
+  forms.backofficeError = ''
+  forms.backofficeTelegramWebhookStatus = ''
+  try {
+    const payload = await api('/api/backoffice/telegram-webhook', {
+      method: 'POST',
+      headers: backofficeAuthHeaders()
+    })
+    forms.backofficeTelegramWebhookUrl = payload.webhookUrl || forms.backofficeTelegramWebhookUrl
+    forms.backofficeTelegramWebhookStatus = 'ตั้งค่า Telegram webhook สำเร็จ'
+  } catch (error) {
+    forms.backofficeTelegramWebhookStatus = error.message || 'ตั้งค่า Telegram webhook ไม่สำเร็จ'
   }
 }
 
@@ -799,6 +819,12 @@ function matchLevelLabel(match) {
 const isAdmin = computed(() => state.session.unlocked)
 const isLiveShare = computed(() => state.session.type === 'liveShare')
 const isSessionExpired = computed(() => Boolean(state.session.expired))
+const isSessionReadOnly = computed(() => Boolean(state.session.readOnly || state.session.expired))
+const sessionReadOnlyMessage = computed(() => (
+  state.session.readOnlyReason === 'paid_complete_24h'
+    ? 'session นี้ชำระครบและเกิน 1 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดผู้เล่นหรือบันทึกเกมต่อ'
+    : 'session นี้ครบ 3 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดผู้เล่นหรือบันทึกเกมต่อ'
+))
 const showAppHeader = computed(() => !((isAdmin.value && state.tab === 'home') || (!auth.user && !isAdmin.value)))
 
 const queuedPlayerIds = computed(() => new Set([...state.pending, ...state.queue].flatMap(matchPlayers)))
@@ -1318,6 +1344,7 @@ function isCancelledMatch(match) {
 }
 
 function requestFinishMatch(match) {
+  if (!ensureSessionActive()) return
   ui.finishMatch = match
   forms.finishNote = ''
   forms.finishWinner = ''
@@ -1334,12 +1361,14 @@ function confirmFinishMatch() {
 }
 
 function requestCancelMatch(match) {
+  if (!ensureSessionActive()) return
   ui.cancelMatch = match
   forms.cancelNote = ''
   ui.showCancelModal = true
 }
 
 function requestAddShuttle(match) {
+  if (!ensureSessionActive()) return
   ui.shuttleMatch = match
   ui.showShuttleModal = true
 }
@@ -1592,8 +1621,8 @@ async function unlockDashboardApi() {
 }
 
 function ensureSessionActive() {
-  if (!state.session.expired) return true
-  showToast('session นี้ครบ 3 วันแล้ว กรุณาสร้าง session ใหม่เพื่อใช้งานต่อ')
+  if (!isSessionReadOnly.value) return true
+  showToast(sessionReadOnlyMessage.value)
   return false
 }
 
@@ -1892,6 +1921,7 @@ const pageProps = computed(() => ({
   availableCourtNames: availableCourtNames.value,
   usedCourtNames: usedCourtNames.value,
   usedLevels: usedLevels.value,
+  isSessionReadOnly: isSessionReadOnly.value,
   money,
   playerCost,
   playerLiveShareHours,
@@ -1963,6 +1993,7 @@ const pageProps = computed(() => ({
   openBackofficeAdminDetail,
   saveBackofficeSettings,
   saveBackofficeCoinShop,
+  setupBackofficeTelegramWebhook,
   addBackofficeCoinPackage,
   removeBackofficeCoinPackage,
   adjustBackofficeCoins,
@@ -2108,8 +2139,8 @@ const pageProps = computed(() => ({
         กำลังโหลดข้อมูลล่าสุด...
       </div>
 
-      <div v-if="isAdmin && isSessionExpired" class="mb-3 grid gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 sm:grid-cols-[1fr_auto] sm:items-center">
-        <span>session นี้ครบ 3 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดผู้เล่นหรือบันทึกเกมต่อ</span>
+      <div v-if="isAdmin && isSessionReadOnly" class="mb-3 grid gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-bold text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 sm:grid-cols-[1fr_auto] sm:items-center">
+        <span>{{ sessionReadOnlyMessage }}</span>
         <button class="h-10 rounded-md bg-court-500 px-4 text-white" @click="backToAdminDashboard">
           สร้าง session ใหม่
         </button>

@@ -568,16 +568,81 @@ func TestQueuePayloadIncludesPendingQueueAndCourtAvailability(t *testing.T) {
 func TestSessionValidityExpiresAfterThreeDays(t *testing.T) {
 	state := defaultState("session-test", "test", "")
 	applySessionValidity(&state, time.Now().UTC().Add(-73*time.Hour))
-	if !state.Session.Expired {
-		t.Fatal("expected session older than 72 hours to be expired")
+	if !state.Session.Expired || !state.Session.ReadOnly || state.Session.ReadOnlyReason != "three_days" {
+		t.Fatalf("expected session older than 72 hours to be readonly by three_days, got %#v", state.Session)
 	}
 
 	applySessionValidity(&state, time.Now().UTC().Add(-71*time.Hour))
-	if state.Session.Expired {
-		t.Fatal("expected session younger than 72 hours to remain active")
+	if state.Session.Expired || state.Session.ReadOnly {
+		t.Fatalf("expected session younger than 72 hours to remain active, got %#v", state.Session)
 	}
 	if state.Session.CreatedAt == "" || state.Session.ExpiresAt == "" {
 		t.Fatalf("expected created/expires labels to be set, got %#v", state.Session)
+	}
+}
+
+func TestSessionReadOnlyAfterPaidCompleteOneDay(t *testing.T) {
+	state := defaultState("session-test", "test", "")
+	state.Players = []Player{
+		{ID: 1, Active: true, Paid: true},
+		{ID: 2, Active: true, Paid: true},
+		{ID: 3, Active: false, Paid: false},
+	}
+	applySessionReadOnly(&state, time.Now().UTC().Add(-25*time.Hour))
+	if !state.Session.ReadOnly || !state.Session.Expired || state.Session.ReadOnlyReason != "paid_complete_24h" {
+		t.Fatalf("expected all-paid session older than 24 hours to be readonly, got %#v", state.Session)
+	}
+}
+
+func TestSessionStaysWritableBeforePaidCompleteOneDay(t *testing.T) {
+	state := defaultState("session-test", "test", "")
+	state.Players = []Player{
+		{ID: 1, Active: true, Paid: true},
+		{ID: 2, Active: true, Paid: true},
+	}
+	applySessionReadOnly(&state, time.Now().UTC().Add(-23*time.Hour))
+	if state.Session.ReadOnly || state.Session.Expired {
+		t.Fatalf("expected all-paid session younger than 24 hours to stay writable, got %#v", state.Session)
+	}
+}
+
+func TestSessionStaysWritableAfterOneDayWithUnpaidPlayers(t *testing.T) {
+	state := defaultState("session-test", "test", "")
+	state.Players = []Player{
+		{ID: 1, Active: true, Paid: true},
+		{ID: 2, Active: true, Paid: false},
+	}
+	applySessionReadOnly(&state, time.Now().UTC().Add(-25*time.Hour))
+	if state.Session.ReadOnly || state.Session.Expired {
+		t.Fatalf("expected unpaid session older than 24 hours to stay writable, got %#v", state.Session)
+	}
+}
+
+func TestSessionPaidCompleteRequiresActivePlayers(t *testing.T) {
+	state := defaultState("session-test", "test", "")
+	state.Players = []Player{{ID: 1, Active: false, Paid: true}}
+	applySessionReadOnly(&state, time.Now().UTC().Add(-25*time.Hour))
+	if state.Session.ReadOnly || state.Session.Expired {
+		t.Fatalf("expected session without active players to stay writable before 72 hours, got %#v", state.Session)
+	}
+}
+
+func TestTelegramWebhookURLUsesPublicBaseURL(t *testing.T) {
+	t.Setenv("APP_BASE_URL", "https://livematch.vibestudio.work/")
+	got := telegramWebhookURL(telegramNotifySettings{WebhookSecret: "secret-123"})
+	want := "https://livematch.vibestudio.work/api/telegram/webhook/secret-123"
+	if got != want {
+		t.Fatalf("expected webhook URL %q, got %q", want, got)
+	}
+}
+
+func TestParseTelegramOrderActionKeepsApprovalFormat(t *testing.T) {
+	status, orderID, ok := parseTelegramOrderAction("coin:approved:order-123")
+	if !ok || status != "approved" || orderID != "order-123" {
+		t.Fatalf("expected approved callback to parse, got status=%q orderID=%q ok=%v", status, orderID, ok)
+	}
+	if _, _, ok := parseTelegramOrderAction("coin:paid:order-123"); ok {
+		t.Fatal("expected unknown callback action to be rejected")
 	}
 }
 

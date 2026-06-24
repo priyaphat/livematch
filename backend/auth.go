@@ -621,6 +621,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeSettings(w, r, backofficeUser)
 	case r.Method == http.MethodPut && action == "coin-shop":
 		a.handleBackofficeCoinShop(w, r, backofficeUser)
+	case r.Method == http.MethodPost && action == "telegram-webhook":
+		a.handleBackofficeTelegramWebhookSetup(w, r, backofficeUser)
 	case r.Method == http.MethodPost && action == "coins":
 		a.handleBackofficeCoinAdjust(w, r, backofficeUser)
 	case r.Method == http.MethodPost && strings.HasPrefix(action, "coin-orders/") && strings.HasSuffix(action, "/approve"):
@@ -714,6 +716,7 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 		"telegramBotToken":      telegramSettings.BotToken,
 		"telegramChatId":        telegramSettings.ChatID,
 		"telegramWebhookSecret": telegramSettings.WebhookSecret,
+		"telegramWebhookUrl":    telegramWebhookURL(telegramSettings),
 		"telegramNotifyEnabled": telegramSettings.enabled(),
 		"coinPurchaseOrders":    orders,
 		"activityLogs":          logs,

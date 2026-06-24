@@ -11,7 +11,8 @@ const props = defineProps([
   'playerName',
   'addCouple',
   'removeCouple',
-  'updatePlayerRandomStatus'
+  'updatePlayerRandomStatus',
+  'isSessionReadOnly'
 ])
 
 const coupleAQuery = ref('')
@@ -80,6 +81,7 @@ function filteredCouplePlayers(query, otherSelectedId) {
 }
 
 function updateCoupleInput(slot, value) {
+  if (props.isSessionReadOnly) return
   const normalized = value.trim().toLocaleLowerCase('th-TH')
   const matched = activePlayers.value.find((player) => (
     optionLabel(player).toLocaleLowerCase('th-TH') === normalized ||
@@ -96,6 +98,7 @@ function updateCoupleInput(slot, value) {
 }
 
 function selectCouplePlayer(slot, player) {
+  if (props.isSessionReadOnly) return
   if (slot === 'a') {
     props.forms.coupleAId = player.id
     coupleAQuery.value = optionLabel(player)
@@ -116,6 +119,7 @@ function groupValue(group) {
 }
 
 function changeGroupStatus(group, event) {
+  if (props.isSessionReadOnly) return
   const level = event.target.value
   group.ids.forEach((id) => props.updatePlayerRandomStatus(id, level))
 }
@@ -151,6 +155,7 @@ function changeGroupStatus(group, event) {
           <select
             class="h-10 rounded-md border border-stone-200 bg-white px-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-900"
             :value="groupValue(group)"
+            :disabled="isSessionReadOnly"
             @change="changeGroupStatus(group, $event)"
           >
             <option value="not-ready">ยังไม่พร้อม</option>
@@ -179,6 +184,7 @@ function changeGroupStatus(group, event) {
               class="h-11 w-full rounded-md border border-stone-200 bg-white px-3 font-semibold outline-none transition focus:border-court-500 focus:ring-2 focus:ring-court-500/20 dark:border-stone-700 dark:bg-stone-900"
               placeholder="เลือกสมาชิกคนที่ 1"
               autocomplete="off"
+              :disabled="isSessionReadOnly"
               @focus="openCoupleSelect = 'a'"
               @input="updateCoupleInput('a', $event.target.value); openCoupleSelect = 'a'"
               @blur="setTimeout(() => { openCoupleSelect = '' }, 120)"
@@ -204,6 +210,7 @@ function changeGroupStatus(group, event) {
               class="h-11 w-full rounded-md border border-stone-200 bg-white px-3 font-semibold outline-none transition focus:border-court-500 focus:ring-2 focus:ring-court-500/20 dark:border-stone-700 dark:bg-stone-900"
               placeholder="เลือกสมาชิกคนที่ 2"
               autocomplete="off"
+              :disabled="isSessionReadOnly"
               @focus="openCoupleSelect = 'b'"
               @input="updateCoupleInput('b', $event.target.value); openCoupleSelect = 'b'"
               @blur="setTimeout(() => { openCoupleSelect = '' }, 120)"
@@ -223,7 +230,7 @@ function changeGroupStatus(group, event) {
             </div>
           </div>
 
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="addCouple">
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="addCouple">
             <Plus class="h-4 w-4" />
             สร้างคู่
           </button>
@@ -235,7 +242,7 @@ function changeGroupStatus(group, event) {
           class="flex items-center justify-between rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
           <span>{{ playerName(couple.a) }} + {{ playerName(couple.b) }}</span>
-          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ลบคู่" @click="removeCouple(couple.id)">
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" aria-label="ลบคู่" @click="removeCouple(couple.id)">
             <X class="h-4 w-4" />
           </button>
         </div>

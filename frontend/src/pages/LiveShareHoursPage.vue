@@ -14,7 +14,8 @@ const props = defineProps([
   'liveShareShuttleCost',
   'liveShareSessionCost',
   'liveShareTotalCost',
-  'saveLiveShareHours'
+  'saveLiveShareHours',
+  'isSessionReadOnly'
 ])
 
 const visibleHourCount = ref(4)
@@ -34,6 +35,7 @@ function hasHour(kind, target, hour) {
 }
 
 function toggleHour(kind, target, hour) {
+  if (props.isSessionReadOnly) return
   const key = String(target)
   const source = kind === 'court' ? props.state.liveShare.courtHours : props.state.liveShare.playerHours
   const current = new Set(source[key] || [])
@@ -43,6 +45,7 @@ function toggleHour(kind, target, hour) {
 }
 
 function addHourColumn() {
+  if (props.isSessionReadOnly) return
   visibleHourCount.value = hourCount.value + 1
 }
 
@@ -51,6 +54,7 @@ function shuttleForHour(hour) {
 }
 
 function updateShuttleHour(hour, value) {
+  if (props.isSessionReadOnly) return
   const count = Math.max(0, Math.floor(Number(value || 0)))
   if (count > 0) props.state.liveShare.shuttleHours[String(hour)] = count
   else delete props.state.liveShare.shuttleHours[String(hour)]
@@ -65,7 +69,7 @@ function updateShuttleHour(hour, value) {
         <h1 class="mt-1 text-2xl font-black">ชั่วโมงเล่น</h1>
         <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เช็คสนามและสมาชิกเป็นรายชั่วโมง แล้วกดบันทึก</p>
       </div>
-      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-black text-white" @click="saveLiveShareHours">
+      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-black text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="saveLiveShareHours">
         <Save class="h-4 w-4" />
         Save
       </button>
@@ -94,7 +98,7 @@ function updateShuttleHour(hour, value) {
     <section class="overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">
       <div class="flex items-center justify-between gap-3 border-b border-stone-200 bg-paper-100 p-3 dark:border-stone-800 dark:bg-stone-800">
         <h2 class="font-black">สนามรายชั่วโมง</h2>
-        <button class="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm font-black dark:border-stone-700 dark:bg-stone-900" @click="addHourColumn">
+        <button class="h-9 rounded-md border border-stone-200 bg-white px-3 text-sm font-black disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700 dark:bg-stone-900" :disabled="isSessionReadOnly" @click="addHourColumn">
           + ชั่วโมง
         </button>
       </div>
@@ -110,7 +114,7 @@ function updateShuttleHour(hour, value) {
             <tr v-for="court in state.settings.courtNames" :key="court" class="border-t border-stone-100 dark:border-stone-800">
               <th class="sticky left-0 z-10 bg-white p-3 text-left font-black dark:bg-stone-900">{{ court }}</th>
               <td v-for="hour in hours" :key="hour" class="p-2 text-center">
-                <input :checked="hasHour('court', court, hour)" type="checkbox" class="h-5 w-5" @change="toggleHour('court', court, hour)" />
+                <input :checked="hasHour('court', court, hour)" type="checkbox" class="h-5 w-5" :disabled="isSessionReadOnly" @change="toggleHour('court', court, hour)" />
               </td>
             </tr>
           </tbody>
@@ -140,6 +144,7 @@ function updateShuttleHour(hour, value) {
                   min="0"
                   inputmode="numeric"
                   class="h-10 w-16 rounded-md border border-stone-200 bg-paper-50 px-2 text-center font-black dark:border-stone-700 dark:bg-stone-800"
+                  :disabled="isSessionReadOnly"
                   @input="updateShuttleHour(hour, $event.target.value)"
                 />
               </td>
@@ -166,7 +171,7 @@ function updateShuttleHour(hour, value) {
             <tr v-for="player in activePlayers" :key="player.id" class="border-t border-stone-100 dark:border-stone-800">
               <th class="sticky left-0 z-10 bg-white p-3 text-left font-black dark:bg-stone-900">{{ player.id }}. {{ player.name }}</th>
               <td v-for="hour in hours" :key="hour" class="p-2 text-center">
-                <input :checked="hasHour('player', player.id, hour)" type="checkbox" class="h-5 w-5" @change="toggleHour('player', player.id, hour)" />
+                <input :checked="hasHour('player', player.id, hour)" type="checkbox" class="h-5 w-5" :disabled="isSessionReadOnly" @change="toggleHour('player', player.id, hour)" />
               </td>
               <td class="p-3 text-right font-black text-court-700 dark:text-court-300">
                 {{ money(playerCost(player)) }}

@@ -2,10 +2,12 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import BackofficePage from './pages/BackofficePage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
 import HistoryPage from './pages/HistoryPage.vue'
 import LiveBoardPage from './pages/LiveBoardPage.vue'
 import LiveMatchPage from './pages/LiveMatchPage.vue'
+import LiveShareHoursPage from './pages/LiveShareHoursPage.vue'
 import PlayersPage from './pages/PlayersPage.vue'
 import QueuePage from './pages/QueuePage.vue'
 import SettingsPage from './pages/SettingsPage.vue'
@@ -119,6 +121,105 @@ describe('LiveMatch app', () => {
     localStorage.removeItem('livematch.adminSessionId')
     localStorage.removeItem('livematch.theme')
     document.documentElement.classList.remove('dark')
+  })
+
+  it('renders Telegram webhook setup controls in backoffice', async () => {
+    const setupBackofficeTelegramWebhook = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'overview',
+          backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeTelegramBotToken: '',
+          backofficeTelegramChatId: '',
+          backofficeTelegramWebhookSecret: 'secret-123',
+          backofficeTelegramWebhookUrl: 'https://livematch.vibestudio.work/api/telegram/webhook/secret-123',
+          backofficeTelegramWebhookStatus: 'ตั้งค่า Telegram webhook สำเร็จ'
+        },
+        ui: {},
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        openBackofficeAdminDetail: vi.fn(),
+        saveBackofficeSettings: vi.fn(),
+        saveBackofficeCoinShop: vi.fn(),
+        setupBackofficeTelegramWebhook,
+        addBackofficeCoinPackage: vi.fn(),
+        removeBackofficeCoinPackage: vi.fn(),
+        adjustBackofficeCoins: vi.fn(),
+        reviewBackofficeCoinOrder: vi.fn(),
+        handleBackofficeQrFile: vi.fn(),
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    expect(wrapper.text()).toContain('Webhook URL')
+    expect(wrapper.find('input[value="https://livematch.vibestudio.work/api/telegram/webhook/secret-123"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('Telegram webhook')
+    await wrapper.findAll('button').find((button) => button.text().includes('Telegram webhook')).trigger('click')
+    expect(setupBackofficeTelegramWebhook).toHaveBeenCalledTimes(1)
+  })
+
+  it('disables settings controls when the session is read-only', () => {
+    const wrapper = mount(SettingsPage, {
+      props: {
+        state: {
+          session: { type: 'liveMatch' },
+          settings: {
+            entryFee: 100,
+            shuttleFee: 80,
+            sessionFee: 0,
+            allowCrossLevel: true,
+            resetPlayersAfterFinish: true,
+            startMatchWithShuttle: true,
+            randomPriority: 'level',
+            courtNames: ['1'],
+            levels: ['light']
+          }
+        },
+        forms: { newCourtName: '', newLevelName: '' },
+        addCourt: vi.fn(),
+        removeCourt: vi.fn(),
+        addLevel: vi.fn(),
+        removeLevel: vi.fn(),
+        usedCourtNames: new Set(),
+        usedLevels: new Set(),
+        saveSettings: vi.fn(),
+        isSessionReadOnly: true
+      }
+    })
+
+    expect(wrapper.find('fieldset').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('fieldset').find('input').exists()).toBe(true)
+  })
+
+  it('disables liveShare hour editing when the session is read-only', () => {
+    const saveLiveShareHours = vi.fn()
+    const wrapper = mount(LiveShareHoursPage, {
+      props: {
+        state: {
+          settings: { courtNames: ['1'] },
+          players: [{ id: 1, name: 'A', active: true }],
+          liveShare: { courtHours: {}, playerHours: {}, shuttleHours: {} }
+        },
+        money: (value) => `${value}`,
+        playerCost: () => 0,
+        playerLiveShareHours: () => 0,
+        liveShareCourtHours: 0,
+        liveSharePlayerHours: 0,
+        liveShareCourtCost: 0,
+        liveShareShuttleCount: 0,
+        liveShareShuttleCost: 0,
+        liveShareSessionCost: 0,
+        liveShareTotalCost: 0,
+        saveLiveShareHours,
+        isSessionReadOnly: true
+      }
+    })
+
+    expect(wrapper.find('button').element.disabled).toBe(true)
+    expect(wrapper.find('input[type="checkbox"]').element.disabled).toBe(true)
+    expect(wrapper.find('input[type="number"]').element.disabled).toBe(true)
   })
 
   it('opens an owned session from the admin supervisor', async () => {

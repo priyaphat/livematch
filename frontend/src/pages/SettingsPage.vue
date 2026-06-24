@@ -11,14 +11,15 @@ const props = defineProps([
   'removeLevel',
   'usedCourtNames',
   'usedLevels',
-  'saveSettings'
+  'saveSettings',
+  'isSessionReadOnly'
 ])
 
 const isLiveShare = computed(() => props.state.session?.type === 'liveShare')
 </script>
 
 <template>
-  <section class="grid gap-4 lg:grid-cols-2">
+  <fieldset class="grid gap-4 disabled:opacity-75 lg:grid-cols-2" :disabled="isSessionReadOnly">
     <div class="grid gap-4">
       <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
         <span class="font-bold">{{ isLiveShare ? 'ค่าสนามต่อชั่วโมง' : 'ค่าเข้าสนามต่อคน' }}</span>
@@ -140,5 +141,5 @@ const isLiveShare = computed(() => props.state.session?.type === 'liveShare')
         </div>
       </div>
     </div>
-  </section>
+  </fieldset>
 </template>

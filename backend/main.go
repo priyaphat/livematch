@@ -54,14 +54,16 @@ type SessionState struct {
 }
 
 type SessionInfo struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Type          string `json:"type"`
-	AdminPasscode string `json:"adminPasscode"`
-	Unlocked      bool   `json:"unlocked"`
-	CreatedAt     string `json:"createdAt"`
-	ExpiresAt     string `json:"expiresAt"`
-	Expired       bool   `json:"expired"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`
+	AdminPasscode  string `json:"adminPasscode"`
+	Unlocked       bool   `json:"unlocked"`
+	CreatedAt      string `json:"createdAt"`
+	ExpiresAt      string `json:"expiresAt"`
+	Expired        bool   `json:"expired"`
+	ReadOnly       bool   `json:"readOnly"`
+	ReadOnlyReason string `json:"readOnlyReason"`
 }
 
 type Settings struct {
@@ -915,11 +917,11 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if r.Method == http.MethodGet && action == "dashboard" && r.URL.Query().Get("open") == "1" {
-			a.insertActivityLog(r.Context(), "admin", user.ID, "open_session", "session", id, map[string]any{"name": state.Session.Name, "expired": state.Session.Expired})
+			a.insertActivityLog(r.Context(), "admin", user.ID, "open_session", "session", id, map[string]any{"name": state.Session.Name, "expired": state.Session.Expired, "readOnly": state.Session.ReadOnly, "readOnlyReason": state.Session.ReadOnlyReason})
 		}
-		if isSessionWrite(r.Method) && action != "unlock" && state.Session.Expired {
-			a.insertActivityLog(r.Context(), "admin", user.ID, "blocked_expired_session_action", "session", id, map[string]any{"name": state.Session.Name, "method": r.Method, "action": action, "path": r.URL.Path})
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "session นี้ครบ 3 วันแล้ว กรุณาสร้าง session ใหม่เพื่อใช้งานต่อ"})
+		if isSessionWrite(r.Method) && action != "unlock" && state.Session.ReadOnly {
+			a.insertActivityLog(r.Context(), "admin", user.ID, "blocked_readonly_session_action", "session", id, map[string]any{"name": state.Session.Name, "method": r.Method, "action": action, "path": r.URL.Path, "reason": state.Session.ReadOnlyReason})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": readOnlySessionMessage(state)})
 			return
 		}
 	}
@@ -1532,6 +1534,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		return SessionState{}, err
 	}
 
+	applySessionReadOnly(&state, createdAt)
 	return state, nil
 }
 
@@ -2647,7 +2650,47 @@ func applySessionValidity(state *SessionState, createdAt time.Time) {
 	expiresAt := createdAt.Add(72 * time.Hour)
 	state.Session.CreatedAt = formatBangkokTime(createdAt)
 	state.Session.ExpiresAt = formatBangkokTime(expiresAt)
-	state.Session.Expired = time.Now().UTC().After(expiresAt)
+	applySessionReadOnly(state, createdAt)
+}
+
+func applySessionReadOnly(state *SessionState, createdAt time.Time) {
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	now := time.Now().UTC()
+	readOnly := false
+	reason := ""
+	if now.After(createdAt.Add(72 * time.Hour)) {
+		readOnly = true
+		reason = "three_days"
+	} else if now.After(createdAt.Add(24*time.Hour)) && activePlayersAllPaid(*state) {
+		readOnly = true
+		reason = "paid_complete_24h"
+	}
+	state.Session.ReadOnly = readOnly
+	state.Session.ReadOnlyReason = reason
+	state.Session.Expired = readOnly
+}
+
+func activePlayersAllPaid(state SessionState) bool {
+	active := 0
+	for _, player := range state.Players {
+		if !player.Active {
+			continue
+		}
+		active++
+		if !player.Paid {
+			return false
+		}
+	}
+	return active > 0
+}
+
+func readOnlySessionMessage(state SessionState) string {
+	if state.Session.ReadOnlyReason == "paid_complete_24h" {
+		return "session นี้ชำระครบและเกิน 1 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดต่อ"
+	}
+	return "session นี้ครบ 3 วันแล้ว เปิดดูย้อนหลังได้ แต่ต้องสร้าง session ใหม่เพื่อจัดต่อ"
 }
 
 func formatBangkokTime(value time.Time) string {

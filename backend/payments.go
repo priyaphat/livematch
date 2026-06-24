@@ -600,6 +600,57 @@ func (a *app) answerTelegramCallback(ctx context.Context, settings telegramNotif
 	}
 }
 
+func telegramWebhookURL(settings telegramNotifySettings) string {
+	if strings.TrimSpace(settings.WebhookSecret) == "" {
+		return ""
+	}
+	return publicAppBaseURL() + "/api/telegram/webhook/" + strings.TrimSpace(settings.WebhookSecret)
+}
+
+func (a *app) handleBackofficeTelegramWebhookSetup(w http.ResponseWriter, r *http.Request, actor string) {
+	settings := a.telegramNotifySettings(r.Context())
+	if settings.WebhookSecret == "" {
+		settings.WebhookSecret = a.ensureTelegramWebhookSecret(r.Context())
+	}
+	webhookURL := telegramWebhookURL(settings)
+	if strings.TrimSpace(settings.BotToken) == "" || webhookURL == "" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "Telegram bot token หรือ webhook secret ยังไม่พร้อม", "webhookUrl": webhookURL})
+		return
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"url":                  webhookURL,
+		"drop_pending_updates": false,
+	})
+	url := "https://api.telegram.org/bot" + settings.BotToken + "/setWebhook"
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	if err != nil {
+		a.insertActivityLog(r.Context(), "backoffice", actor, "telegram_set_webhook_failed", "telegram", "webhook", map[string]any{"error": err.Error(), "webhookUrl": webhookURL})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "webhookUrl": webhookURL})
+		return
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	var parsed map[string]any
+	_ = json.Unmarshal(body, &parsed)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || parsed["ok"] == false {
+		message := string(body)
+		if description, ok := parsed["description"].(string); ok && description != "" {
+			message = description
+		}
+		a.insertActivityLog(r.Context(), "backoffice", actor, "telegram_set_webhook_failed", "telegram", "webhook", map[string]any{"status": resp.StatusCode, "body": string(body), "webhookUrl": webhookURL})
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": message, "webhookUrl": webhookURL})
+		return
+	}
+	a.insertActivityLog(r.Context(), "backoffice", actor, "telegram_set_webhook", "telegram", "webhook", map[string]any{"webhookUrl": webhookURL})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "webhookUrl": webhookURL, "telegram": parsed})
+}
+
 func emptyDash(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {

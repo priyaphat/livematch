@@ -9,7 +9,8 @@ defineProps([
   'startMatch',
   'cancelQueuedMatch',
   'playerName',
-  'availableCourtNames'
+  'availableCourtNames',
+  'isSessionReadOnly'
 ])
 </script>
 
@@ -46,23 +47,24 @@ defineProps([
             <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
           </div>
           <div class="grid gap-2 sm:min-w-96 sm:grid-cols-[1fr_auto_auto]">
-            <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
+            <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :disabled="isSessionReadOnly">
               <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
               <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
             </select>
             <button
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"
               :class="forms.matchCourts[match.id] ? 'bg-court-500' : 'bg-stone-400'"
-              :disabled="!forms.matchCourts[match.id]"
+              :disabled="isSessionReadOnly || !forms.matchCourts[match.id]"
               @click="startMatch(match, forms.matchCourts[match.id])"
             >
               <Play class="h-4 w-4" />
               เริ่ม
             </button>
             <button
-              class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-bold text-rose-700 transition hover:bg-rose-100 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300 dark:hover:bg-rose-950/30"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-3 text-sm font-bold text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-45 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300 dark:hover:bg-rose-950/30"
               aria-label="ยกเลิกคิวเกม"
               title="ยกเลิกคิวเกม"
+              :disabled="isSessionReadOnly"
               @click="cancelQueuedMatch(match)"
             >
               <XCircle class="h-4 w-4" />

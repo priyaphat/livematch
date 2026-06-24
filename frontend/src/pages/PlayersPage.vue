@@ -14,7 +14,8 @@ const props = defineProps([
   'sharePlayers',
   'openPlayersQr',
   'saveSettings',
-  'togglePayment'
+  'togglePayment',
+  'isSessionReadOnly'
 ])
 
 const filteredPlayers = computed(() => {
@@ -36,6 +37,7 @@ const deleteBlockReasons = computed(() => (
 ))
 
 function openEditPlayer(player) {
+  if (props.isSessionReadOnly) return
   editingPlayer.value = player
   editingName.value = player.name
 }
@@ -73,9 +75,10 @@ watch(() => props.forms.playerSearch, () => {
         v-model="forms.newPlayerName"
         class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800"
         placeholder="ชื่อสมาชิกใหม่"
+        :disabled="isSessionReadOnly"
         @keyup.enter="addPlayer"
       />
-      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="addPlayer">
+      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="addPlayer">
         <Plus class="h-4 w-4" />
         เพิ่ม
       </button>
@@ -83,7 +86,7 @@ watch(() => props.forms.playerSearch, () => {
 
     <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
       <label class="flex items-center gap-2 text-sm">
-        <input v-model="state.settings.showPaymentOnShare" type="checkbox" @change="saveSettings" />
+        <input v-model="state.settings.showPaymentOnShare" type="checkbox" :disabled="isSessionReadOnly" @change="saveSettings" />
         แสดงสถานะจ่ายเงินในลิงก์แชร์
       </label>
       <div class="grid gap-2 sm:grid-cols-2">
@@ -146,6 +149,7 @@ watch(() => props.forms.playerSearch, () => {
           <span class="font-semibold text-stone-600 dark:text-stone-300">ชนะ {{ player.wins || 0 }} · เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses || 0 }}</span>
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md border border-court-200 bg-court-500/10 px-2 text-xs font-bold text-court-700 dark:border-court-900/60 dark:text-court-300"
+            :disabled="isSessionReadOnly"
             aria-label="แก้ไขสมาชิก"
             @click.stop="openEditPlayer(player)"
           >
@@ -155,6 +159,7 @@ watch(() => props.forms.playerSearch, () => {
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
             :class="player.paid ? 'bg-court-500 text-white' : 'bg-shuttle-400 text-stone-900'"
+            :disabled="isSessionReadOnly"
             @click.stop="togglePayment(player)"
           >
             <Check class="h-3.5 w-3.5" />
@@ -198,19 +203,20 @@ watch(() => props.forms.playerSearch, () => {
           <input
             v-model="editingName"
             class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 text-base font-black outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
+            :disabled="isSessionReadOnly"
             aria-label="แก้ชื่อสมาชิก"
             @keyup.enter="saveEditPlayer"
           />
         </label>
 
         <div class="mt-4 grid gap-2 sm:grid-cols-2">
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white" @click="saveEditPlayer">
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="saveEditPlayer">
             <Save class="h-4 w-4" />
             บันทึกชื่อ
           </button>
           <button
             class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-4 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-45 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300"
-            :disabled="deleteBlockReasons.length > 0"
+            :disabled="isSessionReadOnly || deleteBlockReasons.length > 0"
             @click="deleteEditPlayer"
           >
             <Trash2 class="h-4 w-4" />

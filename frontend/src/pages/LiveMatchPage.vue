@@ -8,22 +8,23 @@ defineProps([
   'randomMatch',
   'confirmPendingMatch',
   'cancelPendingMatch',
-  'playerName'
+  'playerName',
+  'isSessionReadOnly'
 ])
 </script>
 
 <template>
   <section class="grid gap-4">
     <div class="flex flex-wrap gap-2">
-      <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold dark:border-stone-700 dark:bg-stone-900" @click="ui.showCoupleModal = true">
+      <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700 dark:bg-stone-900" :disabled="isSessionReadOnly" @click="ui.showCoupleModal = true">
         <Users class="h-4 w-4" />
         จับคู่
       </button>
-      <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold dark:border-stone-700 dark:bg-stone-900" @click="ui.showCouponModal = true">
+      <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700 dark:bg-stone-900" :disabled="isSessionReadOnly" @click="ui.showCouponModal = true">
         <ClipboardList class="h-4 w-4" />
         คูปองระดับมือ
       </button>
-      <button class="inline-flex h-11 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="randomMatch">
+      <button class="inline-flex h-11 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="randomMatch">
         <Shuffle class="h-4 w-4" />
         Random
       </button>
@@ -54,11 +55,11 @@ defineProps([
           </div>
 
           <div class="grid grid-cols-2 gap-2">
-            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="cancelPendingMatch(match)">
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-stone-200 font-bold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" @click="cancelPendingMatch(match)">
               <X class="h-4 w-4" />
               ยกเลิกจับคู่
             </button>
-            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 font-bold text-white" @click="confirmPendingMatch(match)">
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmPendingMatch(match)">
               <Check class="h-4 w-4" />
               ยืนยัน
             </button>

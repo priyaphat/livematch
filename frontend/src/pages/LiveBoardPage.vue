@@ -11,7 +11,8 @@ defineProps([
   'requestFinishMatch',
   'confirmFinishMatch',
   'requestCancelMatch',
-  'confirmCancelMatch'
+  'confirmCancelMatch',
+  'isSessionReadOnly'
 ])
 </script>
 
@@ -27,12 +28,12 @@ defineProps([
       </div>
 
       <div class="mt-4 flex flex-wrap gap-2">
-        <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700" @click="requestAddShuttle(match)">+</button>
-        <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white" @click="requestFinishMatch(match)">
+        <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" @click="requestAddShuttle(match)">+</button>
+        <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="requestFinishMatch(match)">
           <Check class="h-4 w-4" />
           จบ
         </button>
-        <button class="inline-flex h-10 items-center gap-2 rounded-md bg-red-600 px-4 font-semibold text-white" @click="requestCancelMatch(match)">
+        <button class="inline-flex h-10 items-center gap-2 rounded-md bg-red-600 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="requestCancelMatch(match)">
           <X class="h-4 w-4" />
           ยกเลิก
         </button>
@@ -53,7 +54,7 @@ defineProps([
 
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showShuttleModal = false">กลับ</button>
-          <button class="h-11 rounded-md bg-shuttle-400 font-bold text-stone-950" @click="confirmAddShuttle">เพิ่มลูกแบด</button>
+          <button class="h-11 rounded-md bg-shuttle-400 font-bold text-stone-950 disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmAddShuttle">เพิ่มลูกแบด</button>
         </div>
       </div>
     </div>
@@ -72,19 +73,19 @@ defineProps([
 
         <div class="mt-4 grid gap-2">
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
-            <input v-model="forms.finishWinner" type="radio" value="" />
+            <input v-model="forms.finishWinner" type="radio" value="" :disabled="isSessionReadOnly" />
             <span class="font-bold">ไม่ระบุ</span>
           </label>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
-            <input v-model="forms.finishWinner" type="radio" value="draw" />
+            <input v-model="forms.finishWinner" type="radio" value="draw" :disabled="isSessionReadOnly" />
             <span class="font-bold">เสมอ</span>
           </label>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
-            <input v-model="forms.finishWinner" type="radio" value="A" />
+            <input v-model="forms.finishWinner" type="radio" value="A" :disabled="isSessionReadOnly" />
             <span class="font-bold">{{ playerName(ui.finishMatch?.a1) }} + {{ playerName(ui.finishMatch?.a2) }}</span>
           </label>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
-            <input v-model="forms.finishWinner" type="radio" value="B" />
+            <input v-model="forms.finishWinner" type="radio" value="B" :disabled="isSessionReadOnly" />
             <span class="font-bold">{{ playerName(ui.finishMatch?.b1) }} + {{ playerName(ui.finishMatch?.b2) }}</span>
           </label>
         </div>
@@ -93,11 +94,12 @@ defineProps([
           v-model="forms.finishNote"
           class="mt-4 min-h-24 w-full rounded-md border border-stone-200 bg-paper-50 p-3 outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
           placeholder="หมายเหตุหลังจบเกม"
+          :disabled="isSessionReadOnly"
         />
 
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showFinishModal = false">กลับ</button>
-          <button class="h-11 rounded-md bg-court-500 font-bold text-white" @click="confirmFinishMatch">บันทึกผล</button>
+          <button class="h-11 rounded-md bg-court-500 font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmFinishMatch">บันทึกผล</button>
         </div>
       </div>
     </div>
@@ -118,11 +120,12 @@ defineProps([
           v-model="forms.cancelNote"
           class="mt-4 min-h-28 w-full rounded-md border border-stone-200 bg-paper-50 p-3 outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
           placeholder="เช่น ผู้เล่นเจ็บ / สนามไม่ว่าง / ยกเลิกตามคำขอ"
+          :disabled="isSessionReadOnly"
         />
 
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showCancelModal = false">กลับ</button>
-          <button class="h-11 rounded-md bg-red-600 font-bold text-white" @click="confirmCancelMatch">บันทึกยกเลิก</button>
+          <button class="h-11 rounded-md bg-red-600 font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmCancelMatch">บันทึกยกเลิก</button>
         </div>
       </div>
     </div>

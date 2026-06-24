@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Lock, ReceiptText, RefreshCw, Save, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
+import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, ReceiptText, RefreshCw, Save, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'forms',
@@ -10,6 +10,7 @@ const props = defineProps([
   'openBackofficeAdminDetail',
   'saveBackofficeSettings',
   'saveBackofficeCoinShop',
+  'setupBackofficeTelegramWebhook',
   'addBackofficeCoinPackage',
   'removeBackofficeCoinPackage',
   'adjustBackofficeCoins',
@@ -177,12 +178,22 @@ function closeSlipPreview() {
                   Webhook secret
                   <input v-model="forms.backofficeTelegramWebhookSecret" readonly class="h-11 rounded-md border border-stone-200 bg-paper-100 px-3 text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300" placeholder="ระบบสร้างให้อัตโนมัติ" />
                 </label>
-                <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">Webhook URL: {{ forms.backofficeTelegramWebhookSecret ? `/api/telegram/webhook/${forms.backofficeTelegramWebhookSecret}` : '/api/telegram/webhook/{secret}' }}</p>
+                <label class="grid gap-2 text-sm font-bold">
+                  Webhook URL
+                  <input :value="forms.backofficeTelegramWebhookUrl || (forms.backofficeTelegramWebhookSecret ? `/api/telegram/webhook/${forms.backofficeTelegramWebhookSecret}` : '')" readonly class="h-11 rounded-md border border-stone-200 bg-paper-100 px-3 text-xs text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300" placeholder="บันทึก Telegram ก่อนเพื่อสร้าง URL" />
+                </label>
               </div>
-              <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeCoinShop">
-                <Save class="h-4 w-4" />
-                บันทึก Telegram
-              </button>
+              <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeCoinShop">
+                  <Save class="h-4 w-4" />
+                  บันทึก Telegram
+                </button>
+                <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 font-bold text-court-700 dark:border-court-900 dark:text-court-300" @click="setupBackofficeTelegramWebhook">
+                  <Link class="h-4 w-4" />
+                  ตั้งค่า Telegram webhook
+                </button>
+              </div>
+              <p v-if="forms.backofficeTelegramWebhookStatus" class="mt-2 rounded-md bg-paper-100 px-3 py-2 text-sm font-bold text-stone-700 dark:bg-stone-800 dark:text-stone-200">{{ forms.backofficeTelegramWebhookStatus }}</p>
             </article>
 
             <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
