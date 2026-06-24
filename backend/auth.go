@@ -22,6 +22,11 @@ import (
 
 const adminCookieName = "livematch_admin_session"
 
+var (
+	errCoinOrderNotFound = errors.New("coin order not found")
+	errCoinOrderReviewed = errors.New("coin order reviewed already")
+)
+
 type adminUser struct {
 	ID        string `json:"id"`
 	Email     string `json:"email"`
@@ -68,17 +73,24 @@ type coinPackage struct {
 }
 
 type coinPurchaseOrder struct {
-	ID         string `json:"id"`
-	AdminID    string `json:"adminId"`
-	AdminEmail string `json:"adminEmail,omitempty"`
-	PackageID  string `json:"packageId"`
-	PriceTHB   int    `json:"priceThb"`
-	Coins      int    `json:"coins"`
-	SlipImage  string `json:"slipImage,omitempty"`
-	Status     string `json:"status"`
-	Note       string `json:"note"`
-	CreatedAt  string `json:"createdAt"`
-	ReviewedAt string `json:"reviewedAt,omitempty"`
+	ID                 string `json:"id"`
+	AdminID            string `json:"adminId"`
+	AdminEmail         string `json:"adminEmail,omitempty"`
+	PackageID          string `json:"packageId"`
+	PriceTHB           int    `json:"priceThb"`
+	Coins              int    `json:"coins"`
+	SlipImage          string `json:"slipImage,omitempty"`
+	Status             string `json:"status"`
+	Note               string `json:"note"`
+	TransRef           string `json:"transRef"`
+	SlipQRPayload      string `json:"slipQrPayload,omitempty"`
+	DetectedAmountTHB  *int   `json:"detectedAmountThb,omitempty"`
+	DetectedPaidAt     string `json:"detectedPaidAt,omitempty"`
+	DetectedReceiver   string `json:"detectedReceiver,omitempty"`
+	VerificationStatus string `json:"verificationStatus"`
+	VerificationNote   string `json:"verificationNote"`
+	CreatedAt          string `json:"createdAt"`
+	ReviewedAt         string `json:"reviewedAt,omitempty"`
 }
 
 type activityLogItem struct {
@@ -477,10 +489,17 @@ func (a *app) handleAdminCoinShop(w http.ResponseWriter, r *http.Request, user a
 		return
 	}
 	qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
+	promptPay := a.promptPaySettings(r.Context())
+	promptPayPayloads := promptPayPayloadsForPackages(promptPay, packages)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"packages":       packages,
-		"paymentQrImage": qrImage,
-		"orders":         orders,
+		"packages":              packages,
+		"paymentQrImage":        qrImage,
+		"promptPayId":           promptPay.ID,
+		"promptPayType":         promptPay.Type,
+		"promptPayReceiverName": promptPay.ReceiverName,
+		"promptPayPayloads":     promptPayPayloads,
+		"promptPayAvailable":    len(promptPayPayloads) > 0,
+		"orders":                orders,
 	})
 }
 
@@ -514,6 +533,25 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	promptPay := a.promptPaySettings(r.Context())
+	slipCheck := inspectSlipImage(body.SlipImage, pkg.PriceTHB, promptPay, time.Now())
+	if slipCheck.TransRef != "" {
+		var existingID string
+		err = a.db.QueryRowContext(r.Context(), `
+			select id from coin_purchase_orders
+			where trans_ref = $1
+			limit 1
+		`, slipCheck.TransRef).Scan(&existingID)
+		if err == nil {
+			a.insertActivityLog(r.Context(), "admin", user.ID, "duplicate_coin_purchase_slip", "coin_purchase_order", existingID, map[string]any{"transRef": slipCheck.TransRef, "packageId": pkg.ID})
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "สลิปนี้เคยถูกส่งเข้าระบบแล้ว"})
+			return
+		}
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	id := "coin-order-" + randHex(8)
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -522,13 +560,21 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 	}
 	defer tx.Rollback()
 	if _, err = tx.ExecContext(r.Context(), `
-		insert into coin_purchase_orders (id, admin_id, package_id, price_thb, coins, slip_image, status)
-		values ($1, $2, $3, $4, $5, $6, 'pending')
-	`, id, user.ID, pkg.ID, pkg.PriceTHB, pkg.Coins, body.SlipImage); err != nil {
+		insert into coin_purchase_orders (
+			id, admin_id, package_id, price_thb, coins, slip_image, status,
+			trans_ref, slip_qr_payload, detected_amount_thb, detected_paid_at, detected_receiver,
+			verification_status, verification_note
+		)
+		values ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11, $12, $13)
+	`, id, user.ID, pkg.ID, pkg.PriceTHB, pkg.Coins, body.SlipImage, slipCheck.TransRef, slipCheck.QRPayload, slipCheck.DetectedAmountTHB, slipCheck.DetectedPaidAt, slipCheck.DetectedReceiver, slipCheck.VerificationStatus, slipCheck.VerificationNote); err != nil {
+		if strings.Contains(err.Error(), "idx_coin_purchase_orders_trans_ref") || strings.Contains(err.Error(), "duplicate key") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "สลิปนี้เคยถูกส่งเข้าระบบแล้ว"})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "submit_coin_purchase", "coin_purchase_order", id, map[string]any{"packageId": pkg.ID, "priceThb": pkg.PriceTHB, "coins": pkg.Coins}); err != nil {
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "submit_coin_purchase", "coin_purchase_order", id, map[string]any{"packageId": pkg.ID, "priceThb": pkg.PriceTHB, "coins": pkg.Coins, "transRef": slipCheck.TransRef, "verificationStatus": slipCheck.VerificationStatus, "verificationNote": slipCheck.VerificationNote}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -536,6 +582,18 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	a.notifyTelegramCoinOrder(r.Context(), coinPurchaseOrder{
+		ID:                 id,
+		AdminID:            user.ID,
+		AdminEmail:         user.Email,
+		PackageID:          pkg.ID,
+		PriceTHB:           pkg.PriceTHB,
+		Coins:              pkg.Coins,
+		SlipImage:          body.SlipImage,
+		TransRef:           slipCheck.TransRef,
+		VerificationStatus: slipCheck.VerificationStatus,
+		VerificationNote:   slipCheck.VerificationNote,
+	}, user)
 	a.handleAdminCoinShop(w, r, user)
 }
 
@@ -632,14 +690,24 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	orders, _ := a.coinPurchaseOrders(r.Context(), "", true, 50)
 	logs, _ := a.activityLogs(r.Context(), 80)
 	qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
+	promptPay := a.promptPaySettings(r.Context())
+	telegramSettings := a.telegramNotifySettings(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"users":                users,
-		"coinLedger":           ledger,
-		"liveMatchSessionCost": nullableCost(cost, hasCost),
-		"coinPackages":         packages,
-		"coinPaymentQrImage":   qrImage,
-		"coinPurchaseOrders":   orders,
-		"activityLogs":         logs,
+		"users":                 users,
+		"coinLedger":            ledger,
+		"liveMatchSessionCost":  nullableCost(cost, hasCost),
+		"coinPackages":          packages,
+		"coinPaymentQrImage":    qrImage,
+		"promptPayId":           promptPay.ID,
+		"promptPayType":         promptPay.Type,
+		"promptPayReceiverName": promptPay.ReceiverName,
+		"promptPayPayloads":     promptPayPayloadsForPackages(promptPay, packages),
+		"telegramBotToken":      telegramSettings.BotToken,
+		"telegramChatId":        telegramSettings.ChatID,
+		"telegramWebhookSecret": telegramSettings.WebhookSecret,
+		"telegramNotifyEnabled": telegramSettings.enabled(),
+		"coinPurchaseOrders":    orders,
+		"activityLogs":          logs,
 	})
 }
 
@@ -679,13 +747,30 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 
 func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, actor string) {
 	var body struct {
-		Packages       []coinPackage `json:"packages"`
-		PaymentQrImage string        `json:"paymentQrImage"`
+		Packages              []coinPackage `json:"packages"`
+		PaymentQrImage        string        `json:"paymentQrImage"`
+		PromptPayID           string        `json:"promptPayId"`
+		PromptPayType         string        `json:"promptPayType"`
+		PromptPayReceiverName string        `json:"promptPayReceiverName"`
+		TelegramBotToken      string        `json:"telegramBotToken"`
+		TelegramChatID        string        `json:"telegramChatId"`
+		TelegramWebhookSecret string        `json:"telegramWebhookSecret"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if len(body.Packages) > 12 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many packages"})
 		return
+	}
+	promptPayID := strings.TrimSpace(body.PromptPayID)
+	promptPayType := strings.TrimSpace(body.PromptPayType)
+	if promptPayType == "" {
+		promptPayType = "mobile"
+	}
+	if promptPayID != "" {
+		if _, _, err := normalizePromptPayTarget(promptPaySettings{ID: promptPayID, Type: promptPayType}); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "PromptPay setting ไม่ถูกต้อง"})
+			return
+		}
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -700,6 +785,23 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 	`, strings.TrimSpace(body.PaymentQrImage)); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	for key, value := range map[string]string{
+		"promptPayId":           promptPayID,
+		"promptPayType":         promptPayType,
+		"promptPayReceiverName": strings.TrimSpace(body.PromptPayReceiverName),
+		"telegramBotToken":      strings.TrimSpace(body.TelegramBotToken),
+		"telegramChatId":        strings.TrimSpace(body.TelegramChatID),
+		"telegramWebhookSecret": strings.TrimSpace(body.TelegramWebhookSecret),
+	} {
+		if _, err = tx.ExecContext(r.Context(), `
+			insert into system_settings (key, value)
+			values ($1, $2)
+			on conflict (key) do update set value = excluded.value, updated_at = now()
+		`, key, value); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	if _, err = tx.ExecContext(r.Context(), `update coin_packages set active = false, updated_at = now()`); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -736,7 +838,7 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 			return
 		}
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_coin_shop", "coin_shop", "coin_packages", map[string]any{"packageCount": len(body.Packages), "hasQr": strings.TrimSpace(body.PaymentQrImage) != ""}); err != nil {
+	if err = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_coin_shop", "coin_shop", "coin_packages", map[string]any{"packageCount": len(body.Packages), "hasQr": strings.TrimSpace(body.PaymentQrImage) != "", "hasPromptPay": promptPayID != "", "promptPayType": promptPayType, "telegramNotifyEnabled": strings.TrimSpace(body.TelegramBotToken) != "" && strings.TrimSpace(body.TelegramChatID) != ""}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -809,70 +911,74 @@ func (a *app) handleBackofficeCoinOrderReview(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing order id"})
 		return
 	}
-	tx, err := a.db.BeginTx(r.Context(), nil)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	defer tx.Rollback()
-	var order coinPurchaseOrder
-	if err = tx.QueryRowContext(r.Context(), `
-		select id, admin_id, package_id, price_thb, coins, status
-		from coin_purchase_orders
-		where id = $1
-		for update
-	`, orderID).Scan(&order.ID, &order.AdminID, &order.PackageID, &order.PriceTHB, &order.Coins, &order.Status); errors.Is(err, sql.ErrNoRows) {
+	if err := a.reviewCoinOrder(r.Context(), orderID, status, "backoffice", actor, strings.TrimSpace(body.Note)); errors.Is(err, errCoinOrderNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
+		return
+	} else if errors.Is(err, errCoinOrderReviewed) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "order reviewed already"})
 		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if order.Status != "pending" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "order reviewed already"})
-		return
+	a.handleBackofficeSummary(w, r)
+}
+
+func (a *app) reviewCoinOrder(ctx context.Context, orderID, status, actorType, actorID, note string) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
 	}
-	note := strings.TrimSpace(body.Note)
+	defer tx.Rollback()
+	var order coinPurchaseOrder
+	if err = tx.QueryRowContext(ctx, `
+		select id, admin_id, package_id, price_thb, coins, status
+		from coin_purchase_orders
+		where id = $1
+		for update
+	`, orderID).Scan(&order.ID, &order.AdminID, &order.PackageID, &order.PriceTHB, &order.Coins, &order.Status); errors.Is(err, sql.ErrNoRows) {
+		return errCoinOrderNotFound
+	} else if err != nil {
+		return err
+	}
+	if order.Status != "pending" {
+		return errCoinOrderReviewed
+	}
+	note = strings.TrimSpace(note)
 	if status == "approved" {
 		var current int
-		if err = tx.QueryRowContext(r.Context(), `select coins from admin_users where id = $1 for update`, order.AdminID).Scan(&current); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		if err = tx.QueryRowContext(ctx, `select coins from admin_users where id = $1 for update`, order.AdminID).Scan(&current); err != nil {
+			return err
 		}
 		next := current + order.Coins
-		if _, err = tx.ExecContext(r.Context(), `update admin_users set coins = $2 where id = $1`, order.AdminID, next); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		if _, err = tx.ExecContext(ctx, `update admin_users set coins = $2 where id = $1`, order.AdminID, next); err != nil {
+			return err
 		}
-		if _, err = tx.ExecContext(r.Context(), `
+		if _, err = tx.ExecContext(ctx, `
 			insert into coin_ledger (admin_id, delta, balance, reason, note)
 			values ($1, $2, $3, 'coin_purchase', $4)
 		`, order.AdminID, order.Coins, next, "order "+order.ID); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+			return err
 		}
 	}
-	if _, err = tx.ExecContext(r.Context(), `
+	if _, err = tx.ExecContext(ctx, `
 		update coin_purchase_orders
 		set status = $2, note = $3, updated_at = now(), reviewed_at = now()
 		where id = $1
 	`, order.ID, status, note); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return err
 	}
 	actionName := "reject_coin_purchase"
 	if status == "approved" {
 		actionName = "approve_coin_purchase"
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, actionName, "coin_purchase_order", order.ID, map[string]any{"adminId": order.AdminID, "priceThb": order.PriceTHB, "coins": order.Coins, "note": note}); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+	if err = a.insertActivityLogTx(ctx, tx, actorType, actorID, actionName, "coin_purchase_order", order.ID, map[string]any{"adminId": order.AdminID, "priceThb": order.PriceTHB, "coins": order.Coins, "note": note}); err != nil {
+		return err
 	}
 	if err = tx.Commit(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
+		return err
 	}
-	a.handleBackofficeSummary(w, r)
+	return nil
 }
 
 func (a *app) currentAdmin(ctx context.Context, r *http.Request) (adminUser, bool) {
@@ -1011,7 +1117,8 @@ func (a *app) coinPurchaseOrders(ctx context.Context, adminID string, includeSli
 	}
 	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
 		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.price_thb, o.coins, %s,
-			o.status, o.note,
+			o.status, o.note, o.trans_ref, o.slip_qr_payload, o.detected_amount_thb,
+			o.detected_paid_at, o.detected_receiver, o.verification_status, o.verification_note,
 			to_char(o.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'),
 			coalesce(to_char(o.reviewed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'), '')
 		from coin_purchase_orders o
@@ -1026,8 +1133,13 @@ func (a *app) coinPurchaseOrders(ctx context.Context, adminID string, includeSli
 	defer rows.Close()
 	for rows.Next() {
 		var item coinPurchaseOrder
-		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PriceTHB, &item.Coins, &item.SlipImage, &item.Status, &item.Note, &item.CreatedAt, &item.ReviewedAt); err != nil {
+		var detectedAmount sql.NullInt64
+		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PriceTHB, &item.Coins, &item.SlipImage, &item.Status, &item.Note, &item.TransRef, &item.SlipQRPayload, &detectedAmount, &item.DetectedPaidAt, &item.DetectedReceiver, &item.VerificationStatus, &item.VerificationNote, &item.CreatedAt, &item.ReviewedAt); err != nil {
 			return items, err
+		}
+		if detectedAmount.Valid {
+			amount := int(detectedAmount.Int64)
+			item.DetectedAmountTHB = &amount
 		}
 		items = append(items, item)
 	}

@@ -161,10 +161,18 @@ const forms = reactive({
   backofficeLiveMatchCost: null,
   backofficeCoinPackages: [],
   backofficeCoinPaymentQrImage: '',
+  backofficePromptPayId: '',
+  backofficePromptPayType: 'mobile',
+  backofficePromptPayReceiverName: '',
+  backofficeTelegramBotToken: '',
+  backofficeTelegramChatId: '',
+  backofficeTelegramWebhookSecret: '',
   backofficeRejectOrderId: '',
   backofficeRejectNote: '',
+  backofficeSlipPreview: null,
   coinModalMode: 'shop',
   coinSelectedPackageId: '',
+  coinPaymentQrDataUrl: '',
   coinSlipImage: '',
   coinOrderStatus: '',
   shareLink: '',
@@ -193,6 +201,7 @@ const ui = reactive({
   showCreateSessionModal: false,
   showCoinModal: false,
   showBackofficeAdminModal: false,
+  showBackofficeSlipModal: false,
   toast: null,
   loadingTab: ''
 })
@@ -211,6 +220,11 @@ const auth = reactive({
   liveMatchSessionCost: null,
   coinPackages: [],
   coinPaymentQrImage: '',
+  promptPayId: '',
+  promptPayType: 'mobile',
+  promptPayReceiverName: '',
+  promptPayPayloads: {},
+  promptPayAvailable: false,
   coinOrders: []
 })
 const backoffice = reactive({
@@ -547,6 +561,12 @@ function syncBackofficeCoinShopForms() {
   const summary = forms.backofficeSummary || {}
   forms.backofficeCoinPackages = (summary.coinPackages || []).map((item) => ({ ...item }))
   forms.backofficeCoinPaymentQrImage = summary.coinPaymentQrImage || ''
+  forms.backofficePromptPayId = summary.promptPayId || ''
+  forms.backofficePromptPayType = summary.promptPayType || 'mobile'
+  forms.backofficePromptPayReceiverName = summary.promptPayReceiverName || ''
+  forms.backofficeTelegramBotToken = summary.telegramBotToken || ''
+  forms.backofficeTelegramChatId = summary.telegramChatId || ''
+  forms.backofficeTelegramWebhookSecret = summary.telegramWebhookSecret || ''
 }
 
 async function saveBackofficeSettings() {
@@ -570,7 +590,13 @@ async function saveBackofficeCoinShop() {
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
         packages: forms.backofficeCoinPackages,
-        paymentQrImage: forms.backofficeCoinPaymentQrImage
+        paymentQrImage: forms.backofficeCoinPaymentQrImage,
+        promptPayId: forms.backofficePromptPayId,
+        promptPayType: forms.backofficePromptPayType,
+        promptPayReceiverName: forms.backofficePromptPayReceiverName,
+        telegramBotToken: forms.backofficeTelegramBotToken,
+        telegramChatId: forms.backofficeTelegramChatId,
+        telegramWebhookSecret: forms.backofficeTelegramWebhookSecret
       })
     })
     syncBackofficeCoinShopForms()
@@ -640,10 +666,16 @@ function applyAdminPayload(payload) {
 function applyCoinShopPayload(payload) {
   auth.coinPackages = payload.packages || []
   auth.coinPaymentQrImage = payload.paymentQrImage || ''
+  auth.promptPayId = payload.promptPayId || ''
+  auth.promptPayType = payload.promptPayType || 'mobile'
+  auth.promptPayReceiverName = payload.promptPayReceiverName || ''
+  auth.promptPayPayloads = payload.promptPayPayloads || {}
+  auth.promptPayAvailable = Boolean(payload.promptPayAvailable)
   auth.coinOrders = payload.orders || []
   if (!forms.coinSelectedPackageId && auth.coinPackages.length) {
     forms.coinSelectedPackageId = auth.coinPackages[0].id
   }
+  refreshCoinPaymentQr()
 }
 
 async function openCoinModal(mode = 'shop') {
@@ -848,6 +880,34 @@ function coinOrderStatusClass(status) {
 function selectedCoinPackage() {
   return auth.coinPackages.find((item) => item.id === forms.coinSelectedPackageId) || auth.coinPackages[0] || null
 }
+
+const coinPaymentQrReady = computed(() => Boolean(forms.coinPaymentQrDataUrl || auth.coinPaymentQrImage))
+const selectedPromptPayPayload = computed(() => auth.promptPayPayloads?.[forms.coinSelectedPackageId] || '')
+
+async function refreshCoinPaymentQr() {
+  const payload = selectedPromptPayPayload.value
+  if (payload) {
+    try {
+      forms.coinPaymentQrDataUrl = await QRCode.toDataURL(payload, {
+        margin: 1,
+        width: 256,
+        color: { dark: '#1c1917', light: '#ffffff' }
+      })
+      return
+    } catch {
+      forms.coinPaymentQrDataUrl = ''
+    }
+  }
+  forms.coinPaymentQrDataUrl = ''
+}
+
+watch(
+  () => [forms.coinSelectedPackageId, auth.promptPayPayloads],
+  () => {
+    refreshCoinPaymentQr()
+  },
+  { deep: true }
+)
 
 function readImageFile(file, callback) {
   if (!file) return
@@ -2002,14 +2062,18 @@ const pageProps = computed(() => ({
               <h3 class="font-black">ชำระเงิน</h3>
               <div class="mt-3 grid gap-3 sm:grid-cols-[12rem_1fr]">
                 <div class="grid min-h-48 place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
-                  <img v-if="auth.coinPaymentQrImage" :src="auth.coinPaymentQrImage" alt="QR ชำระเงิน" class="max-h-44 rounded-md bg-white object-contain p-2" />
-                  <p v-else class="text-center text-sm font-bold text-stone-500">backoffice ยังไม่ได้อัปโหลด QR</p>
+                  <img v-if="forms.coinPaymentQrDataUrl" :src="forms.coinPaymentQrDataUrl" alt="PromptPay QR ตามยอด" class="max-h-44 rounded-md bg-white object-contain p-2" />
+                  <img v-else-if="auth.coinPaymentQrImage" :src="auth.coinPaymentQrImage" alt="QR ชำระเงินสำรอง" class="max-h-44 rounded-md bg-white object-contain p-2" />
+                  <p v-else class="text-center text-sm font-bold text-stone-500">backoffice ยังไม่ได้ตั้ง PromptPay หรือ QR สำรอง</p>
                 </div>
                 <div class="grid gap-3">
                   <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
                     <p class="text-xs font-bold text-stone-500 dark:text-stone-400">แพ็กเกจที่เลือก</p>
                     <p class="mt-1 font-black">{{ selectedCoinPackage()?.name || '-' }}</p>
                     <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ราคา ฿{{ Number(selectedCoinPackage()?.priceThb || 0).toLocaleString('th-TH') }} ได้ {{ Number(selectedCoinPackage()?.coins || 0).toLocaleString('th-TH') }} coin</p>
+                    <p class="mt-2 text-xs font-bold" :class="forms.coinPaymentQrDataUrl ? 'text-court-700 dark:text-court-300' : 'text-amber-700 dark:text-amber-300'">
+                      {{ forms.coinPaymentQrDataUrl ? 'QR นี้สร้างตามยอดแพ็กเกจที่เลือก' : 'ใช้ QR สำรอง กรุณาโอนตามยอดแพ็กเกจ' }}
+                    </p>
                   </div>
                   <label class="grid cursor-pointer place-items-center gap-2 rounded-md border border-dashed border-stone-300 p-4 text-center text-sm font-black transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800">
                     <Upload class="h-5 w-5" />
@@ -2017,7 +2081,7 @@ const pageProps = computed(() => ({
                     <input type="file" accept="image/*" class="hidden" @change="handleCoinSlipFile" />
                   </label>
                   <img v-if="forms.coinSlipImage" :src="forms.coinSlipImage" alt="สลิปที่เลือก" class="max-h-32 rounded-md border border-stone-200 object-contain dark:border-stone-700" />
-                  <button class="h-11 rounded-md bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:opacity-50" :disabled="!forms.coinSelectedPackageId || !forms.coinSlipImage || !auth.coinPaymentQrImage" @click="submitCoinOrder">
+                  <button class="h-11 rounded-md bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:opacity-50" :disabled="!forms.coinSelectedPackageId || !forms.coinSlipImage || !coinPaymentQrReady" @click="submitCoinOrder">
                     ส่งตรวจสอบ
                   </button>
                   <p v-if="forms.coinOrderStatus" class="rounded-md bg-paper-100 px-3 py-2 text-sm font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.coinOrderStatus }}</p>

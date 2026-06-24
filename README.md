@@ -22,6 +22,27 @@ Services:
 
 Backend connects to PostgreSQL through the Docker network with host `postgres`.
 
+## Telegram Alert
+
+Coin order alerts use Telegram Bot messages. Set the bot token and chat ID in `/backoffice` under the setting/overview page.
+
+Environment variables are still supported as a fallback for deployments that prefer Docker-level config:
+
+```text
+TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+TELEGRAM_CHAT_ID=chat-id-or-group-id
+TELEGRAM_WEBHOOK_SECRET=random-secret-for-inline-buttons
+APP_BASE_URL=http://localhost:5173
+```
+
+Leave both Backoffice fields and env values empty to disable Telegram alerts. Failed Telegram delivery is logged but does not block coin order creation.
+
+To use approve/reject buttons in Telegram, set your bot webhook to:
+
+```text
+https://your-domain.example/api/telegram/webhook/{TELEGRAM_WEBHOOK_SECRET}
+```
+
 ## Local Development
 
 Frontend:

@@ -79,6 +79,15 @@ function activityDetails(details) {
     return details
   }
 }
+function openSlipPreview(order) {
+  props.forms.backofficeSlipPreview = order
+  props.ui.showBackofficeSlipModal = true
+}
+
+function closeSlipPreview() {
+  props.forms.backofficeSlipPreview = null
+  props.ui.showBackofficeSlipModal = false
+}
 </script>
 
 <template>
@@ -142,6 +151,33 @@ function activityDetails(details) {
               <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeSettings">
                 <Save class="h-4 w-4" />
                 บันทึกราคา
+              </button>
+            </article>
+
+            <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+              <div class="flex items-center gap-2">
+                <ReceiptText class="h-5 w-5 text-court-600" />
+                <h2 class="text-lg font-black">Telegram notification</h2>
+              </div>
+              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">แจ้ง backoffice เมื่อมีรายการซื้อ coin ใหม่ ผ่าน Telegram Bot</p>
+              <div class="mt-3 grid gap-3">
+                <label class="grid gap-2 text-sm font-bold">
+                  Bot token
+                  <input v-model="forms.backofficeTelegramBotToken" type="password" autocomplete="off" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="TELEGRAM_BOT_TOKEN" />
+                </label>
+                <label class="grid gap-2 text-sm font-bold">
+                  Chat ID
+                  <input v-model="forms.backofficeTelegramChatId" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="chat_id เช่น -1001234567890" />
+                </label>
+                <label class="grid gap-2 text-sm font-bold">
+                  Webhook secret
+                  <input v-model="forms.backofficeTelegramWebhookSecret" type="password" autocomplete="off" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ตั้ง secret สำหรับปุ่ม approve/reject" />
+                </label>
+                <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">Webhook URL: {{ forms.backofficeTelegramWebhookSecret ? `/api/telegram/webhook/${forms.backofficeTelegramWebhookSecret}` : '/api/telegram/webhook/{secret}' }}</p>
+              </div>
+              <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeCoinShop">
+                <Save class="h-4 w-4" />
+                บันทึก Telegram
               </button>
             </article>
 
@@ -259,6 +295,29 @@ function activityDetails(details) {
             </div>
 
             <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+              <p class="font-black">PromptPay ตามยอด</p>
+              <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ตั้งบัญชีรับเงิน ระบบจะสร้าง QR ตามราคาแพ็กเกจให้ลูกค้าอัตโนมัติ</p>
+              <div class="mt-3 grid gap-2">
+                <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
+                  ประเภท PromptPay
+                  <select v-model="forms.backofficePromptPayType" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white">
+                    <option value="mobile">เบอร์มือถือ</option>
+                    <option value="national_id">เลขบัตรประชาชน</option>
+                    <option value="ewallet">e-Wallet</option>
+                  </select>
+                </label>
+                <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
+                  PromptPay ID
+                  <input v-model="forms.backofficePromptPayId" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="เช่น 0812345678" />
+                </label>
+                <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
+                  ชื่อผู้รับ / label ตรวจสลิป
+                  <input v-model="forms.backofficePromptPayReceiverName" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="ชื่อบัญชีผู้รับ" />
+                </label>
+              </div>
+            </div>
+
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <p class="font-black">QR สำหรับรับเงิน</p>
               <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ลูกค้าจะสแกน QR นี้หลังเลือกแพ็กเกจ</p>
               <div class="mt-3 grid min-h-48 place-items-center rounded-md bg-white p-2 dark:bg-stone-900">
@@ -282,8 +341,31 @@ function activityDetails(details) {
                 <p class="truncate font-black">{{ order.adminEmail }}</p>
                 <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ราคา ฿{{ order.priceThb }} · ได้ {{ order.coins }} coin · {{ order.createdAt }}</p>
                 <p v-if="order.note" class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ order.note }}</p>
+                <div class="mt-2 rounded-md bg-white p-2 text-xs font-semibold text-stone-600 dark:bg-stone-900 dark:text-stone-300">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span class="rounded px-2 py-1 font-black" :class="order.verificationStatus === 'passed' ? 'bg-court-500/10 text-court-700 dark:text-court-300' : order.verificationStatus === 'warning' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'">
+                      {{ order.verificationStatus || 'manual_review' }}
+                    </span>
+                    <span v-if="order.transRef">transRef: {{ order.transRef }}</span>
+                  </div>
+                  <p v-if="order.verificationNote" class="mt-1">{{ order.verificationNote }}</p>
+                  <p class="mt-1">
+                    <span v-if="order.detectedAmountThb">ยอดที่อ่านได้ ฿{{ Number(order.detectedAmountThb || 0).toLocaleString('th-TH') }}</span>
+                    <span v-if="order.detectedPaidAt"> · เวลา {{ order.detectedPaidAt }}</span>
+                    <span v-if="order.detectedReceiver"> · ผู้รับ {{ order.detectedReceiver }}</span>
+                  </p>
+                </div>
               </div>
-              <img v-if="order.slipImage" :src="order.slipImage" alt="สลิป" class="h-24 w-full rounded-md bg-white object-contain p-1 dark:bg-stone-900" />
+              <button
+                v-if="order.slipImage"
+                type="button"
+                class="group relative h-24 w-full overflow-hidden rounded-md bg-white p-1 ring-1 ring-stone-200 transition hover:ring-court-500 dark:bg-stone-900 dark:ring-stone-800"
+                title="ดูสลิปขนาดใหญ่"
+                @click="openSlipPreview(order)"
+              >
+                <img :src="order.slipImage" alt="สลิป" class="h-full w-full object-contain" />
+                <span class="absolute inset-x-1 bottom-1 rounded bg-stone-950/70 px-2 py-1 text-center text-[11px] font-black text-white opacity-0 transition group-hover:opacity-100">ดูรูปใหญ่</span>
+              </button>
               <span class="w-max rounded-md px-2 py-1 text-xs font-black" :class="coinOrderStatusClass(order.status)">{{ coinOrderStatusText(order.status) }}</span>
               <div v-if="order.status === 'pending'" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
                 <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @click="reviewBackofficeCoinOrder(order.id, 'approved')">
@@ -441,6 +523,29 @@ function activityDetails(details) {
               </div>
             </section>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="ui.showBackofficeSlipModal && forms.backofficeSlipPreview" class="fixed inset-0 z-[60] grid place-items-end bg-black/70 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="ดูสลิป">
+      <div class="w-full max-w-3xl rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm font-black text-court-700 dark:text-court-300">Payment slip</p>
+            <h2 class="mt-1 truncate text-xl font-black">{{ forms.backofficeSlipPreview.adminEmail || '-' }}</h2>
+            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">฿{{ Number(forms.backofficeSlipPreview.priceThb || 0).toLocaleString('th-TH') }} · {{ Number(forms.backofficeSlipPreview.coins || 0).toLocaleString('th-TH') }} coin · {{ forms.backofficeSlipPreview.createdAt }}</p>
+          </div>
+          <button class="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="closeSlipPreview">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-4 grid max-h-[75vh] place-items-center overflow-auto rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+          <img :src="forms.backofficeSlipPreview.slipImage" alt="สลิปชำระเงิน" class="max-h-[70vh] max-w-full rounded-md bg-white object-contain p-2 dark:bg-stone-950" />
+        </div>
+
+        <div class="mt-4 flex justify-end">
+          <button class="h-10 rounded-md border border-stone-200 px-4 text-sm font-black dark:border-stone-700" @click="closeSlipPreview">ปิด</button>
         </div>
       </div>
     </div>

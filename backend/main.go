@@ -140,6 +140,7 @@ func main() {
 	mux.HandleFunc("/api/auth/", a.handleAuthRoutes)
 	mux.HandleFunc("/api/admin/", a.handleAdminSupervisorRoutes)
 	mux.HandleFunc("/api/backoffice/", a.handleBackofficeRoutes)
+	mux.HandleFunc("/api/telegram/webhook/", a.handleTelegramWebhook)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
 	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
 	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
@@ -350,8 +351,17 @@ func (a *app) migrate(ctx context.Context) error {
 			updated_at timestamptz not null default now(),
 			reviewed_at timestamptz
 		);
+		alter table coin_purchase_orders add column if not exists trans_ref text not null default '';
+		alter table coin_purchase_orders add column if not exists slip_qr_payload text not null default '';
+		alter table coin_purchase_orders add column if not exists detected_amount_thb integer;
+		alter table coin_purchase_orders add column if not exists detected_paid_at text not null default '';
+		alter table coin_purchase_orders add column if not exists detected_receiver text not null default '';
+		alter table coin_purchase_orders add column if not exists verification_status text not null default 'manual_review';
+		alter table coin_purchase_orders add column if not exists verification_note text not null default '';
 		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_status_check;
 		alter table coin_purchase_orders add constraint coin_purchase_orders_status_check check (status in ('pending', 'approved', 'rejected'));
+		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_verification_status_check;
+		alter table coin_purchase_orders add constraint coin_purchase_orders_verification_status_check check (verification_status in ('passed', 'warning', 'manual_review', 'duplicate'));
 		create table if not exists activity_logs (
 			id bigserial primary key,
 			actor_type text not null,
@@ -367,6 +377,7 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
 		create index if not exists idx_coin_purchase_orders_admin on coin_purchase_orders(admin_id);
 		create index if not exists idx_coin_purchase_orders_status on coin_purchase_orders(status);
+		create unique index if not exists idx_coin_purchase_orders_trans_ref on coin_purchase_orders(trans_ref) where trans_ref <> '';
 		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
 	`)
 	if err != nil {

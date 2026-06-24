@@ -1,11 +1,20 @@
 package main
 
 import (
+	"bytes"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/makiuchi-d/gozxing"
+	qrwriter "github.com/makiuchi-d/gozxing/qrcode"
 )
 
 func TestRandomMatchCreatesAllPossiblePendingMatches(t *testing.T) {
@@ -582,4 +591,80 @@ func TestSupervisorRoutesReturnGone(t *testing.T) {
 	if rec.Code != http.StatusGone {
 		t.Fatalf("expected supervisor summary to return 410, got %d", rec.Code)
 	}
+}
+
+func TestPromptPayPayloadIncludesAmountAndValidCRC(t *testing.T) {
+	payload, err := promptPayPayload(promptPaySettings{ID: "0812345678", Type: "mobile"}, 149)
+	if err != nil {
+		t.Fatalf("promptPayPayload returned error: %v", err)
+	}
+	if !strings.Contains(payload, "5406149.00") {
+		t.Fatalf("expected payload to contain THB amount 149.00, got %q", payload)
+	}
+	if !strings.HasSuffix(payload[:len(payload)-4], "6304") {
+		t.Fatalf("expected payload to contain CRC tag, got %q", payload)
+	}
+	expectedCRC := crc16CCITT(payload[:len(payload)-4])
+	if got := payload[len(payload)-4:]; got != expectedCRC {
+		t.Fatalf("expected CRC %s, got %s in %q", expectedCRC, got, payload)
+	}
+}
+
+func TestParseSlipQRPayloadExtractsAmountAndTransRef(t *testing.T) {
+	payload := "00020101021229370016A0000006770101110113006681234567853037645406100.005802TH transRef=ABCDEF1234567890"
+	parsed := parseSlipQRPayload(payload)
+	if parsed.AmountTHB == nil || *parsed.AmountTHB != 100 {
+		t.Fatalf("expected amount 100, got %#v", parsed.AmountTHB)
+	}
+	if parsed.TransRef != "ABCDEF1234567890" {
+		t.Fatalf("expected transRef ABCDEF1234567890, got %q", parsed.TransRef)
+	}
+	if parsed.Receiver == "" {
+		t.Fatal("expected receiver to be parsed from merchant tag")
+	}
+}
+
+func TestParseThaiSlipQRPayloadExtractsNestedTransRef(t *testing.T) {
+	payload := "0046000600000101030340225MPI00119399536174058767155102TH9104A954"
+	parsed := parseSlipQRPayload(payload)
+	if parsed.TransRef != "MPI0011939953617405876715" {
+		t.Fatalf("expected nested MPI transRef, got %q", parsed.TransRef)
+	}
+	if parsed.AmountTHB != nil {
+		t.Fatalf("expected no amount because this slip QR has no amount tag, got %#v", parsed.AmountTHB)
+	}
+}
+
+func TestInspectSlipVerificationFlagsAmountMismatch(t *testing.T) {
+	payload := "00020101021229370016A000000677010111011300668123456785303764540580.005802TH transRef=ABCDEF1234567890"
+	check := inspectSlipImage(qrDataURL(t, payload), 100, promptPaySettings{ID: "0812345678", Type: "mobile"}, time.Now())
+	if check.VerificationStatus != "warning" || !strings.Contains(check.VerificationNote, "ไม่ตรง") {
+		t.Fatalf("expected warning mismatch verification, got %#v", check)
+	}
+	if check.TransRef != "ABCDEF1234567890" {
+		t.Fatalf("expected decoded transRef, got %q", check.TransRef)
+	}
+}
+
+func qrDataURL(t *testing.T, payload string) string {
+	t.Helper()
+	matrix, err := qrwriter.NewQRCodeWriter().Encode(payload, gozxing.BarcodeFormat_QR_CODE, 240, 240, nil)
+	if err != nil {
+		t.Fatalf("encode QR: %v", err)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, matrix.GetWidth(), matrix.GetHeight()))
+	for y := 0; y < matrix.GetHeight(); y++ {
+		for x := 0; x < matrix.GetWidth(); x++ {
+			if matrix.Get(x, y) {
+				img.Set(x, y, color.Black)
+			} else {
+				img.Set(x, y, color.White)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode PNG: %v", err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 }
