@@ -380,6 +380,8 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.handleCreateOwnedSession(w, r, user)
 	case r.Method == http.MethodGet && action == "coin-shop":
 		a.handleAdminCoinShop(w, r, user)
+	case r.Method == http.MethodGet && action == "coin-orders":
+		a.handleAdminCoinOrders(w, r, user)
 	case r.Method == http.MethodPost && action == "coin-orders":
 		a.handleCreateCoinOrder(w, r, user)
 	default:
@@ -615,6 +617,12 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && action == "summary":
 		a.handleBackofficeSummary(w, r)
+	case r.Method == http.MethodGet && action == "activity-logs":
+		a.handleBackofficeActivityLogs(w, r)
+	case r.Method == http.MethodGet && action == "coin-orders":
+		a.handleBackofficeCoinOrders(w, r)
+	case strings.HasPrefix(action, "support-issues"):
+		a.handleBackofficeSupportIssues(w, r, backofficeUser)
 	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/"):
 		a.handleBackofficeAdminDetail(w, r)
 	case r.Method == http.MethodPut && action == "settings":
@@ -632,6 +640,108 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func paginationParams(r *http.Request, defaultSize, maxSize int) (int, int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = defaultSize
+	}
+	if pageSize > maxSize {
+		pageSize = maxSize
+	}
+	return page, pageSize, (page - 1) * pageSize
+}
+
+func paginationPayload(page, pageSize, total int) map[string]int {
+	totalPages := 0
+	if total > 0 {
+		totalPages = (total + pageSize - 1) / pageSize
+	}
+	return map[string]int{
+		"page":       page,
+		"pageSize":   pageSize,
+		"total":      total,
+		"totalPages": totalPages,
+	}
+}
+
+func (a *app) handleAdminCoinOrders(w http.ResponseWriter, r *http.Request, user adminUser) {
+	page, pageSize, _ := paginationParams(r, 10, 50)
+	orders, total, err := a.coinPurchaseOrdersPage(r.Context(), user.ID, true, page, pageSize)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orders":     orders,
+		"pagination": paginationPayload(page, pageSize, total),
+	})
+}
+
+func (a *app) handleBackofficeCoinOrders(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, _ := paginationParams(r, 10, 50)
+	orders, total, err := a.coinPurchaseOrdersPage(r.Context(), "", true, page, pageSize)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"orders":     orders,
+		"pagination": paginationPayload(page, pageSize, total),
+	})
+}
+
+func (a *app) handleBackofficeActivityLogs(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, _ := paginationParams(r, 20, 100)
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	matchID := strings.TrimSpace(r.URL.Query().Get("matchId"))
+	logs, total, err := a.activityLogsPage(r.Context(), page, pageSize, userID, matchID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	matchOptions := []map[string]any{}
+	if userID != "" {
+		matchOptions, _ = a.activityMatchOptions(r.Context(), userID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"logs":         logs,
+		"matchOptions": matchOptions,
+		"pagination":   paginationPayload(page, pageSize, total),
+	})
+}
+
+func (a *app) activityMatchOptions(ctx context.Context, adminID string) ([]map[string]any, error) {
+	items := []map[string]any{}
+	rows, err := a.db.QueryContext(ctx, `
+		select m.id, string_agg(distinct coalesce(s.name, s.id), ', ' order by coalesce(s.name, s.id))
+		from matches m
+		join sessions s on s.id = m.session_id
+		where s.admin_id = $1
+		group by m.id
+		order by m.id desc
+	`, adminID)
+	if err != nil {
+		return items, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var matchID int
+		var sessionNames string
+		if err := rows.Scan(&matchID, &sessionNames); err != nil {
+			return items, err
+		}
+		items = append(items, map[string]any{
+			"id":    strconv.Itoa(matchID),
+			"label": fmt.Sprintf("เกม %d · %s", matchID, sessionNames),
+		})
+	}
+	return items, rows.Err()
 }
 
 func (a *app) handleBackofficeAdminDetail(w http.ResponseWriter, r *http.Request) {
@@ -1141,17 +1251,33 @@ func (a *app) coinPackages(ctx context.Context, activeOnly bool) ([]coinPackage,
 }
 
 func (a *app) coinPurchaseOrders(ctx context.Context, adminID string, includeSlip bool, limit int) ([]coinPurchaseOrder, error) {
+	items, _, err := a.coinPurchaseOrdersPage(ctx, adminID, includeSlip, 1, limit)
+	return items, err
+}
+
+func (a *app) coinPurchaseOrdersPage(ctx context.Context, adminID string, includeSlip bool, page, pageSize int) ([]coinPurchaseOrder, int, error) {
 	items := []coinPurchaseOrder{}
 	where := ""
-	args := []any{limit}
+	filterArgs := []any{}
 	if adminID != "" {
-		where = "where o.admin_id = $2"
-		args = append(args, adminID)
+		where = "where o.admin_id = $1"
+		filterArgs = append(filterArgs, adminID)
+	}
+	var total int
+	if err := a.db.QueryRowContext(ctx, `
+		select count(*)
+		from coin_purchase_orders o
+		`+where, filterArgs...).Scan(&total); err != nil {
+		return items, 0, err
 	}
 	slipSelect := "''"
 	if includeSlip {
 		slipSelect = "o.slip_image"
 	}
+	args := append([]any{}, filterArgs...)
+	limitPlaceholder := len(args) + 1
+	offsetPlaceholder := len(args) + 2
+	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
 		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.price_thb, o.coins, %s,
 			o.status, o.note, o.trans_ref, o.slip_qr_payload, o.detected_amount_thb,
@@ -1162,17 +1288,17 @@ func (a *app) coinPurchaseOrders(ctx context.Context, adminID string, includeSli
 		left join admin_users u on u.id = o.admin_id
 		%s
 		order by o.created_at desc
-		limit $1
-	`, slipSelect, where), args...)
+		limit $%d offset $%d
+	`, slipSelect, where, limitPlaceholder, offsetPlaceholder), args...)
 	if err != nil {
-		return items, err
+		return items, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item coinPurchaseOrder
 		var detectedAmount sql.NullInt64
 		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PriceTHB, &item.Coins, &item.SlipImage, &item.Status, &item.Note, &item.TransRef, &item.SlipQRPayload, &detectedAmount, &item.DetectedPaidAt, &item.DetectedReceiver, &item.VerificationStatus, &item.VerificationNote, &item.CreatedAt, &item.ReviewedAt); err != nil {
-			return items, err
+			return items, 0, err
 		}
 		if detectedAmount.Valid {
 			amount := int(detectedAmount.Int64)
@@ -1180,7 +1306,7 @@ func (a *app) coinPurchaseOrders(ctx context.Context, adminID string, includeSli
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, total, rows.Err()
 }
 
 func (a *app) systemSetting(ctx context.Context, key string) (string, error) {
@@ -1216,26 +1342,55 @@ func (a *app) insertActivityLog(ctx context.Context, actorType, actorID, action,
 }
 
 func (a *app) activityLogs(ctx context.Context, limit int) ([]activityLogItem, error) {
+	items, _, err := a.activityLogsPage(ctx, 1, limit, "", "")
+	return items, err
+}
+
+func (a *app) activityLogsPage(ctx context.Context, page, pageSize int, userID, matchID string) ([]activityLogItem, int, error) {
 	items := []activityLogItem{}
-	rows, err := a.db.QueryContext(ctx, `
+	conditions := []string{}
+	args := []any{}
+	if userID != "" {
+		args = append(args, userID)
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, fmt.Sprintf("((actor_type = 'admin' and actor_id = %s) or (target_type = 'admin_user' and target_id = %s))", placeholder, placeholder))
+	}
+	if matchID != "" {
+		args = append(args, matchID)
+		placeholder := fmt.Sprintf("$%d", len(args))
+		conditions = append(conditions, fmt.Sprintf("target_type = 'match' and target_id = %s", placeholder))
+	}
+	where := ""
+	if len(conditions) > 0 {
+		where = "where " + strings.Join(conditions, " and ")
+	}
+	var total int
+	if err := a.db.QueryRowContext(ctx, "select count(*) from activity_logs "+where, args...).Scan(&total); err != nil {
+		return items, 0, err
+	}
+	limitPlaceholder := len(args) + 1
+	offsetPlaceholder := len(args) + 2
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
 		select id, actor_type, actor_id, action, target_type, target_id, details,
 			to_char(created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')
 		from activity_logs
+		%s
 		order by id desc
-		limit $1
-	`, limit)
+		limit $%d offset $%d
+	`, where, limitPlaceholder, offsetPlaceholder), args...)
 	if err != nil {
-		return items, err
+		return items, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item activityLogItem
 		if err := rows.Scan(&item.ID, &item.ActorType, &item.ActorID, &item.Action, &item.TargetType, &item.TargetID, &item.Details, &item.CreatedAt); err != nil {
-			return items, err
+			return items, 0, err
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	return items, total, rows.Err()
 }
 
 func (a *app) liveMatchCost(ctx context.Context) (int, bool, error) {

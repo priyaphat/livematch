@@ -2,6 +2,8 @@ import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import SupportIssueModal from './components/SupportIssueModal.vue'
+import AuthPage from './pages/AuthPage.vue'
 import BackofficePage from './pages/BackofficePage.vue'
 import DashboardPage from './pages/DashboardPage.vue'
 import HelpPage from './pages/HelpPage.vue'
@@ -228,6 +230,196 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('Telegram webhook')
     await wrapper.findAll('button').find((button) => button.text().includes('Telegram webhook')).trigger('click')
     expect(setupBackofficeTelegramWebhook).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens and submits the public support issue form', async () => {
+    const submitSupportIssue = vi.fn().mockResolvedValue({ id: 'issue-test123' })
+    const wrapper = mount(AuthPage, {
+      props: {
+        forms: { authMode: 'login', authEmail: '', authPassword: '', authError: '', authMessage: '' },
+        auth: { loading: false },
+        loginAdmin: vi.fn(),
+        registerAdmin: vi.fn(),
+        forgotPassword: vi.fn(),
+        resetPassword: vi.fn(),
+        language: 'th',
+        toggleLanguage: vi.fn(),
+        toggleTheme: vi.fn(),
+        state: { theme: 'light' },
+        submitSupportIssue
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('ติดต่อแอดมิน')).trigger('click')
+    const dialog = wrapper.get('[role="dialog"]')
+    await dialog.get('input[placeholder="สรุปปัญหาที่พบ"]').setValue('กดบันทึกไม่ได้')
+    await dialog.get('textarea[placeholder*="เกิดอะไรขึ้น"]').setValue('หน้า setting ไม่ตอบสนอง')
+    await dialog.get('input[placeholder*="LINE"]').setValue('line: tester')
+    await dialog.get('form').trigger('submit')
+    await Promise.resolve()
+
+    expect(submitSupportIssue).toHaveBeenCalledTimes(1)
+    expect(submitSupportIssue.mock.calls[0][0]).toBeInstanceOf(FormData)
+    expect(wrapper.text()).toContain('issue-test123')
+  })
+
+  it('rejects support images larger than 3MB before upload', async () => {
+    const wrapper = mount(SupportIssueModal, {
+      props: { submitSupportIssue: vi.fn() }
+    })
+    const input = wrapper.get('input[type="file"]')
+    const file = new File([new Uint8Array(3 * 1024 * 1024 + 1)], 'large.png', { type: 'image/png' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+
+    expect(wrapper.text()).toContain('รูปแต่ละไฟล์ต้องมีขนาดไม่เกิน 3MB')
+  })
+
+  it('shows support issues, filters and pagination in backoffice', async () => {
+    const applyFilters = vi.fn()
+    const loadIssues = vi.fn()
+    const openIssue = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'support',
+          backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeSupportIssues: [{ id: 'issue-1', title: 'ทดสอบ', details: 'รายละเอียด', contact: 'line:test', imageCount: 2, status: 'new', createdAt: '2026-06-28 20:00' }],
+          backofficeSupportStatus: '',
+          backofficeSupportSearch: '',
+          backofficeSupportNewCount: 1,
+          backofficeSupportPagination: { page: 1, pageSize: 20, total: 21, totalPages: 2 }
+        },
+        ui: {},
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        loadBackofficeCoinOrders: vi.fn(),
+        loadBackofficeActivityLogs: vi.fn(),
+        applyBackofficeActivityFilters: vi.fn(),
+        loadBackofficeSupportIssues: loadIssues,
+        applyBackofficeSupportFilters: applyFilters,
+        openBackofficeSupportIssue: openIssue,
+        saveBackofficeSupportIssue: vi.fn(),
+        openBackofficeAdminDetail: vi.fn(),
+        saveBackofficeSettings: vi.fn(),
+        saveBackofficeCoinShop: vi.fn(),
+        setupBackofficeTelegramWebhook: vi.fn(),
+        addBackofficeCoinPackage: vi.fn(),
+        removeBackofficeCoinPackage: vi.fn(),
+        adjustBackofficeCoins: vi.fn(),
+        reviewBackofficeCoinOrder: vi.fn(),
+        handleBackofficeQrFile: vi.fn(),
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    await wrapper.get('input[placeholder*="เลขรายการ"]').setValue('issue-1')
+    await wrapper.get('form').trigger('submit')
+    await wrapper.findAll('button').find((button) => button.text().includes('ทดสอบ')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().trim() === 'ถัดไป').trigger('click')
+
+    expect(applyFilters).toHaveBeenCalledTimes(1)
+    expect(openIssue).toHaveBeenCalledWith('issue-1')
+    expect(loadIssues).toHaveBeenCalledWith(2)
+    expect(wrapper.text()).toContain('1')
+  })
+
+  it('filters and paginates backoffice activity logs', async () => {
+    const applyFilters = vi.fn()
+    const changeUser = vi.fn()
+    const loadActivity = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'activity',
+          backofficeSummary: {
+            users: [{ id: 'admin-1', email: 'admin@example.com' }],
+            coinLedger: [],
+            coinPurchaseOrders: [],
+            activityLogs: [{ id: 1, action: 'start_match', actorType: 'admin', actorId: 'admin-1', targetType: 'match', targetId: '12', details: '{}', createdAt: '2026-06-28 20:00' }]
+          },
+          backofficeActivityUserId: '',
+          backofficeActivityMatchId: '',
+          backofficeActivityMatchOptions: [{ id: '12', label: 'เกม 12 · Test Session' }],
+          backofficeActivityPagination: { page: 2, pageSize: 20, total: 45, totalPages: 3 }
+        },
+        ui: {},
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        loadBackofficeCoinOrders: vi.fn(),
+        loadBackofficeActivityLogs: loadActivity,
+        applyBackofficeActivityFilters: applyFilters,
+        changeBackofficeActivityUser: changeUser,
+        openBackofficeAdminDetail: vi.fn(),
+        saveBackofficeSettings: vi.fn(),
+        saveBackofficeCoinShop: vi.fn(),
+        setupBackofficeTelegramWebhook: vi.fn(),
+        addBackofficeCoinPackage: vi.fn(),
+        removeBackofficeCoinPackage: vi.fn(),
+        adjustBackofficeCoins: vi.fn(),
+        reviewBackofficeCoinOrder: vi.fn(),
+        handleBackofficeQrFile: vi.fn(),
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    const filters = wrapper.findAll('form select')
+    await filters[0].setValue('admin-1')
+    await filters[1].setValue('12')
+    await wrapper.get('form').trigger('submit')
+    const paginationButtons = wrapper.findAll('section button').filter((button) => ['ก่อนหน้า', 'ถัดไป'].includes(button.text().trim()))
+    await paginationButtons[1].trigger('click')
+
+    expect(changeUser).toHaveBeenCalledTimes(1)
+    expect(applyFilters).toHaveBeenCalledTimes(1)
+    expect(filters[1].text()).toContain('เกม 12 · Test Session')
+    expect(loadActivity).toHaveBeenCalledWith(3)
+    expect(wrapper.text()).toContain('หน้า 2 / 3')
+  })
+
+  it('paginates coin purchase orders in backoffice', async () => {
+    const loadOrders = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'orders',
+          backofficeSummary: {
+            users: [],
+            coinLedger: [],
+            activityLogs: [],
+            coinPurchaseOrders: [{ id: 'order-1', adminEmail: 'admin@example.com', priceThb: 100, coins: 100, status: 'approved', createdAt: '2026-06-28 20:00' }]
+          },
+          backofficeOrdersPagination: { page: 1, pageSize: 10, total: 21, totalPages: 3 }
+        },
+        ui: {},
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        loadBackofficeCoinOrders: loadOrders,
+        loadBackofficeActivityLogs: vi.fn(),
+        applyBackofficeActivityFilters: vi.fn(),
+        openBackofficeAdminDetail: vi.fn(),
+        saveBackofficeSettings: vi.fn(),
+        saveBackofficeCoinShop: vi.fn(),
+        setupBackofficeTelegramWebhook: vi.fn(),
+        addBackofficeCoinPackage: vi.fn(),
+        removeBackofficeCoinPackage: vi.fn(),
+        adjustBackofficeCoins: vi.fn(),
+        reviewBackofficeCoinOrder: vi.fn(),
+        handleBackofficeQrFile: vi.fn(),
+        coinOrderStatusText: () => 'อนุมัติแล้ว',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    const paginationButtons = wrapper.findAll('section button').filter((button) => ['ก่อนหน้า', 'ถัดไป'].includes(button.text().trim()))
+    expect(paginationButtons[0].element.disabled).toBe(true)
+    await wrapper.get('select[aria-label="จำนวนรายการซื้อต่อหน้า"]').setValue('20')
+    await paginationButtons[1].trigger('click')
+    expect(loadOrders).toHaveBeenCalledWith(1)
+    expect(loadOrders).toHaveBeenCalledWith(2)
+    expect(wrapper.text()).toContain('21 รายการ')
   })
 
   it('disables settings controls when the session is read-only', () => {

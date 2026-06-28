@@ -187,6 +187,24 @@ const forms = reactive({
   backofficeRejectOrderId: '',
   backofficeRejectNote: '',
   backofficeSlipPreview: null,
+  backofficeOrdersPage: 1,
+  backofficeOrdersPageSize: 10,
+  backofficeOrdersPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 },
+  backofficeActivityPage: 1,
+  backofficeActivityPageSize: 20,
+  backofficeActivityUserId: '',
+  backofficeActivityMatchId: '',
+  backofficeActivityMatchOptions: [],
+  backofficeActivityPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+  backofficeSupportIssues: [],
+  backofficeSupportIssueDetail: null,
+  backofficeSupportStatus: '',
+  backofficeSupportSearch: '',
+  backofficeSupportPage: 1,
+  backofficeSupportPageSize: 20,
+  backofficeSupportNewCount: 0,
+  backofficeSupportPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+  backofficeSupportSaving: false,
   coinModalMode: 'shop',
   coinSelectedPackageId: '',
   coinPaymentQrDataUrl: '',
@@ -219,6 +237,7 @@ const ui = reactive({
   showCoinModal: false,
   showBackofficeAdminModal: false,
   showBackofficeSlipModal: false,
+  showBackofficeSupportModal: false,
   toast: null,
   loadingTab: ''
 })
@@ -278,11 +297,12 @@ function closeToast() {
 }
 
 async function api(path, options = {}) {
+  const isFormData = options.body instanceof FormData
   const response = await fetch(`${apiUrl}${path}`, {
     ...options,
     credentials: 'include',
     headers: {
-      'Content-Type': 'application/json',
+      ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       'Accept': 'application/json',
       ...(options.headers || {})
     }
@@ -575,12 +595,120 @@ async function loadBackoffice() {
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
     syncBackofficeCoinShopForms()
+    await Promise.all([
+      loadBackofficeCoinOrders(),
+      loadBackofficeActivityLogs(),
+      loadBackofficeSupportIssues()
+    ])
     backoffice.unlocked = true
   } catch (error) {
     forms.backofficeError = error.message || 'เข้าสู่หลังบ้านไม่สำเร็จ'
   } finally {
     backoffice.loading = false
   }
+}
+
+async function submitSupportIssue(formData) {
+  return api('/api/support-issues', {
+    method: 'POST',
+    body: formData
+  })
+}
+
+async function loadBackofficeSupportIssues(page = forms.backofficeSupportPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeSupportPageSize)
+  })
+  if (forms.backofficeSupportStatus) params.set('status', forms.backofficeSupportStatus)
+  if (forms.backofficeSupportSearch.trim()) params.set('search', forms.backofficeSupportSearch.trim())
+  const payload = await api(`/api/backoffice/support-issues?${params}`, {
+    headers: backofficeAuthHeaders()
+  })
+  forms.backofficeSupportIssues = payload.issues || []
+  forms.backofficeSupportNewCount = Number(payload.newCount || 0)
+  forms.backofficeSupportPagination = payload.pagination || { page: 1, pageSize: forms.backofficeSupportPageSize, total: 0, totalPages: 0 }
+  forms.backofficeSupportPage = forms.backofficeSupportPagination.page || 1
+}
+
+function applyBackofficeSupportFilters() {
+  forms.backofficeSupportPage = 1
+  return loadBackofficeSupportIssues(1)
+}
+
+async function openBackofficeSupportIssue(issueId) {
+  forms.backofficeSupportIssueDetail = await api(`/api/backoffice/support-issues/${issueId}`, {
+    headers: backofficeAuthHeaders()
+  })
+  ui.showBackofficeSupportModal = true
+}
+
+async function saveBackofficeSupportIssue() {
+  const issue = forms.backofficeSupportIssueDetail
+  if (!issue || forms.backofficeSupportSaving) return
+  forms.backofficeSupportSaving = true
+  try {
+    forms.backofficeSupportIssueDetail = await api(`/api/backoffice/support-issues/${issue.id}`, {
+      method: 'PUT',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({
+        status: issue.status,
+        supervisorReply: issue.supervisorReply || ''
+      })
+    })
+    await loadBackofficeSupportIssues(forms.backofficeSupportPage)
+    showToast('บันทึกรายการแจ้งปัญหาแล้ว', 'info')
+  } catch (error) {
+    showToast(error.message || 'บันทึกรายการแจ้งปัญหาไม่สำเร็จ')
+  } finally {
+    forms.backofficeSupportSaving = false
+  }
+}
+
+async function loadBackofficeCoinOrders(page = forms.backofficeOrdersPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeOrdersPageSize)
+  })
+  const payload = await api(`/api/backoffice/coin-orders?${params}`, {
+    headers: backofficeAuthHeaders()
+  })
+  forms.backofficeSummary = {
+    ...(forms.backofficeSummary || {}),
+    coinPurchaseOrders: payload.orders || []
+  }
+  forms.backofficeOrdersPagination = payload.pagination || { page: 1, pageSize: forms.backofficeOrdersPageSize, total: 0, totalPages: 0 }
+  forms.backofficeOrdersPage = forms.backofficeOrdersPagination.page || 1
+}
+
+async function loadBackofficeActivityLogs(page = forms.backofficeActivityPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeActivityPageSize)
+  })
+  if (forms.backofficeActivityUserId) params.set('userId', forms.backofficeActivityUserId)
+  if (forms.backofficeActivityMatchId.trim()) params.set('matchId', forms.backofficeActivityMatchId.trim())
+  const payload = await api(`/api/backoffice/activity-logs?${params}`, {
+    headers: backofficeAuthHeaders()
+  })
+  forms.backofficeSummary = {
+    ...(forms.backofficeSummary || {}),
+    activityLogs: payload.logs || []
+  }
+  forms.backofficeActivityPagination = payload.pagination || { page: 1, pageSize: forms.backofficeActivityPageSize, total: 0, totalPages: 0 }
+  forms.backofficeActivityMatchOptions = payload.matchOptions || []
+  forms.backofficeActivityPage = forms.backofficeActivityPagination.page || 1
+}
+
+function applyBackofficeActivityFilters() {
+  forms.backofficeActivityPage = 1
+  return loadBackofficeActivityLogs(1)
+}
+
+function changeBackofficeActivityUser() {
+  forms.backofficeActivityMatchId = ''
+  forms.backofficeActivityMatchOptions = []
+  return applyBackofficeActivityFilters()
 }
 
 async function openBackofficeAdminDetail(adminId) {
@@ -708,6 +836,7 @@ async function reviewBackofficeCoinOrder(orderId, status) {
     forms.backofficeRejectOrderId = ''
     forms.backofficeRejectNote = ''
     syncBackofficeCoinShopForms()
+    await loadBackofficeCoinOrders(forms.backofficeOrdersPage)
   } catch (error) {
     forms.backofficeError = error.message || 'อัปเดตรายการซื้อ coin ไม่สำเร็จ'
   }
@@ -1994,6 +2123,15 @@ const pageProps = computed(() => ({
   createSession: createSessionApi,
   unlockDashboard: unlockDashboardApi,
   loadBackoffice,
+  submitSupportIssue,
+  loadBackofficeSupportIssues,
+  applyBackofficeSupportFilters,
+  openBackofficeSupportIssue,
+  saveBackofficeSupportIssue,
+  loadBackofficeCoinOrders,
+  loadBackofficeActivityLogs,
+  applyBackofficeActivityFilters,
+  changeBackofficeActivityUser,
   openBackofficeAdminDetail,
   saveBackofficeSettings,
   saveBackofficeCoinShop,

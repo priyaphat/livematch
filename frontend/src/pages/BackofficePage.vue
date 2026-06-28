@@ -1,12 +1,20 @@
 <script setup>
 import { computed } from 'vue'
-import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, ReceiptText, RefreshCw, Save, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
+import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, MessageCircleWarning, ReceiptText, RefreshCw, Save, Search, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'forms',
   'ui',
   'backoffice',
   'loadBackoffice',
+  'loadBackofficeCoinOrders',
+  'loadBackofficeActivityLogs',
+  'applyBackofficeActivityFilters',
+  'changeBackofficeActivityUser',
+  'loadBackofficeSupportIssues',
+  'applyBackofficeSupportFilters',
+  'openBackofficeSupportIssue',
+  'saveBackofficeSupportIssue',
   'openBackofficeAdminDetail',
   'saveBackofficeSettings',
   'saveBackofficeCoinShop',
@@ -25,6 +33,11 @@ const users = computed(() => summary.value.users || [])
 const ledger = computed(() => summary.value.coinLedger || [])
 const orders = computed(() => summary.value.coinPurchaseOrders || [])
 const logs = computed(() => summary.value.activityLogs || [])
+const ordersPagination = computed(() => props.forms.backofficeOrdersPagination || { page: 1, total: 0, totalPages: 0 })
+const activityPagination = computed(() => props.forms.backofficeActivityPagination || { page: 1, total: 0, totalPages: 0 })
+const supportIssues = computed(() => props.forms.backofficeSupportIssues || [])
+const supportPagination = computed(() => props.forms.backofficeSupportPagination || { page: 1, total: 0, totalPages: 0 })
+const supportIssueDetail = computed(() => props.forms.backofficeSupportIssueDetail || null)
 const adminDetail = computed(() => props.forms.backofficeAdminDetail || {})
 const adminDetailUser = computed(() => adminDetail.value.user || {})
 const adminDetailSessions = computed(() => adminDetail.value.sessions || [])
@@ -35,8 +48,23 @@ const tabs = [
   { id: 'promotions', label: 'แพ็กเกจ coin', icon: Coins },
   { id: 'orders', label: 'รายการซื้อ', icon: ReceiptText },
   { id: 'members', label: 'สมาชิก admin', icon: Users },
+  { id: 'support', label: 'แจ้งปัญหา', icon: MessageCircleWarning },
   { id: 'activity', label: 'Activity log', icon: Activity }
 ]
+
+function supportStatusText(status) {
+  return {
+    new: 'ใหม่',
+    in_progress: 'กำลังตรวจสอบ',
+    resolved: 'แก้ไขแล้ว'
+  }[status] || status
+}
+
+function supportStatusClass(status) {
+  if (status === 'resolved') return 'bg-court-500/10 text-court-700 dark:text-court-300'
+  if (status === 'in_progress') return 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+  return 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+}
 
 function activityText(action) {
   const map = {
@@ -46,7 +74,11 @@ function activityText(action) {
     update_coin_shop: 'แก้แพ็กเกจ/QR coin',
     manual_coin_adjustment: 'เพิ่ม/หัก coin manual',
     approve_coin_purchase: 'อนุมัติรายการซื้อ coin',
-    reject_coin_purchase: 'ไม่อนุมัติรายการซื้อ coin'
+    reject_coin_purchase: 'ไม่อนุมัติรายการซื้อ coin',
+    submit_support_issue: 'ส่งรายการแจ้งปัญหา',
+    update_support_issue: 'อัปเดตรายการแจ้งปัญหา',
+    telegram_support_notification_failed: 'ส่งแจ้งเตือนปัญหาไป Telegram ไม่สำเร็จ',
+    telegram_support_media_failed: 'ส่งรูปปัญหาไป Telegram ไม่สำเร็จ'
   }
   const sessionMap = {
     open_session: 'เปิด session เดิม',
@@ -135,6 +167,9 @@ function closeSlipPreview() {
           >
             <component :is="tab.icon" class="h-4 w-4" />
             {{ tab.label }}
+            <span v-if="tab.id === 'support' && forms.backofficeSupportNewCount" class="rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-black text-white">
+              {{ forms.backofficeSupportNewCount }}
+            </span>
           </button>
         </nav>
 
@@ -164,7 +199,7 @@ function closeSlipPreview() {
                 <ReceiptText class="h-5 w-5 text-court-600" />
                 <h2 class="text-lg font-black">Telegram notification</h2>
               </div>
-              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">แจ้ง backoffice เมื่อมีรายการซื้อ coin ใหม่ ผ่าน Telegram Bot</p>
+              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">แจ้ง backoffice เมื่อมีรายการซื้อ coin หรือรายการแจ้งปัญหาใหม่ ผ่าน Telegram Bot</p>
               <div class="mt-3 grid gap-3">
                 <label class="grid gap-2 text-sm font-bold">
                   Bot token
@@ -349,7 +384,12 @@ function closeSlipPreview() {
         </section>
 
         <section v-if="forms.backofficeTab === 'orders'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
-          <h2 class="text-lg font-black">รายการซื้อ coin</h2>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-lg font-black">รายการซื้อ coin</h2>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+              {{ ordersPagination.total }} รายการ
+            </span>
+          </div>
           <div class="mt-3 grid gap-3">
             <article v-for="order in orders" :key="order.id" class="grid gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800 lg:grid-cols-[1fr_8rem_9rem_auto] lg:items-center">
               <div class="min-w-0">
@@ -395,6 +435,35 @@ function closeSlipPreview() {
             </article>
             <p v-if="!orders.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีรายการซื้อ coin</p>
           </div>
+          <div v-if="ordersPagination.total > 0" class="mt-4 grid gap-3 border-t border-stone-200 pt-3 text-sm dark:border-stone-800 sm:grid-cols-[auto_1fr_auto] sm:items-center">
+            <select
+              v-model.number="forms.backofficeOrdersPageSize"
+              class="h-9 rounded-md border border-stone-200 bg-paper-50 px-3 font-black dark:border-stone-700 dark:bg-stone-800"
+              aria-label="จำนวนรายการซื้อต่อหน้า"
+              @change="loadBackofficeCoinOrders(1)"
+            >
+              <option :value="10">10 รายการ</option>
+              <option :value="20">20 รายการ</option>
+              <option :value="50">50 รายการ</option>
+            </select>
+            <span class="text-center font-black">หน้า {{ ordersPagination.page }} / {{ Math.max(1, ordersPagination.totalPages) }}</span>
+            <div class="grid grid-cols-2 gap-2">
+            <button
+              class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700"
+              :disabled="ordersPagination.page <= 1"
+              @click="loadBackofficeCoinOrders(ordersPagination.page - 1)"
+            >
+              ก่อนหน้า
+            </button>
+            <button
+              class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700"
+              :disabled="ordersPagination.page >= ordersPagination.totalPages"
+              @click="loadBackofficeCoinOrders(ordersPagination.page + 1)"
+            >
+              ถัดไป
+            </button>
+            </div>
+          </div>
         </section>
 
         <section v-if="forms.backofficeTab === 'members'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
@@ -423,9 +492,94 @@ function closeSlipPreview() {
           </div>
         </section>
 
+        <section v-if="forms.backofficeTab === 'support'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 class="text-lg font-black">แจ้งปัญหา</h2>
+              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ตรวจรายละเอียด รูปประกอบ และช่องทางติดต่อกลับ</p>
+            </div>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+              {{ supportPagination.total }} รายการ
+            </span>
+          </div>
+
+          <form class="mt-4 grid gap-2 sm:grid-cols-[12rem_minmax(0,1fr)_auto]" @submit.prevent="applyBackofficeSupportFilters">
+            <select v-model="forms.backofficeSupportStatus" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" @change="applyBackofficeSupportFilters">
+              <option value="">ทุกสถานะ</option>
+              <option value="new">ใหม่</option>
+              <option value="in_progress">กำลังตรวจสอบ</option>
+              <option value="resolved">แก้ไขแล้ว</option>
+            </select>
+            <input v-model="forms.backofficeSupportSearch" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" placeholder="ค้นหาเลขรายการ ชื่อปัญหา หรือติดต่อกลับ" />
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white">
+              <Search class="h-4 w-4" />
+              ค้นหา
+            </button>
+          </form>
+
+          <div class="mt-4 grid gap-2">
+            <button
+              v-for="issue in supportIssues"
+              :key="issue.id"
+              class="grid gap-3 rounded-md border border-stone-200 bg-paper-50 p-3 text-left transition hover:border-court-500 dark:border-stone-700 dark:bg-stone-800 sm:grid-cols-[1fr_auto] sm:items-center"
+              @click="openBackofficeSupportIssue(issue.id)"
+            >
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <p class="truncate font-black">{{ issue.title }}</p>
+                  <span class="rounded-md px-2 py-1 text-xs font-black" :class="supportStatusClass(issue.status)">{{ supportStatusText(issue.status) }}</span>
+                </div>
+                <p class="mt-1 line-clamp-2 text-sm font-semibold text-stone-600 dark:text-stone-300">{{ issue.details }}</p>
+                <p class="mt-1 text-xs font-semibold text-stone-500">{{ issue.id }} · {{ issue.contact }} · {{ issue.imageCount }} รูป</p>
+              </div>
+              <span class="text-xs font-black text-stone-500">{{ issue.createdAt }}</span>
+            </button>
+            <p v-if="!supportIssues.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ไม่พบรายการแจ้งปัญหา</p>
+          </div>
+
+          <div v-if="supportPagination.totalPages > 1" class="mt-4 flex items-center justify-between gap-3 border-t border-stone-200 pt-3 text-sm dark:border-stone-800">
+            <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="supportPagination.page <= 1" @click="loadBackofficeSupportIssues(supportPagination.page - 1)">ก่อนหน้า</button>
+            <span class="font-black">หน้า {{ supportPagination.page }} / {{ supportPagination.totalPages }}</span>
+            <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="supportPagination.page >= supportPagination.totalPages" @click="loadBackofficeSupportIssues(supportPagination.page + 1)">ถัดไป</button>
+          </div>
+        </section>
+
         <section v-if="forms.backofficeTab === 'activity'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
-          <h2 class="text-lg font-black">Activity log</h2>
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-lg font-black">Activity log</h2>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+              {{ activityPagination.total }} รายการ
+            </span>
+          </div>
           <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">บันทึกทุก action ที่เกี่ยวกับเงินและ coin เพื่อใช้ตรวจสอบย้อนหลัง</p>
+          <form class="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" @submit.prevent="applyBackofficeActivityFilters">
+            <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
+              User
+              <select
+                v-model="forms.backofficeActivityUserId"
+                class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+                @change="changeBackofficeActivityUser"
+              >
+                <option value="">User ทั้งหมด</option>
+                <option v-for="user in users" :key="user.id" :value="user.id">{{ user.email }}</option>
+              </select>
+            </label>
+            <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
+              Match
+              <select
+                v-model="forms.backofficeActivityMatchId"
+                class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
+                :disabled="!forms.backofficeActivityUserId"
+              >
+                <option value="">{{ forms.backofficeActivityUserId ? 'Match ทั้งหมด' : 'เลือก User ก่อน' }}</option>
+                <option v-for="match in forms.backofficeActivityMatchOptions" :key="match.id" :value="match.id">{{ match.label }}</option>
+              </select>
+            </label>
+            <button class="mt-auto inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white">
+              <Search class="h-4 w-4" />
+              กรอง
+            </button>
+          </form>
           <div class="mt-3 grid gap-2">
             <article v-for="item in logs" :key="item.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <div class="flex flex-wrap items-start justify-between gap-3">
@@ -438,6 +592,23 @@ function closeSlipPreview() {
               <p class="mt-2 rounded-md bg-white p-2 text-xs font-semibold text-stone-500 dark:bg-stone-900 dark:text-stone-300">{{ activityDetails(item.details) }}</p>
             </article>
             <p v-if="!logs.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มี Activity log</p>
+          </div>
+          <div v-if="activityPagination.totalPages > 1" class="mt-4 flex items-center justify-between gap-3 border-t border-stone-200 pt-3 text-sm dark:border-stone-800">
+            <button
+              class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700"
+              :disabled="activityPagination.page <= 1"
+              @click="loadBackofficeActivityLogs(activityPagination.page - 1)"
+            >
+              ก่อนหน้า
+            </button>
+            <span class="font-black">หน้า {{ activityPagination.page }} / {{ activityPagination.totalPages }}</span>
+            <button
+              class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700"
+              :disabled="activityPagination.page >= activityPagination.totalPages"
+              @click="loadBackofficeActivityLogs(activityPagination.page + 1)"
+            >
+              ถัดไป
+            </button>
           </div>
         </section>
 
@@ -537,6 +708,58 @@ function closeSlipPreview() {
                 <p v-if="!adminDetailLedger.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มี coin ledger</p>
               </div>
             </section>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="ui.showBackofficeSupportModal && supportIssueDetail" class="fixed inset-0 z-[60] grid place-items-end bg-black/60 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="รายละเอียดแจ้งปัญหา" @click.self="ui.showBackofficeSupportModal = false">
+      <div class="max-h-[92vh] w-full max-w-4xl overflow-auto rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900 sm:p-5">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-sm font-black text-court-700 dark:text-court-300">{{ supportIssueDetail.id }}</p>
+            <h2 class="mt-1 text-xl font-black">{{ supportIssueDetail.title }}</h2>
+            <p class="mt-1 text-xs font-semibold text-stone-500">{{ supportIssueDetail.createdAt }}</p>
+          </div>
+          <button class="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showBackofficeSupportModal = false">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="mt-4 grid gap-4 lg:grid-cols-[1fr_0.8fr]">
+          <div class="grid content-start gap-3">
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+              <p class="text-xs font-black text-stone-500">รายละเอียด</p>
+              <p class="mt-2 whitespace-pre-wrap text-sm font-semibold">{{ supportIssueDetail.details }}</p>
+            </div>
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+              <p class="text-xs font-black text-stone-500">ติดต่อกลับ</p>
+              <p class="mt-2 break-words font-black">{{ supportIssueDetail.contact }}</p>
+            </div>
+            <div v-if="supportIssueDetail.images?.length" class="grid grid-cols-2 gap-2">
+              <a v-for="(image, index) in supportIssueDetail.images" :key="index" :href="image" target="_blank" rel="noreferrer" class="aspect-square overflow-hidden rounded-md border border-stone-200 bg-paper-100 dark:border-stone-700 dark:bg-stone-800">
+                <img :src="image" :alt="`รูปปัญหา ${index + 1}`" class="h-full w-full object-contain" />
+              </a>
+            </div>
+          </div>
+
+          <div class="grid content-start gap-3">
+            <label class="grid gap-2 text-sm font-black">
+              สถานะ
+              <select v-model="supportIssueDetail.status" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
+                <option value="new">ใหม่</option>
+                <option value="in_progress">กำลังตรวจสอบ</option>
+                <option value="resolved">แก้ไขแล้ว</option>
+              </select>
+            </label>
+            <label class="grid gap-2 text-sm font-black">
+              บันทึกข้อความตอบกลับ
+              <textarea v-model="supportIssueDetail.supervisorReply" maxlength="5000" rows="7" class="rounded-md border border-stone-200 bg-paper-50 p-3 dark:border-stone-700 dark:bg-stone-800" placeholder="บันทึกคำตอบหรือแนวทางแก้ไข แล้วติดต่อผู้แจ้งผ่านช่องทางที่ให้มา" />
+            </label>
+            <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white disabled:cursor-wait disabled:opacity-60" :disabled="forms.backofficeSupportSaving" @click="saveBackofficeSupportIssue">
+              <Save class="h-4 w-4" />
+              {{ forms.backofficeSupportSaving ? 'กำลังบันทึก...' : 'บันทึก' }}
+            </button>
           </div>
         </div>
       </div>

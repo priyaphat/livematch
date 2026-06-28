@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -16,6 +18,103 @@ import (
 	"github.com/makiuchi-d/gozxing"
 	qrwriter "github.com/makiuchi-d/gozxing/qrcode"
 )
+
+func supportMultipartRequest(t *testing.T, fields map[string]string, files map[string][]byte) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, content := range files {
+		part, err := writer.CreateFormFile("images", name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/support-issues", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	return request
+}
+
+func TestSupportIssueValidation(t *testing.T) {
+	app := &app{}
+	tests := []struct {
+		name   string
+		fields map[string]string
+		files  map[string][]byte
+	}{
+		{
+			name:   "required fields",
+			fields: map[string]string{"title": "", "details": "detail", "contact": "line"},
+		},
+		{
+			name:   "too many images",
+			fields: map[string]string{"title": "title", "details": "detail", "contact": "line"},
+			files:  map[string][]byte{"1.png": {1}, "2.png": {1}, "3.png": {1}, "4.png": {1}, "5.png": {1}, "6.png": {1}},
+		},
+		{
+			name:   "unsupported image",
+			fields: map[string]string{"title": "title", "details": "detail", "contact": "line"},
+			files:  map[string][]byte{"note.txt": []byte("not an image")},
+		},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := supportMultipartRequest(t, test.fields, test.files)
+			request.RemoteAddr = fmt.Sprintf("192.0.2.%d:1234", index+1)
+			response := httptest.NewRecorder()
+			app.handleSupportIssues(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestSupportIssueRateLimit(t *testing.T) {
+	ip := "198.51.100.10"
+	now := time.Now()
+	supportRateLimit.Lock()
+	delete(supportRateLimit.entries, ip)
+	supportRateLimit.Unlock()
+	for attempt := 1; attempt <= 5; attempt++ {
+		if !allowSupportSubmission(ip, now) {
+			t.Fatalf("attempt %d should be allowed", attempt)
+		}
+	}
+	if allowSupportSubmission(ip, now) {
+		t.Fatal("sixth attempt should be rate limited")
+	}
+}
+
+func TestSupportTelegramMessageIncludesIssueDetails(t *testing.T) {
+	issue := supportIssue{
+		ID:         "issue-123",
+		Title:      "บันทึกไม่ได้",
+		Details:    "หน้า setting ไม่ตอบสนอง",
+		Contact:    "line: tester",
+		ImageCount: 2,
+	}
+	text := supportTelegramText(issue)
+	for _, expected := range []string{"issue-123", "บันทึกไม่ได้", "line: tester", "2 รูป", "หน้า setting ไม่ตอบสนอง"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected Telegram message to contain %q, got %q", expected, text)
+		}
+	}
+	keyboard := supportTelegramKeyboard()
+	if keyboard["inline_keyboard"] == nil {
+		t.Fatal("expected Backoffice inline keyboard")
+	}
+}
 
 func TestRandomMatchCreatesAllPossiblePendingMatches(t *testing.T) {
 	state := SessionState{

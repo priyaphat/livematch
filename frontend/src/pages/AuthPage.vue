@@ -1,7 +1,9 @@
 <script setup>
-import { Check, KeyRound, Mail, Moon, ShieldCheck, Sparkles, Sun, Trophy, UserPlus, Zap } from '@lucide/vue'
+import { ref } from 'vue'
+import { Check, KeyRound, Mail, MessageCircleWarning, Moon, ShieldCheck, Sparkles, Sun, Trophy, UserPlus, Zap } from '@lucide/vue'
+import SupportIssueModal from '../components/SupportIssueModal.vue'
 
-defineProps([
+const props = defineProps([
   'forms',
   'auth',
   'loginAdmin',
@@ -11,8 +13,11 @@ defineProps([
   'language',
   'toggleLanguage',
   'toggleTheme',
-  'state'
+  'state',
+  'submitSupportIssue'
 ])
+
+const showSupportIssue = ref(false)
 
 const tabs = [
   { id: 'login', label: 'เข้าสู่ระบบ', icon: KeyRound },
@@ -179,6 +184,14 @@ const highlights = [
           {{ auth.loading ? 'กำลังรีเซ็ต' : 'ตั้งรหัสผ่านใหม่' }}
         </button>
       </div>
+
+      <div class="mt-5 border-t border-stone-200 pt-4 dark:border-stone-700">
+        <button class="inline-flex h-11 w-full items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-4 text-sm font-black dark:border-stone-700 dark:bg-stone-800" @click="showSupportIssue = true">
+          <MessageCircleWarning class="h-5 w-5 text-court-600 dark:text-court-300" />
+          ติดต่อแอดมิน / แจ้งปัญหา
+        </button>
+      </div>
     </div>
+    <SupportIssueModal v-if="showSupportIssue" :submit-support-issue="props.submitSupportIssue" @close="showSupportIssue = false" />
   </section>
 </template>

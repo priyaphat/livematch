@@ -151,6 +151,7 @@ func main() {
 	mux.HandleFunc("/api/auth/", a.handleAuthRoutes)
 	mux.HandleFunc("/api/admin/", a.handleAdminSupervisorRoutes)
 	mux.HandleFunc("/api/backoffice/", a.handleBackofficeRoutes)
+	mux.HandleFunc("/api/support-issues", a.handleSupportIssues)
 	mux.HandleFunc("/api/telegram/webhook/", a.handleTelegramWebhook)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
 	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
@@ -406,6 +407,18 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_coin_purchase_orders_status on coin_purchase_orders(status);
 		create unique index if not exists idx_coin_purchase_orders_trans_ref on coin_purchase_orders(trans_ref) where trans_ref <> '';
 		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
+		create table if not exists support_issues (
+			id text primary key,
+			title text not null,
+			details text not null,
+			contact text not null,
+			images jsonb not null default '[]'::jsonb,
+			status text not null default 'new' check (status in ('new', 'in_progress', 'resolved')),
+			supervisor_reply text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create index if not exists idx_support_issues_status_created on support_issues(status, created_at desc);
 	`)
 	if err != nil {
 		return err
