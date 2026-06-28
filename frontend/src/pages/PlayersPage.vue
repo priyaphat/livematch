@@ -1,12 +1,15 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Check, Copy, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
+import { Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
+import { exportMembersExcel } from '../excelExport'
 
 const props = defineProps([
   'state',
   'forms',
   'money',
   'playerCost',
+  'playerLiveShareHours',
+  'levelLabel',
   'playerDeleteBlockReasons',
   'addPlayer',
   'renamePlayer',
@@ -32,6 +35,8 @@ const pagedPlayers = computed(() => {
 })
 const editingPlayer = ref(null)
 const editingName = ref('')
+const exportLoading = ref(false)
+const exportError = ref('')
 const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
 ))
@@ -66,6 +71,19 @@ async function deleteEditPlayer() {
 watch(() => props.forms.playerSearch, () => {
   props.forms.playerPage = 1
 })
+
+async function exportExcel() {
+  if (exportLoading.value) return
+  exportLoading.value = true
+  exportError.value = ''
+  try {
+    await exportMembersExcel(props)
+  } catch (error) {
+    exportError.value = error?.message || 'สร้างไฟล์ Excel ไม่สำเร็จ'
+  } finally {
+    exportLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -98,6 +116,15 @@ watch(() => props.forms.playerSearch, () => {
           <QrCode class="h-4 w-4" />
           QR ลิงก์สมาชิก
         </button>
+        <button
+          class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-semibold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300 sm:col-span-2"
+          :disabled="exportLoading"
+          data-testid="export-members"
+          @click="exportExcel"
+        >
+          <Download class="h-4 w-4" />
+          {{ exportLoading ? 'กำลังสร้าง Excel...' : 'Export Excel' }}
+        </button>
       </div>
       <input
         v-if="forms.shareLink"
@@ -106,6 +133,7 @@ watch(() => props.forms.playerSearch, () => {
         class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-xs text-stone-500 dark:border-stone-700 dark:bg-stone-800"
       />
       <p v-if="forms.shareStatus" class="text-sm font-semibold text-court-700 dark:text-court-500">{{ forms.shareStatus }}</p>
+      <p v-if="exportError" class="text-sm font-semibold text-rose-700 dark:text-rose-300">{{ exportError }}</p>
     </div>
 
     <div class="overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">

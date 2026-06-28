@@ -1,14 +1,19 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { Download } from '@lucide/vue'
+import { exportHistoryExcel } from '../excelExport'
 
 const props = defineProps([
   'state',
   'playerName',
+  'matchLevelLabel',
   'updateHistoryWinner',
   'isSessionReadOnly'
 ])
 
 const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
+const exportLoading = ref(false)
+const exportError = ref('')
 
 function winnerText(match) {
   if (!match.winner) return '-'
@@ -29,10 +34,39 @@ function resultScoreText(match) {
 function isCancelled(match) {
   return match.status === 'cancelled'
 }
+
+async function exportExcel() {
+  if (exportLoading.value) return
+  exportLoading.value = true
+  exportError.value = ''
+  try {
+    await exportHistoryExcel(props)
+  } catch (error) {
+    exportError.value = error?.message || 'สร้างไฟล์ Excel ไม่สำเร็จ'
+  } finally {
+    exportLoading.value = false
+  }
+}
 </script>
 
 <template>
   <section class="grid gap-3">
+    <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
+      <div>
+        <h1 class="font-black">ประวัติการแข่งขัน</h1>
+        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ sortedHistory.length }} รายการ</p>
+      </div>
+      <button
+        class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-bold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300"
+        :disabled="exportLoading"
+        data-testid="export-history"
+        @click="exportExcel"
+      >
+        <Download class="h-4 w-4" />
+        {{ exportLoading ? 'กำลังสร้าง Excel...' : 'Export Excel' }}
+      </button>
+      <p v-if="exportError" class="w-full text-right text-xs font-bold text-rose-700 dark:text-rose-300">{{ exportError }}</p>
+    </div>
     <article
       v-for="match in sortedHistory"
       :key="match.id"

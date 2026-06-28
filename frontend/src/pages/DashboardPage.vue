@@ -1,7 +1,9 @@
 <script setup>
-import { Activity, BarChart3, ClipboardList, CreditCard, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
+import { ref } from 'vue'
+import { Activity, BarChart3, ClipboardList, CreditCard, Download, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
+import { exportDashboardExcel } from '../excelExport'
 
-defineProps([
+const props = defineProps([
   'state',
   'activePlayerCount',
   'totalRecordedMatches',
@@ -29,6 +31,22 @@ defineProps([
   'levelLabel',
   'selectAdminTab'
 ])
+
+const exportLoading = ref(false)
+const exportError = ref('')
+
+async function exportExcel() {
+  if (exportLoading.value) return
+  exportLoading.value = true
+  exportError.value = ''
+  try {
+    await exportDashboardExcel(props)
+  } catch (error) {
+    exportError.value = error?.message || 'สร้างไฟล์ Excel ไม่สำเร็จ'
+  } finally {
+    exportLoading.value = false
+  }
+}
 </script>
 
 <template>
@@ -49,6 +67,16 @@ defineProps([
             <Users class="h-4 w-4" />
             สมาชิก
           </button>
+          <button
+            class="col-span-2 inline-flex h-11 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-3 text-sm font-bold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300"
+            :disabled="exportLoading"
+            data-testid="export-dashboard"
+            @click="exportExcel"
+          >
+            <Download class="h-4 w-4" />
+            {{ exportLoading ? 'กำลังสร้าง Excel...' : 'Export Excel' }}
+          </button>
+          <p v-if="exportError" class="col-span-2 text-right text-xs font-bold text-rose-700 dark:text-rose-300">{{ exportError }}</p>
         </div>
       </div>
 

@@ -897,6 +897,56 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.text()).toContain('2')
     expect(wrapper.text()).toContain('ยกเลิก 1')
+    expect(wrapper.get('[data-testid="export-dashboard"]').text()).toContain('Export Excel')
+  })
+
+  it('shows Excel export actions on members and history even when read-only', () => {
+    const memberWrapper = mount(PlayersPage, {
+      props: {
+        state: {
+          session: { type: 'liveShare' },
+          settings: { showPaymentOnShare: true },
+          players: []
+        },
+        forms: {
+          newPlayerName: '',
+          playerSearch: '',
+          playerPage: 1,
+          playerPageSize: 8,
+          selectedPlayerId: null,
+          shareLink: '',
+          shareStatus: ''
+        },
+        money: (value) => value,
+        playerCost: () => 0,
+        playerLiveShareHours: () => 0,
+        levelLabel: (level) => level,
+        playerDeleteBlockReasons: () => [],
+        addPlayer: () => {},
+        renamePlayer: () => {},
+        deletePlayer: () => {},
+        sharePlayers: () => {},
+        openPlayersQr: () => {},
+        saveSettings: () => {},
+        togglePayment: () => {},
+        isSessionReadOnly: true
+      }
+    })
+    const historyWrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          session: { type: 'liveShare' },
+          history: []
+        },
+        playerName: (id) => `p${id}`,
+        matchLevelLabel: (level) => level,
+        updateHistoryWinner: () => {},
+        isSessionReadOnly: true
+      }
+    })
+
+    expect(memberWrapper.get('[data-testid="export-members"]').element.disabled).toBe(false)
+    expect(historyWrapper.get('[data-testid="export-history"]').element.disabled).toBe(false)
   })
 
   it('refreshes shared views every 30 seconds', async () => {
