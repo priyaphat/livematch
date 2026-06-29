@@ -426,6 +426,17 @@ const phrases = [
   ['ประวัติ coin', 'Coin history'],
   ['แพ็กเกจที่เลือก', 'Selected package'],
   ['อัปโหลดสลิป', 'Upload payment slip'],
+  ['เปิดใช้งาน', 'Enabled'],
+  ['ปิดใช้งาน', 'Disabled'],
+  ['ขีดจำกัดการตรวจต่อเดือน', 'Monthly verification limit'],
+  ['ทดสอบและรีเฟรชโควตา', 'Test connection and refresh quota'],
+  ['บันทึก SlipOK', 'Save SlipOK'],
+  ['ตรวจสลิปก่อนเติม coin อัตโนมัติ หากตรวจไม่ผ่านจะส่งเข้าคิวตรวจแบบเดิม', 'Verify slips before automatically adding coins. Failed checks go to the existing manual review queue.'],
+  ['SlipOK ตรวจสอบผ่าน เติม coin สำเร็จ', 'SlipOK verified. Coins added successfully.'],
+  ['ส่งรายการแล้ว รอ backoffice ตรวจสอบ', 'Submitted. Waiting for Backoffice review.'],
+  ['กำลังตรวจสอบการเชื่อมต่อ...', 'Checking SlipOK connection...'],
+  ['เชื่อมต่อ SlipOK สำเร็จ', 'SlipOK connected successfully'],
+  ['เชื่อมต่อ SlipOK ไม่สำเร็จ', 'Could not connect to SlipOK'],
   ['ส่งตรวจสอบ', 'Submit for review'],
   ['ส่งรายการซื้อแล้ว รอ backoffice ตรวจสอบ', 'Purchase submitted and awaiting Backoffice review'],
   ['ยังไม่มีรายการซื้อ coin', 'No coin purchases yet'],
@@ -484,10 +495,14 @@ function phraseMap() {
 function translateString(value) {
   if (!value || !value.trim()) return value
   let next = value
-  const exact = phraseMap().get(next.trim())
+  const map = phraseMap()
+  const exact = map.get(next.trim())
   if (exact) return value.replace(next.trim(), exact)
-  const entries = [...phraseMap().entries()].sort((a, b) => b[0].length - a[0].length)
+  const translatedPhrases = new Set(map.values())
+  if (translatedPhrases.has(next.trim())) return value
+  const entries = [...map.entries()].sort((a, b) => b[0].length - a[0].length)
   for (const [from, to] of entries) {
+    if (from !== to && next.includes(to)) continue
     next = next.split(from).join(to)
   }
   return next

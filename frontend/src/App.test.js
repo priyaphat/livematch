@@ -197,6 +197,7 @@ describe('LiveMatch app', () => {
 
   it('renders Telegram webhook setup controls in backoffice', async () => {
     const setupBackofficeTelegramWebhook = vi.fn()
+    const refreshBackofficeSlipOKQuota = vi.fn()
     const wrapper = mount(BackofficePage, {
       props: {
         forms: {
@@ -206,7 +207,13 @@ describe('LiveMatch app', () => {
           backofficeTelegramChatId: '',
           backofficeTelegramWebhookSecret: 'secret-123',
           backofficeTelegramWebhookUrl: 'https://livematch.vibestudio.work/api/telegram/webhook/secret-123',
-          backofficeTelegramWebhookStatus: 'ตั้งค่า Telegram webhook สำเร็จ'
+          backofficeTelegramWebhookStatus: 'ตั้งค่า Telegram webhook สำเร็จ',
+          backofficeSlipOKEnabled: true,
+          backofficeSlipOKBranchId: 'branch-1',
+          backofficeSlipOKApiKey: '',
+          backofficeSlipOKApiKeyMasked: 'abcd••••••••wxyz',
+          backofficeSlipOKMonthlyCap: 100,
+          backofficeSlipOKQuota: { available: true, used: 20, remaining: 80, limit: 100 }
         },
         ui: {},
         backoffice: { unlocked: true },
@@ -215,6 +222,7 @@ describe('LiveMatch app', () => {
         saveBackofficeSettings: vi.fn(),
         saveBackofficeCoinShop: vi.fn(),
         setupBackofficeTelegramWebhook,
+        refreshBackofficeSlipOKQuota,
         addBackofficeCoinPackage: vi.fn(),
         removeBackofficeCoinPackage: vi.fn(),
         adjustBackofficeCoins: vi.fn(),
@@ -228,8 +236,12 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('Webhook URL')
     expect(wrapper.find('input[value="https://livematch.vibestudio.work/api/telegram/webhook/secret-123"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Telegram webhook')
+    expect(wrapper.text()).toContain('SlipOK verification')
+    expect(wrapper.text()).toContain('20 / 100')
     await wrapper.findAll('button').find((button) => button.text().includes('Telegram webhook')).trigger('click')
     expect(setupBackofficeTelegramWebhook).toHaveBeenCalledTimes(1)
+    await wrapper.findAll('button').find((button) => button.text().includes('ทดสอบและรีเฟรชโควตา')).trigger('click')
+    expect(refreshBackofficeSlipOKQuota).toHaveBeenCalledTimes(1)
   })
 
   it('opens and submits the public support issue form', async () => {
@@ -261,6 +273,9 @@ describe('LiveMatch app', () => {
     expect(submitSupportIssue).toHaveBeenCalledTimes(1)
     expect(submitSupportIssue.mock.calls[0][0]).toBeInstanceOf(FormData)
     expect(wrapper.text()).toContain('issue-test123')
+    const footerLink = wrapper.get('a[href="https://www.vibestudio.work/"]')
+    expect(footerLink.attributes('target')).toBe('_blank')
+    expect(wrapper.text()).toContain('Copyright 2026 LiveMatch v2.1')
   })
 
   it('rejects support images larger than 3MB before upload', async () => {

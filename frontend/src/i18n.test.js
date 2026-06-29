@@ -27,4 +27,12 @@ describe('bilingual UI dictionary', () => {
     setLanguage('th')
     expect(translateText('Submit problem report')).toBe('ส่งรายการแจ้งปัญหา')
   })
+
+  it('does not repeatedly translate text that contains its source phrase', () => {
+    setLanguage('en')
+    const translated = translateText('Telegram notification')
+    expect(translated).toBe('Telegram notifications')
+    expect(translateText(translated)).toBe('Telegram notifications')
+    expect(translateText('เชื่อมต่อ SlipOK สำเร็จ')).toBe('SlipOK connected successfully')
+  })
 })

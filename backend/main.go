@@ -386,6 +386,10 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table coin_purchase_orders add column if not exists detected_receiver text not null default '';
 		alter table coin_purchase_orders add column if not exists verification_status text not null default 'manual_review';
 		alter table coin_purchase_orders add column if not exists verification_note text not null default '';
+		alter table coin_purchase_orders add column if not exists verification_provider text not null default 'local';
+		alter table coin_purchase_orders add column if not exists provider_status text not null default 'not_checked';
+		alter table coin_purchase_orders add column if not exists provider_error_code integer not null default 0;
+		alter table coin_purchase_orders add column if not exists provider_checked_at timestamptz;
 		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_status_check;
 		alter table coin_purchase_orders add constraint coin_purchase_orders_status_check check (status in ('pending', 'approved', 'rejected'));
 		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_verification_status_check;

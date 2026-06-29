@@ -192,6 +192,10 @@ const highlights = [
         </button>
       </div>
     </div>
+    <footer class="py-3 text-center text-xs font-semibold text-stone-500 dark:text-stone-400 lg:col-span-2">
+      Copyright 2026 LiveMatch v2.1 · Contact
+      <a class="font-black text-court-700 underline-offset-4 hover:underline dark:text-court-300" href="https://www.vibestudio.work/" target="_blank" rel="noopener noreferrer">vibestudio.work</a>
+    </footer>
     <SupportIssueModal v-if="showSupportIssue" :submit-support-issue="props.submitSupportIssue" @close="showSupportIssue = false" />
   </section>
 </template>

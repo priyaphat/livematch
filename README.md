@@ -32,10 +32,12 @@ Environment variables are still supported as a fallback for deployments that pre
 TELEGRAM_BOT_TOKEN=your-telegram-bot-token
 TELEGRAM_CHAT_ID=chat-id-or-group-id
 TELEGRAM_WEBHOOK_SECRET=random-secret-for-inline-buttons
-APP_BASE_URL=http://localhost:5173
+APP_BASE_URL=https://your-production-domain.example
 ```
 
 Leave both Backoffice fields and env values empty to disable Telegram alerts. Failed Telegram delivery is logged but does not block coin order creation.
+
+Telegram accepts webhook URLs over HTTPS only. A local `http://localhost` URL can run the app, but cannot be registered as a Telegram webhook. Use the deployed HTTPS domain or an HTTPS tunnel, then restart the backend after changing `APP_BASE_URL`.
 
 To use approve/reject buttons in Telegram, set your bot webhook to:
 

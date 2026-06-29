@@ -74,24 +74,28 @@ type coinPackage struct {
 }
 
 type coinPurchaseOrder struct {
-	ID                 string `json:"id"`
-	AdminID            string `json:"adminId"`
-	AdminEmail         string `json:"adminEmail,omitempty"`
-	PackageID          string `json:"packageId"`
-	PriceTHB           int    `json:"priceThb"`
-	Coins              int    `json:"coins"`
-	SlipImage          string `json:"slipImage,omitempty"`
-	Status             string `json:"status"`
-	Note               string `json:"note"`
-	TransRef           string `json:"transRef"`
-	SlipQRPayload      string `json:"slipQrPayload,omitempty"`
-	DetectedAmountTHB  *int   `json:"detectedAmountThb,omitempty"`
-	DetectedPaidAt     string `json:"detectedPaidAt,omitempty"`
-	DetectedReceiver   string `json:"detectedReceiver,omitempty"`
-	VerificationStatus string `json:"verificationStatus"`
-	VerificationNote   string `json:"verificationNote"`
-	CreatedAt          string `json:"createdAt"`
-	ReviewedAt         string `json:"reviewedAt,omitempty"`
+	ID                   string `json:"id"`
+	AdminID              string `json:"adminId"`
+	AdminEmail           string `json:"adminEmail,omitempty"`
+	PackageID            string `json:"packageId"`
+	PriceTHB             int    `json:"priceThb"`
+	Coins                int    `json:"coins"`
+	SlipImage            string `json:"slipImage,omitempty"`
+	Status               string `json:"status"`
+	Note                 string `json:"note"`
+	TransRef             string `json:"transRef"`
+	SlipQRPayload        string `json:"slipQrPayload,omitempty"`
+	DetectedAmountTHB    *int   `json:"detectedAmountThb,omitempty"`
+	DetectedPaidAt       string `json:"detectedPaidAt,omitempty"`
+	DetectedReceiver     string `json:"detectedReceiver,omitempty"`
+	VerificationStatus   string `json:"verificationStatus"`
+	VerificationNote     string `json:"verificationNote"`
+	VerificationProvider string `json:"verificationProvider"`
+	ProviderStatus       string `json:"providerStatus"`
+	ProviderErrorCode    int    `json:"providerErrorCode,omitempty"`
+	ProviderCheckedAt    string `json:"providerCheckedAt,omitempty"`
+	CreatedAt            string `json:"createdAt"`
+	ReviewedAt           string `json:"reviewedAt,omitempty"`
 }
 
 type activityLogItem struct {
@@ -541,6 +545,47 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 	}
 	promptPay := a.promptPaySettings(r.Context())
 	slipCheck := inspectSlipImage(body.SlipImage, pkg.PriceTHB, promptPay, time.Now())
+	orderStatus := "pending"
+	provider := "local"
+	providerStatus := "not_checked"
+	providerErrorCode := 0
+	slipOK := a.slipOKSettings(r.Context())
+	if slipOK.ready() {
+		quota := a.fetchSlipOKQuota(r.Context(), slipOK)
+		if quota.Available && !quota.CapReached {
+			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, pkg.PriceTHB)
+			provider = "slipok"
+			providerStatus = checked.Status
+			providerErrorCode = checked.ErrorCode
+			if checked.TransRef != "" {
+				slipCheck.TransRef = checked.TransRef
+			}
+			if checked.AmountTHB != nil {
+				slipCheck.DetectedAmountTHB = checked.AmountTHB
+			}
+			if checked.PaidAt != "" {
+				slipCheck.DetectedPaidAt = checked.PaidAt
+			}
+			if checked.Receiver != "" {
+				slipCheck.DetectedReceiver = checked.Receiver
+			}
+			slipCheck.VerificationStatus = checked.Status
+			slipCheck.VerificationNote = checked.Note
+			if checked.Passed {
+				orderStatus = "approved"
+			}
+		} else if quota.CapReached {
+			provider = "slipok"
+			providerStatus = "cap_reached"
+			slipCheck.VerificationStatus = "manual_review"
+			slipCheck.VerificationNote = "SlipOK ถึงขีดจำกัดรายเดือน ใช้การตรวจสอบด้วยผู้ดูแล"
+		} else {
+			provider = "slipok"
+			providerStatus = "quota_unavailable"
+			slipCheck.VerificationStatus = "manual_review"
+			slipCheck.VerificationNote = "ตรวจสอบโควตา SlipOK ไม่สำเร็จ: " + quota.Error
+		}
+	}
 	if slipCheck.TransRef != "" {
 		var existingID string
 		err = a.db.QueryRowContext(r.Context(), `
@@ -550,8 +595,15 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		`, slipCheck.TransRef).Scan(&existingID)
 		if err == nil {
 			a.insertActivityLog(r.Context(), "admin", user.ID, "duplicate_coin_purchase_slip", "coin_purchase_order", existingID, map[string]any{"transRef": slipCheck.TransRef, "packageId": pkg.ID})
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "สลิปนี้เคยถูกส่งเข้าระบบแล้ว"})
-			return
+			if provider == "slipok" && orderStatus == "pending" {
+				slipCheck.VerificationStatus = "duplicate"
+				slipCheck.VerificationNote += " | transRef ซ้ำกับรายการ " + existingID
+				slipCheck.TransRef = ""
+				err = sql.ErrNoRows
+			} else {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "สลิปนี้เคยถูกส่งเข้าระบบแล้ว"})
+				return
+			}
 		}
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -569,16 +621,38 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		insert into coin_purchase_orders (
 			id, admin_id, package_id, price_thb, coins, slip_image, status,
 			trans_ref, slip_qr_payload, detected_amount_thb, detected_paid_at, detected_receiver,
-			verification_status, verification_note
+			verification_status, verification_note, verification_provider, provider_status,
+			provider_error_code, provider_checked_at, reviewed_at
 		)
-		values ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11, $12, $13)
-	`, id, user.ID, pkg.ID, pkg.PriceTHB, pkg.Coins, body.SlipImage, slipCheck.TransRef, slipCheck.QRPayload, slipCheck.DetectedAmountTHB, slipCheck.DetectedPaidAt, slipCheck.DetectedReceiver, slipCheck.VerificationStatus, slipCheck.VerificationNote); err != nil {
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+			case when $15 = 'slipok' then now() else null end,
+			case when $7 = 'approved' then now() else null end)
+	`, id, user.ID, pkg.ID, pkg.PriceTHB, pkg.Coins, body.SlipImage, orderStatus, slipCheck.TransRef, slipCheck.QRPayload, slipCheck.DetectedAmountTHB, slipCheck.DetectedPaidAt, slipCheck.DetectedReceiver, slipCheck.VerificationStatus, slipCheck.VerificationNote, provider, providerStatus, providerErrorCode); err != nil {
 		if strings.Contains(err.Error(), "idx_coin_purchase_orders_trans_ref") || strings.Contains(err.Error(), "duplicate key") {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "สลิปนี้เคยถูกส่งเข้าระบบแล้ว"})
 			return
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
+	}
+	if orderStatus == "approved" {
+		var current int
+		if err = tx.QueryRowContext(r.Context(), `select coins from admin_users where id = $1 for update`, user.ID).Scan(&current); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		next := current + pkg.Coins
+		if _, err = tx.ExecContext(r.Context(), `update admin_users set coins = $2, updated_at = now() where id = $1`, user.ID, next); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if _, err = tx.ExecContext(r.Context(), `
+			insert into coin_ledger (admin_id, delta, balance, reason, note)
+			values ($1, $2, $3, 'coin_purchase', $4)
+		`, user.ID, pkg.Coins, next, "SlipOK auto-approved order "+id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "submit_coin_purchase", "coin_purchase_order", id, map[string]any{"packageId": pkg.ID, "priceThb": pkg.PriceTHB, "coins": pkg.Coins, "transRef": slipCheck.TransRef, "verificationStatus": slipCheck.VerificationStatus, "verificationNote": slipCheck.VerificationNote}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -599,6 +673,7 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		TransRef:           slipCheck.TransRef,
 		VerificationStatus: slipCheck.VerificationStatus,
 		VerificationNote:   slipCheck.VerificationNote,
+		Status:             orderStatus,
 	}, user)
 	a.handleAdminCoinShop(w, r, user)
 }
@@ -631,6 +706,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeCoinShop(w, r, backofficeUser)
 	case r.Method == http.MethodPost && action == "telegram-webhook":
 		a.handleBackofficeTelegramWebhookSetup(w, r, backofficeUser)
+	case r.Method == http.MethodGet && action == "slipok-quota":
+		a.handleBackofficeSlipOKQuota(w, r)
 	case r.Method == http.MethodPost && action == "coins":
 		a.handleBackofficeCoinAdjust(w, r, backofficeUser)
 	case r.Method == http.MethodPost && strings.HasPrefix(action, "coin-orders/") && strings.HasSuffix(action, "/approve"):
@@ -809,6 +886,8 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
 	promptPay := a.promptPaySettings(r.Context())
 	telegramSettings := a.telegramNotifySettings(r.Context())
+	slipOKSettings := a.slipOKSettings(r.Context())
+	slipOKQuota := a.fetchSlipOKQuota(r.Context(), slipOKSettings)
 	if telegramSettings.WebhookSecret == "" {
 		telegramSettings.WebhookSecret = a.ensureTelegramWebhookSecret(r.Context())
 	}
@@ -828,6 +907,11 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 		"telegramWebhookSecret": telegramSettings.WebhookSecret,
 		"telegramWebhookUrl":    telegramWebhookURL(telegramSettings),
 		"telegramNotifyEnabled": telegramSettings.enabled(),
+		"slipOKEnabled":         slipOKSettings.Enabled,
+		"slipOKBranchId":        slipOKSettings.BranchID,
+		"slipOKApiKeyMasked":    maskSecret(slipOKSettings.APIKey),
+		"slipOKMonthlyCap":      slipOKSettings.MonthlyCap,
+		"slipOKQuota":           slipOKQuota,
 		"coinPurchaseOrders":    orders,
 		"activityLogs":          logs,
 	})
@@ -886,11 +970,24 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 		TelegramBotToken      string        `json:"telegramBotToken"`
 		TelegramChatID        string        `json:"telegramChatId"`
 		TelegramWebhookSecret string        `json:"telegramWebhookSecret"`
+		SlipOKEnabled         bool          `json:"slipOKEnabled"`
+		SlipOKBranchID        string        `json:"slipOKBranchId"`
+		SlipOKAPIKey          string        `json:"slipOKApiKey"`
+		SlipOKMonthlyCap      int           `json:"slipOKMonthlyCap"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if len(body.Packages) > 12 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many packages"})
 		return
+	}
+	if body.SlipOKMonthlyCap < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "SlipOK monthly cap ต้องไม่น้อยกว่า 0"})
+		return
+	}
+	currentSlipOK := a.slipOKSettings(r.Context())
+	slipOKAPIKey := strings.TrimSpace(body.SlipOKAPIKey)
+	if slipOKAPIKey == "" {
+		slipOKAPIKey = currentSlipOK.APIKey
 	}
 	promptPayID := strings.TrimSpace(body.PromptPayID)
 	promptPayType := strings.TrimSpace(body.PromptPayType)
@@ -928,6 +1025,10 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 		"telegramBotToken":      strings.TrimSpace(body.TelegramBotToken),
 		"telegramChatId":        strings.TrimSpace(body.TelegramChatID),
 		"telegramWebhookSecret": telegramWebhookSecret,
+		"slipOKEnabled":         strconv.FormatBool(body.SlipOKEnabled),
+		"slipOKBranchId":        normalizeSlipOKBranchID(body.SlipOKBranchID),
+		"slipOKApiKey":          slipOKAPIKey,
+		"slipOKMonthlyCap":      strconv.Itoa(body.SlipOKMonthlyCap),
 	} {
 		if _, err = tx.ExecContext(r.Context(), `
 			insert into system_settings (key, value)
@@ -982,6 +1083,16 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	a.handleBackofficeSummary(w, r)
+}
+
+func (a *app) handleBackofficeSlipOKQuota(w http.ResponseWriter, r *http.Request) {
+	settings := a.slipOKSettings(r.Context())
+	quota := a.fetchSlipOKQuota(r.Context(), settings)
+	if !quota.Available {
+		writeJSON(w, http.StatusBadGateway, quota)
+		return
+	}
+	writeJSON(w, http.StatusOK, quota)
 }
 
 func (a *app) handleBackofficeCoinAdjust(w http.ResponseWriter, r *http.Request, actor string) {
@@ -1282,6 +1393,8 @@ func (a *app) coinPurchaseOrdersPage(ctx context.Context, adminID string, includ
 		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.price_thb, o.coins, %s,
 			o.status, o.note, o.trans_ref, o.slip_qr_payload, o.detected_amount_thb,
 			o.detected_paid_at, o.detected_receiver, o.verification_status, o.verification_note,
+			o.verification_provider, o.provider_status, o.provider_error_code,
+			coalesce(to_char(o.provider_checked_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'), ''),
 			to_char(o.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'),
 			coalesce(to_char(o.reviewed_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI'), '')
 		from coin_purchase_orders o
@@ -1297,7 +1410,7 @@ func (a *app) coinPurchaseOrdersPage(ctx context.Context, adminID string, includ
 	for rows.Next() {
 		var item coinPurchaseOrder
 		var detectedAmount sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PriceTHB, &item.Coins, &item.SlipImage, &item.Status, &item.Note, &item.TransRef, &item.SlipQRPayload, &detectedAmount, &item.DetectedPaidAt, &item.DetectedReceiver, &item.VerificationStatus, &item.VerificationNote, &item.CreatedAt, &item.ReviewedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PriceTHB, &item.Coins, &item.SlipImage, &item.Status, &item.Note, &item.TransRef, &item.SlipQRPayload, &detectedAmount, &item.DetectedPaidAt, &item.DetectedReceiver, &item.VerificationStatus, &item.VerificationNote, &item.VerificationProvider, &item.ProviderStatus, &item.ProviderErrorCode, &item.ProviderCheckedAt, &item.CreatedAt, &item.ReviewedAt); err != nil {
 			return items, 0, err
 		}
 		if detectedAmount.Valid {

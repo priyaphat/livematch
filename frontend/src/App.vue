@@ -184,6 +184,13 @@ const forms = reactive({
   backofficeTelegramWebhookSecret: '',
   backofficeTelegramWebhookUrl: '',
   backofficeTelegramWebhookStatus: '',
+  backofficeSlipOKEnabled: false,
+  backofficeSlipOKBranchId: '',
+  backofficeSlipOKApiKey: '',
+  backofficeSlipOKApiKeyMasked: '',
+  backofficeSlipOKMonthlyCap: 0,
+  backofficeSlipOKQuota: { available: false, remaining: 0, used: 0, limit: 0, overQuota: 0, capReached: false, error: '' },
+  backofficeSlipOKStatus: '',
   backofficeRejectOrderId: '',
   backofficeRejectNote: '',
   backofficeSlipPreview: null,
@@ -734,6 +741,12 @@ function syncBackofficeCoinShopForms() {
   forms.backofficeTelegramChatId = summary.telegramChatId || ''
   forms.backofficeTelegramWebhookSecret = summary.telegramWebhookSecret || ''
   forms.backofficeTelegramWebhookUrl = summary.telegramWebhookUrl || ''
+  forms.backofficeSlipOKEnabled = Boolean(summary.slipOKEnabled)
+  forms.backofficeSlipOKBranchId = summary.slipOKBranchId || ''
+  forms.backofficeSlipOKApiKey = ''
+  forms.backofficeSlipOKApiKeyMasked = summary.slipOKApiKeyMasked || ''
+  forms.backofficeSlipOKMonthlyCap = Number(summary.slipOKMonthlyCap || 0)
+  forms.backofficeSlipOKQuota = summary.slipOKQuota || forms.backofficeSlipOKQuota
 }
 
 async function saveBackofficeSettings() {
@@ -766,7 +779,11 @@ async function saveBackofficeCoinShop() {
         promptPayReceiverName: forms.backofficePromptPayReceiverName,
         telegramBotToken: forms.backofficeTelegramBotToken,
         telegramChatId: forms.backofficeTelegramChatId,
-        telegramWebhookSecret: forms.backofficeTelegramWebhookSecret
+        telegramWebhookSecret: forms.backofficeTelegramWebhookSecret,
+        slipOKEnabled: forms.backofficeSlipOKEnabled,
+        slipOKBranchId: forms.backofficeSlipOKBranchId,
+        slipOKApiKey: forms.backofficeSlipOKApiKey,
+        slipOKMonthlyCap: Number(forms.backofficeSlipOKMonthlyCap)
       })
     })
     syncBackofficeCoinShopForms()
@@ -775,9 +792,27 @@ async function saveBackofficeCoinShop() {
   }
 }
 
+async function refreshBackofficeSlipOKQuota() {
+  forms.backofficeSlipOKStatus = 'กำลังตรวจสอบการเชื่อมต่อ...'
+  try {
+    const quota = await api('/api/backoffice/slipok-quota', {
+      headers: backofficeAuthHeaders()
+    })
+    forms.backofficeSlipOKQuota = quota
+    forms.backofficeSlipOKStatus = 'เชื่อมต่อ SlipOK สำเร็จ'
+  } catch (error) {
+    forms.backofficeSlipOKStatus = error.message || 'เชื่อมต่อ SlipOK ไม่สำเร็จ'
+  }
+}
+
 async function setupBackofficeTelegramWebhook() {
   forms.backofficeError = ''
   forms.backofficeTelegramWebhookStatus = ''
+  const webhookUrl = forms.backofficeTelegramWebhookUrl || ''
+  if (!webhookUrl.startsWith('https://')) {
+    forms.backofficeTelegramWebhookStatus = 'Telegram รับเฉพาะ HTTPS กรุณาตั้ง APP_BASE_URL เป็นโดเมน HTTPS แล้ว restart backend'
+    return
+  }
   try {
     const payload = await api('/api/backoffice/telegram-webhook', {
       method: 'POST',
@@ -891,8 +926,11 @@ async function submitCoinOrder() {
       })
     })
     applyCoinShopPayload(payload)
+    const latestOrder = auth.coinOrders[0]
     forms.coinSlipImage = ''
-    forms.coinOrderStatus = 'ส่งรายการซื้อแล้ว รอ backoffice ตรวจสอบ'
+    forms.coinOrderStatus = latestOrder?.status === 'approved'
+      ? 'SlipOK ตรวจสอบผ่าน เติม coin สำเร็จ'
+      : 'ส่งรายการแล้ว รอ backoffice ตรวจสอบ'
     await restoreAdminAccount()
   } catch (error) {
     forms.coinOrderStatus = error.message || 'ส่งรายการซื้อ coin ไม่สำเร็จ'
@@ -2136,6 +2174,7 @@ const pageProps = computed(() => ({
   saveBackofficeSettings,
   saveBackofficeCoinShop,
   setupBackofficeTelegramWebhook,
+  refreshBackofficeSlipOKQuota,
   addBackofficeCoinPackage,
   removeBackofficeCoinPackage,
   adjustBackofficeCoins,

@@ -19,6 +19,7 @@ const props = defineProps([
   'saveBackofficeSettings',
   'saveBackofficeCoinShop',
   'setupBackofficeTelegramWebhook',
+  'refreshBackofficeSlipOKQuota',
   'addBackofficeCoinPackage',
   'removeBackofficeCoinPackage',
   'adjustBackofficeCoins',
@@ -43,6 +44,13 @@ const adminDetailUser = computed(() => adminDetail.value.user || {})
 const adminDetailSessions = computed(() => adminDetail.value.sessions || [])
 const adminDetailLedger = computed(() => adminDetail.value.coinLedger || [])
 const adminDetailOrders = computed(() => adminDetail.value.orders || [])
+const slipOKQuota = computed(() => props.forms.backofficeSlipOKQuota || {})
+const slipOKUsagePercent = computed(() => {
+  const limit = Number(slipOKQuota.value.limit || props.forms.backofficeSlipOKMonthlyCap || 0)
+  return limit > 0 ? Math.min(100, Math.round((Number(slipOKQuota.value.used || 0) / limit) * 100)) : 0
+})
+const telegramWebhookURL = computed(() => props.forms.backofficeTelegramWebhookUrl || (props.forms.backofficeTelegramWebhookSecret ? `/api/telegram/webhook/${props.forms.backofficeTelegramWebhookSecret}` : ''))
+const telegramWebhookIsHTTPS = computed(() => telegramWebhookURL.value.startsWith('https://'))
 const tabs = [
   { id: 'overview', label: 'ภาพรวม', icon: Settings },
   { id: 'promotions', label: 'แพ็กเกจ coin', icon: Coins },
@@ -195,6 +203,55 @@ function closeSlipPreview() {
             </article>
 
             <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+              <div class="flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2">
+                  <CheckCircle2 class="h-5 w-5 text-court-600" />
+                  <h2 class="text-lg font-black">SlipOK verification</h2>
+                </div>
+                <label class="inline-flex items-center gap-2 text-sm font-black">
+                  <input v-model="forms.backofficeSlipOKEnabled" type="checkbox" />
+                  {{ forms.backofficeSlipOKEnabled ? 'เปิดใช้งาน' : 'ปิดใช้งาน' }}
+                </label>
+              </div>
+              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ตรวจสลิปก่อนเติม coin อัตโนมัติ หากตรวจไม่ผ่านจะส่งเข้าคิวตรวจแบบเดิม</p>
+              <div class="mt-3 grid gap-3 sm:grid-cols-2">
+                <label class="grid gap-2 text-sm font-bold">
+                  Branch ID
+                  <input v-model="forms.backofficeSlipOKBranchId" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="เช่น 70006 (ไม่ต้องใส่ URL)" />
+                </label>
+                <label class="grid gap-2 text-sm font-bold">
+                  API Key
+                  <input v-model="forms.backofficeSlipOKApiKey" type="password" autocomplete="new-password" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :placeholder="forms.backofficeSlipOKApiKeyMasked || 'SlipOK API Key'" />
+                </label>
+                <label class="grid gap-2 text-sm font-bold sm:col-span-2">
+                  ขีดจำกัดการตรวจต่อเดือน
+                  <input v-model.number="forms.backofficeSlipOKMonthlyCap" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+                </label>
+              </div>
+              <div class="mt-4 rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+                <div class="flex flex-wrap items-center justify-between gap-2 text-sm font-black">
+                  <span>ใช้แล้ว {{ Number(slipOKQuota.used || 0).toLocaleString('th-TH') }} / {{ Number(slipOKQuota.limit || forms.backofficeSlipOKMonthlyCap || 0).toLocaleString('th-TH') }}</span>
+                  <span>คงเหลือ {{ Number(slipOKQuota.remaining || 0).toLocaleString('th-TH') }}</span>
+                </div>
+                <div class="mt-2 h-2 overflow-hidden rounded-full bg-stone-200 dark:bg-stone-700">
+                  <div class="h-full rounded-full transition-all" :class="slipOKQuota.capReached ? 'bg-red-500' : 'bg-court-500'" :style="{ width: `${slipOKUsagePercent}%` }"></div>
+                </div>
+                <p v-if="slipOKQuota.error" class="mt-2 text-xs font-bold text-amber-700 dark:text-amber-300">{{ slipOKQuota.error }}</p>
+              </div>
+              <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeCoinShop">
+                  <Save class="h-4 w-4" />
+                  บันทึก SlipOK
+                </button>
+                <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 font-bold text-court-700 dark:border-court-900 dark:text-court-300" @click="refreshBackofficeSlipOKQuota">
+                  <RefreshCw class="h-4 w-4" />
+                  ทดสอบและรีเฟรชโควตา
+                </button>
+              </div>
+              <p v-if="forms.backofficeSlipOKStatus" class="mt-2 rounded-md bg-paper-100 px-3 py-2 text-sm font-bold dark:bg-stone-800">{{ forms.backofficeSlipOKStatus }}</p>
+            </article>
+
+            <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
               <div class="flex items-center gap-2">
                 <ReceiptText class="h-5 w-5 text-court-600" />
                 <h2 class="text-lg font-black">Telegram notification</h2>
@@ -215,15 +272,18 @@ function closeSlipPreview() {
                 </label>
                 <label class="grid gap-2 text-sm font-bold">
                   Webhook URL
-                  <input :value="forms.backofficeTelegramWebhookUrl || (forms.backofficeTelegramWebhookSecret ? `/api/telegram/webhook/${forms.backofficeTelegramWebhookSecret}` : '')" readonly class="h-11 rounded-md border border-stone-200 bg-paper-100 px-3 text-xs text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300" placeholder="บันทึก Telegram ก่อนเพื่อสร้าง URL" />
+                  <input :value="telegramWebhookURL" readonly class="h-11 rounded-md border border-stone-200 bg-paper-100 px-3 text-xs text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300" placeholder="บันทึก Telegram ก่อนเพื่อสร้าง URL" />
                 </label>
               </div>
+              <p v-if="telegramWebhookURL && !telegramWebhookIsHTTPS" class="mt-2 rounded-md bg-amber-100 px-3 py-2 text-sm font-bold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">
+                Telegram รับเฉพาะ HTTPS กรุณาตั้ง APP_BASE_URL เป็นโดเมน HTTPS ของระบบ แล้ว restart backend
+              </p>
               <div class="mt-3 grid gap-2 sm:grid-cols-2">
                 <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeCoinShop">
                   <Save class="h-4 w-4" />
                   บันทึก Telegram
                 </button>
-                <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 font-bold text-court-700 dark:border-court-900 dark:text-court-300" @click="setupBackofficeTelegramWebhook">
+                <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 font-bold text-court-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-court-900 dark:text-court-300" :disabled="!telegramWebhookIsHTTPS" @click="setupBackofficeTelegramWebhook">
                   <Link class="h-4 w-4" />
                   ตั้งค่า Telegram webhook
                 </button>

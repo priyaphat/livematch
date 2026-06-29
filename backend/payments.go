@@ -16,6 +16,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -46,6 +47,223 @@ type slipVerification struct {
 	DetectedReceiver   string
 	VerificationStatus string
 	VerificationNote   string
+}
+
+type slipOKSettings struct {
+	Enabled    bool   `json:"enabled"`
+	BranchID   string `json:"branchId"`
+	APIKey     string `json:"-"`
+	MonthlyCap int    `json:"monthlyCap"`
+}
+
+type slipOKQuota struct {
+	Available  bool   `json:"available"`
+	Remaining  int    `json:"remaining"`
+	Used       int    `json:"used"`
+	Limit      int    `json:"limit"`
+	OverQuota  int    `json:"overQuota"`
+	CapReached bool   `json:"capReached"`
+	Error      string `json:"error,omitempty"`
+}
+
+type slipOKResult struct {
+	Passed    bool
+	Status    string
+	ErrorCode int
+	Note      string
+	TransRef  string
+	AmountTHB *int
+	PaidAt    string
+	Receiver  string
+}
+
+var slipOKAPIBaseURL = "https://api.slipok.com"
+
+func (a *app) slipOKSettings(ctx context.Context) slipOKSettings {
+	enabled, _ := a.systemSetting(ctx, "slipOKEnabled")
+	branchID, _ := a.systemSetting(ctx, "slipOKBranchId")
+	apiKey, _ := a.systemSetting(ctx, "slipOKApiKey")
+	capValue, _ := a.systemSetting(ctx, "slipOKMonthlyCap")
+	if strings.TrimSpace(branchID) == "" {
+		branchID = os.Getenv("SLIPOK_BRANCH_ID")
+	}
+	if strings.TrimSpace(apiKey) == "" {
+		apiKey = os.Getenv("SLIPOK_API_KEY")
+	}
+	if strings.TrimSpace(capValue) == "" {
+		capValue = os.Getenv("SLIPOK_MONTHLY_CAP")
+	}
+	monthlyCap, _ := strconv.Atoi(strings.TrimSpace(capValue))
+	return slipOKSettings{
+		Enabled:    strings.EqualFold(strings.TrimSpace(enabled), "true"),
+		BranchID:   normalizeSlipOKBranchID(branchID),
+		APIKey:     strings.TrimSpace(apiKey),
+		MonthlyCap: max(0, monthlyCap),
+	}
+}
+
+func normalizeSlipOKBranchID(value string) string {
+	value = strings.TrimSpace(strings.TrimRight(value, "/"))
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		value = strings.Trim(strings.TrimSpace(parsed.Path), "/")
+	}
+	const prefix = "api/line/apikey/"
+	if index := strings.LastIndex(strings.ToLower(value), prefix); index >= 0 {
+		value = value[index+len(prefix):]
+	}
+	if slash := strings.LastIndex(value, "/"); slash >= 0 {
+		value = value[slash+1:]
+	}
+	return strings.TrimSpace(value)
+}
+
+func (settings slipOKSettings) ready() bool {
+	return settings.Enabled && settings.BranchID != "" && settings.APIKey != "" && settings.MonthlyCap > 0
+}
+
+func maskSecret(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 8 {
+		return "••••••••"
+	}
+	return value[:4] + "••••••••" + value[len(value)-4:]
+}
+
+func (a *app) fetchSlipOKQuota(ctx context.Context, settings slipOKSettings) slipOKQuota {
+	result := slipOKQuota{Limit: settings.MonthlyCap}
+	if settings.BranchID == "" || settings.APIKey == "" {
+		result.Error = "SlipOK Branch ID หรือ API Key ยังไม่พร้อม"
+		return result
+	}
+	url := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID + "/quota"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	req.Header.Set("x-authorization", settings.APIKey)
+	resp, err := (&http.Client{Timeout: 12 * time.Second}).Do(req)
+	if err != nil {
+		result.Error = err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	var payload struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Quota     int `json:"quota"`
+			OverQuota int `json:"overQuota"`
+		} `json:"data"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		result.Error = "อ่านผล SlipOK quota ไม่สำเร็จ"
+		return result
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !payload.Success {
+		result.Error = strings.TrimSpace(payload.Message)
+		if result.Error == "" {
+			result.Error = fmt.Sprintf("SlipOK quota HTTP %d", resp.StatusCode)
+		}
+		return result
+	}
+	result.Available = true
+	result.Remaining = max(0, payload.Data.Quota)
+	result.OverQuota = max(0, payload.Data.OverQuota)
+	result.Used = max(0, settings.MonthlyCap-result.Remaining)
+	result.CapReached = result.Used >= settings.MonthlyCap
+	return result
+}
+
+func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipDataURL string, expectedAmount int) slipOKResult {
+	result := slipOKResult{Status: "manual_review"}
+	raw, err := decodeDataURL(slipDataURL)
+	if err != nil {
+		result.Note = "แปลงรูปสลิปเพื่อส่ง SlipOK ไม่สำเร็จ"
+		return result
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("log", "true")
+	_ = writer.WriteField("amount", strconv.Itoa(expectedAmount))
+	part, err := writer.CreateFormFile("files", "slip.png")
+	if err != nil {
+		result.Note = err.Error()
+		return result
+	}
+	if _, err = part.Write(raw); err != nil {
+		result.Note = err.Error()
+		return result
+	}
+	if err = writer.Close(); err != nil {
+		result.Note = err.Error()
+		return result
+	}
+	url := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	if err != nil {
+		result.Note = err.Error()
+		return result
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("x-authorization", settings.APIKey)
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		result.Note = "เรียก SlipOK ไม่สำเร็จ: " + err.Error()
+		return result
+	}
+	defer resp.Body.Close()
+	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	var payload struct {
+		Success bool   `json:"success"`
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+		Data    struct {
+			Success        bool    `json:"success"`
+			Message        string  `json:"message"`
+			TransRef       string  `json:"transRef"`
+			TransTimestamp string  `json:"transTimestamp"`
+			Amount         float64 `json:"amount"`
+			Receiver       struct {
+				DisplayName string `json:"displayName"`
+				Name        string `json:"name"`
+			} `json:"receiver"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		result.Note = fmt.Sprintf("อ่านผล SlipOK ไม่สำเร็จ (HTTP %d)", resp.StatusCode)
+		return result
+	}
+	result.ErrorCode = payload.Code
+	result.TransRef = strings.TrimSpace(payload.Data.TransRef)
+	if payload.Data.Amount > 0 {
+		amount := int(payload.Data.Amount + 0.5)
+		result.AmountTHB = &amount
+	}
+	result.PaidAt = strings.TrimSpace(payload.Data.TransTimestamp)
+	result.Receiver = strings.TrimSpace(payload.Data.Receiver.DisplayName)
+	if result.Receiver == "" {
+		result.Receiver = strings.TrimSpace(payload.Data.Receiver.Name)
+	}
+	result.Passed = resp.StatusCode >= 200 && resp.StatusCode < 300 && payload.Success && payload.Data.Success
+	if result.Passed {
+		result.Status = "passed"
+		result.Note = "SlipOK ตรวจสอบสลิป ยอดเงิน และบัญชีผู้รับผ่าน"
+		return result
+	}
+	result.Status = "manual_review"
+	result.Note = strings.TrimSpace(payload.Message)
+	if result.Note == "" {
+		result.Note = strings.TrimSpace(payload.Data.Message)
+	}
+	if result.Note == "" {
+		result.Note = fmt.Sprintf("SlipOK ไม่ผ่าน (code %d)", payload.Code)
+	}
+	return result
 }
 
 func (a *app) promptPaySettings(ctx context.Context) promptPaySettings {
@@ -408,13 +626,14 @@ func (a *app) notifyTelegramCoinOrder(ctx context.Context, order coinPurchaseOrd
 		return
 	}
 	text := fmt.Sprintf(
-		"LiveMatch coin order\nAdmin: %s\nPackage: %s\nAmount: %d THB\nCoins: %d\ntransRef: %s\nStatus: %s\n%s/backoffice",
+		"LiveMatch coin order\nAdmin: %s\nPackage: %s\nAmount: %d THB\nCoins: %d\ntransRef: %s\nVerification: %s\nOrder: %s\n%s/backoffice",
 		user.Email,
 		order.PackageID,
 		order.PriceTHB,
 		order.Coins,
 		emptyDash(order.TransRef),
 		order.VerificationStatus,
+		order.Status,
 		publicAppBaseURL(),
 	)
 	var err error
@@ -437,10 +656,14 @@ func (a *app) notifyTelegramCoinOrder(ctx context.Context, order coinPurchaseOrd
 }
 
 func postTelegramMessage(ctx context.Context, client *http.Client, settings telegramNotifySettings, order coinPurchaseOrder, text string) (*http.Response, error) {
+	var keyboard any
+	if order.Status == "pending" {
+		keyboard = telegramOrderKeyboard(order.ID)
+	}
 	payload, _ := json.Marshal(map[string]any{
 		"chat_id":      settings.ChatID,
 		"text":         text,
-		"reply_markup": telegramOrderKeyboard(order.ID),
+		"reply_markup": keyboard,
 	})
 	url := "https://api.telegram.org/bot" + settings.BotToken + "/sendMessage"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -460,8 +683,10 @@ func postTelegramPhoto(ctx context.Context, client *http.Client, settings telegr
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("chat_id", settings.ChatID)
 	_ = writer.WriteField("caption", caption)
-	rawKeyboard, _ := json.Marshal(telegramOrderKeyboard(order.ID))
-	_ = writer.WriteField("reply_markup", string(rawKeyboard))
+	if order.Status == "pending" {
+		rawKeyboard, _ := json.Marshal(telegramOrderKeyboard(order.ID))
+		_ = writer.WriteField("reply_markup", string(rawKeyboard))
+	}
 	part, err := writer.CreateFormFile("photo", "slip.png")
 	if err != nil {
 		return nil, err
@@ -607,6 +832,11 @@ func telegramWebhookURL(settings telegramNotifySettings) string {
 	return publicAppBaseURL() + "/api/telegram/webhook/" + strings.TrimSpace(settings.WebhookSecret)
 }
 
+func validTelegramWebhookURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	return err == nil && parsed.Scheme == "https" && parsed.Host != ""
+}
+
 func (a *app) handleBackofficeTelegramWebhookSetup(w http.ResponseWriter, r *http.Request, actor string) {
 	settings := a.telegramNotifySettings(r.Context())
 	if settings.WebhookSecret == "" {
@@ -615,6 +845,13 @@ func (a *app) handleBackofficeTelegramWebhookSetup(w http.ResponseWriter, r *htt
 	webhookURL := telegramWebhookURL(settings)
 	if strings.TrimSpace(settings.BotToken) == "" || webhookURL == "" {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "Telegram bot token หรือ webhook secret ยังไม่พร้อม", "webhookUrl": webhookURL})
+		return
+	}
+	if !validTelegramWebhookURL(webhookURL) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":      "Telegram webhook ต้องใช้ HTTPS กรุณาตั้ง APP_BASE_URL เป็นโดเมน HTTPS แล้ว restart backend",
+			"webhookUrl": webhookURL,
+		})
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{

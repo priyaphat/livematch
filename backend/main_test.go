@@ -45,6 +45,83 @@ func supportMultipartRequest(t *testing.T, fields map[string]string, files map[s
 	return request
 }
 
+func TestSlipOKQuotaAndVerification(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("x-authorization") != "secret-key" {
+			t.Fatalf("missing SlipOK authorization header")
+		}
+		if strings.HasSuffix(r.URL.Path, "/quota") {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"success": true,
+				"data":    map[string]any{"quota": 80, "overQuota": 0},
+			})
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		if r.FormValue("log") != "true" || r.FormValue("amount") != "100" {
+			t.Fatalf("expected log and amount fields, got %#v", r.Form)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"success": true,
+			"data": map[string]any{
+				"success":        true,
+				"message":        "OK",
+				"transRef":       "TX-123",
+				"transTimestamp": "2026-06-29T10:00:00.000Z",
+				"amount":         100,
+				"receiver":       map[string]any{"displayName": "LiveMatch"},
+			},
+		})
+	}))
+	defer server.Close()
+	previous := slipOKAPIBaseURL
+	slipOKAPIBaseURL = server.URL
+	defer func() { slipOKAPIBaseURL = previous }()
+
+	app := &app{}
+	settings := slipOKSettings{Enabled: true, BranchID: "branch-1", APIKey: "secret-key", MonthlyCap: 100}
+	quota := app.fetchSlipOKQuota(t.Context(), settings)
+	if !quota.Available || quota.Used != 20 || quota.Remaining != 80 || quota.CapReached {
+		t.Fatalf("unexpected SlipOK quota: %#v", quota)
+	}
+	result := app.checkSlipOK(t.Context(), settings, "data:image/png;base64,aGVsbG8=", 100)
+	if !result.Passed || result.TransRef != "TX-123" || result.AmountTHB == nil || *result.AmountTHB != 100 {
+		t.Fatalf("unexpected SlipOK result: %#v", result)
+	}
+}
+
+func TestMaskSecret(t *testing.T) {
+	if got := maskSecret("1234567890abcdef"); got != "1234••••••••cdef" {
+		t.Fatalf("unexpected masked secret %q", got)
+	}
+	if got := maskSecret("short"); got != "••••••••" {
+		t.Fatalf("short secret must be fully masked, got %q", got)
+	}
+}
+
+func TestNormalizeSlipOKBranchID(t *testing.T) {
+	for input, expected := range map[string]string{
+		"70006": "70006",
+		"https://api.slipok.com/api/line/apikey/70006":  "70006",
+		"https://api.slipok.com/api/line/apikey/70006/": "70006",
+	} {
+		if got := normalizeSlipOKBranchID(input); got != expected {
+			t.Fatalf("normalizeSlipOKBranchID(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}
+
+func TestValidTelegramWebhookURLRequiresHTTPS(t *testing.T) {
+	if validTelegramWebhookURL("http://localhost:5173/api/telegram/webhook/test") {
+		t.Fatal("HTTP webhook URL must be rejected")
+	}
+	if !validTelegramWebhookURL("https://livematch.vibestudio.work/api/telegram/webhook/test") {
+		t.Fatal("valid HTTPS webhook URL must be accepted")
+	}
+}
+
 func TestSupportIssueValidation(t *testing.T) {
 	app := &app{}
 	tests := []struct {
