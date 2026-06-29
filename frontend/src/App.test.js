@@ -396,6 +396,7 @@ describe('LiveMatch app', () => {
 
   it('paginates coin purchase orders in backoffice', async () => {
     const loadOrders = vi.fn()
+    const resendTelegram = vi.fn()
     const wrapper = mount(BackofficePage, {
       props: {
         forms: {
@@ -404,7 +405,7 @@ describe('LiveMatch app', () => {
             users: [],
             coinLedger: [],
             activityLogs: [],
-            coinPurchaseOrders: [{ id: 'order-1', adminEmail: 'admin@example.com', priceThb: 100, coins: 100, status: 'approved', createdAt: '2026-06-28 20:00' }]
+            coinPurchaseOrders: [{ id: 'order-1', adminEmail: 'admin@example.com', packageId: 'starter', priceThb: 100, coins: 100, status: 'approved', verificationNote: 'ยอดเงินไม่ตรง', createdAt: '2026-06-28 20:00' }]
           },
           backofficeOrdersPagination: { page: 1, pageSize: 10, total: 21, totalPages: 3 }
         },
@@ -422,6 +423,7 @@ describe('LiveMatch app', () => {
         removeBackofficeCoinPackage: vi.fn(),
         adjustBackofficeCoins: vi.fn(),
         reviewBackofficeCoinOrder: vi.fn(),
+        resendBackofficeCoinOrderTelegram: resendTelegram,
         handleBackofficeQrFile: vi.fn(),
         coinOrderStatusText: () => 'อนุมัติแล้ว',
         coinOrderStatusClass: () => ''
@@ -432,8 +434,11 @@ describe('LiveMatch app', () => {
     expect(paginationButtons[0].element.disabled).toBe(true)
     await wrapper.get('select[aria-label="จำนวนรายการซื้อต่อหน้า"]').setValue('20')
     await paginationButtons[1].trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('Telegram')).trigger('click')
     expect(loadOrders).toHaveBeenCalledWith(1)
     expect(loadOrders).toHaveBeenCalledWith(2)
+    expect(resendTelegram).toHaveBeenCalledWith('order-1')
+    expect(wrapper.text()).toContain('เหตุผลการตรวจสอบ')
     expect(wrapper.text()).toContain('21 รายการ')
   })
 

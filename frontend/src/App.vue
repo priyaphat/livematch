@@ -193,10 +193,14 @@ const forms = reactive({
   backofficeSlipOKStatus: '',
   backofficeRejectOrderId: '',
   backofficeRejectNote: '',
+  backofficeTelegramSendingId: '',
   backofficeSlipPreview: null,
   backofficeOrdersPage: 1,
   backofficeOrdersPageSize: 10,
   backofficeOrdersPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 },
+  backofficeLedgerPage: 1,
+  backofficeLedgerPageSize: 20,
+  backofficeLedgerPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
   backofficeActivityPage: 1,
   backofficeActivityPageSize: 20,
   backofficeActivityUserId: '',
@@ -605,6 +609,7 @@ async function loadBackoffice() {
     syncBackofficeCoinShopForms()
     await Promise.all([
       loadBackofficeCoinOrders(),
+      loadBackofficeCoinLedger(),
       loadBackofficeActivityLogs(),
       loadBackofficeSupportIssues()
     ])
@@ -1592,6 +1597,40 @@ function nextShuttleNumber() {
   return Math.max(maxSequence, legacyCount) + 1
 }
 
+async function loadBackofficeCoinLedger(page = forms.backofficeLedgerPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeLedgerPageSize)
+  })
+  const payload = await api(`/api/backoffice/coin-ledger?${params}`, {
+    headers: backofficeAuthHeaders()
+  })
+  forms.backofficeSummary = {
+    ...(forms.backofficeSummary || {}),
+    coinLedger: payload.items || []
+  }
+  forms.backofficeLedgerPagination = payload.pagination || { page: 1, pageSize: forms.backofficeLedgerPageSize, total: 0, totalPages: 0 }
+  forms.backofficeLedgerPage = forms.backofficeLedgerPagination.page || 1
+}
+
+async function resendBackofficeCoinOrderTelegram(orderId) {
+  if (forms.backofficeTelegramSendingId) return
+  forms.backofficeTelegramSendingId = orderId
+  forms.backofficeError = ''
+  try {
+    await api(`/api/backoffice/coin-orders/${orderId}/telegram`, {
+      method: 'POST',
+      headers: backofficeAuthHeaders()
+    })
+    showToast('ส่งรายการซื้อไป Telegram แล้ว', 'info')
+  } catch (error) {
+    forms.backofficeError = error.message || 'ส่งรายการซื้อไป Telegram ไม่สำเร็จ'
+    showToast(forms.backofficeError)
+  } finally {
+    forms.backofficeTelegramSendingId = ''
+  }
+}
+
 function shuttleSequenceNumbers(sequence) {
   return sequence.split(',').flatMap((part) => {
     const bounds = part.trim().split('-').map((value) => Number.parseInt(value.trim(), 10))
@@ -2199,6 +2238,7 @@ const pageProps = computed(() => ({
   openBackofficeSupportIssue,
   saveBackofficeSupportIssue,
   loadBackofficeCoinOrders,
+  loadBackofficeCoinLedger,
   loadBackofficeActivityLogs,
   applyBackofficeActivityFilters,
   changeBackofficeActivityUser,
@@ -2210,7 +2250,8 @@ const pageProps = computed(() => ({
   addBackofficeCoinPackage,
   removeBackofficeCoinPackage,
   adjustBackofficeCoins,
-  reviewBackofficeCoinOrder
+  reviewBackofficeCoinOrder,
+  resendBackofficeCoinOrderTelegram
 }))
 </script>
 

@@ -902,6 +902,27 @@ func TestParseTelegramOrderActionKeepsApprovalFormat(t *testing.T) {
 	}
 }
 
+func TestTelegramCoinOrderTextIncludesVerificationReason(t *testing.T) {
+	t.Setenv("APP_BASE_URL", "https://livematch.example")
+	text := telegramCoinOrderText(coinPurchaseOrder{
+		ID:                 "order-1",
+		PackageID:          "starter",
+		PriceTHB:           100,
+		Coins:              120,
+		TransRef:           "REF123",
+		VerificationStatus: "warning",
+		VerificationNote:   "ยอดเงินไม่ตรงกับแพ็กเกจ",
+		Note:               "ตรวจสอบกับลูกค้าแล้ว",
+		Status:             "pending",
+	}, adminUser{Email: "admin@example.com"})
+
+	for _, expected := range []string{"Reason: ยอดเงินไม่ตรงกับแพ็กเกจ", "Review note: ตรวจสอบกับลูกค้าแล้ว"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected Telegram message to contain %q, got %q", expected, text)
+		}
+	}
+}
+
 func TestSupervisorRoutesReturnGone(t *testing.T) {
 	a := &app{}
 	req := httptest.NewRequest(http.MethodPost, "/api/supervisor/summary", nil)

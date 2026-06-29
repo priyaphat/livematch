@@ -620,22 +620,28 @@ func shortHash(value string) string {
 	return hex.EncodeToString(sum[:])[:24]
 }
 
-func (a *app) notifyTelegramCoinOrder(ctx context.Context, order coinPurchaseOrder, user adminUser) {
-	settings := a.telegramNotifySettings(ctx)
-	if !settings.enabled() {
-		return
-	}
-	text := fmt.Sprintf(
-		"LiveMatch coin order\nAdmin: %s\nPackage: %s\nAmount: %d THB\nCoins: %d\ntransRef: %s\nVerification: %s\nOrder: %s\n%s/backoffice",
+func telegramCoinOrderText(order coinPurchaseOrder, user adminUser) string {
+	return fmt.Sprintf(
+		"LiveMatch coin order\nAdmin: %s\nPackage: %s\nAmount: %d THB\nCoins: %d\ntransRef: %s\nVerification: %s\nReason: %s\nReview note: %s\nOrder: %s\n%s/backoffice",
 		user.Email,
 		order.PackageID,
 		order.PriceTHB,
 		order.Coins,
 		emptyDash(order.TransRef),
 		order.VerificationStatus,
+		emptyDash(order.VerificationNote),
+		emptyDash(order.Note),
 		order.Status,
 		publicAppBaseURL(),
 	)
+}
+
+func (a *app) notifyTelegramCoinOrder(ctx context.Context, order coinPurchaseOrder, user adminUser) error {
+	settings := a.telegramNotifySettings(ctx)
+	if !settings.enabled() {
+		return errors.New("Telegram notification is not configured")
+	}
+	text := telegramCoinOrderText(order, user)
 	var err error
 	var resp *http.Response
 	client := &http.Client{Timeout: 12 * time.Second}
@@ -646,13 +652,15 @@ func (a *app) notifyTelegramCoinOrder(ctx context.Context, order coinPurchaseOrd
 	}
 	if err != nil {
 		a.insertActivityLog(ctx, "system", "telegram", "telegram_payment_notification_failed", "coin_purchase_order", order.ID, map[string]any{"error": err.Error()})
-		return
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		a.insertActivityLog(ctx, "system", "telegram", "telegram_payment_notification_failed", "coin_purchase_order", order.ID, map[string]any{"status": resp.StatusCode, "body": string(body)})
+		return fmt.Errorf("Telegram returned status %d", resp.StatusCode)
 	}
+	return nil
 }
 
 func postTelegramMessage(ctx context.Context, client *http.Client, settings telegramNotifySettings, order coinPurchaseOrder, text string) (*http.Response, error) {

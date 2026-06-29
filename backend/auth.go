@@ -696,6 +696,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeActivityLogs(w, r)
 	case r.Method == http.MethodGet && action == "coin-orders":
 		a.handleBackofficeCoinOrders(w, r)
+	case r.Method == http.MethodGet && action == "coin-ledger":
+		a.handleBackofficeCoinLedger(w, r)
 	case strings.HasPrefix(action, "support-issues"):
 		a.handleBackofficeSupportIssues(w, r, backofficeUser)
 	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/"):
@@ -710,6 +712,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeSlipOKQuota(w, r)
 	case r.Method == http.MethodPost && action == "coins":
 		a.handleBackofficeCoinAdjust(w, r, backofficeUser)
+	case r.Method == http.MethodPost && strings.HasPrefix(action, "coin-orders/") && strings.HasSuffix(action, "/telegram"):
+		a.handleBackofficeCoinOrderTelegram(w, r, backofficeUser)
 	case r.Method == http.MethodPost && strings.HasPrefix(action, "coin-orders/") && strings.HasSuffix(action, "/approve"):
 		a.handleBackofficeCoinOrderReview(w, r, "approved", backofficeUser)
 	case r.Method == http.MethodPost && strings.HasPrefix(action, "coin-orders/") && strings.HasSuffix(action, "/reject"):
@@ -717,6 +721,42 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) handleBackofficeCoinOrderTelegram(w http.ResponseWriter, r *http.Request, actor string) {
+	orderID := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/backoffice/coin-orders/"), "/telegram"))
+	if orderID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing order id"})
+		return
+	}
+	var order coinPurchaseOrder
+	var user adminUser
+	err := a.db.QueryRowContext(r.Context(), `
+		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.price_thb, o.coins,
+			o.slip_image, o.status, o.note, o.trans_ref, o.verification_status, o.verification_note
+		from coin_purchase_orders o
+		left join admin_users u on u.id = o.admin_id
+		where o.id = $1
+	`, orderID).Scan(
+		&order.ID, &order.AdminID, &order.AdminEmail, &order.PackageID, &order.PriceTHB, &order.Coins,
+		&order.SlipImage, &order.Status, &order.Note, &order.TransRef, &order.VerificationStatus, &order.VerificationNote,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "order not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	user.ID = order.AdminID
+	user.Email = order.AdminEmail
+	if err = a.notifyTelegramCoinOrder(r.Context(), order, user); err != nil {
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	a.insertActivityLog(r.Context(), "backoffice", actor, "resend_coin_order_telegram", "coin_purchase_order", order.ID, map[string]any{"status": order.Status})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "sent", "orderId": order.ID})
 }
 
 func paginationParams(r *http.Request, defaultSize, maxSize int) (int, int, int) {
@@ -769,6 +809,19 @@ func (a *app) handleBackofficeCoinOrders(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"orders":     orders,
+		"pagination": paginationPayload(page, pageSize, total),
+	})
+}
+
+func (a *app) handleBackofficeCoinLedger(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, _ := paginationParams(r, 20, 100)
+	items, total, err := a.coinLedgerPage(r.Context(), "", page, pageSize)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items":      items,
 		"pagination": paginationPayload(page, pageSize, total),
 	})
 }
@@ -1330,6 +1383,45 @@ func (a *app) coinLedger(ctx context.Context, adminID string, limit int) ([]coin
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (a *app) coinLedgerPage(ctx context.Context, adminID string, page, pageSize int) ([]coinLedgerItem, int, error) {
+	items := []coinLedgerItem{}
+	where := ""
+	filterArgs := []any{}
+	if adminID != "" {
+		where = "where l.admin_id = $1"
+		filterArgs = append(filterArgs, adminID)
+	}
+	var total int
+	if err := a.db.QueryRowContext(ctx, `select count(*) from coin_ledger l `+where, filterArgs...).Scan(&total); err != nil {
+		return items, 0, err
+	}
+	args := append([]any{}, filterArgs...)
+	limitPlaceholder := len(args) + 1
+	offsetPlaceholder := len(args) + 2
+	args = append(args, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
+		select l.id, l.admin_id, coalesce(u.email, ''), l.delta, l.balance, l.reason, l.note,
+			to_char(l.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')
+		from coin_ledger l
+		left join admin_users u on u.id = l.admin_id
+		%s
+		order by l.id desc
+		limit $%d offset $%d
+	`, where, limitPlaceholder, offsetPlaceholder), args...)
+	if err != nil {
+		return items, 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item coinLedgerItem
+		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.Delta, &item.Balance, &item.Reason, &item.Note, &item.CreatedAt); err != nil {
+			return items, 0, err
+		}
+		items = append(items, item)
+	}
+	return items, total, rows.Err()
 }
 
 func (a *app) coinPackages(ctx context.Context, activeOnly bool) ([]coinPackage, error) {

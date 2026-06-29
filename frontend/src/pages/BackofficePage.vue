@@ -1,6 +1,6 @@
 <script setup>
 import { computed } from 'vue'
-import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, MessageCircleWarning, ReceiptText, RefreshCw, Save, Search, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
+import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, MessageCircleWarning, ReceiptText, RefreshCw, Save, Search, Send, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'forms',
@@ -8,6 +8,7 @@ const props = defineProps([
   'backoffice',
   'loadBackoffice',
   'loadBackofficeCoinOrders',
+  'loadBackofficeCoinLedger',
   'loadBackofficeActivityLogs',
   'applyBackofficeActivityFilters',
   'changeBackofficeActivityUser',
@@ -24,6 +25,7 @@ const props = defineProps([
   'removeBackofficeCoinPackage',
   'adjustBackofficeCoins',
   'reviewBackofficeCoinOrder',
+  'resendBackofficeCoinOrderTelegram',
   'handleBackofficeQrFile',
   'coinOrderStatusText',
   'coinOrderStatusClass'
@@ -35,6 +37,7 @@ const ledger = computed(() => summary.value.coinLedger || [])
 const orders = computed(() => summary.value.coinPurchaseOrders || [])
 const logs = computed(() => summary.value.activityLogs || [])
 const ordersPagination = computed(() => props.forms.backofficeOrdersPagination || { page: 1, total: 0, totalPages: 0 })
+const ledgerPagination = computed(() => props.forms.backofficeLedgerPagination || { page: 1, total: 0, totalPages: 0 })
 const activityPagination = computed(() => props.forms.backofficeActivityPagination || { page: 1, total: 0, totalPages: 0 })
 const supportIssues = computed(() => props.forms.backofficeSupportIssues || [])
 const supportPagination = computed(() => props.forms.backofficeSupportPagination || { page: 1, total: 0, totalPages: 0 })
@@ -451,19 +454,44 @@ function closeSlipPreview() {
             </span>
           </div>
           <div class="mt-3 grid gap-3">
-            <article v-for="order in orders" :key="order.id" class="grid gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800 lg:grid-cols-[1fr_8rem_9rem_auto] lg:items-center">
+            <article v-for="order in orders" :key="order.id" class="grid gap-4 overflow-hidden rounded-lg border border-stone-200 bg-paper-50 p-4 shadow-sm dark:border-stone-700 dark:bg-stone-800 lg:grid-cols-[1fr_9rem_12rem] lg:items-start">
               <div class="min-w-0">
-                <p class="truncate font-black">{{ order.adminEmail }}</p>
-                <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ราคา ฿{{ order.priceThb }} · ได้ {{ order.coins }} coin · {{ order.createdAt }}</p>
-                <p v-if="order.note" class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ order.note }}</p>
-                <div class="mt-2 rounded-md bg-white p-2 text-xs font-semibold text-stone-600 dark:bg-stone-900 dark:text-stone-300">
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p class="truncate font-black">{{ order.adminEmail }}</p>
+                    <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">#{{ order.id }} · {{ order.createdAt }}</p>
+                  </div>
+                  <span class="w-max rounded-md px-2 py-1 text-xs font-black" :class="coinOrderStatusClass(order.status)">{{ coinOrderStatusText(order.status) }}</span>
+                </div>
+                <div class="mt-3 grid grid-cols-3 gap-2">
+                  <div class="rounded-md bg-white p-2 dark:bg-stone-900">
+                    <p class="text-[10px] font-black uppercase text-stone-500">ยอดชำระ</p>
+                    <p class="mt-1 font-black">฿{{ Number(order.priceThb || 0).toLocaleString('th-TH') }}</p>
+                  </div>
+                  <div class="rounded-md bg-white p-2 dark:bg-stone-900">
+                    <p class="text-[10px] font-black uppercase text-stone-500">Coin</p>
+                    <p class="mt-1 font-black text-court-700 dark:text-court-300">{{ Number(order.coins || 0).toLocaleString('th-TH') }}</p>
+                  </div>
+                  <div class="min-w-0 rounded-md bg-white p-2 dark:bg-stone-900">
+                    <p class="text-[10px] font-black uppercase text-stone-500">Package</p>
+                    <p class="mt-1 truncate font-black">{{ order.packageId || '-' }}</p>
+                  </div>
+                </div>
+                <div class="mt-3 rounded-md bg-white p-3 text-xs font-semibold text-stone-600 dark:bg-stone-900 dark:text-stone-300">
                   <div class="flex flex-wrap items-center gap-2">
                     <span class="rounded px-2 py-1 font-black" :class="order.verificationStatus === 'passed' ? 'bg-court-500/10 text-court-700 dark:text-court-300' : order.verificationStatus === 'warning' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-300'">
                       {{ order.verificationStatus || 'manual_review' }}
                     </span>
                     <span v-if="order.transRef">transRef: {{ order.transRef }}</span>
                   </div>
-                  <p v-if="order.verificationNote" class="mt-1">{{ order.verificationNote }}</p>
+                  <div v-if="order.verificationNote" class="mt-2 rounded-md border border-amber-200 bg-amber-50 p-2 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+                    <p class="text-[10px] font-black uppercase">เหตุผลการตรวจสอบ</p>
+                    <p class="mt-1">{{ order.verificationNote }}</p>
+                  </div>
+                  <div v-if="order.note" class="mt-2 rounded-md border border-stone-200 p-2 dark:border-stone-700">
+                    <p class="text-[10px] font-black uppercase text-stone-500">หมายเหตุ Backoffice</p>
+                    <p class="mt-1">{{ order.note }}</p>
+                  </div>
                   <p class="mt-1">
                     <span v-if="order.detectedAmountThb">ยอดที่อ่านได้ ฿{{ Number(order.detectedAmountThb || 0).toLocaleString('th-TH') }}</span>
                     <span v-if="order.detectedPaidAt"> · เวลา {{ order.detectedPaidAt }}</span>
@@ -481,13 +509,20 @@ function closeSlipPreview() {
                 <img :src="order.slipImage" alt="สลิป" class="h-full w-full object-contain" />
                 <span class="absolute inset-x-1 bottom-1 rounded bg-stone-950/70 px-2 py-1 text-center text-[11px] font-black text-white opacity-0 transition group-hover:opacity-100">ดูรูปใหญ่</span>
               </button>
-              <span class="w-max rounded-md px-2 py-1 text-xs font-black" :class="coinOrderStatusClass(order.status)">{{ coinOrderStatusText(order.status) }}</span>
-              <div v-if="order.status === 'pending'" class="grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
-                <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @click="reviewBackofficeCoinOrder(order.id, 'approved')">
+              <div class="grid gap-2">
+                <button
+                  class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-sky-200 bg-sky-50 px-3 text-sm font-black text-sky-700 disabled:cursor-wait disabled:opacity-60 dark:border-sky-900 dark:bg-sky-950/40 dark:text-sky-200"
+                  :disabled="Boolean(forms.backofficeTelegramSendingId)"
+                  @click="resendBackofficeCoinOrderTelegram(order.id)"
+                >
+                  <Send class="h-4 w-4" :class="{ 'animate-pulse': forms.backofficeTelegramSendingId === order.id }" />
+                  {{ forms.backofficeTelegramSendingId === order.id ? 'กำลังส่ง...' : 'ส่ง Telegram ซ้ำ' }}
+                </button>
+                <button v-if="order.status === 'pending'" class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @click="reviewBackofficeCoinOrder(order.id, 'approved')">
                   <CheckCircle2 class="h-4 w-4" />
                   อนุมัติ
                 </button>
-                <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 text-sm font-black text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200" @click="reviewBackofficeCoinOrder(order.id, 'rejected')">
+                <button v-if="order.status === 'pending'" class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-red-200 bg-red-50 px-3 text-sm font-black text-red-700 dark:border-red-900 dark:bg-red-950/40 dark:text-red-200" @click="reviewBackofficeCoinOrder(order.id, 'rejected')">
                   <XCircle class="h-4 w-4" />
                   ไม่อนุมัติ
                 </button>
@@ -673,7 +708,10 @@ function closeSlipPreview() {
         </section>
 
         <section v-if="forms.backofficeTab === 'orders'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
-          <h2 class="text-lg font-black">Coin ledger</h2>
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-lg font-black">Coin ledger</h2>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ ledgerPagination.total }} รายการ</span>
+          </div>
           <div class="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             <div v-for="item in ledger" :key="item.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <div class="flex items-center justify-between gap-3">
@@ -682,6 +720,19 @@ function closeSlipPreview() {
               </div>
               <p class="mt-1 truncate text-sm font-semibold">{{ item.adminEmail }}</p>
               <p class="mt-1 text-xs text-stone-500">{{ item.reason }} · balance {{ item.balance }}</p>
+            </div>
+            <p v-if="!ledger.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มี coin ledger</p>
+          </div>
+          <div v-if="ledgerPagination.total > 0" class="mt-4 grid gap-3 border-t border-stone-200 pt-3 text-sm dark:border-stone-800 sm:grid-cols-[auto_1fr_auto] sm:items-center">
+            <select v-model.number="forms.backofficeLedgerPageSize" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-3 font-black dark:border-stone-700 dark:bg-stone-800" aria-label="จำนวน Coin ledger ต่อหน้า" @change="loadBackofficeCoinLedger(1)">
+              <option :value="10">10 รายการ</option>
+              <option :value="20">20 รายการ</option>
+              <option :value="50">50 รายการ</option>
+            </select>
+            <span class="text-center font-black">หน้า {{ ledgerPagination.page }} / {{ Math.max(1, ledgerPagination.totalPages) }}</span>
+            <div class="grid grid-cols-2 gap-2">
+              <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="ledgerPagination.page <= 1" @click="loadBackofficeCoinLedger(ledgerPagination.page - 1)">ก่อนหน้า</button>
+              <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="ledgerPagination.page >= ledgerPagination.totalPages" @click="loadBackofficeCoinLedger(ledgerPagination.page + 1)">ถัดไป</button>
             </div>
           </div>
         </section>
