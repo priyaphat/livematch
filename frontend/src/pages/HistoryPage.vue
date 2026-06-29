@@ -82,6 +82,12 @@ async function exportExcel() {
           >
             {{ isCancelled(match) ? 'สถานะ ยกเลิก' : 'สถานะ บันทึกผล' }}
           </span>
+          <span
+            v-if="isCancelled(match) && match.shuttleReturned"
+            class="ml-2 mt-2 inline-flex rounded-md bg-shuttle-400/20 px-2 py-1 text-xs font-black text-amber-800 dark:text-shuttle-400"
+          >
+            คืนลูกแล้ว
+          </span>
         </div>
         <div class="text-right">
           <p class="text-xs font-bold text-stone-500 dark:text-stone-400">สนาม</p>

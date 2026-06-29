@@ -222,6 +222,7 @@ const forms = reactive({
   finishNote: '',
   finishWinner: '',
   cancelNote: '',
+  cancelShuttleReturned: false,
   selectedPlayerId: 1,
   coupleAId: '',
   coupleBId: '',
@@ -1002,12 +1003,15 @@ const livePlayerIds = computed(() => new Set(state.live.flatMap(matchPlayers)))
 const activePlayers = computed(() => state.players.filter((player) => player.active))
 const realHistoryMatches = computed(() => state.history.filter((match) => !isCancelledMatch(match)))
 const cancelledMatches = computed(() => state.history.filter(isCancelledMatch))
+const chargeableCancelledMatches = computed(() => cancelledMatches.value.filter((match) => !match.shuttleReturned))
 const activePlayerCount = computed(() => activePlayers.value.length)
 const liveShareShuttleCount = computed(() => Object.values(state.liveShare?.shuttleHours || {}).reduce((sum, value) => sum + Math.max(0, Number(value || 0)), 0))
 const totalShuttles = computed(() => (
   isLiveShare.value
     ? liveShareShuttleCount.value
-    : state.live.reduce((sum, match) => sum + match.shuttles, 0) + realHistoryMatches.value.reduce((sum, match) => sum + match.shuttles, 0)
+    : state.live.reduce((sum, match) => sum + match.shuttles, 0)
+      + realHistoryMatches.value.reduce((sum, match) => sum + match.shuttles, 0)
+      + chargeableCancelledMatches.value.reduce((sum, match) => sum + match.shuttles, 0)
 ))
 const totalRecordedMatches = computed(() => state.live.length + realHistoryMatches.value.length)
 const totalPlays = computed(() => activePlayers.value.reduce((sum, player) => sum + player.games, 0))
@@ -1458,22 +1462,24 @@ function adjustShuttle(match, delta) {
   }
 }
 
-function closeLive(match, cancelled = false, note = '') {
+function closeLive(match, cancelled = false, note = '', shuttleReturned = false) {
   selectedLiveId.value = match.id
   const ended = {
     ...match,
     endedAt: currentTime(),
     winner: cancelled ? '' : forms.finishWinner,
-    shuttleSequence: cancelled ? '' : (match.shuttleSequence || ''),
+    shuttleSequence: match.shuttleSequence || '',
+    shuttleReturned: cancelled && shuttleReturned && match.shuttles > 0 && Boolean(match.shuttleSequence),
     status: cancelled ? 'cancelled' : 'finished',
     note: note || forms.finishNote || (cancelled ? 'ยกเลิกการแข่งขัน' : 'จบการแข่งขัน')
   }
   state.history.unshift(ended)
   for (const id of matchPlayers(match)) {
     const player = playerById(id)
-    if (player && !cancelled) {
-      player.games += 1
+    if (player && (!cancelled || !ended.shuttleReturned)) {
       player.shuttles += match.shuttles
+      if (cancelled) continue
+      player.games += 1
       if (state.settings.resetPlayersAfterFinish) player.coupon = false
       const won = (ended.winner === 'A' && (id === match.a1 || id === match.a2)) || (ended.winner === 'B' && (id === match.b1 || id === match.b2))
       if (won) player.wins = (player.wins || 0) + 1
@@ -1534,6 +1540,7 @@ function requestCancelMatch(match) {
   if (!ensureSessionActive()) return
   ui.cancelMatch = match
   forms.cancelNote = ''
+  forms.cancelShuttleReturned = false
   ui.showCancelModal = true
 }
 
@@ -1552,9 +1559,10 @@ async function confirmAddShuttle() {
 
 function confirmCancelMatch() {
   if (!ui.cancelMatch) return
-  closeLive(ui.cancelMatch, true, forms.cancelNote)
+  closeLive(ui.cancelMatch, true, forms.cancelNote, forms.cancelShuttleReturned)
   ui.cancelMatch = null
   forms.cancelNote = ''
+  forms.cancelShuttleReturned = false
   ui.showCancelModal = false
 }
 
@@ -1565,10 +1573,33 @@ function appendShuttleNumber(sequence, number) {
 function nextShuttleNumber() {
   const matches = [...state.live, ...state.history]
   const maxSequence = matches.reduce((max, match) => Math.max(max, maxShuttleSequenceNumber(match.shuttleSequence || '')), 0)
+  const allocationCount = new Map()
+  const returnCount = new Map()
+  for (const match of matches) {
+    for (const number of shuttleSequenceNumbers(match.shuttleSequence || '')) {
+      allocationCount.set(number, (allocationCount.get(number) || 0) + 1)
+      if (match.status === 'cancelled' && match.shuttleReturned) {
+        returnCount.set(number, (returnCount.get(number) || 0) + 1)
+      }
+    }
+  }
+  for (let number = 1; number <= maxSequence; number += 1) {
+    if ((allocationCount.get(number) || 0) > 0 && allocationCount.get(number) === returnCount.get(number)) return number
+  }
   const legacyCount = matches
     .filter((match) => !match.shuttleSequence)
     .reduce((sum, match) => sum + (match.shuttles || 0), 0)
   return Math.max(maxSequence, legacyCount) + 1
+}
+
+function shuttleSequenceNumbers(sequence) {
+  return sequence.split(',').flatMap((part) => {
+    const bounds = part.trim().split('-').map((value) => Number.parseInt(value.trim(), 10))
+    if (!Number.isFinite(bounds[0])) return []
+    const start = Math.min(bounds[0], Number.isFinite(bounds.at(-1)) ? bounds.at(-1) : bounds[0])
+    const end = Math.max(bounds[0], Number.isFinite(bounds.at(-1)) ? bounds.at(-1) : bounds[0])
+    return Array.from({ length: end - start + 1 }, (_, index) => start + index)
+  })
 }
 
 function maxShuttleSequenceNumber(sequence) {
@@ -1953,16 +1984,16 @@ async function adjustShuttleApi(match, delta) {
   }
 }
 
-async function closeLiveApi(match, cancelled = false, note = '') {
+async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned = false) {
   if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/${cancelled ? 'cancel' : 'finish'}`, {
       method: 'POST',
-      body: JSON.stringify({ note, winner: forms.finishWinner })
+      body: JSON.stringify({ note, winner: forms.finishWinner, shuttleReturned })
     }))
     forms.finishNote = ''
   } catch {
-    closeLive(match, cancelled, note)
+    closeLive(match, cancelled, note, shuttleReturned)
   }
 }
 
@@ -1989,9 +2020,10 @@ async function confirmFinishMatchApi() {
 
 async function confirmCancelMatchApi() {
   if (!ui.cancelMatch) return
-  await closeLiveApi(ui.cancelMatch, true, forms.cancelNote)
+  await closeLiveApi(ui.cancelMatch, true, forms.cancelNote, forms.cancelShuttleReturned)
   ui.cancelMatch = null
   forms.cancelNote = ''
+  forms.cancelShuttleReturned = false
   ui.showCancelModal = false
 }
 

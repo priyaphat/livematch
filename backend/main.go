@@ -103,20 +103,21 @@ type Couple struct {
 }
 
 type Match struct {
-	ID         int    `json:"id"`
-	Court      string `json:"court"`
-	Level      string `json:"level"`
-	A1         int    `json:"a1"`
-	A2         int    `json:"a2"`
-	B1         int    `json:"b1"`
-	B2         int    `json:"b2"`
-	Shuttles   int    `json:"shuttles"`
-	Winner     string `json:"winner"`
-	ShuttleSeq string `json:"shuttleSequence"`
-	Status     string `json:"status"`
-	StartedAt  string `json:"startedAt"`
-	EndedAt    string `json:"endedAt"`
-	Note       string `json:"note"`
+	ID              int    `json:"id"`
+	Court           string `json:"court"`
+	Level           string `json:"level"`
+	A1              int    `json:"a1"`
+	A2              int    `json:"a2"`
+	B1              int    `json:"b1"`
+	B2              int    `json:"b2"`
+	Shuttles        int    `json:"shuttles"`
+	Winner          string `json:"winner"`
+	ShuttleSeq      string `json:"shuttleSequence"`
+	ShuttleReturned bool   `json:"shuttleReturned"`
+	Status          string `json:"status"`
+	StartedAt       string `json:"startedAt"`
+	EndedAt         string `json:"endedAt"`
+	Note            string `json:"note"`
 }
 
 type LiveShareHours struct {
@@ -278,6 +279,7 @@ func (a *app) migrate(ctx context.Context) error {
 			shuttles integer not null default 0,
 			winner text not null default '',
 			shuttle_sequence text not null default '',
+			shuttle_returned boolean not null default false,
 			status text not null default '',
 			started_at text not null default '',
 			ended_at text not null default '',
@@ -288,6 +290,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
 		alter table matches add column if not exists winner text not null default '';
 		alter table matches add column if not exists shuttle_sequence text not null default '';
+		alter table matches add column if not exists shuttle_returned boolean not null default false;
 		create table if not exists live_share_hours (
 			session_id text not null references sessions(id) on delete cascade,
 			kind text not null check (kind in ('court', 'player', 'shuttle')),
@@ -667,7 +670,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'queue'`).Scan(&summary.QueueMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'live'`).Scan(&summary.LiveMatches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from matches where phase = 'history' and status <> 'cancelled'`).Scan(&summary.HistoryMatches)
-	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(shuttles), 0) from matches where status <> 'cancelled'`).Scan(&summary.TotalShuttles)
+	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(shuttles), 0) from matches where status <> 'cancelled' or not shuttle_returned`).Scan(&summary.TotalShuttles)
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(wins), 0) from players where active`).Scan(&summary.TotalWins)
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(avg(games), 0) from players where active`).Scan(&summary.AverageGames)
 	_ = a.db.QueryRowContext(r.Context(), `
@@ -715,7 +718,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'queue') as queue_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'live') as live_matches,
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history' and m.status <> 'cancelled') as history_matches,
-			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and m.status <> 'cancelled') as shuttles,
+			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and (m.status <> 'cancelled' or not m.shuttle_returned)) as shuttles,
 			(
 				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 				from players p
@@ -800,6 +803,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 		EndedAt    string `json:"endedAt"`
 		Note       string `json:"note"`
 		ShuttleSeq string `json:"shuttleSequence"`
+		Returned   bool   `json:"shuttleReturned"`
 	}
 	detail := struct {
 		SessionID     string          `json:"sessionId"`
@@ -861,7 +865,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	rows, err = a.db.QueryContext(r.Context(), `
 		select m.id, m.court, m.level, m.a1, m.a2, m.b1, m.b2,
 			coalesce(a1.name, '-'), coalesce(a2.name, '-'), coalesce(b1.name, '-'), coalesce(b2.name, '-'),
-			m.shuttles, m.winner, m.started_at, m.ended_at, m.note, m.shuttle_sequence
+			m.shuttles, m.winner, m.started_at, m.ended_at, m.note, m.shuttle_sequence, m.shuttle_returned
 		from matches m
 		left join players a1 on a1.session_id = m.session_id and a1.id = m.a1
 		left join players a2 on a2.session_id = m.session_id and a2.id = m.a2
@@ -877,7 +881,7 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	defer rows.Close()
 	for rows.Next() {
 		var match historyMatch
-		if err := rows.Scan(&match.ID, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.A1Name, &match.A2Name, &match.B1Name, &match.B2Name, &match.Shuttles, &match.Winner, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttleSeq); err != nil {
+		if err := rows.Scan(&match.ID, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.A1Name, &match.A2Name, &match.B1Name, &match.B2Name, &match.Shuttles, &match.Winner, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttleSeq, &match.Returned); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
@@ -1194,11 +1198,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 4 && (parts[3] == "finish" || parts[3] == "cancel"):
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Note   string `json:"note"`
-			Winner string `json:"winner"`
+			Note            string `json:"note"`
+			Winner          string `json:"winner"`
+			ShuttleReturned bool   `json:"shuttleReturned"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note, body.Winner) {
+		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note, body.Winner, body.ShuttleReturned) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
@@ -1206,7 +1211,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		if parts[3] == "cancel" {
 			actionName = "cancel_live_match"
 		}
-		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "note": body.Note})
+		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "note": body.Note, "shuttleReturned": body.ShuttleReturned})
 	case r.Method == http.MethodPatch && action == "history" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -1327,10 +1332,10 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	insertMatch := func(phase string, match Match) error {
 		_, err := tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, status, started_at, ended_at, note
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_returned, status, started_at, ended_at, note
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, match.Status, match.StartedAt, match.EndedAt, match.Note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, match.ShuttleReturned, match.Status, match.StartedAt, match.EndedAt, match.Note)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -1484,7 +1489,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, status, started_at, ended_at, note
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_returned, status, started_at, ended_at, note
 		from matches
 		where session_id = $1
 		order by id
@@ -1496,7 +1501,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var phase string
 		var match Match
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &match.ShuttleReturned, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
 			return SessionState{}, err
 		}
 		switch phase {
@@ -2021,7 +2026,7 @@ func adjustShuttles(state *SessionState, matchID, delta int) {
 	}
 }
 
-func closeLive(state *SessionState, matchID int, cancelled bool, note string, winner string) bool {
+func closeLive(state *SessionState, matchID int, cancelled bool, note string, winner string, shuttleReturned bool) bool {
 	for i, match := range state.Live {
 		if match.ID != matchID {
 			continue
@@ -2044,11 +2049,15 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 		} else {
 			match.Winner = ""
 			match.Status = "cancelled"
+			match.ShuttleReturned = shuttleReturned && match.Shuttles > 0 && match.ShuttleSeq != ""
 		}
 		for j := range state.Players {
-			if !cancelled && slices.Contains(matchPlayers(match), state.Players[j].ID) {
-				state.Players[j].Games++
+			if slices.Contains(matchPlayers(match), state.Players[j].ID) && (!cancelled || !match.ShuttleReturned) {
 				state.Players[j].Shuttles += match.Shuttles
+				if cancelled {
+					continue
+				}
+				state.Players[j].Games++
 				if state.Settings.ResetPlayersAfterFinish {
 					state.Players[j].Coupon = false
 				}
@@ -2193,7 +2202,7 @@ func totalRealShuttles(state SessionState) int {
 		total += match.Shuttles
 	}
 	for _, match := range state.History {
-		if !isCancelledMatch(match) {
+		if !isCancelledMatch(match) || !match.ShuttleReturned {
 			total += match.Shuttles
 		}
 	}
@@ -2492,18 +2501,59 @@ func appendShuttleNumber(sequence string, number int) string {
 func nextShuttleNumber(state SessionState) int {
 	maxNumber := 0
 	legacyCount := 0
+	allocationCount := map[int]int{}
+	returnCount := map[int]int{}
 	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
 		if sequenceMax := maxShuttleSequenceNumber(match.ShuttleSeq); sequenceMax > maxNumber {
 			maxNumber = sequenceMax
 		}
 		if match.ShuttleSeq == "" {
 			legacyCount += match.Shuttles
+			continue
+		}
+		for _, number := range shuttleSequenceNumbers(match.ShuttleSeq) {
+			allocationCount[number]++
+			if match.Status == "cancelled" && match.ShuttleReturned {
+				returnCount[number]++
+			}
+		}
+	}
+	for number := 1; number <= maxNumber; number++ {
+		if allocationCount[number] > 0 && allocationCount[number] == returnCount[number] {
+			return number
 		}
 	}
 	if legacyCount > maxNumber {
 		return legacyCount + 1
 	}
 	return maxNumber + 1
+}
+
+func shuttleSequenceNumbers(sequence string) []int {
+	numbers := []int{}
+	for _, part := range strings.Split(sequence, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		bounds := strings.Split(part, "-")
+		start, startErr := strconv.Atoi(strings.TrimSpace(bounds[0]))
+		end := start
+		endErr := startErr
+		if len(bounds) > 1 {
+			end, endErr = strconv.Atoi(strings.TrimSpace(bounds[len(bounds)-1]))
+		}
+		if startErr != nil || endErr != nil {
+			continue
+		}
+		if start > end {
+			start, end = end, start
+		}
+		for number := start; number <= end; number++ {
+			numbers = append(numbers, number)
+		}
+	}
+	return numbers
 }
 
 func maxShuttleSequenceNumber(sequence string) int {

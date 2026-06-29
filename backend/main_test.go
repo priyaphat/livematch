@@ -273,7 +273,7 @@ func TestCloseLiveStoresWinnerStatsAndShuttleSequence(t *testing.T) {
 		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 3, ShuttleSeq: "1-3"}},
 	}
 
-	if !closeLive(&state, 1, false, "", "B") {
+	if !closeLive(&state, 1, false, "", "B", false) {
 		t.Fatal("expected closeLive to close match")
 	}
 	if got := state.History[0].Winner; got != "B" {
@@ -393,7 +393,7 @@ func TestCloseLiveWithoutWinnerDoesNotStoreWinLoss(t *testing.T) {
 		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 1}},
 	}
 
-	if !closeLive(&state, 1, false, "", "") {
+	if !closeLive(&state, 1, false, "", "", false) {
 		t.Fatal("expected closeLive to close match")
 	}
 	if got := state.History[0].Winner; got != "" {
@@ -420,7 +420,7 @@ func TestCloseLiveWithDrawStoresResultAndDrawStats(t *testing.T) {
 		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 2}},
 	}
 
-	if !closeLive(&state, 1, false, "", "draw") {
+	if !closeLive(&state, 1, false, "", "draw", false) {
 		t.Fatal("expected closeLive to close match")
 	}
 	if got := state.History[0].Winner; got != "draw" {
@@ -452,7 +452,7 @@ func TestCloseLiveResetsPlayerReadinessAfterFinishOnly(t *testing.T) {
 		Live: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
 	}
 
-	if !closeLive(&state, 1, false, "", "") {
+	if !closeLive(&state, 1, false, "", "", false) {
 		t.Fatal("expected closeLive to finish match")
 	}
 	for _, player := range state.Players[:4] {
@@ -469,7 +469,7 @@ func TestCloseLiveResetsPlayerReadinessAfterFinishOnly(t *testing.T) {
 		Players:  []Player{{ID: 1, Coupon: true}, {ID: 2, Coupon: true}, {ID: 3, Coupon: true}, {ID: 4, Coupon: true}},
 		Live:     []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
 	}
-	if !closeLive(&cancelState, 1, true, "", "") {
+	if !closeLive(&cancelState, 1, true, "", "", false) {
 		t.Fatal("expected closeLive to cancel match")
 	}
 	for _, player := range cancelState.Players {
@@ -567,6 +567,86 @@ func TestAdjustShuttlesAssignsGlobalSequenceOnAdd(t *testing.T) {
 	}
 	if state.Live[1].Shuttles != 1 || state.Live[1].ShuttleSeq != "2" {
 		t.Fatalf("expected match 2 sequence 2, got %#v", state.Live[1])
+	}
+}
+
+func TestReturnedShuttleIsReusedOnceBeforeNewNumbers(t *testing.T) {
+	state := SessionState{
+		Live: []Match{
+			{ID: 3, Shuttles: 1, ShuttleSeq: "3"},
+			{ID: 4},
+		},
+		History: []Match{
+			{ID: 1, Shuttles: 1, ShuttleSeq: "1", Status: "finished"},
+			{ID: 2, Shuttles: 1, ShuttleSeq: "2", Status: "cancelled", ShuttleReturned: true},
+		},
+	}
+
+	adjustShuttles(&state, 4, 4)
+
+	if got := state.Live[1].ShuttleSeq; got != "2,4,5,6" {
+		t.Fatalf("expected returned shuttle 2 then new numbers 4,5,6, got %q", got)
+	}
+}
+
+func TestReusedShuttleCanBeReturnedAgain(t *testing.T) {
+	state := SessionState{
+		Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+		Live:    []Match{{ID: 4, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 1, ShuttleSeq: "2"}},
+		History: []Match{
+			{ID: 2, Shuttles: 1, ShuttleSeq: "2", Status: "cancelled", ShuttleReturned: true},
+			{ID: 3, Shuttles: 1, ShuttleSeq: "3", Status: "finished"},
+		},
+	}
+
+	if !closeLive(&state, 4, true, "", "", true) {
+		t.Fatal("expected live match to cancel")
+	}
+	state.Live = []Match{{ID: 5}}
+	adjustShuttles(&state, 5, 1)
+
+	if got := state.Live[0].ShuttleSeq; got != "2" {
+		t.Fatalf("expected shuttle 2 to be available again, got %q", got)
+	}
+}
+
+func TestCancelledMatchWithoutReturnChargesShuttleButNotGame(t *testing.T) {
+	state := SessionState{
+		Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+		Live:    []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 1, ShuttleSeq: "1"}},
+	}
+
+	if !closeLive(&state, 1, true, "", "", false) {
+		t.Fatal("expected live match to cancel")
+	}
+
+	for _, player := range state.Players {
+		if player.Games != 0 || player.Shuttles != 1 {
+			t.Fatalf("expected player to receive shuttle charge without a game, got %#v", player)
+		}
+	}
+	if got := totalRealShuttles(state); got != 1 {
+		t.Fatalf("expected cancelled non-returned shuttle in total, got %d", got)
+	}
+}
+
+func TestCancelledMatchWithReturnDoesNotChargeShuttle(t *testing.T) {
+	state := SessionState{
+		Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+		Live:    []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Shuttles: 1, ShuttleSeq: "1"}},
+	}
+
+	if !closeLive(&state, 1, true, "", "", true) {
+		t.Fatal("expected live match to cancel")
+	}
+
+	for _, player := range state.Players {
+		if player.Games != 0 || player.Shuttles != 0 {
+			t.Fatalf("expected returned shuttle not to affect player, got %#v", player)
+		}
+	}
+	if got := totalRealShuttles(state); got != 0 {
+		t.Fatalf("expected returned shuttle excluded from total, got %d", got)
 	}
 }
 

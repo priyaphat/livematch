@@ -793,6 +793,50 @@ describe('LiveMatch app', () => {
     expect(savedWinner).toBe('draw')
   })
 
+  it('offers an unchecked shuttle return option when cancelling a live match', async () => {
+    const forms = { cancelNote: '', cancelShuttleReturned: false }
+    const ui = {
+      showShuttleModal: false,
+      showFinishModal: false,
+      showCancelModal: true,
+      cancelMatch: {
+        id: 2,
+        court: '1',
+        a1: 1,
+        a2: 2,
+        b1: 3,
+        b2: 4,
+        shuttles: 1,
+        shuttleSequence: '2'
+      }
+    }
+    let returned = null
+    const wrapper = mount(LiveBoardPage, {
+      props: {
+        state: { live: [ui.cancelMatch] },
+        forms,
+        ui,
+        playerName: (id) => `p${id}`,
+        requestAddShuttle: () => {},
+        confirmAddShuttle: () => {},
+        requestFinishMatch: () => {},
+        confirmFinishMatch: () => {},
+        requestCancelMatch: () => {},
+        confirmCancelMatch: () => {
+          returned = forms.cancelShuttleReturned
+        }
+      }
+    })
+
+    const checkbox = wrapper.get('input[type="checkbox"]')
+    expect(checkbox.element.checked).toBe(false)
+    expect(wrapper.text()).toContain('คืนลูกหมายเลข 2')
+    await checkbox.setValue(true)
+    await wrapper.findAll('button').at(wrapper.findAll('button').length - 1).trigger('click')
+
+    expect(returned).toBe(true)
+  })
+
   it('shows draw result and score in history', () => {
     const wrapper = mount(HistoryPage, {
       props: {
@@ -834,6 +878,23 @@ describe('LiveMatch app', () => {
     expect(nextWinner).toBe('B')
     expect(selects[1].element.disabled).toBe(true)
     expect(wrapper.text()).toContain('ยกเลิก')
+  })
+
+  it('shows returned shuttle status in cancelled history', () => {
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          history: [
+            { id: 2, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, shuttleSequence: '2', status: 'cancelled', shuttleReturned: true }
+          ]
+        },
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner: () => {}
+      }
+    })
+
+    expect(wrapper.text()).toContain('คืนลูกแล้ว')
+    expect(wrapper.text()).toContain('2')
   })
 
   it('shows score and draw stats in shared players view', () => {

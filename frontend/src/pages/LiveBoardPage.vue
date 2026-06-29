@@ -123,6 +123,24 @@ defineProps([
           :disabled="isSessionReadOnly"
         />
 
+        <label
+          v-if="ui.cancelMatch?.shuttles > 0 && ui.cancelMatch?.shuttleSequence"
+          class="mt-3 flex items-start gap-3 rounded-md border border-shuttle-400/60 bg-shuttle-400/10 p-3"
+        >
+          <input
+            v-model="forms.cancelShuttleReturned"
+            class="mt-1 h-4 w-4"
+            type="checkbox"
+            :disabled="isSessionReadOnly"
+          />
+          <span>
+            <span class="block font-bold">คืนลูกแบด</span>
+            <span class="text-xs text-stone-500 dark:text-stone-400">
+              คืนลูกหมายเลข {{ ui.cancelMatch.shuttleSequence }} เพื่อนำกลับมาใช้ในเกมถัดไป
+            </span>
+          </span>
+        </label>
+
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showCancelModal = false">กลับ</button>
           <button class="h-11 rounded-md bg-red-600 font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmCancelMatch">บันทึกยกเลิก</button>
