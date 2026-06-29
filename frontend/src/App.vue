@@ -200,8 +200,8 @@ const forms = reactive({
   backofficeActivityPage: 1,
   backofficeActivityPageSize: 20,
   backofficeActivityUserId: '',
-  backofficeActivityMatchId: '',
-  backofficeActivityMatchOptions: [],
+  backofficeActivitySessionId: '',
+  backofficeActivitySessionOptions: [],
   backofficeActivityPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
   backofficeSupportIssues: [],
   backofficeSupportIssueDetail: null,
@@ -694,7 +694,7 @@ async function loadBackofficeActivityLogs(page = forms.backofficeActivityPage) {
     pageSize: String(forms.backofficeActivityPageSize)
   })
   if (forms.backofficeActivityUserId) params.set('userId', forms.backofficeActivityUserId)
-  if (forms.backofficeActivityMatchId.trim()) params.set('matchId', forms.backofficeActivityMatchId.trim())
+  if (forms.backofficeActivitySessionId.trim()) params.set('sessionId', forms.backofficeActivitySessionId.trim())
   const payload = await api(`/api/backoffice/activity-logs?${params}`, {
     headers: backofficeAuthHeaders()
   })
@@ -703,7 +703,7 @@ async function loadBackofficeActivityLogs(page = forms.backofficeActivityPage) {
     activityLogs: payload.logs || []
   }
   forms.backofficeActivityPagination = payload.pagination || { page: 1, pageSize: forms.backofficeActivityPageSize, total: 0, totalPages: 0 }
-  forms.backofficeActivityMatchOptions = payload.matchOptions || []
+  forms.backofficeActivitySessionOptions = payload.sessionOptions || []
   forms.backofficeActivityPage = forms.backofficeActivityPagination.page || 1
 }
 
@@ -713,8 +713,8 @@ function applyBackofficeActivityFilters() {
 }
 
 function changeBackofficeActivityUser() {
-  forms.backofficeActivityMatchId = ''
-  forms.backofficeActivityMatchOptions = []
+  forms.backofficeActivitySessionId = ''
+  forms.backofficeActivitySessionOptions = []
   return applyBackofficeActivityFilters()
 }
 

@@ -355,8 +355,8 @@ describe('LiveMatch app', () => {
             activityLogs: [{ id: 1, action: 'start_match', actorType: 'admin', actorId: 'admin-1', targetType: 'match', targetId: '12', details: '{}', createdAt: '2026-06-28 20:00' }]
           },
           backofficeActivityUserId: '',
-          backofficeActivityMatchId: '',
-          backofficeActivityMatchOptions: [{ id: '12', label: 'เกม 12 · Test Session' }],
+          backofficeActivitySessionId: '',
+          backofficeActivitySessionOptions: [{ id: 'session-1', label: 'Test Session' }],
           backofficeActivityPagination: { page: 2, pageSize: 20, total: 45, totalPages: 3 }
         },
         ui: {},
@@ -382,14 +382,14 @@ describe('LiveMatch app', () => {
 
     const filters = wrapper.findAll('form select')
     await filters[0].setValue('admin-1')
-    await filters[1].setValue('12')
+    await filters[1].setValue('session-1')
     await wrapper.get('form').trigger('submit')
     const paginationButtons = wrapper.findAll('section button').filter((button) => ['ก่อนหน้า', 'ถัดไป'].includes(button.text().trim()))
     await paginationButtons[1].trigger('click')
 
     expect(changeUser).toHaveBeenCalledTimes(1)
     expect(applyFilters).toHaveBeenCalledTimes(1)
-    expect(filters[1].text()).toContain('เกม 12 · Test Session')
+    expect(filters[1].text()).toContain('Test Session')
     expect(loadActivity).toHaveBeenCalledWith(3)
     expect(wrapper.text()).toContain('หน้า 2 / 3')
   })

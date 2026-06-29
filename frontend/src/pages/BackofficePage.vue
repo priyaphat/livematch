@@ -625,14 +625,14 @@ function closeSlipPreview() {
               </select>
             </label>
             <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
-              Match
+              Session
               <select
-                v-model="forms.backofficeActivityMatchId"
+                v-model="forms.backofficeActivitySessionId"
                 class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
                 :disabled="!forms.backofficeActivityUserId"
               >
-                <option value="">{{ forms.backofficeActivityUserId ? 'Match ทั้งหมด' : 'เลือก User ก่อน' }}</option>
-                <option v-for="match in forms.backofficeActivityMatchOptions" :key="match.id" :value="match.id">{{ match.label }}</option>
+                <option value="">{{ forms.backofficeActivityUserId ? 'Session ทั้งหมด' : 'เลือก User ก่อน' }}</option>
+                <option v-for="session in forms.backofficeActivitySessionOptions" :key="session.id" :value="session.id">{{ session.label }}</option>
               </select>
             </label>
             <button class="mt-auto inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white">

@@ -776,46 +776,43 @@ func (a *app) handleBackofficeCoinOrders(w http.ResponseWriter, r *http.Request)
 func (a *app) handleBackofficeActivityLogs(w http.ResponseWriter, r *http.Request) {
 	page, pageSize, _ := paginationParams(r, 20, 100)
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
-	matchID := strings.TrimSpace(r.URL.Query().Get("matchId"))
-	logs, total, err := a.activityLogsPage(r.Context(), page, pageSize, userID, matchID)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	logs, total, err := a.activityLogsPage(r.Context(), page, pageSize, userID, sessionID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	matchOptions := []map[string]any{}
+	sessionOptions := []map[string]any{}
 	if userID != "" {
-		matchOptions, _ = a.activityMatchOptions(r.Context(), userID)
+		sessionOptions, _ = a.activitySessionOptions(r.Context(), userID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"logs":         logs,
-		"matchOptions": matchOptions,
-		"pagination":   paginationPayload(page, pageSize, total),
+		"logs":           logs,
+		"sessionOptions": sessionOptions,
+		"pagination":     paginationPayload(page, pageSize, total),
 	})
 }
 
-func (a *app) activityMatchOptions(ctx context.Context, adminID string) ([]map[string]any, error) {
+func (a *app) activitySessionOptions(ctx context.Context, adminID string) ([]map[string]any, error) {
 	items := []map[string]any{}
 	rows, err := a.db.QueryContext(ctx, `
-		select m.id, string_agg(distinct coalesce(s.name, s.id), ', ' order by coalesce(s.name, s.id))
-		from matches m
-		join sessions s on s.id = m.session_id
+		select s.id, coalesce(s.name, s.id)
+		from sessions s
 		where s.admin_id = $1
-		group by m.id
-		order by m.id desc
+		order by s.updated_at desc
 	`, adminID)
 	if err != nil {
 		return items, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var matchID int
-		var sessionNames string
-		if err := rows.Scan(&matchID, &sessionNames); err != nil {
+		var sessionID, sessionName string
+		if err := rows.Scan(&sessionID, &sessionName); err != nil {
 			return items, err
 		}
 		items = append(items, map[string]any{
-			"id":    strconv.Itoa(matchID),
-			"label": fmt.Sprintf("เกม %d · %s", matchID, sessionNames),
+			"id":    sessionID,
+			"label": sessionName,
 		})
 	}
 	return items, rows.Err()
@@ -1459,7 +1456,7 @@ func (a *app) activityLogs(ctx context.Context, limit int) ([]activityLogItem, e
 	return items, err
 }
 
-func (a *app) activityLogsPage(ctx context.Context, page, pageSize int, userID, matchID string) ([]activityLogItem, int, error) {
+func (a *app) activityLogsPage(ctx context.Context, page, pageSize int, userID, sessionID string) ([]activityLogItem, int, error) {
 	items := []activityLogItem{}
 	conditions := []string{}
 	args := []any{}
@@ -1468,10 +1465,10 @@ func (a *app) activityLogsPage(ctx context.Context, page, pageSize int, userID, 
 		placeholder := fmt.Sprintf("$%d", len(args))
 		conditions = append(conditions, fmt.Sprintf("((actor_type = 'admin' and actor_id = %s) or (target_type = 'admin_user' and target_id = %s))", placeholder, placeholder))
 	}
-	if matchID != "" {
-		args = append(args, matchID)
+	if sessionID != "" {
+		args = append(args, sessionID)
 		placeholder := fmt.Sprintf("$%d", len(args))
-		conditions = append(conditions, fmt.Sprintf("target_type = 'match' and target_id = %s", placeholder))
+		conditions = append(conditions, fmt.Sprintf("((target_type = 'session' and target_id = %s) or (details::jsonb ->> 'sessionId') = %s)", placeholder, placeholder))
 	}
 	where := ""
 	if len(conditions) > 0 {
