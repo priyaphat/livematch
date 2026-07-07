@@ -38,19 +38,20 @@ type SessionRecord struct {
 }
 
 type SessionState struct {
-	Tab       string         `json:"tab"`
-	Theme     string         `json:"theme"`
-	Session   SessionInfo    `json:"session"`
-	Settings  Settings       `json:"settings"`
-	Players   []Player       `json:"players"`
-	Couples   []Couple       `json:"couples"`
-	Pending   []Match        `json:"pending"`
-	Queue     []Match        `json:"queue"`
-	Live      []Match        `json:"live"`
-	History   []Match        `json:"history"`
-	LiveShare LiveShareHours `json:"liveShare"`
-	NextIDs   NextIDs        `json:"nextIds"`
-	UpdatedAt time.Time      `json:"updatedAt"`
+	Tab              string         `json:"tab"`
+	Theme            string         `json:"theme"`
+	Session          SessionInfo    `json:"session"`
+	Settings         Settings       `json:"settings"`
+	Players          []Player       `json:"players"`
+	Couples          []Couple       `json:"couples"`
+	ReturnedShuttles []int          `json:"returnedShuttles"`
+	Pending          []Match        `json:"pending"`
+	Queue            []Match        `json:"queue"`
+	Live             []Match        `json:"live"`
+	History          []Match        `json:"history"`
+	LiveShare        LiveShareHours `json:"liveShare"`
+	NextIDs          NextIDs        `json:"nextIds"`
+	UpdatedAt        time.Time      `json:"updatedAt"`
 }
 
 type SessionInfo struct {
@@ -291,6 +292,11 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add column if not exists winner text not null default '';
 		alter table matches add column if not exists shuttle_sequence text not null default '';
 		alter table matches add column if not exists shuttle_returned boolean not null default false;
+		create table if not exists returned_shuttles (
+			session_id text not null references sessions(id) on delete cascade,
+			shuttle_number integer not null check (shuttle_number > 0),
+			primary key (session_id, shuttle_number)
+		);
 		create table if not exists live_share_hours (
 			session_id text not null references sessions(id) on delete cascade,
 			kind text not null check (kind in ('court', 'player', 'shuttle')),
@@ -1018,6 +1024,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					logDetails["paid"] = *body.Paid
 					actionName = "toggle_player_paid"
 					state.Players[i].Paid = *body.Paid
+					if *body.Paid {
+						state.Players[i].Coupon = false
+						state.Couples = slices.DeleteFunc(state.Couples, func(c Couple) bool {
+							return c.A == playerID || c.B == playerID
+						})
+					}
 				}
 				if body.Level != nil {
 					logDetails["level"] = *body.Level
@@ -1059,17 +1071,29 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "history":
 		writeJSON(w, http.StatusOK, map[string]any{"history": state.History, "players": state.Players})
 	case r.Method == http.MethodPut && action == "settings":
-		var settings Settings
-		if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		var body struct {
+			Settings
+			SessionName *string `json:"sessionName"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid settings"})
 			return
 		}
+		settings := body.Settings
 		normalizeSettings(&settings)
 		if isLiveShare(state) {
 			settings.StartMatchWithShuttle = false
 		}
+		if body.SessionName != nil {
+			name := strings.TrimSpace(*body.SessionName)
+			if name == "" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session name"})
+				return
+			}
+			state.Session.Name = name
+		}
 		state.Settings = settings
-		a.respondSavedWithActivity(w, r, state, "update_session_settings", "session", state.Session.ID, map[string]any{"entryFee": settings.EntryFee, "shuttleFee": settings.ShuttleFee, "courtCount": settings.CourtCount, "allowCrossLevel": settings.AllowCrossLevel})
+		a.respondSavedWithActivity(w, r, state, "update_session_settings", "session", state.Session.ID, map[string]any{"name": state.Session.Name, "entryFee": settings.EntryFee, "shuttleFee": settings.ShuttleFee, "courtCount": settings.CourtCount, "allowCrossLevel": settings.AllowCrossLevel})
 	case r.Method == http.MethodPut && action == "live-share-hours":
 		if !isLiveShare(state) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "liveShare only"})
@@ -1088,7 +1112,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			B int `json:"b"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if body.A == 0 || body.B == 0 || body.A == body.B {
+		playerA, playerB := playerByID(state.Players, body.A), playerByID(state.Players, body.B)
+		if body.A == 0 || body.B == 0 || body.A == body.B || playerA == nil || playerB == nil || playerA.Paid || playerB.Paid {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid couple"})
 			return
 		}
@@ -1195,6 +1220,14 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		adjustShuttles(&state, matchID, body.Delta)
 		a.respondSavedWithActivity(w, r, state, "adjust_match_shuttles", "match", strconv.Itoa(matchID), map[string]any{"delta": body.Delta})
+	case r.Method == http.MethodPost && action == "live" && len(parts) >= 5 && parts[3] == "shuttles" && parts[4] == "return":
+		matchID, _ := strconv.Atoi(parts[2])
+		number, ok := returnLatestShuttle(&state, matchID)
+		if !ok {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "match must have more than one shuttle"})
+			return
+		}
+		a.respondSavedWithActivity(w, r, state, "return_match_shuttle", "match", strconv.Itoa(matchID), map[string]any{"shuttleNumber": number})
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 4 && (parts[3] == "finish" || parts[3] == "cancel"):
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -1305,7 +1338,7 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		return err
 	}
 
-	for _, table := range []string{"players", "couples", "matches", "live_share_hours"} {
+	for _, table := range []string{"players", "couples", "matches", "live_share_hours", "returned_shuttles"} {
 		if _, err = tx.ExecContext(ctx, "delete from "+table+" where session_id = $1", state.Session.ID); err != nil {
 			return err
 		}
@@ -1325,6 +1358,14 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			insert into couples (session_id, id, player_a, player_b)
 			values ($1, $2, $3, $4)
 		`, state.Session.ID, couple.ID, couple.A, couple.B); err != nil {
+			return err
+		}
+	}
+	for _, number := range state.ReturnedShuttles {
+		if _, err = tx.ExecContext(ctx, `
+			insert into returned_shuttles (session_id, shuttle_number)
+			values ($1, $2)
+		`, state.Session.ID, number); err != nil {
 			return err
 		}
 	}
@@ -1526,6 +1567,27 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
+		select shuttle_number
+		from returned_shuttles
+		where session_id = $1
+		order by shuttle_number
+	`, id)
+	if err != nil {
+		return SessionState{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var number int
+		if err := rows.Scan(&number); err != nil {
+			return SessionState{}, err
+		}
+		state.ReturnedShuttles = append(state.ReturnedShuttles, number)
+	}
+	if err := rows.Err(); err != nil {
+		return SessionState{}, err
+	}
+
+	rows, err = a.db.QueryContext(ctx, `
 		select kind, target, hour, quantity
 		from live_share_hours
 		where session_id = $1
@@ -1660,7 +1722,7 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 	used := map[int]bool{}
 	var groups []group
 	for _, p := range state.Players {
-		if used[p.ID] || !p.Active || !p.Coupon || busy[p.ID] {
+		if used[p.ID] || !p.Active || p.Paid || !p.Coupon || busy[p.ID] {
 			continue
 		}
 		if c, ok := coupleForPlayer(state.Couples, p.ID); ok {
@@ -1669,7 +1731,7 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 				mateID = c.B
 			}
 			mate, exists := playersByID[mateID]
-			if exists && mate.Active && mate.Coupon && !busy[mateID] {
+			if exists && mate.Active && !mate.Paid && mate.Coupon && !busy[mateID] {
 				groups = append(groups, group{ids: []int{p.ID, mateID}, level: p.Level, games: p.Games + mate.Games})
 				used[p.ID], used[mateID] = true, true
 				continue
@@ -1876,7 +1938,7 @@ func startMatch(state *SessionState, matchID int, court string) bool {
 			match.ShuttleSeq = ""
 			if state.Settings.StartMatchWithShuttle {
 				match.Shuttles = 1
-				match.ShuttleSeq = appendShuttleNumber(match.ShuttleSeq, nextShuttleNumber(*state))
+				match.ShuttleSeq = appendShuttleNumber(match.ShuttleSeq, nextShuttleNumber(state))
 			}
 			match.Status = "กำลังเล่น"
 			match.StartedAt = nowHHMM()
@@ -2017,13 +2079,37 @@ func adjustShuttles(state *SessionState, matchID, delta int) {
 				return
 			}
 			for range delta {
-				nextNumber := nextShuttleNumber(*state)
+				nextNumber := nextShuttleNumber(state)
 				state.Live[i].Shuttles++
 				state.Live[i].ShuttleSeq = appendShuttleNumber(state.Live[i].ShuttleSeq, nextNumber)
 			}
 			return
 		}
 	}
+}
+
+func returnLatestShuttle(state *SessionState, matchID int) (int, bool) {
+	for i := range state.Live {
+		match := &state.Live[i]
+		numbers := shuttleSequenceNumbers(match.ShuttleSeq)
+		if match.ID != matchID || match.Shuttles <= 1 || len(numbers) <= 1 {
+			continue
+		}
+		number := numbers[len(numbers)-1]
+		numbers = numbers[:len(numbers)-1]
+		parts := make([]string, 0, len(numbers))
+		for _, item := range numbers {
+			parts = append(parts, strconv.Itoa(item))
+		}
+		match.Shuttles--
+		match.ShuttleSeq = strings.Join(parts, ",")
+		if !slices.Contains(state.ReturnedShuttles, number) {
+			state.ReturnedShuttles = append(state.ReturnedShuttles, number)
+			slices.Sort(state.ReturnedShuttles)
+		}
+		return number, true
+	}
+	return 0, false
 }
 
 func closeLive(state *SessionState, matchID int, cancelled bool, note string, winner string, shuttleReturned bool) bool {
@@ -2498,7 +2584,13 @@ func appendShuttleNumber(sequence string, number int) string {
 	return sequence + "," + strconv.Itoa(number)
 }
 
-func nextShuttleNumber(state SessionState) int {
+func nextShuttleNumber(state *SessionState) int {
+	if len(state.ReturnedShuttles) > 0 {
+		slices.Sort(state.ReturnedShuttles)
+		number := state.ReturnedShuttles[0]
+		state.ReturnedShuttles = state.ReturnedShuttles[1:]
+		return number
+	}
 	maxNumber := 0
 	legacyCount := 0
 	allocationCount := map[int]int{}

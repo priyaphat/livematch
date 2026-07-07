@@ -589,6 +589,45 @@ func TestReturnedShuttleIsReusedOnceBeforeNewNumbers(t *testing.T) {
 	}
 }
 
+func TestReturnLatestShuttleReusesItBeforeContinuingSequence(t *testing.T) {
+	state := SessionState{
+		Live: []Match{
+			{ID: 5, Shuttles: 2, ShuttleSeq: "5,6"},
+			{ID: 6, Shuttles: 3, ShuttleSeq: "7,8,9"},
+			{ID: 7},
+		},
+		History: []Match{{ID: 1, Shuttles: 4, ShuttleSeq: "1-4", Status: "finished"}},
+	}
+
+	number, ok := returnLatestShuttle(&state, 5)
+	if !ok || number != 6 {
+		t.Fatalf("expected shuttle 6 to return, got number=%d ok=%v", number, ok)
+	}
+	if state.Live[0].Shuttles != 1 || state.Live[0].ShuttleSeq != "5" {
+		t.Fatalf("expected game 5 to retain shuttle 5, got %#v", state.Live[0])
+	}
+	adjustShuttles(&state, 7, 2)
+	if got := state.Live[2].ShuttleSeq; got != "6,10" {
+		t.Fatalf("expected game 7 sequence 6,10, got %q", got)
+	}
+	if _, ok := returnLatestShuttle(&state, 5); ok {
+		t.Fatal("expected a game with one shuttle not to return another")
+	}
+}
+
+func TestPaidPlayersAreExcludedFromAvailableGroups(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Paid: true},
+			{ID: 2, Active: true, Coupon: true},
+		},
+	}
+	groups := buildAvailableGroups(state, map[int]bool{})
+	if len(groups) != 1 || len(groups[0].ids) != 1 || groups[0].ids[0] != 2 {
+		t.Fatalf("expected only unpaid player 2, got %#v", groups)
+	}
+}
+
 func TestReusedShuttleCanBeReturnedAgain(t *testing.T) {
 	state := SessionState{
 		Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},

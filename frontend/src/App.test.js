@@ -842,6 +842,41 @@ describe('LiveMatch app', () => {
     expect(returned).toBe(true)
   })
 
+  it('shows the return button only for multiple shuttles and confirms the latest number', async () => {
+    const match = { id: 5, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 2, shuttleSequence: '5,6' }
+    const ui = {
+      showShuttleModal: false,
+      showReturnShuttleModal: true,
+      returnShuttleMatch: match,
+      showFinishModal: false,
+      showCancelModal: false
+    }
+    const confirmReturn = vi.fn()
+    const wrapper = mount(LiveBoardPage, {
+      props: {
+        state: { live: [match] },
+        forms: {},
+        ui,
+        playerName: (id) => `p${id}`,
+        requestAddShuttle: () => {},
+        confirmAddShuttle: () => {},
+        latestShuttleNumber: () => 6,
+        requestReturnShuttle: () => {},
+        confirmReturnShuttle: confirmReturn,
+        requestFinishMatch: () => {},
+        confirmFinishMatch: () => {},
+        requestCancelMatch: () => {},
+        confirmCancelMatch: () => {}
+      }
+    })
+
+    expect(wrapper.text()).toContain('เพิ่มลูก')
+    expect(wrapper.text()).toContain('คืนลูก')
+    expect(wrapper.text()).toContain('คืนลูกหมายเลข 6')
+    await wrapper.findAll('button').find((item) => item.text().includes('ยืนยันคืนลูก')).trigger('click')
+    expect(confirmReturn).toHaveBeenCalledOnce()
+  })
+
   it('shows draw result and score in history', () => {
     const wrapper = mount(HistoryPage, {
       props: {
@@ -926,6 +961,7 @@ describe('LiveMatch app', () => {
     const wrapper = mount(SettingsPage, {
       props: {
         state: {
+          session: { name: 'สนามเดิม', type: 'liveMatch' },
           settings: {
             entryFee: 120,
             shuttleFee: 85,
@@ -952,6 +988,7 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('เริ่มเกมแล้วนับลูกแบด 1 ลูกอัตโนมัติ')
     expect(wrapper.findAll('input[type="checkbox"]').at(1).element.checked).toBe(true)
     expect(wrapper.findAll('input[type="checkbox"]').at(2).element.checked).toBe(true)
+    expect(wrapper.get('input[placeholder="ชื่อสนามหรือชื่อกิจกรรม"]').element.value).toBe('สนามเดิม')
   })
   it('renders readable member share labels', () => {
     const wrapper = mount(PlayersPage, {
@@ -1131,6 +1168,29 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('select').exists()).toBe(true)
     await wrapper.get('button[title="ยกเลิกคิวเกม"]').trigger('click')
     expect(cancelled?.id).toBe(9)
+  })
+
+  it('announces a queued match after selecting a court', async () => {
+    const announce = vi.fn()
+    const wrapper = mount(QueuePage, {
+      props: {
+        state: { queue: [{ id: 9, level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4 }] },
+        forms: { matchCourts: { 9: '' } },
+        matchLevelLabel: () => 'กลาง',
+        openQueueQr: () => {},
+        startMatch: () => {},
+        announceQueuedMatch: announce,
+        cancelQueuedMatch: () => {},
+        playerName: (id) => `p${id}`,
+        availableCourtNames: ['สนาม 1']
+      }
+    })
+
+    expect(wrapper.text()).not.toContain('อ่านออกเสียง')
+    await wrapper.get('select').setValue('สนาม 1')
+    const button = wrapper.findAll('button').find((item) => item.text().includes('อ่านออกเสียง'))
+    await button.trigger('click')
+    expect(announce).toHaveBeenCalledWith(expect.objectContaining({ id: 9 }), 'สนาม 1')
   })
 
   it('shows dashboard game total after cancelled games are excluded', () => {

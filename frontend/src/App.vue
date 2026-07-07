@@ -114,6 +114,7 @@ const state = reactive({
     { id: 12, name: 'พลอย', games: 1, wins: 1, draws: 0, losses: 0, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
   ],
   couples: [{ id: 1, a: 1, b: 2 }],
+  returnedShuttles: [],
   pending: [],
   queue: [
     { id: 1, court: '-', level: 'middle', a1: 1, a2: 2, b1: 7, b2: 8 }
@@ -244,6 +245,8 @@ const ui = reactive({
   cancelMatch: null,
   showShuttleModal: false,
   shuttleMatch: null,
+  showReturnShuttleModal: false,
+  returnShuttleMatch: null,
   showQrModal: false,
   showCreateSessionModal: false,
   showCoinModal: false,
@@ -349,6 +352,7 @@ function applyServerState(nextState) {
 function mergeSessionPatch(patch = {}) {
   if (Array.isArray(patch.players)) state.players = patch.players
   if (Array.isArray(patch.couples)) state.couples = patch.couples
+  if (Array.isArray(patch.returnedShuttles)) state.returnedShuttles = patch.returnedShuttles
   if (Array.isArray(patch.pending)) state.pending = patch.pending
   if (Array.isArray(patch.queue)) state.queue = patch.queue
   if (Array.isArray(patch.live)) state.live = patch.live
@@ -491,7 +495,7 @@ async function saveSettings() {
   if (!ensureSessionActive()) return
   applyServerState(await api(`/api/sessions/${state.session.id}/settings`, {
     method: 'PUT',
-    body: JSON.stringify(state.settings)
+    body: JSON.stringify({ ...state.settings, sessionName: state.session.name })
   }))
 }
 
@@ -1050,7 +1054,7 @@ const usedLevels = computed(() => new Set([
 ].filter(Boolean)))
 const availablePlayers = computed(() =>
   state.players
-    .filter((player) => player.active && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
+    .filter((player) => player.active && !player.paid && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
     .sort((a, b) => a.games - b.games || a.id - b.id)
 )
 
@@ -1304,6 +1308,10 @@ function playerDeleteBlockReasons(playerId) {
 
 function togglePayment(player) {
   player.paid = !player.paid
+  if (player.paid) {
+    player.coupon = false
+    state.couples = state.couples.filter((couple) => couple.a !== player.id && couple.b !== player.id)
+  }
 }
 
 function randomMatch() {
@@ -1555,11 +1563,54 @@ function requestAddShuttle(match) {
   ui.showShuttleModal = true
 }
 
+function announceQueuedMatch(match, court = '') {
+  if (!court) return
+  if (!('speechSynthesis' in window) || typeof window.SpeechSynthesisUtterance !== 'function') {
+    showToast('อุปกรณ์นี้ไม่รองรับการอ่านออกเสียง')
+    return
+  }
+  const voices = window.speechSynthesis.getVoices()
+  const thaiVoice = voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
+    || voices.find((voice) => voice.lang?.toLowerCase().startsWith('th'))
+  if (!thaiVoice) {
+    showToast('ไม่พบเสียงภาษาไทยในอุปกรณ์นี้')
+    return
+  }
+  const courtText = `บุฟเฟ่ต์สนามที่ ${court}`
+  const namesText = matchPlayers(match).map((id) => `คุณ${playerName(id)}`).join(' ')
+  window.speechSynthesis.cancel()
+  for (const text of [courtText, namesText]) {
+    const utterance = new window.SpeechSynthesisUtterance(text)
+    utterance.lang = 'th-TH'
+    utterance.voice = thaiVoice
+    utterance.rate = 0.9
+    utterance.pitch = 1
+    window.speechSynthesis.speak(utterance)
+  }
+}
+
+function latestShuttleNumber(match) {
+  return shuttleSequenceNumbers(match?.shuttleSequence || '').at(-1) || null
+}
+
+function requestReturnShuttle(match) {
+  if (!ensureSessionActive() || Number(match?.shuttles || 0) <= 1) return
+  ui.returnShuttleMatch = match
+  ui.showReturnShuttleModal = true
+}
+
 async function confirmAddShuttle() {
   if (!ui.shuttleMatch) return
   await adjustShuttleApi(ui.shuttleMatch, 1)
   ui.shuttleMatch = null
   ui.showShuttleModal = false
+}
+
+async function confirmReturnShuttle() {
+  if (!ui.returnShuttleMatch) return
+  await returnShuttleApi(ui.returnShuttleMatch)
+  ui.returnShuttleMatch = null
+  ui.showReturnShuttleModal = false
 }
 
 function confirmCancelMatch() {
@@ -1576,6 +1627,10 @@ function appendShuttleNumber(sequence, number) {
 }
 
 function nextShuttleNumber() {
+  if ((state.returnedShuttles || []).length) {
+    state.returnedShuttles.sort((a, b) => a - b)
+    return state.returnedShuttles.shift()
+  }
   const matches = [...state.live, ...state.history]
   const maxSequence = matches.reduce((max, match) => Math.max(max, maxShuttleSequenceNumber(match.shuttleSequence || '')), 0)
   const allocationCount = new Map()
@@ -1595,6 +1650,18 @@ function nextShuttleNumber() {
     .filter((match) => !match.shuttleSequence)
     .reduce((sum, match) => sum + (match.shuttles || 0), 0)
   return Math.max(maxSequence, legacyCount) + 1
+}
+
+function returnLatestShuttle(match) {
+  const numbers = shuttleSequenceNumbers(match.shuttleSequence || '')
+  if (match.shuttles <= 1 || numbers.length <= 1) return
+  const returned = numbers.pop()
+  match.shuttles -= 1
+  match.shuttleSequence = numbers.join(',')
+  if (!state.returnedShuttles.includes(returned)) {
+    state.returnedShuttles.push(returned)
+    state.returnedShuttles.sort((a, b) => a - b)
+  }
 }
 
 async function loadBackofficeCoinLedger(page = forms.backofficeLedgerPage) {
@@ -2023,6 +2090,17 @@ async function adjustShuttleApi(match, delta) {
   }
 }
 
+async function returnShuttleApi(match) {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/shuttles/return`, {
+      method: 'POST'
+    }))
+  } catch {
+    returnLatestShuttle(match)
+  }
+}
+
 async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned = false) {
   if (!ensureSessionActive()) return
   try {
@@ -2101,7 +2179,7 @@ async function saveSettingsApi() {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/settings`, {
       method: 'PUT',
-      body: JSON.stringify(state.settings)
+      body: JSON.stringify({ ...state.settings, sessionName: state.session.name })
     }))
   } catch {
     // Local fallback keeps manual testing usable if the backend is offline.
@@ -2186,10 +2264,14 @@ const pageProps = computed(() => ({
   confirmPendingMatch: confirmPendingMatchApi,
   cancelPendingMatch: cancelPendingMatchApi,
   startMatch: startMatchApi,
+  announceQueuedMatch,
   cancelQueuedMatch: cancelQueuedMatchApi,
   playerName,
   requestAddShuttle,
   confirmAddShuttle,
+  latestShuttleNumber,
+  requestReturnShuttle,
+  confirmReturnShuttle,
   closeLive: closeLiveApi,
   requestFinishMatch,
   confirmFinishMatch: confirmFinishMatchApi,

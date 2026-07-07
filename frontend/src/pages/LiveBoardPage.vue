@@ -1,5 +1,5 @@
 <script setup>
-import { Check, X } from '@lucide/vue'
+import { Check, Plus, RotateCcw, X } from '@lucide/vue'
 
 defineProps([
   'state',
@@ -8,6 +8,9 @@ defineProps([
   'playerName',
   'requestAddShuttle',
   'confirmAddShuttle',
+  'latestShuttleNumber',
+  'requestReturnShuttle',
+  'confirmReturnShuttle',
   'requestFinishMatch',
   'confirmFinishMatch',
   'requestCancelMatch',
@@ -28,7 +31,14 @@ defineProps([
       </div>
 
       <div class="mt-4 flex flex-wrap gap-2">
-        <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" @click="requestAddShuttle(match)">+</button>
+        <button class="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-3 font-semibold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" @click="requestAddShuttle(match)">
+          <Plus class="h-4 w-4" />
+          เพิ่มลูก
+        </button>
+        <button v-if="match.shuttles > 1" class="inline-flex h-10 items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 font-semibold text-amber-800 disabled:cursor-not-allowed disabled:opacity-45 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-300" :disabled="isSessionReadOnly" @click="requestReturnShuttle(match)">
+          <RotateCcw class="h-4 w-4" />
+          คืนลูก
+        </button>
         <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="requestFinishMatch(match)">
           <Check class="h-4 w-4" />
           จบ
@@ -55,6 +65,27 @@ defineProps([
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showShuttleModal = false">กลับ</button>
           <button class="h-11 rounded-md bg-shuttle-400 font-bold text-stone-950 disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmAddShuttle">เพิ่มลูกแบด</button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="ui.showReturnShuttleModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
+      <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-black">ยืนยันคืนลูกแบด</h2>
+            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">คืนลูกหมายเลข {{ latestShuttleNumber(ui.returnShuttleMatch) }} แล้วนำกลับไปใช้ในเกมถัดไป</p>
+          </div>
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal คืนลูก" @click="ui.showReturnShuttleModal = false">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+        <div class="mt-4 rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+          เกมนี้จะเหลือลูกแบด {{ Math.max(1, Number(ui.returnShuttleMatch?.shuttles || 1) - 1) }} ลูก
+        </div>
+        <div class="mt-4 grid grid-cols-2 gap-2">
+          <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showReturnShuttleModal = false">กลับ</button>
+          <button class="h-11 rounded-md bg-amber-500 font-bold text-stone-950 disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmReturnShuttle">ยืนยันคืนลูก</button>
         </div>
       </div>
     </div>

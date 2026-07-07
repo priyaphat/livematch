@@ -1,5 +1,5 @@
 <script setup>
-import { Clock3, Play, QrCode, XCircle } from '@lucide/vue'
+import { Clock3, Play, QrCode, Volume2, XCircle } from '@lucide/vue'
 
 defineProps([
   'state',
@@ -7,6 +7,7 @@ defineProps([
   'matchLevelLabel',
   'openQueueQr',
   'startMatch',
+  'announceQueuedMatch',
   'cancelQueuedMatch',
   'playerName',
   'availableCourtNames',
@@ -46,11 +47,20 @@ defineProps([
             <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ matchLevelLabel(match) }}</p>
             <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
           </div>
-          <div class="grid gap-2 sm:min-w-96 sm:grid-cols-[1fr_auto_auto]">
+          <div class="grid gap-2 sm:min-w-96 sm:grid-cols-[1fr_auto_auto_auto]">
             <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :disabled="isSessionReadOnly">
               <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
               <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
             </select>
+            <button
+              v-if="forms.matchCourts[match.id]"
+              class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-3 text-sm font-bold text-court-700 dark:border-court-900 dark:text-court-300"
+              type="button"
+              @click="announceQueuedMatch(match, forms.matchCourts[match.id])"
+            >
+              <Volume2 class="h-4 w-4" />
+              อ่านออกเสียง
+            </button>
             <button
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"
               :class="forms.matchCourts[match.id] ? 'bg-court-500' : 'bg-stone-400'"

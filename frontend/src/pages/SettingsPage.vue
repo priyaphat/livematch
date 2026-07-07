@@ -16,11 +16,23 @@ const props = defineProps([
 ])
 
 const isLiveShare = computed(() => props.state.session?.type === 'liveShare')
+const sessionName = computed({
+  get: () => props.state.session?.name || '',
+  set: (value) => {
+    if (!props.state.session) props.state.session = {}
+    props.state.session.name = value
+  }
+})
 </script>
 
 <template>
   <fieldset class="grid gap-4 disabled:opacity-75 lg:grid-cols-2" :disabled="isSessionReadOnly">
     <div class="grid gap-4">
+      <label class="grid gap-2 rounded-lg border border-court-200 bg-white p-4 dark:border-court-900 dark:bg-stone-900">
+        <span class="font-bold">ชื่อ Session</span>
+        <input v-model.trim="sessionName" maxlength="120" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ชื่อสนามหรือชื่อกิจกรรม" @change="saveSettings" />
+      </label>
+
       <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
         <span class="font-bold">{{ isLiveShare ? 'ค่าสนามต่อชั่วโมง' : 'ค่าเข้าสนามต่อคน' }}</span>
         <input v-if="isLiveShare" v-model.number="state.settings.courtFeePerHour" type="number" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
