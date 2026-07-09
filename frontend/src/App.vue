@@ -51,6 +51,7 @@ import { installDomTranslator, language, levelText, t, toggleLanguage } from './
 import { persistTheme, readStoredTheme } from './theme'
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
+const defaultAnnouncementTemplate = 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}'
 
 const tabs = computed(() => [
   { id: 'home', label: t('หน้าแรก', 'Home'), icon: Home },
@@ -97,7 +98,8 @@ const state = reactive({
     randomPriority: 'level',
     showPaymentOnShare: true,
     resetPlayersAfterFinish: true,
-    startMatchWithShuttle: true
+    startMatchWithShuttle: true,
+    announcementTemplate: defaultAnnouncementTemplate
   },
   players: [
     { id: 1, name: 'ต้น', games: 4, wins: 2, draws: 0, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
@@ -377,6 +379,9 @@ function normalizeClientSettings() {
   }
   if (state.settings.startMatchWithShuttle === undefined) {
     state.settings.startMatchWithShuttle = true
+  }
+  if (!String(state.settings.announcementTemplate || '').trim()) {
+    state.settings.announcementTemplate = defaultAnnouncementTemplate
   }
   if (!state.liveShare) {
     state.liveShare = { courtHours: {}, playerHours: {}, shuttleHours: {} }
@@ -1563,27 +1568,123 @@ function requestAddShuttle(match) {
   ui.showShuttleModal = true
 }
 
-function announceQueuedMatch(match, court = '') {
+function waitForSpeechVoices(timeoutMs = 2500) {
+  if (!('speechSynthesis' in window)) return Promise.resolve([])
+  const currentVoices = window.speechSynthesis.getVoices()
+  if (currentVoices.length) return Promise.resolve(currentVoices)
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      window.speechSynthesis.removeEventListener?.('voiceschanged', finish)
+      resolve(window.speechSynthesis.getVoices())
+    }
+    window.speechSynthesis.addEventListener?.('voiceschanged', finish)
+    window.speechSynthesis.onvoiceschanged = finish
+    window.setTimeout(finish, timeoutMs)
+  })
+}
+
+function announcementParts(match, court = '') {
+  const players = matchPlayers(match).map((id) => playerName(id))
+  const values = {
+    court,
+    สนาม: court,
+    a: players[0] || '',
+    b: players[1] || '',
+    c: players[2] || '',
+    d: players[3] || ''
+  }
+  const pauseToken = '__LIVEMATCH_SPEECH_PAUSE__'
+  let text = String(state.settings.announcementTemplate || defaultAnnouncementTemplate)
+    .replace(/\{\s*pause\s*\}/gi, `\n${pauseToken}\n`)
+    .replace(/\{\s*เว้นช่วงพูด\s*\}/g, `\n${pauseToken}\n`)
+
+  for (const [key, value] of Object.entries(values)) {
+    text = text.replace(new RegExp(`\\{\\s*${key}\\s*\\}`, 'g'), value)
+  }
+
+  return text
+    .split(pauseToken)
+    .map((part) => part.replace(/\s*\n+\s*/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+}
+
+async function playAnnouncementChime() {
+  try {
+    const bell = new Audio('/sounds/announcement-bell.mp3')
+    bell.preload = 'auto'
+    bell.volume = 0.85
+    await new Promise((resolve, reject) => {
+      const timeout = window.setTimeout(resolve, 2200)
+      bell.addEventListener('ended', () => {
+        window.clearTimeout(timeout)
+        resolve()
+      }, { once: true })
+      bell.addEventListener('error', () => {
+        window.clearTimeout(timeout)
+        reject(new Error('announcement bell failed'))
+      }, { once: true })
+      bell.play().catch((error) => {
+        window.clearTimeout(timeout)
+        reject(error)
+      })
+    })
+    return
+  } catch {
+    // Fall back to a generated chime if the audio file is blocked or unavailable.
+  }
+
+  const AudioContext = window.AudioContext || window.webkitAudioContext
+  if (!AudioContext) return
+  try {
+    const audio = new AudioContext()
+    if (audio.state === 'suspended') {
+      await audio.resume()
+    }
+    const now = audio.currentTime
+    const gain = audio.createGain()
+    gain.connect(audio.destination)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.16, now + 0.025)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.48)
+
+    for (const [index, frequency] of [880, 1174.66].entries()) {
+      const oscillator = audio.createOscillator()
+      oscillator.type = 'sine'
+      oscillator.frequency.setValueAtTime(frequency, now + index * 0.12)
+      oscillator.connect(gain)
+      oscillator.start(now + index * 0.12)
+      oscillator.stop(now + index * 0.12 + 0.22)
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 560))
+    await audio.close()
+  } catch {
+    // Audio can be blocked on some mobile browsers; speech should still continue.
+  }
+}
+
+async function announceQueuedMatch(match, court = '') {
   if (!court) return
   if (!('speechSynthesis' in window) || typeof window.SpeechSynthesisUtterance !== 'function') {
     showToast('อุปกรณ์นี้ไม่รองรับการอ่านออกเสียง')
     return
   }
-  const voices = window.speechSynthesis.getVoices()
+  const voices = await waitForSpeechVoices()
   const thaiVoice = voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
     || voices.find((voice) => voice.lang?.toLowerCase().startsWith('th'))
   if (!thaiVoice) {
-    showToast('ไม่พบเสียงภาษาไทยในอุปกรณ์นี้')
-    return
+    showToast('ไม่พบเสียงภาษาไทยในอุปกรณ์นี้ จะลองอ่านด้วยเสียงเริ่มต้น')
   }
-  const courtText = `บุฟเฟ่ต์สนามที่ ${court}`
-  const namesText = matchPlayers(match).map((id) => `คุณ${playerName(id)}`).join(' ')
   window.speechSynthesis.cancel()
-  for (const text of [courtText, namesText]) {
+  await playAnnouncementChime()
+  for (const text of announcementParts(match, court)) {
     const utterance = new window.SpeechSynthesisUtterance(text)
     utterance.lang = 'th-TH'
-    utterance.voice = thaiVoice
-    utterance.rate = 0.9
+    if (thaiVoice) utterance.voice = thaiVoice
+    utterance.rate = 0.85
     utterance.pitch = 1
     window.speechSynthesis.speak(utterance)
   }

@@ -80,6 +80,25 @@ const sessionName = computed({
         </span>
       </label>
 
+      <label class="grid gap-3 rounded-lg border border-court-200 bg-white p-4 shadow-soft dark:border-court-900 dark:bg-stone-900">
+        <span>
+          <span class="block font-black">คำอ่านตอนเรียกคิว</span>
+          <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">
+            ใช้ตัวแปร {court}, {pause}, {a}, {b}, {c}, {d}
+          </span>
+        </span>
+        <textarea
+          v-model="state.settings.announcementTemplate"
+          rows="5"
+          class="min-h-32 rounded-md border border-stone-200 bg-paper-50 px-3 py-2 dark:border-stone-700 dark:bg-stone-800"
+          placeholder="บุฟเฟ่ต์สนามที่ {court}&#10;{pause}&#10;คุณ{a} คุณ{b} คุณ{c} คุณ{d}"
+          @change="saveSettings"
+        />
+        <span class="text-xs font-semibold text-stone-500 dark:text-stone-400">
+          ระบบจะแยกพูดเป็นช่วงเมื่อเจอ {pause} ทำให้บนมือถือฟังชัดขึ้น
+        </span>
+      </label>
+
       <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
         <span class="font-bold">ลำดับการสุ่ม</span>
         <select v-model="state.settings.randomPriority" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings">

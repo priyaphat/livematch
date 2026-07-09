@@ -968,6 +968,7 @@ describe('LiveMatch app', () => {
             allowCrossLevel: true,
             resetPlayersAfterFinish: true,
             startMatchWithShuttle: true,
+            announcementTemplate: 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}',
             randomPriority: 'level',
             courtNames: ['court 1'],
             levels: ['light']
@@ -986,6 +987,9 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.text()).toContain('จบเกมแล้วตั้งผู้เล่นเป็นยังไม่พร้อม')
     expect(wrapper.text()).toContain('เริ่มเกมแล้วนับลูกแบด 1 ลูกอัตโนมัติ')
+    expect(wrapper.text()).toContain('คำอ่านตอนเรียกคิว')
+    expect(wrapper.get('textarea').element.value).toContain('{court}')
+    expect(wrapper.get('textarea').element.value).toContain('{pause}')
     expect(wrapper.findAll('input[type="checkbox"]').at(1).element.checked).toBe(true)
     expect(wrapper.findAll('input[type="checkbox"]').at(2).element.checked).toBe(true)
     expect(wrapper.get('input[placeholder="ชื่อสนามหรือชื่อกิจกรรม"]').element.value).toBe('สนามเดิม')
