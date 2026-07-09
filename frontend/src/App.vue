@@ -97,6 +97,7 @@ const state = reactive({
     crossLevelRange: 1,
     randomPriority: 'level',
     showPaymentOnShare: true,
+    showTotalOnShare: true,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
     announcementTemplate: defaultAnnouncementTemplate
@@ -263,7 +264,8 @@ const share = reactive({
   view: '',
   loading: false,
   error: '',
-  showPayment: false
+  showPayment: false,
+  showTotal: true
 })
 const auth = reactive({
   loading: false,
@@ -379,6 +381,9 @@ function normalizeClientSettings() {
   }
   if (state.settings.startMatchWithShuttle === undefined) {
     state.settings.startMatchWithShuttle = true
+  }
+  if (state.settings.showTotalOnShare === undefined) {
+    state.settings.showTotalOnShare = true
   }
   if (!String(state.settings.announcementTemplate || '').trim()) {
     state.settings.announcementTemplate = defaultAnnouncementTemplate
@@ -1996,6 +2001,7 @@ async function loadSharedView({ silent = false } = {}) {
     const nextState = await api(`/api/sessions/${params.get('session')}/state`)
     applyServerState(nextState)
     share.showPayment = state.settings.showPaymentOnShare
+    share.showTotal = state.settings.showTotalOnShare !== false
     state.session.unlocked = false
     startSharedRefresh()
   } catch {

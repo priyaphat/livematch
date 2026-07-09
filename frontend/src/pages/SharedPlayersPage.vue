@@ -93,7 +93,10 @@ function rankStyle(index) {
           </div>
         </div>
 
-        <div class="grid grid-cols-3 divide-x divide-stone-100 border-b border-stone-100 dark:divide-stone-800 dark:border-stone-800">
+        <div
+          class="grid divide-x divide-stone-100 border-b border-stone-100 dark:divide-stone-800 dark:border-stone-800"
+          :class="share.showTotal ? 'grid-cols-3' : 'grid-cols-2'"
+        >
           <div class="p-3">
             <p class="text-[11px] font-bold text-stone-500 dark:text-stone-400">สมาชิก</p>
             <p class="mt-1 text-xl font-black">{{ activePlayers.length }}</p>
@@ -102,7 +105,7 @@ function rankStyle(index) {
             <p class="text-[11px] font-bold text-stone-500 dark:text-stone-400">เกมรวม</p>
             <p class="mt-1 text-xl font-black">{{ activePlayers.reduce((sum, player) => sum + player.games, 0) }}</p>
           </div>
-          <div class="p-3">
+          <div v-if="share.showTotal" class="p-3">
             <p class="text-[11px] font-bold text-stone-500 dark:text-stone-400">ยอดรวม</p>
             <p class="mt-1 truncate text-xl font-black">{{ money(totalCost) }}</p>
           </div>

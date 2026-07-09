@@ -35,6 +35,7 @@ function sessionStatePayload(type = 'liveMatch', extraSession = {}) {
       crossLevelRange: 1,
       randomPriority: 'level',
       showPaymentOnShare: true,
+      showTotalOnShare: true,
       resetPlayersAfterFinish: true,
       startMatchWithShuttle: type !== 'liveShare'
     },
@@ -946,7 +947,7 @@ describe('LiveMatch app', () => {
             { id: 1, name: 'p1', games: 2, wins: 1, draws: 1, losses: 0, shuttles: 2, paid: false, active: true }
           ]
         },
-        share: { loading: false, error: '', showPayment: false },
+        share: { loading: false, error: '', showPayment: false, showTotal: true },
         money: (value) => `${value}`,
         playerCost: () => 0
       }
@@ -955,6 +956,25 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('แต้ม')
     expect(wrapper.text()).toContain('1.5')
     expect(wrapper.text()).toContain('เสมอ 1')
+  })
+
+  it('hides the shared players total when disabled', () => {
+    const wrapper = mount(SharedPlayersPage, {
+      props: {
+        state: {
+          session: { name: 'Test Session' },
+          players: [
+            { id: 1, name: 'p1', games: 1, wins: 1, draws: 0, losses: 0, shuttles: 1, paid: false, active: true }
+          ]
+        },
+        share: { loading: false, error: '', showPayment: false, showTotal: false },
+        money: (value) => `${value}`,
+        playerCost: () => 120
+      }
+    })
+
+    expect(wrapper.text()).not.toContain('ยอดรวม')
+    expect(wrapper.text()).toContain('ค่าใช้จ่าย 120')
   })
 
   it('renders reset readiness setting', () => {
@@ -998,7 +1018,7 @@ describe('LiveMatch app', () => {
     const wrapper = mount(PlayersPage, {
       props: {
         state: {
-          settings: { showPaymentOnShare: true },
+          settings: { showPaymentOnShare: true, showTotalOnShare: true },
           players: []
         },
         forms: {
@@ -1025,6 +1045,7 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.text()).toContain('คัดลอกลิงก์สมาชิก')
     expect(wrapper.text()).toContain('QR ลิงก์สมาชิก')
+    expect(wrapper.text()).toContain('แสดงยอดรวมในลิงก์แชร์')
     expect(wrapper.text()).not.toContain('????')
   })
 

@@ -81,6 +81,7 @@ type Settings struct {
 	CrossLevelRange         int      `json:"crossLevelRange"`
 	RandomPriority          string   `json:"randomPriority"`
 	ShowPaymentOnShare      bool     `json:"showPaymentOnShare"`
+	ShowTotalOnShare        bool     `json:"showTotalOnShare"`
 	ResetPlayersAfterFinish bool     `json:"resetPlayersAfterFinish"`
 	StartMatchWithShuttle   bool     `json:"startMatchWithShuttle"`
 	AnnouncementTemplate    string   `json:"announcementTemplate"`
@@ -235,6 +236,7 @@ func (a *app) migrate(ctx context.Context) error {
 			cross_level_range integer not null default 1,
 			random_priority text not null default 'level',
 			show_payment_on_share boolean not null default true,
+			show_total_on_share boolean not null default true,
 			reset_players_after_finish boolean not null default true,
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
@@ -244,6 +246,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists random_priority text not null default 'level';
 		alter table session_settings add column if not exists court_fee_per_hour integer not null default 150;
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
+		alter table session_settings add column if not exists show_total_on_share boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
 		alter table session_settings add column if not exists session_fee integer not null default 0;
@@ -1326,9 +1329,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+			session_id, entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			court_fee_per_hour = excluded.court_fee_per_hour,
@@ -1341,10 +1344,11 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			cross_level_range = excluded.cross_level_range,
 			random_priority = excluded.random_priority,
 			show_payment_on_share = excluded.show_payment_on_share,
+			show_total_on_share = excluded.show_total_on_share,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		return err
 	}
 
@@ -1461,7 +1465,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		select entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -1476,6 +1480,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.CrossLevelRange,
 		&state.Settings.RandomPriority,
 		&state.Settings.ShowPaymentOnShare,
+		&state.Settings.ShowTotalOnShare,
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
@@ -1656,6 +1661,7 @@ func defaultState(id, name, passcode string) SessionState {
 			CrossLevelRange:         1,
 			RandomPriority:          "level",
 			ShowPaymentOnShare:      true,
+			ShowTotalOnShare:        true,
 			ResetPlayersAfterFinish: true,
 			StartMatchWithShuttle:   true,
 			AnnouncementTemplate:    defaultAnnouncementTemplate,

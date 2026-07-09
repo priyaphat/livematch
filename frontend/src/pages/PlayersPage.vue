@@ -103,10 +103,16 @@ async function exportExcel() {
     </div>
 
     <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-      <label class="flex items-center gap-2 text-sm">
-        <input v-model="state.settings.showPaymentOnShare" type="checkbox" :disabled="isSessionReadOnly" @change="saveSettings" />
-        แสดงสถานะจ่ายเงินในลิงก์แชร์
-      </label>
+      <div class="grid gap-2 text-sm sm:grid-cols-2">
+        <label class="flex items-center gap-2">
+          <input v-model="state.settings.showPaymentOnShare" type="checkbox" :disabled="isSessionReadOnly" @change="saveSettings" />
+          แสดงสถานะจ่ายเงินในลิงก์แชร์
+        </label>
+        <label class="flex items-center gap-2">
+          <input v-model="state.settings.showTotalOnShare" type="checkbox" :disabled="isSessionReadOnly" @change="saveSettings" />
+          แสดงยอดรวมในลิงก์แชร์
+        </label>
+      </div>
       <div class="grid gap-2 sm:grid-cols-2">
         <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-stone-900 px-4 text-sm font-semibold text-white dark:bg-white dark:text-stone-900" @click="sharePlayers">
           <Copy class="h-4 w-4" />
