@@ -1573,6 +1573,8 @@ function requestAddShuttle(match) {
   ui.showShuttleModal = true
 }
 
+let activeSpeechUtterances = []
+
 function waitForSpeechVoices(timeoutMs = 2500) {
   if (!('speechSynthesis' in window)) return Promise.resolve([])
   const currentVoices = window.speechSynthesis.getVoices()
@@ -1671,28 +1673,79 @@ async function playAnnouncementChime() {
   }
 }
 
+function currentThaiSpeechVoice() {
+  const voices = window.speechSynthesis.getVoices()
+  return voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
+    || voices.find((voice) => voice.lang?.toLowerCase().startsWith('th'))
+    || null
+}
+
+function resumeSpeechForIOS() {
+  window.speechSynthesis.resume?.()
+  window.setTimeout(() => window.speechSynthesis.resume?.(), 120)
+  window.setTimeout(() => window.speechSynthesis.resume?.(), 450)
+}
+
+function primeSpeechForIOS() {
+  try {
+    const primer = new window.SpeechSynthesisUtterance('.')
+    primer.lang = 'th-TH'
+    primer.volume = 0
+    primer.rate = 1
+    activeSpeechUtterances = [primer]
+    window.speechSynthesis.speak(primer)
+    resumeSpeechForIOS()
+  } catch {
+    // Some browsers reject silent primer utterances; the real announcement can still try to speak.
+  }
+}
+
+function speakAnnouncement(parts, thaiVoice = null) {
+  activeSpeechUtterances = parts.map((text) => {
+    const utterance = new window.SpeechSynthesisUtterance(text)
+    utterance.lang = 'th-TH'
+    if (thaiVoice) utterance.voice = thaiVoice
+    utterance.rate = 0.85
+    utterance.pitch = 1
+    utterance.onend = () => {
+      activeSpeechUtterances = activeSpeechUtterances.filter((item) => item !== utterance)
+    }
+    utterance.onerror = () => {
+      activeSpeechUtterances = activeSpeechUtterances.filter((item) => item !== utterance)
+    }
+    return utterance
+  })
+  for (const utterance of activeSpeechUtterances) {
+    window.speechSynthesis.speak(utterance)
+  }
+  resumeSpeechForIOS()
+}
+
 async function announceQueuedMatch(match, court = '') {
   if (!court) return
   if (!('speechSynthesis' in window) || typeof window.SpeechSynthesisUtterance !== 'function') {
     showToast('อุปกรณ์นี้ไม่รองรับการอ่านออกเสียง')
     return
   }
-  const voices = await waitForSpeechVoices()
-  const thaiVoice = voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
-    || voices.find((voice) => voice.lang?.toLowerCase().startsWith('th'))
-  if (!thaiVoice) {
-    showToast('ไม่พบเสียงภาษาไทยในอุปกรณ์นี้ จะลองอ่านด้วยเสียงเริ่มต้น')
-  }
+  const parts = announcementParts(match, court)
+  let thaiVoice = currentThaiSpeechVoice()
   window.speechSynthesis.cancel()
+  primeSpeechForIOS()
   await playAnnouncementChime()
-  for (const text of announcementParts(match, court)) {
-    const utterance = new window.SpeechSynthesisUtterance(text)
-    utterance.lang = 'th-TH'
-    if (thaiVoice) utterance.voice = thaiVoice
-    utterance.rate = 0.85
-    utterance.pitch = 1
-    window.speechSynthesis.speak(utterance)
+  thaiVoice = thaiVoice || currentThaiSpeechVoice()
+  if (!thaiVoice) {
+    waitForSpeechVoices(900).then((voices) => {
+      const loadedThaiVoice = voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
+        || voices.find((voice) => voice.lang?.toLowerCase().startsWith('th'))
+        || null
+      speakAnnouncement(parts, loadedThaiVoice)
+      if (!loadedThaiVoice) {
+        showToast('ไม่พบเสียงภาษาไทยในอุปกรณ์นี้ จะลองอ่านด้วยเสียงเริ่มต้น', 'info')
+      }
+    })
+    return
   }
+  speakAnnouncement(parts, thaiVoice)
 }
 
 function latestShuttleNumber(match) {

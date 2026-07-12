@@ -8,7 +8,8 @@ export default defineConfig({
     port: 5173,
     allowedHosts: [
       'livematch.vibestudio.work',
-      '1eaf-2405-9800-b901-dd24-9176-268c-b0ce-4a.ngrok-free.app'
+      '16af-2405-9800-b901-dd24-9176-268c-b0ce-4a.ngrok-free.app',
+      '33e8-2405-9800-b901-dd24-9191-8383-8d66-de36.ngrok-free.app'
     ],
     proxy: {
       '/api': {
