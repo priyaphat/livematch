@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import ManualTeamModal from './components/ManualTeamModal.vue'
 import LineArt from './components/LineArt.vue'
 import SupportIssueModal from './components/SupportIssueModal.vue'
 import AuthPage from './pages/AuthPage.vue'
@@ -205,7 +206,10 @@ describe('LiveMatch app', () => {
       props: {
         forms: {
           backofficeTab: 'overview',
-          backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeSummary: {
+            users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [],
+            ttsUsage: { enabled: true, period: '2026-07', characters: 12345, safetyLimit: 3900000, providerFreeLimit: 4000000, remaining: 3887655, percent: 0.3165, voice: 'th-TH-Standard-A', speakingRate: 0.82 }
+          },
           backofficeTelegramBotToken: '',
           backofficeTelegramChatId: '',
           backofficeTelegramWebhookSecret: 'secret-123',
@@ -236,6 +240,14 @@ describe('LiveMatch app', () => {
       }
     })
 
+    expect(wrapper.text()).toContain('Google TTS Usage')
+    expect(wrapper.text()).toContain('12,345')
+    expect(wrapper.text()).toContain('th-TH-Standard-A')
+    expect(wrapper.text()).toContain('3,887,655')
+    expect(wrapper.text()).not.toContain('SlipOK verification')
+
+    await wrapper.findAll('button').find((button) => button.text().includes('บริการเชื่อมต่อ')).trigger('click')
+    expect(wrapper.text()).not.toContain('Google TTS Usage')
     expect(wrapper.text()).toContain('Webhook URL')
     expect(wrapper.find('input[value="https://livematch.vibestudio.work/api/telegram/webhook/secret-123"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('Telegram webhook')
@@ -787,6 +799,173 @@ describe('LiveMatch app', () => {
     expect(saveDefaults).toHaveBeenCalledOnce()
   })
 
+  it('shows backend discount pricing and monthly entitlement in create session modal', () => {
+    const wrapper = mount(AdminSupervisorPage, {
+      props: {
+        auth: {
+          user: { name: 'Admin', email: 'admin@example.com', coins: 0 },
+          sessions: [],
+          liveMatchSessionCost: 49,
+          liveShareSessionCost: 39,
+          benefits: {
+            discountPercent: 10,
+            pricing: {
+              liveMatch: { baseCost: 49, discountPercent: 10, finalCost: 44 },
+              liveShare: { baseCost: 39, discountPercent: 10, finalCost: 35 }
+            },
+            subscription: { id: 'sub-1', status: 'active', startDate: '2026-07-01', endDate: '2026-07-31', totalSessions: 20, remaining: 3 }
+          },
+          defaultSettings: { shuttleBrands: [], courtNames: [], levels: [] }
+        },
+        forms: { sessionCreateType: 'liveMatch', sessionCreateName: '' },
+        ui: { showCreateSessionModal: true, showAdminDefaultSettingsModal: false },
+        money: (value) => `${value}`,
+        createSession: vi.fn(),
+        openOwnedSession: vi.fn(),
+        refreshAdminSupervisor: vi.fn(),
+        saveAdminDefaultSettings: vi.fn(),
+        addAdminDefaultShuttleBrand: vi.fn(),
+        removeAdminDefaultShuttleBrand: vi.fn(),
+        addAdminDefaultCourt: vi.fn(),
+        removeAdminDefaultCourt: vi.fn(),
+        addAdminDefaultLevel: vi.fn(),
+        removeAdminDefaultLevel: vi.fn()
+      }
+    })
+
+    expect(wrapper.text()).toContain('สิทธิ์รายเดือนเหลือ 3/20 Session')
+    expect(wrapper.text()).toContain('ลด 10%')
+    expect(wrapper.text()).toContain('44 coin')
+    expect(wrapper.text()).toContain('49 coin')
+    expect(wrapper.findAll('button').find((button) => button.text().trim() === 'สร้าง').element.disabled).toBe(false)
+  })
+
+  it('shows and saves admin discount and subscription benefits in backoffice detail', async () => {
+    const saveDiscount = vi.fn()
+    const saveSubscription = vi.fn()
+    const subscription = { id: 'sub-1', status: 'active', startDate: '2026-07-01', endDate: '2026-07-31', totalSessions: 20, usedSessions: 7, remaining: 13, paidAmountThb: 990, note: 'รายเดือน' }
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'members',
+          backofficeSummary: { users: [{ id: 'admin-1', email: 'admin@example.com', name: 'Admin', coins: 10, sessions: 2, verified: true, discountPercent: 10, subscription }], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeAdminDetail: { user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', coins: 10, verified: true }, sessions: [], orders: [], coinLedger: [], benefits: { discountPercent: 10, pricing: { liveMatch: { baseCost: 49, discountPercent: 10, finalCost: 44 } }, subscription, subscriptionHistory: [subscription] } },
+          backofficeDiscountPercent: 10,
+          backofficeSubscriptionId: 'sub-1',
+          backofficeSubscriptionStartDate: '2026-07-01',
+          backofficeSubscriptionEndDate: '2026-07-31',
+          backofficeSubscriptionTotalSessions: 20,
+          backofficeSubscriptionPaidAmountThb: 990,
+          backofficeSubscriptionNote: 'รายเดือน',
+          backofficeBenefitStatus: ''
+        },
+        ui: { showBackofficeAdminModal: true },
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        openBackofficeAdminDetail: vi.fn(),
+        saveBackofficeAdminDiscount: saveDiscount,
+        saveBackofficeAdminSubscription: saveSubscription,
+        cancelBackofficeAdminSubscription: vi.fn(),
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    expect(wrapper.text()).toContain('ลด 10%')
+    expect(wrapper.text()).toContain('คงเหลือ')
+    expect(wrapper.text()).toContain('13')
+    expect(wrapper.text()).toContain('ประวัติแพ็กเกจรายเดือน')
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกส่วนลด')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกการแก้ไข')).trigger('click')
+    expect(saveDiscount).toHaveBeenCalledOnce()
+    expect(saveSubscription).toHaveBeenCalledOnce()
+  })
+
+  it('configures self-service subscription packages beside coin packages', async () => {
+    const addSubscriptionPackage = vi.fn()
+    const saveCoinShop = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'promotions',
+          backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeCoinPackages: [],
+          backofficeSubscriptionPackages: [{ id: 'pro-30', name: 'Pro 30', priceThb: 999, totalSessions: 30, durationDays: 30, bonusText: 'แนะนำ', active: true }],
+          backofficeError: ''
+        },
+        ui: {},
+        backoffice: { unlocked: true },
+        addBackofficeCoinPackage: vi.fn(),
+        removeBackofficeCoinPackage: vi.fn(),
+        addBackofficeSubscriptionPackage: addSubscriptionPackage,
+        removeBackofficeSubscriptionPackage: vi.fn(),
+        saveBackofficeCoinShop: saveCoinShop,
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    expect(wrapper.text()).toContain('แพ็กเกจ Coin และรายเดือน')
+    expect(wrapper.text()).toContain('Pro 30')
+    expect(wrapper.text()).toContain('30 Session / 30 วัน')
+    expect(wrapper.text()).toContain('ราคาคงที่ ไม่ใช้ส่วนลดรายบัญชี')
+
+    const addButton = wrapper.findAll('button').find((button) => button.text().includes('เพิ่มรายเดือน'))
+    await addButton.trigger('click')
+    expect(addSubscriptionPackage).toHaveBeenCalledOnce()
+  })
+
+  it('shows subscription products and renewal warning in the admin shop', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((url) => {
+      const target = String(url)
+      if (target.includes('/api/admin/coin-shop')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            packages: [{ id: 'coin-100', name: 'Coin 100', priceThb: 100, coins: 100 }],
+            subscriptionPackages: [{ id: 'pro-30', name: 'Pro 30', priceThb: 999, totalSessions: 30, durationDays: 30, bonusText: 'แนะนำ' }],
+            paymentQrImage: 'data:image/png;base64,AA==',
+            promptPayPayloads: {},
+            subscriptionPromptPayPayloads: {},
+            promptPayAvailable: false,
+            subscriptionEligibility: { canPurchase: true, renewal: true, currentEndDate: '2026-07-31', estimatedStartDate: '2026-08-01' },
+            orders: []
+          })
+        })
+      }
+      if (target.includes('/api/auth/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', verified: true, coins: 10 },
+            sessions: [],
+            coinLedger: [],
+            benefits: { discountPercent: 0, pricing: {}, subscription: null },
+            defaultSettings: {}
+          })
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
+    })
+
+    const wrapper = mount(App)
+    for (let index = 0; index < 8; index += 1) await Promise.resolve()
+    const shopButton = wrapper.find('button[title="ซื้อ coin"]')
+    expect(shopButton.exists()).toBe(true)
+    await shopButton.trigger('click')
+    for (let index = 0; index < 8; index += 1) await Promise.resolve()
+
+    const subscriptionTab = wrapper.findAll('button').find((button) => button.text().includes('แพ็กเกจรายเดือน'))
+    await subscriptionTab.trigger('click')
+    expect(wrapper.text()).toContain('Pro 30')
+    expect(wrapper.text()).toContain('30 Session')
+    expect(wrapper.text()).toContain('คาดว่าจะเริ่มวันที่ 2026-08-01')
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
+
   it('shows every couple option and requires an explicit player click', async () => {
     const forms = { coupleAId: '', coupleBId: '' }
     const players = Array.from({ length: 12 }, (_, index) => ({
@@ -1301,6 +1480,33 @@ describe('LiveMatch app', () => {
     expect(cancelled?.id).toBe(9)
   })
 
+  it('creates a manual team only after the user selects all four players', async () => {
+    const createManualMatch = vi.fn().mockResolvedValue(undefined)
+    const players = [1, 2, 3, 4, 5].map((id) => ({ id, name: `p${id}`, level: 'middle', games: id - 1 }))
+    const wrapper = mount(ManualTeamModal, {
+      props: {
+        state: { settings: { levels: ['light', 'middle', 'heavy'] } },
+        players,
+        createManualMatch
+      }
+    })
+
+    const selects = wrapper.findAll('select')
+    expect(selects).toHaveLength(5)
+    expect(selects.slice(0, 4).every((select) => select.element.value === '')).toBe(true)
+    expect(wrapper.get('button[type="submit"]').element.disabled).toBe(true)
+
+    await selects[0].setValue('1')
+    await selects[1].setValue('2')
+    await selects[2].setValue('3')
+    await selects[3].setValue('4')
+    await selects[4].setValue('middle')
+    await wrapper.get('form').trigger('submit')
+
+    expect(createManualMatch).toHaveBeenCalledWith({ a1: 1, a2: 2, b1: 3, b2: 4, level: 'middle' })
+    expect(wrapper.emitted('close')).toHaveLength(1)
+  })
+
   it('auto-selects the only shuttle brand when starting a queued match', async () => {
     const startMatch = vi.fn()
     const match = { id: 9, level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4 }
@@ -1562,5 +1768,34 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('เริ่ม 10:00')
     wrapper.unmount()
     vi.useRealTimers()
+  })
+
+  it('packs a long shared queue into the dense TV grid', () => {
+    const queue = Array.from({ length: 18 }, (_, index) => ({
+      id: index + 1,
+      level: 'middle',
+      a1: 1,
+      a2: 2,
+      b1: 3,
+      b2: 4
+    }))
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: {
+          session: { name: 'TV Session' },
+          settings: { courtNames: ['สนาม 1', 'สนาม 2'] },
+          queue,
+          live: []
+        },
+        share: { loading: false, error: '' },
+        playerName: (id) => `p${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    expect(wrapper.get('.shared-queue-page').classes()).toContain('shared-queue-page--dense')
+    expect(wrapper.findAll('.shared-waiting-card')).toHaveLength(18)
+    expect(wrapper.get('.shared-match-grid').attributes('style')).toContain('--tv-grid-columns: 5')
+    expect(wrapper.get('.shared-match-grid').attributes('style')).toContain('--tv-grid-rows: 4')
   })
 })

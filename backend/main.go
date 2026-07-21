@@ -21,7 +21,8 @@ import (
 )
 
 type app struct {
-	db *sql.DB
+	db  *sql.DB
+	tts *ttsService
 }
 
 const defaultAnnouncementTemplate = "บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}"
@@ -176,6 +177,7 @@ func main() {
 	if err := a.migrate(context.Background()); err != nil {
 		log.Fatal(err)
 	}
+	a.tts = newTTSService(db)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", a.handleHealth)
@@ -358,6 +360,11 @@ func (a *app) migrate(ctx context.Context) error {
 			quantity integer not null default 1,
 			primary key (session_id, kind, target, hour)
 		);
+		create table if not exists tts_monthly_usage (
+			period text primary key,
+			characters bigint not null default 0 check (characters >= 0),
+			updated_at timestamptz not null default now()
+		);
 		alter table live_share_hours add column if not exists quantity integer not null default 1;
 		alter table live_share_hours drop constraint if exists live_share_hours_kind_check;
 		alter table live_share_hours add constraint live_share_hours_kind_check check (kind in ('court', 'player', 'shuttle'));
@@ -423,11 +430,57 @@ func (a *app) migrate(ctx context.Context) error {
 			note text not null default '',
 			created_at timestamptz not null default now()
 		);
+		create table if not exists admin_discounts (
+			admin_id text primary key references admin_users(id) on delete cascade,
+			discount_percent integer not null default 0 check (discount_percent between 0 and 100),
+			updated_by text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists admin_subscriptions (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			start_date date not null,
+			end_date date not null,
+			total_sessions integer not null check (total_sessions > 0),
+			used_sessions integer not null default 0 check (used_sessions >= 0 and used_sessions <= total_sessions),
+			paid_amount_thb integer not null default 0 check (paid_amount_thb >= 0),
+			note text not null default '',
+			created_by text not null default '',
+			cancelled_at timestamptz,
+			cancelled_by text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			check (end_date >= start_date)
+		);
+		create table if not exists session_billing (
+			session_id text primary key references sessions(id) on delete cascade,
+			admin_id text not null references admin_users(id) on delete cascade,
+			session_type text not null,
+			billing_method text not null check (billing_method in ('coin', 'subscription')),
+			base_coin_cost integer not null default 0 check (base_coin_cost >= 0),
+			discount_percent integer not null default 0 check (discount_percent between 0 and 100),
+			charged_coin_cost integer not null default 0 check (charged_coin_cost >= 0),
+			subscription_id text references admin_subscriptions(id) on delete set null,
+			created_at timestamptz not null default now()
+		);
 		create table if not exists coin_packages (
 			id text primary key,
 			name text not null,
 			price_thb integer not null,
 			coins integer not null,
+			bonus_text text not null default '',
+			active boolean not null default true,
+			sort_order integer not null default 0,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists subscription_packages (
+			id text primary key,
+			name text not null,
+			price_thb integer not null check (price_thb > 0),
+			total_sessions integer not null check (total_sessions > 0),
+			duration_days integer not null check (duration_days > 0),
 			bonus_text text not null default '',
 			active boolean not null default true,
 			sort_order integer not null default 0,
@@ -447,6 +500,11 @@ func (a *app) migrate(ctx context.Context) error {
 			updated_at timestamptz not null default now(),
 			reviewed_at timestamptz
 		);
+		alter table coin_purchase_orders add column if not exists product_type text not null default 'coin';
+		alter table coin_purchase_orders add column if not exists package_name text not null default '';
+		alter table coin_purchase_orders add column if not exists total_sessions integer not null default 0;
+		alter table coin_purchase_orders add column if not exists duration_days integer not null default 0;
+		alter table coin_purchase_orders add column if not exists subscription_id text references admin_subscriptions(id) on delete set null;
 		alter table coin_purchase_orders add column if not exists trans_ref text not null default '';
 		alter table coin_purchase_orders add column if not exists slip_qr_payload text not null default '';
 		alter table coin_purchase_orders add column if not exists detected_amount_thb integer;
@@ -462,6 +520,8 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table coin_purchase_orders add constraint coin_purchase_orders_status_check check (status in ('pending', 'approved', 'rejected'));
 		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_verification_status_check;
 		alter table coin_purchase_orders add constraint coin_purchase_orders_verification_status_check check (verification_status in ('passed', 'warning', 'manual_review', 'duplicate'));
+		alter table coin_purchase_orders drop constraint if exists coin_purchase_orders_product_type_check;
+		alter table coin_purchase_orders add constraint coin_purchase_orders_product_type_check check (product_type in ('coin', 'subscription'));
 		create table if not exists activity_logs (
 			id bigserial primary key,
 			actor_type text not null,
@@ -475,9 +535,13 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_sessions_admin on sessions(admin_id);
 		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
+		create index if not exists idx_admin_subscriptions_admin_dates on admin_subscriptions(admin_id, start_date, end_date);
+		create index if not exists idx_session_billing_admin on session_billing(admin_id, created_at desc);
 		create index if not exists idx_coin_purchase_orders_admin on coin_purchase_orders(admin_id);
 		create index if not exists idx_coin_purchase_orders_status on coin_purchase_orders(status);
 		create unique index if not exists idx_coin_purchase_orders_trans_ref on coin_purchase_orders(trans_ref) where trans_ref <> '';
+		create unique index if not exists idx_coin_purchase_orders_subscription on coin_purchase_orders(subscription_id) where subscription_id is not null;
+		create unique index if not exists idx_coin_purchase_orders_pending_subscription on coin_purchase_orders(admin_id) where product_type = 'subscription' and status = 'pending';
 		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
 		create table if not exists support_issues (
 			id text primary key,
@@ -1013,6 +1077,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case r.Method == http.MethodPost && action == "announcement-audio":
+		a.handleAnnouncementAudio(w, r)
 	case r.Method == http.MethodPost && action == "unlock":
 		writeJSON(w, http.StatusGone, map[string]string{"error": "passcode login removed"})
 	case r.Method == http.MethodGet && action == "state":
@@ -1204,6 +1270,20 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.respondSavedWithActivity(w, r, state, "random_matches", "session", state.Session.ID, map[string]any{"pending": len(state.Pending)})
+	case r.Method == http.MethodPost && action == "pending" && len(parts) == 2:
+		var body Match
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลทีมไม่ถูกต้อง"})
+			return
+		}
+		created, err := createManualPendingMatch(&state, body)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		a.respondSavedWithActivity(w, r, state, "create_manual_match", "match", strconv.Itoa(created.ID), map[string]any{
+			"a1": created.A1, "a2": created.A2, "b1": created.B1, "b2": created.B2, "level": created.Level,
+		})
 	case r.Method == http.MethodPost && action == "pending" && len(parts) >= 4 && parts[3] == "confirm":
 		matchID, _ := strconv.Atoi(parts[2])
 		if !confirmPendingMatch(&state, matchID) {
@@ -1788,7 +1868,7 @@ func randomMatch(state *SessionState) error {
 			break
 		}
 
-		teams := keepCouplesTogether(selected, state.Couples)
+		teams := arrangeTeamsByTeammateHistory(selected, state.Couples, state.History)
 		state.NextIDs.Pending++
 		state.Pending = append(state.Pending, Match{
 			ID:    -state.NextIDs.Pending,
@@ -1808,6 +1888,68 @@ func randomMatch(state *SessionState) error {
 		return errors.New("ผู้เล่นว่างที่พร้อมสุ่มไม่พอสำหรับจัดคู่")
 	}
 	return nil
+}
+
+func createManualPendingMatch(state *SessionState, requested Match) (Match, error) {
+	ids := []int{requested.A1, requested.A2, requested.B1, requested.B2}
+	selected := map[int]bool{}
+	for _, id := range ids {
+		if id <= 0 || selected[id] {
+			return Match{}, errors.New("กรุณาเลือกผู้เล่นให้ครบ 4 คนโดยไม่ซ้ำกัน")
+		}
+		selected[id] = true
+	}
+
+	busy := map[int]bool{}
+	for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+		for _, id := range matchPlayers(match) {
+			busy[id] = true
+		}
+	}
+	for _, id := range ids {
+		player := playerByID(state.Players, id)
+		if player == nil || !player.Active || player.Paid || busy[id] {
+			return Match{}, errors.New("มีผู้เล่นที่ไม่ว่างหรือไม่สามารถจัดทีมได้")
+		}
+	}
+
+	teamByPlayer := map[int]int{
+		requested.A1: 0,
+		requested.A2: 0,
+		requested.B1: 1,
+		requested.B2: 1,
+	}
+	for _, couple := range state.Couples {
+		teamA, hasA := teamByPlayer[couple.A]
+		teamB, hasB := teamByPlayer[couple.B]
+		if hasA != hasB {
+			return Match{}, errors.New("คู่ที่กำหนดไว้ต้องถูกเลือกมาด้วยกัน")
+		}
+		if hasA && teamA != teamB {
+			return Match{}, errors.New("คู่ที่กำหนดไว้ต้องอยู่ทีมเดียวกัน")
+		}
+	}
+
+	level := strings.TrimSpace(requested.Level)
+	if level == "" && len(state.Settings.Levels) > 0 {
+		level = state.Settings.Levels[0]
+	}
+	if level == "" || !slices.Contains(state.Settings.Levels, level) {
+		return Match{}, errors.New("กรุณาเลือกระดับมือที่ถูกต้อง")
+	}
+
+	state.NextIDs.Pending++
+	created := Match{
+		ID:    -state.NextIDs.Pending,
+		Court: "-",
+		Level: level,
+		A1:    requested.A1,
+		A2:    requested.A2,
+		B1:    requested.B1,
+		B2:    requested.B2,
+	}
+	state.Pending = append(state.Pending, created)
+	return created, nil
 }
 
 type group struct {
@@ -2013,19 +2155,93 @@ func levelByIndex(levelIndex map[string]int, index int) string {
 	return ""
 }
 
-func keepCouplesTogether(ids []int, couples []Couple) []int {
-	for _, c := range couples {
-		if slices.Contains(ids, c.A) && slices.Contains(ids, c.B) {
-			rest := []int{}
-			for _, id := range ids {
-				if id != c.A && id != c.B {
-					rest = append(rest, id)
-				}
+type teammatePair struct {
+	a int
+	b int
+}
+
+type teammateScore struct {
+	total          int
+	mostWithOne    int
+	recencyPenalty int
+}
+
+func teammatePairFor(a, b int) teammatePair {
+	if a > b {
+		a, b = b, a
+	}
+	return teammatePair{a: a, b: b}
+}
+
+func arrangeTeamsByTeammateHistory(ids []int, couples []Couple, history []Match) []int {
+	if len(ids) != 4 {
+		return ids
+	}
+	candidates := [][]int{
+		{ids[0], ids[1], ids[2], ids[3]},
+		{ids[0], ids[2], ids[1], ids[3]},
+		{ids[0], ids[3], ids[1], ids[2]},
+	}
+	counts := map[teammatePair]int{}
+	recency := map[teammatePair]int{}
+	for index, match := range history {
+		weight := len(history) - index
+		for _, pair := range []teammatePair{
+			teammatePairFor(match.A1, match.A2),
+			teammatePairFor(match.B1, match.B2),
+		} {
+			if pair.a <= 0 || pair.b <= 0 || pair.a == pair.b {
+				continue
 			}
-			return []int{c.A, c.B, rest[0], rest[1]}
+			counts[pair]++
+			if _, exists := recency[pair]; !exists {
+				recency[pair] = weight
+			}
 		}
 	}
+
+	var best []int
+	bestScore := teammateScore{total: int(^uint(0) >> 1), mostWithOne: int(^uint(0) >> 1), recencyPenalty: int(^uint(0) >> 1)}
+	for _, candidate := range candidates {
+		if !candidateKeepsCouplesTogether(candidate, couples) {
+			continue
+		}
+		first := teammatePairFor(candidate[0], candidate[1])
+		second := teammatePairFor(candidate[2], candidate[3])
+		firstCount, secondCount := counts[first], counts[second]
+		score := teammateScore{
+			total:          firstCount + secondCount,
+			mostWithOne:    max(firstCount, secondCount),
+			recencyPenalty: recency[first] + recency[second],
+		}
+		if score.total < bestScore.total ||
+			(score.total == bestScore.total && score.mostWithOne < bestScore.mostWithOne) ||
+			(score.total == bestScore.total && score.mostWithOne == bestScore.mostWithOne && score.recencyPenalty < bestScore.recencyPenalty) {
+			best = candidate
+			bestScore = score
+		}
+	}
+	if len(best) == 4 {
+		return best
+	}
 	return ids
+}
+
+func candidateKeepsCouplesTogether(candidate []int, couples []Couple) bool {
+	teamByPlayer := map[int]int{
+		candidate[0]: 0,
+		candidate[1]: 0,
+		candidate[2]: 1,
+		candidate[3]: 1,
+	}
+	for _, couple := range couples {
+		teamA, hasA := teamByPlayer[couple.A]
+		teamB, hasB := teamByPlayer[couple.B]
+		if hasA && hasB && teamA != teamB {
+			return false
+		}
+	}
+	return true
 }
 
 func startMatch(state *SessionState, matchID int, court string, brandIDs ...string) bool {
@@ -2170,15 +2386,6 @@ func cancelQueuedMatch(state *SessionState, matchID int) bool {
 	for i, match := range state.Queue {
 		if match.ID == matchID {
 			state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
-			match.Status = "cancelled"
-			match.Winner = ""
-			match.Shuttles = 0
-			match.ShuttleSeq = ""
-			match.EndedAt = nowHHMM()
-			if match.Note == "" {
-				match.Note = "ยกเลิกคิว"
-			}
-			state.History = append([]Match{match}, state.History...)
 			return true
 		}
 	}

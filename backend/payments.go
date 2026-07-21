@@ -333,6 +333,20 @@ func promptPayPayloadsForPackages(settings promptPaySettings, packages []coinPac
 	return payloads
 }
 
+func promptPayPayloadsForSubscriptionPackages(settings promptPaySettings, packages []subscriptionPackage) map[string]string {
+	payloads := map[string]string{}
+	if strings.TrimSpace(settings.ID) == "" {
+		return payloads
+	}
+	for _, pkg := range packages {
+		payload, err := promptPayPayload(settings, pkg.PriceTHB)
+		if err == nil && payload != "" {
+			payloads[pkg.ID] = payload
+		}
+	}
+	return payloads
+}
+
 func promptPayPayload(settings promptPaySettings, amountTHB int) (string, error) {
 	if amountTHB <= 0 {
 		return "", errors.New("amount must be positive")
@@ -621,12 +635,19 @@ func shortHash(value string) string {
 }
 
 func telegramCoinOrderText(order coinPurchaseOrder, user adminUser) string {
+	product := "Coin"
+	benefit := fmt.Sprintf("Coins: %d", order.Coins)
+	if order.ProductType == "subscription" {
+		product = "Subscription"
+		benefit = fmt.Sprintf("Sessions: %d\nDuration: %d days\nSubscription: %s", order.TotalSessions, order.DurationDays, emptyDash(order.SubscriptionID))
+	}
 	return fmt.Sprintf(
-		"LiveMatch coin order\nAdmin: %s\nPackage: %s\nAmount: %d THB\nCoins: %d\ntransRef: %s\nVerification: %s\nReason: %s\nReview note: %s\nOrder: %s\n%s/backoffice",
+		"LiveMatch payment order\nAdmin: %s\nProduct: %s\nPackage: %s\nAmount: %d THB\n%s\ntransRef: %s\nVerification: %s\nReason: %s\nReview note: %s\nStatus: %s\n%s/backoffice",
 		user.Email,
-		order.PackageID,
+		product,
+		firstNonEmpty(order.PackageName, order.PackageID),
 		order.PriceTHB,
-		order.Coins,
+		benefit,
 		emptyDash(order.TransRef),
 		order.VerificationStatus,
 		emptyDash(order.VerificationNote),
@@ -785,6 +806,8 @@ func (a *app) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 			message = "รายการนี้ถูกตรวจแล้ว"
 		} else if errors.Is(err, errCoinOrderNotFound) {
 			message = "ไม่พบรายการซื้อ"
+		} else if errors.Is(err, errSubscriptionPurchaseBlocked) {
+			message = "บัญชีนี้มีรอบล่วงหน้าหรือรายการแพ็กเกจที่รอตรวจอยู่แล้ว"
 		}
 		a.answerTelegramCallback(r.Context(), settings, update.CallbackQuery.ID, message)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "failed"})
@@ -902,6 +925,15 @@ func emptyDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return "-"
 }
 
 func publicAppBaseURL() string {

@@ -1,5 +1,7 @@
 ﻿<script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { createAnnouncementAudioCache } from './utils/announcementAudioCache.js'
+import { arrangeTeamsByTeammateHistory } from './utils/teamRotation.js'
 import QRCode from 'qrcode'
 import {
   Activity,
@@ -38,6 +40,7 @@ import {
   X
 } from '@lucide/vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import ManualTeamModal from './components/ManualTeamModal.vue'
 import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import AuthPage from './pages/AuthPage.vue'
 import BackofficePage from './pages/BackofficePage.vue'
@@ -195,14 +198,25 @@ const forms = reactive({
   backofficePassword: '',
   backofficeError: '',
   backofficeTab: 'overview',
+  backofficeOverviewTab: 'system',
   backofficeSummary: null,
   backofficeAdminDetail: null,
+  backofficeDiscountPercent: 0,
+  backofficeSubscriptionId: '',
+  backofficeSubscriptionStartDate: '',
+  backofficeSubscriptionEndDate: '',
+  backofficeSubscriptionTotalSessions: 1,
+  backofficeSubscriptionPaidAmountThb: 0,
+  backofficeSubscriptionNote: '',
+  backofficeSubscriptionCancelNote: '',
+  backofficeBenefitStatus: '',
   backofficeCoinAdminId: '',
   backofficeCoinDelta: 0,
   backofficeCoinNote: '',
   backofficeLiveMatchCost: null,
   backofficeLiveShareCost: null,
   backofficeCoinPackages: [],
+  backofficeSubscriptionPackages: [],
   backofficeCoinPaymentQrImage: '',
   backofficePromptPayId: '',
   backofficePromptPayType: 'mobile',
@@ -245,7 +259,9 @@ const forms = reactive({
   backofficeSupportPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
   backofficeSupportSaving: false,
   coinModalMode: 'shop',
+  coinShopTab: 'coin',
   coinSelectedPackageId: '',
+  subscriptionSelectedPackageId: '',
   coinPaymentQrDataUrl: '',
   coinSlipImage: '',
   coinOrderStatus: '',
@@ -276,6 +292,7 @@ const forms = reactive({
 const ui = reactive({
   showCouponModal: false,
   showCoupleModal: false,
+  showManualTeamModal: false,
   showFinishModal: false,
   finishMatch: null,
   showCancelModal: false,
@@ -309,14 +326,18 @@ const auth = reactive({
   coinLedger: [],
   liveMatchSessionCost: null,
   liveShareSessionCost: null,
+  benefits: { discountPercent: 0, pricing: {}, subscription: null },
   coinPackages: [],
+  subscriptionPackages: [],
   coinPaymentQrImage: '',
   defaultSettings: defaultSessionSettingsTemplate(),
   promptPayId: '',
   promptPayType: 'mobile',
   promptPayReceiverName: '',
   promptPayPayloads: {},
+  subscriptionPromptPayPayloads: {},
   promptPayAvailable: false,
+  subscriptionEligibility: { canPurchase: true, reason: '', renewal: false, estimatedStartDate: '' },
   coinOrders: []
 })
 const backoffice = reactive({
@@ -554,6 +575,8 @@ async function confirmVerifyEmail(token) {
 
 onUnmounted(() => {
   stopSharedRefresh()
+  stopAnnouncementAudio()
+  announcementAudioCache.dispose()
 })
 
 async function saveSettings() {
@@ -796,18 +819,118 @@ function changeBackofficeActivityUser() {
 async function openBackofficeAdminDetail(adminId) {
   forms.backofficeError = ''
   try {
-    forms.backofficeAdminDetail = await api(`/api/backoffice/admins/${adminId}`, {
+    applyBackofficeAdminDetail(await api(`/api/backoffice/admins/${adminId}`, {
       headers: backofficeAuthHeaders()
-    })
+    }))
     ui.showBackofficeAdminModal = true
   } catch (error) {
     forms.backofficeError = error.message || 'โหลดรายละเอียด admin ไม่สำเร็จ'
   }
 }
 
+function dateInputValue(date = new Date()) {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
+  return local.toISOString().slice(0, 10)
+}
+
+function defaultSubscriptionDates() {
+  const start = new Date()
+  const end = new Date(start)
+  end.setMonth(end.getMonth() + 1)
+  end.setDate(end.getDate() - 1)
+  return { startDate: dateInputValue(start), endDate: dateInputValue(end) }
+}
+
+function syncBackofficeBenefitForms() {
+  const benefits = forms.backofficeAdminDetail?.benefits || {}
+  const subscription = benefits.subscription || null
+  const defaults = defaultSubscriptionDates()
+  forms.backofficeDiscountPercent = Number(benefits.discountPercent || 0)
+  forms.backofficeSubscriptionId = subscription?.id || ''
+  forms.backofficeSubscriptionStartDate = subscription?.startDate || defaults.startDate
+  forms.backofficeSubscriptionEndDate = subscription?.endDate || defaults.endDate
+  forms.backofficeSubscriptionTotalSessions = Number(subscription?.totalSessions || 1)
+  forms.backofficeSubscriptionPaidAmountThb = Number(subscription?.paidAmountThb || 0)
+  forms.backofficeSubscriptionNote = subscription?.note || ''
+  forms.backofficeSubscriptionCancelNote = ''
+  forms.backofficeBenefitStatus = ''
+}
+
+function applyBackofficeAdminDetail(payload) {
+  forms.backofficeAdminDetail = payload
+  syncBackofficeBenefitForms()
+  const userId = payload?.user?.id
+  const summaryUser = forms.backofficeSummary?.users?.find((item) => item.id === userId)
+  if (summaryUser) {
+    summaryUser.discountPercent = Number(payload?.benefits?.discountPercent || 0)
+    summaryUser.subscription = payload?.benefits?.subscription || null
+  }
+}
+
+async function saveBackofficeAdminDiscount() {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  if (!adminId) return
+  forms.backofficeBenefitStatus = ''
+  try {
+    applyBackofficeAdminDetail(await api(`/api/backoffice/admins/${adminId}/discount`, {
+      method: 'PUT',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({ discountPercent: Number(forms.backofficeDiscountPercent) })
+    }))
+    forms.backofficeBenefitStatus = 'บันทึกส่วนลดแล้ว'
+  } catch (error) {
+    forms.backofficeBenefitStatus = error.message || 'บันทึกส่วนลดไม่สำเร็จ'
+  }
+}
+
+async function saveBackofficeAdminSubscription() {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  if (!adminId) return
+  const subscriptionId = forms.backofficeSubscriptionId
+  const path = subscriptionId
+    ? `/api/backoffice/admins/${adminId}/subscriptions/${subscriptionId}`
+    : `/api/backoffice/admins/${adminId}/subscriptions`
+  forms.backofficeBenefitStatus = ''
+  try {
+    applyBackofficeAdminDetail(await api(path, {
+      method: subscriptionId ? 'PUT' : 'POST',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({
+        startDate: forms.backofficeSubscriptionStartDate,
+        endDate: forms.backofficeSubscriptionEndDate,
+        totalSessions: Number(forms.backofficeSubscriptionTotalSessions),
+        paidAmountThb: Number(forms.backofficeSubscriptionPaidAmountThb),
+        note: forms.backofficeSubscriptionNote || ''
+      })
+    }))
+    forms.backofficeBenefitStatus = subscriptionId ? 'แก้ไขแพ็กเกจแล้ว' : 'สร้างแพ็กเกจแล้ว'
+  } catch (error) {
+    forms.backofficeBenefitStatus = error.message || 'บันทึกแพ็กเกจไม่สำเร็จ'
+  }
+}
+
+async function cancelBackofficeAdminSubscription() {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  const subscriptionId = forms.backofficeSubscriptionId
+  if (!adminId || !subscriptionId) return
+  if (!window.confirm('ยืนยันยกเลิกแพ็กเกจนี้? สิทธิ์ที่เหลือจะใช้ไม่ได้ทันที')) return
+  forms.backofficeBenefitStatus = ''
+  try {
+    applyBackofficeAdminDetail(await api(`/api/backoffice/admins/${adminId}/subscriptions/${subscriptionId}/cancel`, {
+      method: 'POST',
+      headers: backofficeAuthHeaders(),
+      body: JSON.stringify({ note: forms.backofficeSubscriptionCancelNote || '' })
+    }))
+    forms.backofficeBenefitStatus = 'ยกเลิกแพ็กเกจแล้ว'
+  } catch (error) {
+    forms.backofficeBenefitStatus = error.message || 'ยกเลิกแพ็กเกจไม่สำเร็จ'
+  }
+}
+
 function syncBackofficeCoinShopForms() {
   const summary = forms.backofficeSummary || {}
   forms.backofficeCoinPackages = (summary.coinPackages || []).map((item) => ({ ...item }))
+  forms.backofficeSubscriptionPackages = (summary.subscriptionPackages || []).map((item) => ({ ...item }))
   forms.backofficeCoinPaymentQrImage = summary.coinPaymentQrImage || ''
   forms.backofficePromptPayId = summary.promptPayId || ''
   forms.backofficePromptPayType = summary.promptPayType || 'mobile'
@@ -848,6 +971,7 @@ async function saveBackofficeCoinShop() {
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
         packages: forms.backofficeCoinPackages,
+        subscriptionPackages: forms.backofficeSubscriptionPackages,
         paymentQrImage: forms.backofficeCoinPaymentQrImage,
         promptPayId: forms.backofficePromptPayId,
         promptPayType: forms.backofficePromptPayType,
@@ -916,6 +1040,23 @@ function removeBackofficeCoinPackage(index) {
   forms.backofficeCoinPackages.splice(index, 1)
 }
 
+function addBackofficeSubscriptionPackage() {
+  forms.backofficeSubscriptionPackages.push({
+    id: '',
+    name: 'แพ็กเกจรายเดือนใหม่',
+    priceThb: 999,
+    totalSessions: 30,
+    durationDays: 30,
+    bonusText: '',
+    active: true,
+    sortOrder: forms.backofficeSubscriptionPackages.length + 1
+  })
+}
+
+function removeBackofficeSubscriptionPackage(index) {
+  forms.backofficeSubscriptionPackages.splice(index, 1)
+}
+
 async function adjustBackofficeCoins() {
   forms.backofficeError = ''
   try {
@@ -948,7 +1089,7 @@ async function reviewBackofficeCoinOrder(orderId, status) {
     syncBackofficeCoinShopForms()
     await loadBackofficeCoinOrders(forms.backofficeOrdersPage)
   } catch (error) {
-    forms.backofficeError = error.message || 'อัปเดตรายการซื้อ coin ไม่สำเร็จ'
+    forms.backofficeError = error.message || 'อัปเดตรายการชำระเงินไม่สำเร็จ'
   }
 }
 
@@ -959,19 +1100,26 @@ function applyAdminPayload(payload) {
   auth.defaultSettings = normalizeSessionDefaults(payload.defaultSettings || auth.defaultSettings)
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
+  auth.benefits = payload.benefits || { discountPercent: 0, pricing: {}, subscription: null }
 }
 
 function applyCoinShopPayload(payload) {
   auth.coinPackages = payload.packages || []
+  auth.subscriptionPackages = payload.subscriptionPackages || []
   auth.coinPaymentQrImage = payload.paymentQrImage || ''
   auth.promptPayId = payload.promptPayId || ''
   auth.promptPayType = payload.promptPayType || 'mobile'
   auth.promptPayReceiverName = payload.promptPayReceiverName || ''
   auth.promptPayPayloads = payload.promptPayPayloads || {}
+  auth.subscriptionPromptPayPayloads = payload.subscriptionPromptPayPayloads || {}
   auth.promptPayAvailable = Boolean(payload.promptPayAvailable)
+  auth.subscriptionEligibility = payload.subscriptionEligibility || { canPurchase: true, reason: '', renewal: false, estimatedStartDate: '' }
   auth.coinOrders = payload.orders || []
   if (!forms.coinSelectedPackageId && auth.coinPackages.length) {
     forms.coinSelectedPackageId = auth.coinPackages[0].id
+  }
+  if (!forms.subscriptionSelectedPackageId && auth.subscriptionPackages.length) {
+    forms.subscriptionSelectedPackageId = auth.subscriptionPackages[0].id
   }
   refreshCoinPaymentQr()
 }
@@ -987,7 +1135,7 @@ async function loadCoinShop() {
   try {
     applyCoinShopPayload(await api('/api/admin/coin-shop'))
   } catch (error) {
-    showToast(error.message || 'โหลดร้าน coin ไม่สำเร็จ')
+    showToast(error.message || 'โหลดร้านค้าไม่สำเร็จ')
   }
 }
 
@@ -997,7 +1145,8 @@ async function submitCoinOrder() {
     const payload = await api('/api/admin/coin-orders', {
       method: 'POST',
       body: JSON.stringify({
-        packageId: forms.coinSelectedPackageId,
+        productType: forms.coinShopTab,
+        packageId: selectedShopPackage()?.id,
         slipImage: forms.coinSlipImage
       })
     })
@@ -1005,11 +1154,13 @@ async function submitCoinOrder() {
     const latestOrder = auth.coinOrders[0]
     forms.coinSlipImage = ''
     forms.coinOrderStatus = latestOrder?.status === 'approved'
-      ? 'SlipOK ตรวจสอบผ่าน เติม coin สำเร็จ'
+      ? latestOrder?.productType === 'subscription'
+        ? 'SlipOK ตรวจสอบผ่าน เปิดสิทธิ์แพ็กเกจสำเร็จ'
+        : 'SlipOK ตรวจสอบผ่าน เติม coin สำเร็จ'
       : 'ส่งรายการแล้ว รอ backoffice ตรวจสอบ'
     await restoreAdminAccount()
   } catch (error) {
-    forms.coinOrderStatus = error.message || 'ส่งรายการซื้อ coin ไม่สำเร็จ'
+    forms.coinOrderStatus = error.message || 'ส่งรายการชำระเงินไม่สำเร็จ'
   }
 }
 
@@ -1313,8 +1464,23 @@ function selectedCoinPackage() {
   return auth.coinPackages.find((item) => item.id === forms.coinSelectedPackageId) || auth.coinPackages[0] || null
 }
 
+function selectedSubscriptionPackage() {
+  return auth.subscriptionPackages.find((item) => item.id === forms.subscriptionSelectedPackageId) || auth.subscriptionPackages[0] || null
+}
+
+function selectedShopPackage() {
+  return forms.coinShopTab === 'subscription' ? selectedSubscriptionPackage() : selectedCoinPackage()
+}
+
+const canSubmitShopOrder = computed(() => {
+  if (forms.coinShopTab === 'subscription' && !auth.subscriptionEligibility?.canPurchase) return false
+  return Boolean(selectedShopPackage()?.id && forms.coinSlipImage && coinPaymentQrReady.value)
+})
+
 const coinPaymentQrReady = computed(() => Boolean(forms.coinPaymentQrDataUrl || auth.coinPaymentQrImage))
-const selectedPromptPayPayload = computed(() => auth.promptPayPayloads?.[forms.coinSelectedPackageId] || '')
+const selectedPromptPayPayload = computed(() => forms.coinShopTab === 'subscription'
+  ? auth.subscriptionPromptPayPayloads?.[forms.subscriptionSelectedPackageId] || ''
+  : auth.promptPayPayloads?.[forms.coinSelectedPackageId] || '')
 
 async function refreshCoinPaymentQr() {
   const payload = selectedPromptPayPayload.value
@@ -1334,7 +1500,7 @@ async function refreshCoinPaymentQr() {
 }
 
 watch(
-  () => [forms.coinSelectedPackageId, auth.promptPayPayloads],
+  () => [forms.coinShopTab, forms.coinSelectedPackageId, forms.subscriptionSelectedPackageId, auth.promptPayPayloads, auth.subscriptionPromptPayPayloads],
   () => {
     refreshCoinPaymentQr()
   },
@@ -1475,12 +1641,7 @@ function randomMatch() {
     const { selected, level } = pickRandomMatch(randomEligibleGroups.value)
     if (selected.length < 4) return
 
-    const couple = state.couples.find((item) => selected.includes(item.a) && selected.includes(item.b))
-    let teams = selected
-    if (couple) {
-      const rest = selected.filter((id) => id !== couple.a && id !== couple.b)
-      teams = [couple.a, couple.b, rest[0], rest[1]]
-    }
+    const teams = arrangeTeamsByTeammateHistory(selected, state.couples, state.history)
 
     state.pending.push({
       id: nextPendingId(),
@@ -1612,15 +1773,6 @@ function cancelPendingMatch(match) {
 
 function cancelQueuedMatch(match) {
   state.queue = state.queue.filter((item) => item.id !== match.id)
-  state.history.unshift({
-    ...match,
-    status: 'cancelled',
-    winner: '',
-    shuttles: 0,
-    shuttleSequence: '',
-    endedAt: currentTime(),
-    note: match.note || 'ยกเลิกคิว'
-  })
   delete forms.matchCourts[match.id]
 }
 
@@ -1632,6 +1784,42 @@ function adjustShuttle(match, delta, brandId = defaultShuttleBrand().id) {
     normalizeMatchShuttleItems(match).push({ brandId, number: nextNumber })
     match.shuttleSequence = appendShuttleNumber(match.shuttleSequence || '', nextNumber)
   }
+}
+
+function createManualMatch(match) {
+  const ids = [match.a1, match.a2, match.b1, match.b2].map(Number)
+  if (ids.some((id) => !id) || new Set(ids).size !== 4) {
+    throw new Error('กรุณาเลือกผู้เล่นให้ครบ 4 คนโดยไม่ซ้ำกัน')
+  }
+  const availableIds = new Set(availablePlayers.value.map((player) => player.id))
+  if (ids.some((id) => !availableIds.has(id))) {
+    throw new Error('มีผู้เล่นที่ไม่ว่างหรือไม่สามารถจัดทีมได้')
+  }
+  const teamByPlayer = new Map([
+    [ids[0], 0],
+    [ids[1], 0],
+    [ids[2], 1],
+    [ids[3], 1]
+  ])
+  for (const couple of state.couples) {
+    const hasA = teamByPlayer.has(couple.a)
+    const hasB = teamByPlayer.has(couple.b)
+    if (hasA !== hasB) throw new Error('คู่ที่กำหนดไว้ต้องถูกเลือกมาด้วยกัน')
+    if (hasA && teamByPlayer.get(couple.a) !== teamByPlayer.get(couple.b)) {
+      throw new Error('คู่ที่กำหนดไว้ต้องอยู่ทีมเดียวกัน')
+    }
+  }
+  const level = state.settings.levels.includes(match.level) ? match.level : state.settings.levels[0]
+  if (!level) throw new Error('กรุณาเลือกระดับมือที่ถูกต้อง')
+  state.pending.push({
+    id: nextPendingId(),
+    court: '-',
+    level,
+    a1: ids[0],
+    a2: ids[1],
+    b1: ids[2],
+    b2: ids[3]
+  })
 }
 
 function closeLive(match, cancelled = false, note = '', shuttleReturned = false) {
@@ -1735,6 +1923,10 @@ function requestAddShuttle(match) {
 }
 
 let activeSpeechUtterances = []
+let activeAnnouncementAudio = null
+let announcementRunId = 0
+let lastCloudTTSNoticeCode = ''
+const announcementAudioCache = createAnnouncementAudioCache(fetchCloudAnnouncementBlob)
 
 function waitForSpeechVoices(timeoutMs = 2500) {
   if (!('speechSynthesis' in window)) return Promise.resolve([])
@@ -1834,6 +2026,66 @@ async function playAnnouncementChime() {
   }
 }
 
+function cloudAnnouncementText(parts) {
+  return parts.map((part) => String(part || '').trim()).filter(Boolean).join('\n')
+}
+
+async function requestCloudAnnouncementAudio(parts) {
+  const text = cloudAnnouncementText(parts)
+  if (!text) throw new Error('ไม่มีข้อความสำหรับอ่านออกเสียง')
+  return announcementAudioCache.get(text)
+}
+
+async function fetchCloudAnnouncementBlob(text) {
+  const response = await fetch(`${apiUrl}/api/sessions/${state.session.id}/announcement-audio`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'audio/mpeg, application/json'
+    },
+    body: JSON.stringify({ text })
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}))
+    const error = new Error(payload.error || 'ไม่สามารถสร้างเสียง Google ได้')
+    error.code = payload.code || 'tts_unavailable'
+    throw error
+  }
+  const blob = await response.blob()
+  if (!blob.size) throw new Error('ไฟล์เสียง Google ว่างเปล่า')
+  return blob
+}
+
+function stopAnnouncementAudio() {
+  if (!activeAnnouncementAudio) return
+  activeAnnouncementAudio.pause?.()
+  activeAnnouncementAudio.removeAttribute?.('src')
+  activeAnnouncementAudio.load?.()
+  activeAnnouncementAudio = null
+}
+
+function playCloudAnnouncementAudio(url) {
+  stopAnnouncementAudio()
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(url)
+    activeAnnouncementAudio = audio
+    const finish = () => {
+      if (activeAnnouncementAudio === audio) activeAnnouncementAudio = null
+      resolve()
+    }
+    audio.addEventListener('ended', finish, { once: true })
+    audio.addEventListener('error', () => {
+      if (activeAnnouncementAudio === audio) activeAnnouncementAudio = null
+      reject(new Error('ไม่สามารถเล่นไฟล์เสียง Google ได้'))
+    }, { once: true })
+    audio.play().catch((error) => {
+      if (activeAnnouncementAudio === audio) activeAnnouncementAudio = null
+      reject(error)
+    })
+  })
+}
+
 function currentThaiSpeechVoice() {
   const voices = window.speechSynthesis.getVoices()
   return voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
@@ -1884,16 +2136,37 @@ function speakAnnouncement(parts, thaiVoice = null) {
 
 async function announceQueuedMatch(match, court = '') {
   if (!court) return
-  if (!('speechSynthesis' in window) || typeof window.SpeechSynthesisUtterance !== 'function') {
-    showToast('อุปกรณ์นี้ไม่รองรับการอ่านออกเสียง')
+  const hasDeviceSpeech = 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance === 'function'
+  const runId = ++announcementRunId
+  const parts = announcementParts(match, court)
+  const cloudResultPromise = requestCloudAnnouncementAudio(parts)
+    .then((url) => ({ url, error: null }))
+    .catch((error) => ({ url: '', error }))
+  stopAnnouncementAudio()
+  if (hasDeviceSpeech) {
+    window.speechSynthesis.cancel()
+    primeSpeechForIOS()
+  }
+  await playAnnouncementChime()
+  const cloudResult = await cloudResultPromise
+  if (runId !== announcementRunId) return
+  if (cloudResult.url) {
+    try {
+      await playCloudAnnouncementAudio(cloudResult.url)
+      return
+    } catch {
+      // If MP3 playback is blocked, continue with the device speech fallback.
+    }
+  } else if (cloudResult.error?.code && cloudResult.error.code !== 'tts_disabled' && lastCloudTTSNoticeCode !== cloudResult.error.code) {
+    lastCloudTTSNoticeCode = cloudResult.error.code
+    showToast(cloudResult.error.message, 'info')
+  }
+
+  if (!hasDeviceSpeech) {
+    showToast('Google TTS ใช้งานไม่ได้ และอุปกรณ์นี้ไม่รองรับเสียงสำรอง')
     return
   }
-  const parts = announcementParts(match, court)
   let thaiVoice = currentThaiSpeechVoice()
-  window.speechSynthesis.cancel()
-  primeSpeechForIOS()
-  await playAnnouncementChime()
-  thaiVoice = thaiVoice || currentThaiSpeechVoice()
   if (!thaiVoice) {
     waitForSpeechVoices(900).then((voices) => {
       const loadedThaiVoice = voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
@@ -2464,6 +2737,22 @@ async function startMatchApi(match, court = '') {
   }
 }
 
+async function createManualMatchApi(match) {
+  if (!ensureSessionActive()) throw new Error(sessionReadOnlyMessage.value)
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/pending`, {
+      method: 'POST',
+      body: JSON.stringify(match)
+    }))
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'สร้างทีมไม่สำเร็จ')
+      throw error
+    }
+    createManualMatch(match)
+  }
+}
+
 async function confirmPendingMatchApi(match) {
   if (!ensureSessionActive()) return
   try {
@@ -2755,12 +3044,17 @@ const pageProps = computed(() => ({
   applyBackofficeActivityFilters,
   changeBackofficeActivityUser,
   openBackofficeAdminDetail,
+  saveBackofficeAdminDiscount,
+  saveBackofficeAdminSubscription,
+  cancelBackofficeAdminSubscription,
   saveBackofficeSettings,
   saveBackofficeCoinShop,
   setupBackofficeTelegramWebhook,
   refreshBackofficeSlipOKQuota,
   addBackofficeCoinPackage,
   removeBackofficeCoinPackage,
+  addBackofficeSubscriptionPackage,
+  removeBackofficeSubscriptionPackage,
   adjustBackofficeCoins,
   reviewBackofficeCoinOrder,
   resendBackofficeCoinOrderTelegram
@@ -2920,7 +3214,20 @@ const pageProps = computed(() => ({
 
       <LiveMatchPage v-if="isAdmin && state.tab === 'livematch'" v-bind="pageProps" />
 
-      <QueuePage v-if="isAdmin && state.tab === 'queue'" v-bind="pageProps" />
+      <QueuePage
+        v-if="isAdmin && state.tab === 'queue'"
+        :state="state"
+        :forms="forms"
+        :match-level-label="matchLevelLabel"
+        :open-queue-qr="openQueueQr"
+        :start-match="startMatchApi"
+        :announce-queued-match="announceQueuedMatch"
+        :cancel-queued-match="cancelQueuedMatchApi"
+        :player-name="playerName"
+        :available-court-names="availableCourtNames"
+        :active-shuttle-brands="activeShuttleBrands"
+        :is-session-read-only="isSessionReadOnly"
+      />
 
       <LiveBoardPage v-if="isAdmin && state.tab === 'liveboard'" v-bind="pageProps" />
 
@@ -2953,109 +3260,148 @@ const pageProps = computed(() => ({
 
     <MatchSetupModal v-if="isAdmin && (ui.showCouponModal || ui.showCoupleModal)" v-bind="pageProps" />
 
-    <div v-if="ui.showCoinModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
-      <div class="w-full max-w-4xl rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
-        <div class="flex items-start justify-between gap-3">
-          <div>
-            <p class="text-sm font-black text-shuttle-700 dark:text-shuttle-300">Coin</p>
-            <h2 class="mt-1 text-xl font-black">COIN : {{ Number(auth.user?.coins || 0).toLocaleString('th-TH') }}</h2>
-            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ forms.coinModalMode === 'shop' ? 'เลือกโปรโมชัน โอนเงินตาม QR แล้วอัปโหลดสลิปเพื่อรอตรวจสอบ' : 'ประวัติการเติมและการใช้ coin ของบัญชีนี้' }}</p>
+    <ManualTeamModal
+      v-if="isAdmin && ui.showManualTeamModal"
+      :state="state"
+      :players="availablePlayers"
+      :create-manual-match="createManualMatchApi"
+      :is-session-read-only="isSessionReadOnly"
+      @close="ui.showManualTeamModal = false"
+    />
+
+    <div v-if="ui.showCoinModal" class="fixed inset-0 z-40 grid place-items-end bg-stone-950/55 backdrop-blur-sm sm:place-items-center sm:p-4">
+      <div class="flex h-[100dvh] w-full flex-col overflow-hidden bg-paper-50 shadow-2xl dark:bg-stone-900 sm:h-auto sm:max-h-[92vh] sm:max-w-6xl sm:rounded-2xl sm:border sm:border-stone-200 dark:sm:border-stone-700">
+        <header class="shrink-0 border-b border-stone-200 bg-white px-4 py-4 dark:border-stone-700 dark:bg-stone-900 sm:px-6">
+          <div class="flex items-start justify-between gap-3">
+            <div class="flex min-w-0 items-center gap-3">
+              <span class="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-shuttle-400 text-stone-950"><Coins class="h-5 w-5" /></span>
+              <div class="min-w-0">
+                <h2 class="truncate text-xl font-black">Coin และแพ็กเกจ</h2>
+                <p class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">เลือกแพ็กเกจ ชำระเงิน และส่งสลิปในที่เดียว</p>
+                <span class="mt-2 inline-flex rounded-md bg-paper-100 px-2 py-1 text-[11px] font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300 sm:hidden">Coin คงเหลือ {{ Number(auth.user?.coins || 0).toLocaleString('th-TH') }}</span>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <div class="hidden rounded-lg bg-paper-100 px-3 py-2 text-right dark:bg-stone-800 sm:block">
+                <p class="text-[10px] font-black uppercase tracking-wide text-stone-400">Coin คงเหลือ</p>
+                <p class="text-lg font-black tabular-nums">{{ Number(auth.user?.coins || 0).toLocaleString('th-TH') }}</p>
+              </div>
+              <button class="grid h-10 w-10 place-items-center rounded-lg border border-stone-200 text-stone-500 transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800" aria-label="ปิด modal" @click="ui.showCoinModal = false"><X class="h-4 w-4" /></button>
+            </div>
           </div>
-          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showCoinModal = false">
-            <X class="h-4 w-4" />
-          </button>
-        </div>
 
-        <div class="mt-4 grid max-h-[72vh] gap-4 overflow-auto pr-1 lg:grid-cols-[1.15fr_0.85fr]">
-          <section v-if="forms.coinModalMode === 'shop'" class="grid gap-3">
-            <div class="grid gap-3 sm:grid-cols-2">
-              <button
-                v-for="pkg in auth.coinPackages"
-                :key="pkg.id"
-                type="button"
-                class="rounded-lg border p-4 text-left transition"
-                :class="forms.coinSelectedPackageId === pkg.id ? 'border-shuttle-500 bg-shuttle-400/15 ring-2 ring-shuttle-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'"
-                @click="forms.coinSelectedPackageId = pkg.id"
-              >
-                <div class="flex items-start justify-between gap-3">
-                  <div>
-                    <p class="text-lg font-black">{{ pkg.name }}</p>
-                    <p class="mt-2 text-3xl font-black tabular-nums">฿{{ Number(pkg.priceThb || 0).toLocaleString('th-TH') }}</p>
-                  </div>
-                  <span v-if="pkg.bonusText" class="rounded-md bg-court-500/10 px-2 py-1 text-xs font-black text-court-700 dark:text-court-300">{{ pkg.bonusText }}</span>
-                </div>
-                <p class="mt-4 text-sm font-bold text-stone-500 dark:text-stone-400">ได้รับ</p>
-                <p class="mt-1 text-xl font-black text-shuttle-700 dark:text-shuttle-300">{{ Number(pkg.coins || 0).toLocaleString('th-TH') }} coin</p>
-              </button>
-            </div>
-            <p v-if="!auth.coinPackages.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีโปรโมชัน coin</p>
+          <nav class="mt-4 grid grid-cols-3 gap-1 rounded-lg bg-paper-100 p-1 dark:bg-stone-800" aria-label="เมนู Coin และแพ็กเกจ">
+            <button type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md text-xs font-black transition sm:text-sm" :class="forms.coinModalMode === 'shop' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-white' : 'text-stone-500'" @click="openCoinModal('shop')"><Coins class="h-4 w-4" />ซื้อแพ็กเกจ</button>
+            <button type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md text-xs font-black transition sm:text-sm" :class="forms.coinModalMode === 'orders' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-white' : 'text-stone-500'" @click="forms.coinModalMode = 'orders'"><ClipboardList class="h-4 w-4" />รายการชำระ</button>
+            <button type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md text-xs font-black transition sm:text-sm" :class="forms.coinModalMode === 'history' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-white' : 'text-stone-500'" @click="forms.coinModalMode = 'history'"><History class="h-4 w-4" />ประวัติ Coin</button>
+          </nav>
+        </header>
 
-            <div class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
-              <h3 class="font-black">ชำระเงิน</h3>
-              <div class="mt-3 grid gap-3 sm:grid-cols-[12rem_1fr]">
-                <div class="grid min-h-48 place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
-                  <img v-if="forms.coinPaymentQrDataUrl" :src="forms.coinPaymentQrDataUrl" alt="PromptPay QR ตามยอด" class="max-h-44 rounded-md bg-white object-contain p-2" />
-                  <img v-else-if="auth.coinPaymentQrImage" :src="auth.coinPaymentQrImage" alt="QR ชำระเงินสำรอง" class="max-h-44 rounded-md bg-white object-contain p-2" />
-                  <p v-else class="text-center text-sm font-bold text-stone-500">backoffice ยังไม่ได้ตั้ง PromptPay หรือ QR สำรอง</p>
-                </div>
-                <div class="grid gap-3">
-                  <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
-                    <p class="text-xs font-bold text-stone-500 dark:text-stone-400">แพ็กเกจที่เลือก</p>
-                    <p class="mt-1 font-black">{{ selectedCoinPackage()?.name || '-' }}</p>
-                    <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ราคา ฿{{ Number(selectedCoinPackage()?.priceThb || 0).toLocaleString('th-TH') }} ได้ {{ Number(selectedCoinPackage()?.coins || 0).toLocaleString('th-TH') }} coin</p>
-                    <p class="mt-2 text-xs font-bold" :class="forms.coinPaymentQrDataUrl ? 'text-court-700 dark:text-court-300' : 'text-amber-700 dark:text-amber-300'">
-                      {{ forms.coinPaymentQrDataUrl ? 'QR นี้สร้างตามยอดแพ็กเกจที่เลือก' : 'ใช้ QR สำรอง กรุณาโอนตามยอดแพ็กเกจ' }}
-                    </p>
-                  </div>
-                  <label class="grid cursor-pointer place-items-center gap-2 rounded-md border border-dashed border-stone-300 p-4 text-center text-sm font-black transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800">
-                    <Upload class="h-5 w-5" />
-                    อัปโหลดสลิป
-                    <input type="file" accept="image/*" class="hidden" @change="handleCoinSlipFile" />
-                  </label>
-                  <img v-if="forms.coinSlipImage" :src="forms.coinSlipImage" alt="สลิปที่เลือก" class="max-h-32 rounded-md border border-stone-200 object-contain dark:border-stone-700" />
-                  <button class="h-11 rounded-md bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:opacity-50" :disabled="!forms.coinSelectedPackageId || !forms.coinSlipImage || !coinPaymentQrReady" @click="submitCoinOrder">
-                    ส่งตรวจสอบ
+        <main class="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          <section v-if="forms.coinModalMode === 'shop'" class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
+            <div class="min-w-0">
+              <div class="mb-4 grid grid-cols-3 gap-2 text-center text-[11px] font-black text-stone-500">
+                <div class="rounded-lg bg-white px-2 py-2 dark:bg-stone-800"><span class="mr-1 text-court-600">1</span>เลือกแพ็กเกจ</div>
+                <div class="rounded-lg bg-white px-2 py-2 dark:bg-stone-800"><span class="mr-1 text-court-600">2</span>สแกนจ่าย</div>
+                <div class="rounded-lg bg-white px-2 py-2 dark:bg-stone-800"><span class="mr-1 text-court-600">3</span>ส่งสลิป</div>
+              </div>
+
+              <div class="rounded-xl border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
+                <nav class="grid grid-cols-2 gap-1 rounded-lg bg-paper-100 p-1 dark:bg-stone-800" aria-label="ประเภทสินค้า">
+                  <button type="button" class="h-11 rounded-md text-sm font-black transition" :class="forms.coinShopTab === 'coin' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-white' : 'text-stone-500'" @click="forms.coinShopTab = 'coin'">เติม Coin</button>
+                  <button type="button" class="h-11 rounded-md text-sm font-black transition" :class="forms.coinShopTab === 'subscription' ? 'bg-white text-stone-900 shadow-sm dark:bg-stone-700 dark:text-white' : 'text-stone-500'" @click="forms.coinShopTab = 'subscription'">แพ็กเกจรายเดือน</button>
+                </nav>
+
+                <div v-if="forms.coinShopTab === 'coin'" class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <button v-for="pkg in auth.coinPackages" :key="pkg.id" type="button" class="relative min-h-40 rounded-xl border p-4 text-left transition" :class="forms.coinSelectedPackageId === pkg.id ? 'border-shuttle-500 bg-shuttle-400/10 ring-2 ring-shuttle-500/15' : 'border-stone-200 hover:border-stone-300 hover:bg-paper-50 dark:border-stone-700 dark:hover:bg-stone-800'" @click="forms.coinSelectedPackageId = pkg.id">
+                    <span v-if="forms.coinSelectedPackageId === pkg.id" class="absolute right-3 top-3 grid h-6 w-6 place-items-center rounded-full bg-shuttle-400 text-stone-950"><Check class="h-3.5 w-3.5" /></span>
+                    <p class="pr-8 text-base font-black">{{ pkg.name }}</p>
+                    <p class="mt-3 text-2xl font-black tabular-nums">฿{{ Number(pkg.priceThb || 0).toLocaleString('th-TH') }}</p>
+                    <p class="mt-3 text-sm font-black text-shuttle-700 dark:text-shuttle-300">รับ {{ Number(pkg.coins || 0).toLocaleString('th-TH') }} Coin</p>
+                    <span v-if="pkg.bonusText" class="mt-2 inline-flex rounded-md bg-court-500/10 px-2 py-1 text-[11px] font-black text-court-700 dark:text-court-300">{{ pkg.bonusText }}</span>
                   </button>
-                  <p v-if="forms.coinOrderStatus" class="rounded-md bg-paper-100 px-3 py-2 text-sm font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.coinOrderStatus }}</p>
                 </div>
+                <p v-if="forms.coinShopTab === 'coin' && !auth.coinPackages.length" class="mt-3 rounded-lg bg-paper-100 p-5 text-center text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีโปรโมชัน Coin</p>
+
+                <div v-if="forms.coinShopTab === 'subscription'" class="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                  <button v-for="pkg in auth.subscriptionPackages" :key="pkg.id" type="button" class="relative min-h-40 rounded-xl border p-4 text-left transition" :class="forms.subscriptionSelectedPackageId === pkg.id ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/15' : 'border-stone-200 hover:border-stone-300 hover:bg-paper-50 dark:border-stone-700 dark:hover:bg-stone-800'" @click="forms.subscriptionSelectedPackageId = pkg.id">
+                    <span v-if="forms.subscriptionSelectedPackageId === pkg.id" class="absolute right-3 top-3 grid h-6 w-6 place-items-center rounded-full bg-court-500 text-white"><Check class="h-3.5 w-3.5" /></span>
+                    <p class="pr-8 text-base font-black">{{ pkg.name }}</p>
+                    <p class="mt-3 text-2xl font-black tabular-nums">฿{{ Number(pkg.priceThb || 0).toLocaleString('th-TH') }}</p>
+                    <p class="mt-3 text-sm font-black text-court-700 dark:text-court-300">{{ Number(pkg.totalSessions || 0).toLocaleString('th-TH') }} Session · {{ Number(pkg.durationDays || 0).toLocaleString('th-TH') }} วัน</p>
+                    <span v-if="pkg.bonusText" class="mt-2 inline-flex rounded-md bg-court-500/10 px-2 py-1 text-[11px] font-black text-court-700 dark:text-court-300">{{ pkg.bonusText }}</span>
+                  </button>
+                </div>
+                <p v-if="forms.coinShopTab === 'subscription' && !auth.subscriptionPackages.length" class="mt-3 rounded-lg bg-paper-100 p-5 text-center text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีแพ็กเกจรายเดือนเปิดขาย</p>
               </div>
+
+              <div v-if="forms.coinShopTab === 'subscription' && auth.subscriptionEligibility?.renewal" class="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-bold text-amber-900 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">
+                ต่ออายุล่วงหน้า · รอบใหม่คาดว่าจะเริ่มวันที่ {{ auth.subscriptionEligibility.estimatedStartDate }} หลังรอบเดิมสิ้นสุด {{ auth.subscriptionEligibility.currentEndDate }}
+              </div>
+              <div v-if="forms.coinShopTab === 'subscription' && !auth.subscriptionEligibility?.canPurchase" class="mt-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-bold text-red-700 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">{{ auth.subscriptionEligibility?.reason || 'ยังไม่สามารถซื้อแพ็กเกจรายเดือนได้' }}</div>
             </div>
+
+            <aside class="h-max rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 lg:sticky lg:top-0">
+              <div class="flex items-start justify-between gap-3 border-b border-stone-100 pb-3 dark:border-stone-800">
+                <div>
+                  <p class="text-xs font-black text-stone-400">ยอดชำระ</p>
+                  <p class="mt-1 text-3xl font-black tabular-nums">฿{{ Number(selectedShopPackage()?.priceThb || 0).toLocaleString('th-TH') }}</p>
+                </div>
+                <span class="rounded-md bg-paper-100 px-2 py-1 text-xs font-black text-stone-500 dark:bg-stone-800">{{ forms.coinShopTab === 'subscription' ? 'รายเดือน' : 'Coin' }}</span>
+              </div>
+              <p class="mt-3 font-black">{{ selectedShopPackage()?.name || 'กรุณาเลือกแพ็กเกจ' }}</p>
+              <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">
+                <template v-if="forms.coinShopTab === 'subscription'">{{ Number(selectedShopPackage()?.totalSessions || 0).toLocaleString('th-TH') }} Session · {{ Number(selectedShopPackage()?.durationDays || 0).toLocaleString('th-TH') }} วัน</template>
+                <template v-else>รับ {{ Number(selectedShopPackage()?.coins || 0).toLocaleString('th-TH') }} Coin</template>
+              </p>
+
+              <div class="mt-4 grid min-h-52 place-items-center rounded-xl bg-paper-100 p-3 dark:bg-stone-800">
+                <img v-if="forms.coinPaymentQrDataUrl" :src="forms.coinPaymentQrDataUrl" alt="PromptPay QR ตามยอด" class="h-48 w-48 rounded-lg bg-white object-contain p-2" />
+                <img v-else-if="auth.coinPaymentQrImage" :src="auth.coinPaymentQrImage" alt="QR ชำระเงินสำรอง" class="h-48 w-48 rounded-lg bg-white object-contain p-2" />
+                <p v-else class="max-w-48 text-center text-sm font-bold text-stone-500">Backoffice ยังไม่ได้ตั้ง PromptPay หรือ QR สำรอง</p>
+              </div>
+              <p class="mt-2 text-center text-[11px] font-bold" :class="forms.coinPaymentQrDataUrl ? 'text-court-700 dark:text-court-300' : 'text-amber-700 dark:text-amber-300'">{{ forms.coinPaymentQrDataUrl ? 'QR สร้างตามยอดแพ็กเกจนี้แล้ว' : 'กรุณาโอนตามยอดที่แสดง' }}</p>
+
+              <label class="mt-4 flex min-h-20 cursor-pointer items-center justify-center gap-3 rounded-xl border border-dashed border-stone-300 px-3 text-center text-sm font-black transition hover:border-court-500 hover:bg-court-500/5 dark:border-stone-700">
+                <Upload class="h-5 w-5 text-court-600" />
+                <span>{{ forms.coinSlipImage ? 'เปลี่ยนรูปสลิป' : 'เลือกรูปสลิป' }}</span>
+                <input type="file" accept="image/*" class="hidden" @change="handleCoinSlipFile" />
+              </label>
+              <img v-if="forms.coinSlipImage" :src="forms.coinSlipImage" alt="สลิปที่เลือก" class="mt-3 h-28 w-full rounded-lg border border-stone-200 bg-paper-100 object-contain dark:border-stone-700 dark:bg-stone-800" />
+              <button class="mt-4 h-12 w-full rounded-lg bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!canSubmitShopOrder" @click="submitCoinOrder">ส่งสลิปตรวจสอบ</button>
+              <p v-if="forms.coinOrderStatus" class="mt-3 rounded-lg bg-paper-100 px-3 py-2 text-sm font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.coinOrderStatus }}</p>
+            </aside>
           </section>
 
-          <section class="grid content-start gap-3">
-            <div v-if="forms.coinModalMode === 'shop'" class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
-              <h3 class="font-black">รายการซื้อ coin</h3>
-              <div class="mt-3 grid gap-2">
-                <div v-for="order in auth.coinOrders" :key="order.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
-                  <div class="flex items-center justify-between gap-3">
-                    <p class="font-black">฿{{ Number(order.priceThb || 0).toLocaleString('th-TH') }} / {{ Number(order.coins || 0).toLocaleString('th-TH') }} coin</p>
-                    <span class="rounded-md px-2 py-1 text-xs font-black" :class="coinOrderStatusClass(order.status)">{{ coinOrderStatusText(order.status) }}</span>
-                  </div>
-                  <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ order.createdAt }}</p>
-                  <p v-if="order.note" class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ order.note }}</p>
-                </div>
-                <p v-if="!auth.coinOrders.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีรายการซื้อ coin</p>
-              </div>
+          <section v-else-if="forms.coinModalMode === 'orders'" class="mx-auto grid max-w-3xl gap-3">
+            <div class="mb-1 flex items-end justify-between gap-3">
+              <div><h3 class="text-lg font-black">รายการชำระเงิน</h3><p class="mt-1 text-sm font-semibold text-stone-500">ตรวจสอบสถานะสลิปและสิทธิ์ที่ได้รับ</p></div>
+              <span class="rounded-md bg-white px-3 py-1 text-xs font-black dark:bg-stone-800">{{ auth.coinOrders.length }} รายการ</span>
             </div>
-
-            <div v-if="forms.coinModalMode === 'history'" class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
-              <h3 class="font-black">ประวัติ coin</h3>
-              <div class="mt-3 grid gap-2">
-                <div v-for="item in auth.coinLedger" :key="item.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
-                  <div class="flex items-center justify-between gap-3">
-                    <p class="font-black" :class="item.delta > 0 ? 'text-court-700 dark:text-court-300' : 'text-red-700 dark:text-red-300'">{{ coinReasonText(item) }}</p>
-                    <p class="text-sm font-black tabular-nums" :class="item.delta > 0 ? 'text-court-700 dark:text-court-300' : 'text-red-700 dark:text-red-300'">{{ item.delta > 0 ? '+' : '' }}{{ item.delta }}</p>
-                  </div>
-                  <div class="mt-1 flex items-center justify-between gap-3 text-xs font-semibold text-stone-500 dark:text-stone-400">
-                    <span>{{ item.createdAt }}</span>
-                    <span>คงเหลือ {{ Number(item.balance || 0).toLocaleString('th-TH') }}</span>
-                  </div>
-                </div>
-                <p v-if="!auth.coinLedger.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800 dark:text-stone-400">ยังไม่มีประวัติ coin</p>
+            <article v-for="order in auth.coinOrders" :key="order.id" class="rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0"><p class="truncate font-black">{{ order.packageName || order.packageId }}</p><p class="mt-1 text-xs font-semibold text-stone-500">{{ order.createdAt }} · {{ order.productType === 'subscription' ? 'แพ็กเกจรายเดือน' : 'เติม Coin' }}</p></div>
+                <span class="shrink-0 rounded-md px-2 py-1 text-xs font-black" :class="coinOrderStatusClass(order.status)">{{ coinOrderStatusText(order.status) }}</span>
               </div>
-            </div>
+              <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+                <div class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><p class="text-[10px] font-black text-stone-400">ยอดชำระ</p><p class="mt-1 font-black">฿{{ Number(order.priceThb || 0).toLocaleString('th-TH') }}</p></div>
+                <div class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><p class="text-[10px] font-black text-stone-400">ได้รับ</p><p class="mt-1 font-black text-court-700 dark:text-court-300">{{ order.productType === 'subscription' ? `${Number(order.totalSessions || 0).toLocaleString('th-TH')} Session` : `${Number(order.coins || 0).toLocaleString('th-TH')} Coin` }}</p></div>
+                <div class="col-span-2 rounded-lg bg-paper-100 p-3 dark:bg-stone-800 sm:col-span-1"><p class="text-[10px] font-black text-stone-400">เลขรายการ</p><p class="mt-1 truncate text-xs font-black">{{ order.id }}</p></div>
+              </div>
+              <p v-if="order.note" class="mt-3 text-xs font-semibold text-stone-500">{{ order.note }}</p>
+            </article>
+            <p v-if="!auth.coinOrders.length" class="rounded-xl bg-white p-8 text-center text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีรายการชำระเงิน</p>
           </section>
-        </div>
+
+          <section v-else class="mx-auto grid max-w-3xl gap-3">
+            <div class="mb-1 flex items-end justify-between gap-3"><div><h3 class="text-lg font-black">ประวัติ Coin</h3><p class="mt-1 text-sm font-semibold text-stone-500">รายการเติมและใช้ Coin ของบัญชีนี้</p></div><span class="rounded-lg bg-shuttle-400 px-3 py-2 text-sm font-black text-stone-950">คงเหลือ {{ Number(auth.user?.coins || 0).toLocaleString('th-TH') }}</span></div>
+            <article v-for="item in auth.coinLedger" :key="item.id" class="flex items-center justify-between gap-4 rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+              <div class="min-w-0"><p class="font-black" :class="item.delta > 0 ? 'text-court-700 dark:text-court-300' : 'text-red-700 dark:text-red-300'">{{ coinReasonText(item) }}</p><p class="mt-1 text-xs font-semibold text-stone-500">{{ item.createdAt }} · คงเหลือ {{ Number(item.balance || 0).toLocaleString('th-TH') }}</p></div>
+              <p class="shrink-0 text-lg font-black tabular-nums" :class="item.delta > 0 ? 'text-court-700 dark:text-court-300' : 'text-red-700 dark:text-red-300'">{{ item.delta > 0 ? '+' : '' }}{{ item.delta }}</p>
+            </article>
+            <p v-if="!auth.coinLedger.length" class="rounded-xl bg-white p-8 text-center text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีประวัติ Coin</p>
+          </section>
+        </main>
       </div>
     </div>
 

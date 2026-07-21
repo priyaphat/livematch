@@ -45,6 +45,28 @@ To use approve/reject buttons in Telegram, set your bot webhook to:
 https://your-domain.example/api/telegram/webhook/{TELEGRAM_WEBHOOK_SECRET}
 ```
 
+## Google Thai Text-to-Speech
+
+Queue announcements can use Google Cloud's Thai Standard voice. The backend stops new Google synthesis at 3.9 million characters per UTC month and the frontend automatically falls back to the device Web Speech voice. Generated MP3 files are cached in the `tts_cache` Docker volume, while the frontend also caches them for repeated clicks in the same browser session.
+
+1. Enable Cloud Text-to-Speech in a Google Cloud project and create a service-account JSON credential.
+2. Save it locally as `./secrets/google-tts.json`. This path is ignored by Git.
+3. Add these values to `.env`:
+
+```text
+GOOGLE_TTS_ENABLED=true
+GOOGLE_TTS_VOICE=th-TH-Standard-A
+GOOGLE_TTS_SPEAKING_RATE=0.82
+```
+
+4. Recreate the backend:
+
+```bash
+docker compose up -d --build backend frontend
+```
+
+Never copy the service-account JSON into an image or commit it to the repository.
+
 ## Local Development
 
 Frontend:

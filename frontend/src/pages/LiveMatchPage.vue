@@ -1,5 +1,5 @@
 <script setup>
-import { Check, ClipboardList, Shuffle, Users, X } from '@lucide/vue'
+import { Check, ClipboardList, Plus, Shuffle, Users, X } from '@lucide/vue'
 
 defineProps([
   'state',
@@ -16,6 +16,10 @@ defineProps([
 <template>
   <section class="grid gap-4">
     <div class="flex flex-wrap gap-2">
+      <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700 dark:bg-stone-900" :disabled="isSessionReadOnly" @click="ui.showManualTeamModal = true">
+        <Plus class="h-4 w-4" />
+        สร้างทีม
+      </button>
       <button class="inline-flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-4 font-semibold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700 dark:bg-stone-900" :disabled="isSessionReadOnly" @click="ui.showCoupleModal = true">
         <Users class="h-4 w-4" />
         จับคู่

@@ -3,6 +3,8 @@ import { ref } from 'vue'
 import { CheckCircle2, Clock3, Play, QrCode, Volume2, X, XCircle } from '@lucide/vue'
 import LineArt from '../components/LineArt.vue'
 
+defineOptions({ inheritAttrs: false })
+
 const props = defineProps([
   'state',
   'forms',

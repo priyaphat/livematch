@@ -35,8 +35,16 @@ services:
       - SLIPOK_BRANCH_ID=${SLIPOK_BRANCH_ID:-}
       - SLIPOK_API_KEY=${SLIPOK_API_KEY:-}
       - SLIPOK_MONTHLY_CAP=${SLIPOK_MONTHLY_CAP:-0}
+      - GOOGLE_TTS_ENABLED=${GOOGLE_TTS_ENABLED:-false}
+      - GOOGLE_TTS_VOICE=${GOOGLE_TTS_VOICE:-th-TH-Standard-A}
+      - GOOGLE_TTS_SPEAKING_RATE=${GOOGLE_TTS_SPEAKING_RATE:-0.82}
+      - GOOGLE_TTS_CACHE_DIR=/var/cache/livematch-tts
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/google-tts.json
       - SUPERADMIN_USERNAME=${SUPERADMIN_USERNAME:-superadmin}
       - SUPERADMIN_PASSWORD=${SUPERADMIN_PASSWORD:-12345678}
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - tts_cache:/var/cache/livematch-tts
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,3 +78,4 @@ services:
 volumes:
   frontend_node_modules:
   postgres_data:
+  tts_cache:

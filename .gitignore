@@ -13,6 +13,10 @@ backend/livematch
 .env.*
 !.env.example
 
+# Local service credentials
+secrets/*
+!secrets/.gitkeep
+
 # Test and coverage
 coverage/
 frontend/coverage/

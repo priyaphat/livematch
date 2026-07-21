@@ -23,8 +23,9 @@ import (
 const adminCookieName = "livematch_admin_session"
 
 var (
-	errCoinOrderNotFound = errors.New("coin order not found")
-	errCoinOrderReviewed = errors.New("coin order reviewed already")
+	errCoinOrderNotFound           = errors.New("coin order not found")
+	errCoinOrderReviewed           = errors.New("coin order reviewed already")
+	errSubscriptionPurchaseBlocked = errors.New("subscription purchase is not available")
 )
 
 type adminUser struct {
@@ -73,13 +74,38 @@ type coinPackage struct {
 	SortOrder int    `json:"sortOrder"`
 }
 
+type subscriptionPackage struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	PriceTHB      int    `json:"priceThb"`
+	TotalSessions int    `json:"totalSessions"`
+	DurationDays  int    `json:"durationDays"`
+	BonusText     string `json:"bonusText"`
+	Active        bool   `json:"active"`
+	SortOrder     int    `json:"sortOrder"`
+}
+
+type subscriptionPurchaseEligibility struct {
+	CanPurchase    bool   `json:"canPurchase"`
+	Reason         string `json:"reason"`
+	Renewal        bool   `json:"renewal"`
+	EstimatedStart string `json:"estimatedStartDate"`
+	CurrentEndDate string `json:"currentEndDate,omitempty"`
+	PendingOrderID string `json:"pendingOrderId,omitempty"`
+}
+
 type coinPurchaseOrder struct {
 	ID                   string `json:"id"`
 	AdminID              string `json:"adminId"`
 	AdminEmail           string `json:"adminEmail,omitempty"`
 	PackageID            string `json:"packageId"`
+	PackageName          string `json:"packageName"`
+	ProductType          string `json:"productType"`
 	PriceTHB             int    `json:"priceThb"`
 	Coins                int    `json:"coins"`
+	TotalSessions        int    `json:"totalSessions"`
+	DurationDays         int    `json:"durationDays"`
+	SubscriptionID       string `json:"subscriptionId,omitempty"`
 	SlipImage            string `json:"slipImage,omitempty"`
 	Status               string `json:"status"`
 	Note                 string `json:"note"`
@@ -245,6 +271,7 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	defaultSettings, _ := a.adminDefaultSettings(r.Context(), user.ID)
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
+	benefits, _ := a.adminBenefits(r.Context(), user.ID, false)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
@@ -252,6 +279,7 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 		"defaultSettings":      defaultSettings,
 		"liveMatchSessionCost": nullableCost(liveMatchCost, hasLiveMatchCost),
 		"liveShareSessionCost": nullableCost(liveShareCost, hasLiveShareCost),
+		"benefits":             benefits,
 	})
 }
 
@@ -495,15 +523,6 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 		sessionType = "liveMatch"
 	}
 	sessionType = normalizeSessionType(sessionType)
-	cost, hasCost, err := a.sessionCoinCost(r.Context(), sessionType)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if !hasCost {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "ยังไม่ได้ตั้งราคา coin"})
-		return
-	}
 	name := strings.TrimSpace(body.Name)
 	if name == "" {
 		name = "แบดวันนี้"
@@ -543,17 +562,16 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	defer tx.Rollback()
-	var currentCoins int
-	if err = tx.QueryRowContext(r.Context(), `select coins from admin_users where id = $1 for update`, user.ID).Scan(&currentCoins); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	billing, err := consumeSessionBillingTx(r.Context(), tx, user.ID, sessionType)
+	if errors.Is(err, errSessionPriceUnset) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ยังไม่ได้ตั้งราคา coin"})
 		return
 	}
-	if currentCoins < cost {
+	if errors.Is(err, errInsufficientCoins) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "coin ไม่พอ"})
 		return
 	}
-	newBalance := currentCoins - cost
-	if _, err = tx.ExecContext(r.Context(), `update admin_users set coins = $2 where id = $1`, user.ID, newBalance); err != nil {
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -573,13 +591,30 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `
-		insert into coin_ledger (admin_id, delta, balance, reason, note)
-		values ($1, $2, $3, 'create_session', $4)
-	`, user.ID, -cost, newBalance, sessionType+" "+id); err != nil {
+		insert into session_billing (session_id, admin_id, session_type, billing_method, base_coin_cost, discount_percent, charged_coin_cost, subscription_id)
+		values ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''))
+	`, id, user.ID, sessionType, billing.Method, billing.BaseCost, billing.DiscountPercent, billing.ChargedCost, billing.SubscriptionID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "create_session_spend_coin", "session", id, map[string]any{"cost": cost, "balance": newBalance, "name": name, "type": sessionType}); err != nil {
+	if billing.Method == "coin" && billing.ChargedCost > 0 {
+		if _, err = tx.ExecContext(r.Context(), `
+			insert into coin_ledger (admin_id, delta, balance, reason, note)
+			values ($1, $2, $3, 'create_session', $4)
+		`, user.ID, -billing.ChargedCost, billing.NewCoinBalance, sessionType+" "+id); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	activityAction := "create_session_spend_coin"
+	if billing.Method == "subscription" {
+		activityAction = "create_session_use_subscription"
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, activityAction, "session", id, map[string]any{
+		"billingMethod": billing.Method, "baseCost": billing.BaseCost, "discountPercent": billing.DiscountPercent,
+		"chargedCost": billing.ChargedCost, "balance": billing.NewCoinBalance, "subscriptionId": billing.SubscriptionID,
+		"subscriptionRemaining": billing.Remaining, "name": name, "type": sessionType,
+	}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -602,6 +637,11 @@ func (a *app) handleAdminCoinShop(w http.ResponseWriter, r *http.Request, user a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	subscriptionPackages, err := a.subscriptionPackages(r.Context(), true)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	orders, err := a.coinPurchaseOrders(r.Context(), user.ID, true, 20)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -610,27 +650,41 @@ func (a *app) handleAdminCoinShop(w http.ResponseWriter, r *http.Request, user a
 	qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
 	promptPay := a.promptPaySettings(r.Context())
 	promptPayPayloads := promptPayPayloadsForPackages(promptPay, packages)
+	subscriptionPromptPayPayloads := promptPayPayloadsForSubscriptionPackages(promptPay, subscriptionPackages)
+	eligibility, eligibilityErr := subscriptionPurchaseEligibilityForAdmin(r.Context(), a.db, user.ID)
+	if eligibilityErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": eligibilityErr.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"packages":              packages,
-		"paymentQrImage":        qrImage,
-		"promptPayId":           promptPay.ID,
-		"promptPayType":         promptPay.Type,
-		"promptPayReceiverName": promptPay.ReceiverName,
-		"promptPayPayloads":     promptPayPayloads,
-		"promptPayAvailable":    len(promptPayPayloads) > 0,
-		"orders":                orders,
+		"packages":                      packages,
+		"subscriptionPackages":          subscriptionPackages,
+		"subscriptionEligibility":       eligibility,
+		"paymentQrImage":                qrImage,
+		"promptPayId":                   promptPay.ID,
+		"promptPayType":                 promptPay.Type,
+		"promptPayReceiverName":         promptPay.ReceiverName,
+		"promptPayPayloads":             promptPayPayloads,
+		"subscriptionPromptPayPayloads": subscriptionPromptPayPayloads,
+		"promptPayAvailable":            len(promptPayPayloads) > 0 || len(subscriptionPromptPayPayloads) > 0,
+		"orders":                        orders,
 	})
 }
 
 func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user adminUser) {
 	var body struct {
-		PackageID string `json:"packageId"`
-		SlipImage string `json:"slipImage"`
+		ProductType string `json:"productType"`
+		PackageID   string `json:"packageId"`
+		SlipImage   string `json:"slipImage"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	body.ProductType = strings.TrimSpace(body.ProductType)
+	if body.ProductType == "" {
+		body.ProductType = "coin"
+	}
 	body.PackageID = strings.TrimSpace(body.PackageID)
 	body.SlipImage = strings.TrimSpace(body.SlipImage)
-	if body.PackageID == "" || body.SlipImage == "" {
+	if (body.ProductType != "coin" && body.ProductType != "subscription") || body.PackageID == "" || body.SlipImage == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "กรุณาเลือกโปรโมชันและอัปโหลดสลิป"})
 		return
 	}
@@ -638,22 +692,49 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "รูปสลิปใหญ่เกินไป"})
 		return
 	}
-	var pkg coinPackage
-	err := a.db.QueryRowContext(r.Context(), `
-		select id, name, price_thb, coins, bonus_text, active, sort_order
-		from coin_packages
-		where id = $1 and active
-	`, body.PackageID).Scan(&pkg.ID, &pkg.Name, &pkg.PriceTHB, &pkg.Coins, &pkg.BonusText, &pkg.Active, &pkg.SortOrder)
+	order := coinPurchaseOrder{AdminID: user.ID, ProductType: body.ProductType, PackageID: body.PackageID, SlipImage: body.SlipImage}
+	var err error
+	if body.ProductType == "subscription" {
+		var pkg subscriptionPackage
+		err = a.db.QueryRowContext(r.Context(), `
+			select id, name, price_thb, total_sessions, duration_days, bonus_text, active, sort_order
+			from subscription_packages where id = $1 and active
+		`, body.PackageID).Scan(&pkg.ID, &pkg.Name, &pkg.PriceTHB, &pkg.TotalSessions, &pkg.DurationDays, &pkg.BonusText, &pkg.Active, &pkg.SortOrder)
+		order.PackageName = pkg.Name
+		order.PriceTHB = pkg.PriceTHB
+		order.TotalSessions = pkg.TotalSessions
+		order.DurationDays = pkg.DurationDays
+	} else {
+		var pkg coinPackage
+		err = a.db.QueryRowContext(r.Context(), `
+			select id, name, price_thb, coins, bonus_text, active, sort_order
+			from coin_packages where id = $1 and active
+		`, body.PackageID).Scan(&pkg.ID, &pkg.Name, &pkg.PriceTHB, &pkg.Coins, &pkg.BonusText, &pkg.Active, &pkg.SortOrder)
+		order.PackageName = pkg.Name
+		order.PriceTHB = pkg.PriceTHB
+		order.Coins = pkg.Coins
+	}
 	if errors.Is(err, sql.ErrNoRows) {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ไม่พบโปรโมชันนี้"})
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ไม่พบแพ็กเกจนี้"})
 		return
 	}
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if body.ProductType == "subscription" {
+		eligibility, eligibilityErr := subscriptionPurchaseEligibilityForAdmin(r.Context(), a.db, user.ID)
+		if eligibilityErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": eligibilityErr.Error()})
+			return
+		}
+		if !eligibility.CanPurchase {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": eligibility.Reason})
+			return
+		}
+	}
 	promptPay := a.promptPaySettings(r.Context())
-	slipCheck := inspectSlipImage(body.SlipImage, pkg.PriceTHB, promptPay, time.Now())
+	slipCheck := inspectSlipImage(body.SlipImage, order.PriceTHB, promptPay, time.Now())
 	orderStatus := "pending"
 	provider := "local"
 	providerStatus := "not_checked"
@@ -662,7 +743,7 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 	if slipOK.ready() {
 		quota := a.fetchSlipOKQuota(r.Context(), slipOK)
 		if quota.Available && !quota.CapReached {
-			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, pkg.PriceTHB)
+			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, order.PriceTHB)
 			provider = "slipok"
 			providerStatus = checked.Status
 			providerErrorCode = checked.ErrorCode
@@ -703,7 +784,7 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 			limit 1
 		`, slipCheck.TransRef).Scan(&existingID)
 		if err == nil {
-			a.insertActivityLog(r.Context(), "admin", user.ID, "duplicate_coin_purchase_slip", "coin_purchase_order", existingID, map[string]any{"transRef": slipCheck.TransRef, "packageId": pkg.ID})
+			a.insertActivityLog(r.Context(), "admin", user.ID, "duplicate_coin_purchase_slip", "coin_purchase_order", existingID, map[string]any{"transRef": slipCheck.TransRef, "packageId": order.PackageID, "productType": order.ProductType})
 			if provider == "slipok" && orderStatus == "pending" {
 				slipCheck.VerificationStatus = "duplicate"
 				slipCheck.VerificationNote += " | transRef ซ้ำกับรายการ " + existingID
@@ -720,23 +801,52 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		}
 	}
 	id := "coin-order-" + randHex(8)
+	order.ID = id
+	order.Status = orderStatus
+	order.TransRef = slipCheck.TransRef
+	order.SlipQRPayload = slipCheck.QRPayload
+	order.DetectedAmountTHB = slipCheck.DetectedAmountTHB
+	order.DetectedPaidAt = slipCheck.DetectedPaidAt
+	order.DetectedReceiver = slipCheck.DetectedReceiver
+	order.VerificationStatus = slipCheck.VerificationStatus
+	order.VerificationNote = slipCheck.VerificationNote
+	order.VerificationProvider = provider
+	order.ProviderStatus = providerStatus
+	order.ProviderErrorCode = providerErrorCode
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	defer tx.Rollback()
+	if order.ProductType == "subscription" {
+		eligibility, eligibilityErr := subscriptionRenewalWindowTx(r.Context(), tx, user.ID, "")
+		if eligibilityErr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": eligibilityErr.Error()})
+			return
+		}
+		if !eligibility.CanPurchase {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": eligibility.Reason})
+			return
+		}
+	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into coin_purchase_orders (
-			id, admin_id, package_id, price_thb, coins, slip_image, status,
+			id, admin_id, product_type, package_id, package_name, price_thb, coins, total_sessions, duration_days, slip_image, status,
 			trans_ref, slip_qr_payload, detected_amount_thb, detected_paid_at, detected_receiver,
 			verification_status, verification_note, verification_provider, provider_status,
 			provider_error_code, provider_checked_at, reviewed_at
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-			case when $15 = 'slipok' then now() else null end,
-			case when $7 = 'approved' then now() else null end)
-	`, id, user.ID, pkg.ID, pkg.PriceTHB, pkg.Coins, body.SlipImage, orderStatus, slipCheck.TransRef, slipCheck.QRPayload, slipCheck.DetectedAmountTHB, slipCheck.DetectedPaidAt, slipCheck.DetectedReceiver, slipCheck.VerificationStatus, slipCheck.VerificationNote, provider, providerStatus, providerErrorCode); err != nil {
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21,
+			case when $19 = 'slipok' then now() else null end,
+			case when $11 = 'approved' then now() else null end)
+	`, id, user.ID, order.ProductType, order.PackageID, order.PackageName, order.PriceTHB, order.Coins, order.TotalSessions, order.DurationDays,
+		body.SlipImage, orderStatus, slipCheck.TransRef, slipCheck.QRPayload, slipCheck.DetectedAmountTHB, slipCheck.DetectedPaidAt,
+		slipCheck.DetectedReceiver, slipCheck.VerificationStatus, slipCheck.VerificationNote, provider, providerStatus, providerErrorCode); err != nil {
+		if strings.Contains(err.Error(), "idx_coin_purchase_orders_pending_subscription") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "มีรายการซื้อแพ็กเกจที่รอตรวจสอบอยู่แล้ว"})
+			return
+		}
 		if strings.Contains(err.Error(), "idx_coin_purchase_orders_trans_ref") || strings.Contains(err.Error(), "duplicate key") {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "สลิปนี้เคยถูกส่งเข้าระบบแล้ว"})
 			return
@@ -745,25 +855,40 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 	if orderStatus == "approved" {
-		var current int
-		if err = tx.QueryRowContext(r.Context(), `select coins from admin_users where id = $1 for update`, user.ID).Scan(&current); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		next := current + pkg.Coins
-		if _, err = tx.ExecContext(r.Context(), `update admin_users set coins = $2, updated_at = now() where id = $1`, user.ID, next); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		if _, err = tx.ExecContext(r.Context(), `
-			insert into coin_ledger (admin_id, delta, balance, reason, note)
-			values ($1, $2, $3, 'coin_purchase', $4)
-		`, user.ID, pkg.Coins, next, "SlipOK auto-approved order "+id); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		if order.ProductType == "subscription" {
+			if _, err = activateSubscriptionOrderTx(r.Context(), tx, &order, "self-service"); err != nil {
+				status := http.StatusInternalServerError
+				if errors.Is(err, errSubscriptionPurchaseBlocked) {
+					status = http.StatusConflict
+				}
+				writeJSON(w, status, map[string]string{"error": err.Error()})
+				return
+			}
+		} else {
+			var current int
+			if err = tx.QueryRowContext(r.Context(), `select coins from admin_users where id = $1 for update`, user.ID).Scan(&current); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			next := current + order.Coins
+			if _, err = tx.ExecContext(r.Context(), `update admin_users set coins = $2, updated_at = now() where id = $1`, user.ID, next); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if _, err = tx.ExecContext(r.Context(), `
+				insert into coin_ledger (admin_id, delta, balance, reason, note)
+				values ($1, $2, $3, 'coin_purchase', $4)
+			`, user.ID, order.Coins, next, "SlipOK auto-approved order "+id); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
 		}
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "submit_coin_purchase", "coin_purchase_order", id, map[string]any{"packageId": pkg.ID, "priceThb": pkg.PriceTHB, "coins": pkg.Coins, "transRef": slipCheck.TransRef, "verificationStatus": slipCheck.VerificationStatus, "verificationNote": slipCheck.VerificationNote}); err != nil {
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "submit_coin_purchase", "coin_purchase_order", id, map[string]any{
+		"productType": order.ProductType, "packageId": order.PackageID, "priceThb": order.PriceTHB, "coins": order.Coins,
+		"totalSessions": order.TotalSessions, "durationDays": order.DurationDays, "subscriptionId": order.SubscriptionID,
+		"transRef": slipCheck.TransRef, "verificationStatus": slipCheck.VerificationStatus, "verificationNote": slipCheck.VerificationNote,
+	}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -771,19 +896,8 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	a.notifyTelegramCoinOrder(r.Context(), coinPurchaseOrder{
-		ID:                 id,
-		AdminID:            user.ID,
-		AdminEmail:         user.Email,
-		PackageID:          pkg.ID,
-		PriceTHB:           pkg.PriceTHB,
-		Coins:              pkg.Coins,
-		SlipImage:          body.SlipImage,
-		TransRef:           slipCheck.TransRef,
-		VerificationStatus: slipCheck.VerificationStatus,
-		VerificationNote:   slipCheck.VerificationNote,
-		Status:             orderStatus,
-	}, user)
+	order.AdminEmail = user.Email
+	a.notifyTelegramCoinOrder(r.Context(), order, user)
 	a.handleAdminCoinShop(w, r, user)
 }
 
@@ -809,6 +923,14 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeCoinLedger(w, r)
 	case strings.HasPrefix(action, "support-issues"):
 		a.handleBackofficeSupportIssues(w, r, backofficeUser)
+	case r.Method == http.MethodPut && strings.HasPrefix(action, "admins/") && strings.HasSuffix(action, "/discount"):
+		a.handleBackofficeAdminDiscount(w, r, backofficeUser)
+	case r.Method == http.MethodPost && strings.HasPrefix(action, "admins/") && strings.HasSuffix(action, "/subscriptions"):
+		a.handleBackofficeAdminSubscriptionCreate(w, r, backofficeUser)
+	case r.Method == http.MethodPut && strings.Contains(action, "/subscriptions/"):
+		a.handleBackofficeAdminSubscriptionUpdate(w, r, backofficeUser)
+	case r.Method == http.MethodPost && strings.Contains(action, "/subscriptions/") && strings.HasSuffix(action, "/cancel"):
+		a.handleBackofficeAdminSubscriptionCancel(w, r, backofficeUser)
 	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/"):
 		a.handleBackofficeAdminDetail(w, r)
 	case r.Method == http.MethodPut && action == "settings":
@@ -841,13 +963,15 @@ func (a *app) handleBackofficeCoinOrderTelegram(w http.ResponseWriter, r *http.R
 	var order coinPurchaseOrder
 	var user adminUser
 	err := a.db.QueryRowContext(r.Context(), `
-		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.price_thb, o.coins,
+		select o.id, o.admin_id, coalesce(u.email, ''), o.product_type, o.package_id, o.package_name,
+			o.price_thb, o.coins, o.total_sessions, o.duration_days, coalesce(o.subscription_id, ''),
 			o.slip_image, o.status, o.note, o.trans_ref, o.verification_status, o.verification_note
 		from coin_purchase_orders o
 		left join admin_users u on u.id = o.admin_id
 		where o.id = $1
 	`, orderID).Scan(
-		&order.ID, &order.AdminID, &order.AdminEmail, &order.PackageID, &order.PriceTHB, &order.Coins,
+		&order.ID, &order.AdminID, &order.AdminEmail, &order.ProductType, &order.PackageID, &order.PackageName,
+		&order.PriceTHB, &order.Coins, &order.TotalSessions, &order.DurationDays, &order.SubscriptionID,
 		&order.SlipImage, &order.Status, &order.Note, &order.TransRef, &order.VerificationStatus, &order.VerificationNote,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -982,6 +1106,10 @@ func (a *app) activitySessionOptions(ctx context.Context, adminID string) ([]map
 
 func (a *app) handleBackofficeAdminDetail(w http.ResponseWriter, r *http.Request) {
 	adminID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/backoffice/admins/"))
+	a.writeBackofficeAdminDetail(w, r, adminID)
+}
+
+func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request, adminID string) {
 	if adminID == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing admin id"})
 		return
@@ -1004,11 +1132,13 @@ func (a *app) handleBackofficeAdminDetail(w http.ResponseWriter, r *http.Request
 	sessions, _ := a.adminSessions(r.Context(), adminID)
 	ledger, _ := a.coinLedger(r.Context(), adminID, 20)
 	orders, _ := a.coinPurchaseOrders(r.Context(), adminID, true, 20)
+	benefits, _ := a.adminBenefits(r.Context(), adminID, true)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":       user,
 		"sessions":   sessions,
 		"coinLedger": ledger,
 		"orders":     orders,
+		"benefits":   benefits,
 	})
 }
 
@@ -1034,12 +1164,14 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		users = append(users, map[string]any{"id": id, "email": email, "name": name, "verified": verified, "coins": coins, "sessions": sessions, "createdAt": createdAt})
+		benefits, _ := a.adminBenefits(r.Context(), id, false)
+		users = append(users, map[string]any{"id": id, "email": email, "name": name, "verified": verified, "coins": coins, "sessions": sessions, "createdAt": createdAt, "discountPercent": benefits.DiscountPercent, "subscription": benefits.Subscription})
 	}
 	ledger, _ := a.coinLedger(r.Context(), "", 30)
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	packages, _ := a.coinPackages(r.Context(), false)
+	subscriptionPackages, _ := a.subscriptionPackages(r.Context(), false)
 	orders, _ := a.coinPurchaseOrders(r.Context(), "", true, 50)
 	logs, _ := a.activityLogs(r.Context(), 80)
 	qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
@@ -1047,32 +1179,36 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	telegramSettings := a.telegramNotifySettings(r.Context())
 	slipOKSettings := a.slipOKSettings(r.Context())
 	slipOKQuota := a.fetchSlipOKQuota(r.Context(), slipOKSettings)
+	ttsUsage := a.tts.usageSnapshot(r.Context())
 	if telegramSettings.WebhookSecret == "" {
 		telegramSettings.WebhookSecret = a.ensureTelegramWebhookSecret(r.Context())
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"users":                 users,
-		"coinLedger":            ledger,
-		"liveMatchSessionCost":  nullableCost(liveMatchCost, hasLiveMatchCost),
-		"liveShareSessionCost":  nullableCost(liveShareCost, hasLiveShareCost),
-		"coinPackages":          packages,
-		"coinPaymentQrImage":    qrImage,
-		"promptPayId":           promptPay.ID,
-		"promptPayType":         promptPay.Type,
-		"promptPayReceiverName": promptPay.ReceiverName,
-		"promptPayPayloads":     promptPayPayloadsForPackages(promptPay, packages),
-		"telegramBotToken":      telegramSettings.BotToken,
-		"telegramChatId":        telegramSettings.ChatID,
-		"telegramWebhookSecret": telegramSettings.WebhookSecret,
-		"telegramWebhookUrl":    telegramWebhookURL(telegramSettings),
-		"telegramNotifyEnabled": telegramSettings.enabled(),
-		"slipOKEnabled":         slipOKSettings.Enabled,
-		"slipOKBranchId":        slipOKSettings.BranchID,
-		"slipOKApiKeyMasked":    maskSecret(slipOKSettings.APIKey),
-		"slipOKMonthlyCap":      slipOKSettings.MonthlyCap,
-		"slipOKQuota":           slipOKQuota,
-		"coinPurchaseOrders":    orders,
-		"activityLogs":          logs,
+		"users":                         users,
+		"coinLedger":                    ledger,
+		"liveMatchSessionCost":          nullableCost(liveMatchCost, hasLiveMatchCost),
+		"liveShareSessionCost":          nullableCost(liveShareCost, hasLiveShareCost),
+		"coinPackages":                  packages,
+		"subscriptionPackages":          subscriptionPackages,
+		"coinPaymentQrImage":            qrImage,
+		"promptPayId":                   promptPay.ID,
+		"promptPayType":                 promptPay.Type,
+		"promptPayReceiverName":         promptPay.ReceiverName,
+		"promptPayPayloads":             promptPayPayloadsForPackages(promptPay, packages),
+		"subscriptionPromptPayPayloads": promptPayPayloadsForSubscriptionPackages(promptPay, subscriptionPackages),
+		"telegramBotToken":              telegramSettings.BotToken,
+		"telegramChatId":                telegramSettings.ChatID,
+		"telegramWebhookSecret":         telegramSettings.WebhookSecret,
+		"telegramWebhookUrl":            telegramWebhookURL(telegramSettings),
+		"telegramNotifyEnabled":         telegramSettings.enabled(),
+		"slipOKEnabled":                 slipOKSettings.Enabled,
+		"slipOKBranchId":                slipOKSettings.BranchID,
+		"slipOKApiKeyMasked":            maskSecret(slipOKSettings.APIKey),
+		"slipOKMonthlyCap":              slipOKSettings.MonthlyCap,
+		"slipOKQuota":                   slipOKQuota,
+		"ttsUsage":                      ttsUsage,
+		"coinPurchaseOrders":            orders,
+		"activityLogs":                  logs,
 	})
 }
 
@@ -1121,22 +1257,27 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 
 func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, actor string) {
 	var body struct {
-		Packages              []coinPackage `json:"packages"`
-		PaymentQrImage        string        `json:"paymentQrImage"`
-		PromptPayID           string        `json:"promptPayId"`
-		PromptPayType         string        `json:"promptPayType"`
-		PromptPayReceiverName string        `json:"promptPayReceiverName"`
-		TelegramBotToken      string        `json:"telegramBotToken"`
-		TelegramChatID        string        `json:"telegramChatId"`
-		TelegramWebhookSecret string        `json:"telegramWebhookSecret"`
-		SlipOKEnabled         bool          `json:"slipOKEnabled"`
-		SlipOKBranchID        string        `json:"slipOKBranchId"`
-		SlipOKAPIKey          string        `json:"slipOKApiKey"`
-		SlipOKMonthlyCap      int           `json:"slipOKMonthlyCap"`
+		Packages              []coinPackage         `json:"packages"`
+		SubscriptionPackages  []subscriptionPackage `json:"subscriptionPackages"`
+		PaymentQrImage        string                `json:"paymentQrImage"`
+		PromptPayID           string                `json:"promptPayId"`
+		PromptPayType         string                `json:"promptPayType"`
+		PromptPayReceiverName string                `json:"promptPayReceiverName"`
+		TelegramBotToken      string                `json:"telegramBotToken"`
+		TelegramChatID        string                `json:"telegramChatId"`
+		TelegramWebhookSecret string                `json:"telegramWebhookSecret"`
+		SlipOKEnabled         bool                  `json:"slipOKEnabled"`
+		SlipOKBranchID        string                `json:"slipOKBranchId"`
+		SlipOKAPIKey          string                `json:"slipOKApiKey"`
+		SlipOKMonthlyCap      int                   `json:"slipOKMonthlyCap"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if len(body.Packages) > 12 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many packages"})
+		return
+	}
+	if len(body.SubscriptionPackages) > 12 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "too many subscription packages"})
 		return
 	}
 	if body.SlipOKMonthlyCap < 0 {
@@ -1233,7 +1374,40 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 			return
 		}
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_coin_shop", "coin_shop", "coin_packages", map[string]any{"packageCount": len(body.Packages), "hasQr": strings.TrimSpace(body.PaymentQrImage) != "", "hasPromptPay": promptPayID != "", "promptPayType": promptPayType, "telegramNotifyEnabled": strings.TrimSpace(body.TelegramBotToken) != "" && strings.TrimSpace(body.TelegramChatID) != ""}); err != nil {
+	if body.SubscriptionPackages != nil {
+		if _, err = tx.ExecContext(r.Context(), `update subscription_packages set active = false, updated_at = now()`); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		for index, pkg := range body.SubscriptionPackages {
+			pkg.ID = strings.TrimSpace(pkg.ID)
+			pkg.Name = strings.TrimSpace(pkg.Name)
+			pkg.BonusText = strings.TrimSpace(pkg.BonusText)
+			if pkg.ID == "" {
+				pkg.ID = "subscription-package-" + randHex(6)
+			}
+			if pkg.Name == "" || pkg.PriceTHB <= 0 || pkg.TotalSessions <= 0 || pkg.DurationDays <= 0 || pkg.DurationDays > 3660 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid subscription package"})
+				return
+			}
+			sortOrder := pkg.SortOrder
+			if sortOrder == 0 {
+				sortOrder = index + 1
+			}
+			if _, err = tx.ExecContext(r.Context(), `
+				insert into subscription_packages (id, name, price_thb, total_sessions, duration_days, bonus_text, active, sort_order)
+				values ($1, $2, $3, $4, $5, $6, $7, $8)
+				on conflict (id) do update set
+					name = excluded.name, price_thb = excluded.price_thb, total_sessions = excluded.total_sessions,
+					duration_days = excluded.duration_days, bonus_text = excluded.bonus_text,
+					active = excluded.active, sort_order = excluded.sort_order, updated_at = now()
+			`, pkg.ID, pkg.Name, pkg.PriceTHB, pkg.TotalSessions, pkg.DurationDays, pkg.BonusText, pkg.Active, sortOrder); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_coin_shop", "coin_shop", "coin_packages", map[string]any{"packageCount": len(body.Packages), "subscriptionPackageCount": len(body.SubscriptionPackages), "hasQr": strings.TrimSpace(body.PaymentQrImage) != "", "hasPromptPay": promptPayID != "", "promptPayType": promptPayType, "telegramNotifyEnabled": strings.TrimSpace(body.TelegramBotToken) != "" && strings.TrimSpace(body.TelegramChatID) != ""}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1322,6 +1496,9 @@ func (a *app) handleBackofficeCoinOrderReview(w http.ResponseWriter, r *http.Req
 	} else if errors.Is(err, errCoinOrderReviewed) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "order reviewed already"})
 		return
+	} else if errors.Is(err, errSubscriptionPurchaseBlocked) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1337,11 +1514,13 @@ func (a *app) reviewCoinOrder(ctx context.Context, orderID, status, actorType, a
 	defer tx.Rollback()
 	var order coinPurchaseOrder
 	if err = tx.QueryRowContext(ctx, `
-		select id, admin_id, package_id, price_thb, coins, status
+		select id, admin_id, product_type, package_id, package_name, price_thb, coins,
+			total_sessions, duration_days, coalesce(subscription_id, ''), status
 		from coin_purchase_orders
 		where id = $1
 		for update
-	`, orderID).Scan(&order.ID, &order.AdminID, &order.PackageID, &order.PriceTHB, &order.Coins, &order.Status); errors.Is(err, sql.ErrNoRows) {
+	`, orderID).Scan(&order.ID, &order.AdminID, &order.ProductType, &order.PackageID, &order.PackageName, &order.PriceTHB,
+		&order.Coins, &order.TotalSessions, &order.DurationDays, &order.SubscriptionID, &order.Status); errors.Is(err, sql.ErrNoRows) {
 		return errCoinOrderNotFound
 	} else if err != nil {
 		return err
@@ -1351,19 +1530,25 @@ func (a *app) reviewCoinOrder(ctx context.Context, orderID, status, actorType, a
 	}
 	note = strings.TrimSpace(note)
 	if status == "approved" {
-		var current int
-		if err = tx.QueryRowContext(ctx, `select coins from admin_users where id = $1 for update`, order.AdminID).Scan(&current); err != nil {
-			return err
-		}
-		next := current + order.Coins
-		if _, err = tx.ExecContext(ctx, `update admin_users set coins = $2 where id = $1`, order.AdminID, next); err != nil {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, `
-			insert into coin_ledger (admin_id, delta, balance, reason, note)
-			values ($1, $2, $3, 'coin_purchase', $4)
-		`, order.AdminID, order.Coins, next, "order "+order.ID); err != nil {
-			return err
+		if order.ProductType == "subscription" {
+			if _, err = activateSubscriptionOrderTx(ctx, tx, &order, actorType+":"+actorID); err != nil {
+				return err
+			}
+		} else {
+			var current int
+			if err = tx.QueryRowContext(ctx, `select coins from admin_users where id = $1 for update`, order.AdminID).Scan(&current); err != nil {
+				return err
+			}
+			next := current + order.Coins
+			if _, err = tx.ExecContext(ctx, `update admin_users set coins = $2 where id = $1`, order.AdminID, next); err != nil {
+				return err
+			}
+			if _, err = tx.ExecContext(ctx, `
+				insert into coin_ledger (admin_id, delta, balance, reason, note)
+				values ($1, $2, $3, 'coin_purchase', $4)
+			`, order.AdminID, order.Coins, next, "order "+order.ID); err != nil {
+				return err
+			}
 		}
 	}
 	if _, err = tx.ExecContext(ctx, `
@@ -1377,7 +1562,10 @@ func (a *app) reviewCoinOrder(ctx context.Context, orderID, status, actorType, a
 	if status == "approved" {
 		actionName = "approve_coin_purchase"
 	}
-	if err = a.insertActivityLogTx(ctx, tx, actorType, actorID, actionName, "coin_purchase_order", order.ID, map[string]any{"adminId": order.AdminID, "priceThb": order.PriceTHB, "coins": order.Coins, "note": note}); err != nil {
+	if err = a.insertActivityLogTx(ctx, tx, actorType, actorID, actionName, "coin_purchase_order", order.ID, map[string]any{
+		"adminId": order.AdminID, "productType": order.ProductType, "priceThb": order.PriceTHB, "coins": order.Coins,
+		"totalSessions": order.TotalSessions, "durationDays": order.DurationDays, "subscriptionId": order.SubscriptionID, "note": note,
+	}); err != nil {
 		return err
 	}
 	if err = tx.Commit(); err != nil {
@@ -1559,6 +1747,32 @@ func (a *app) coinPackages(ctx context.Context, activeOnly bool) ([]coinPackage,
 	return items, rows.Err()
 }
 
+func (a *app) subscriptionPackages(ctx context.Context, activeOnly bool) ([]subscriptionPackage, error) {
+	items := []subscriptionPackage{}
+	where := ""
+	if activeOnly {
+		where = "where active"
+	}
+	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
+		select id, name, price_thb, total_sessions, duration_days, bonus_text, active, sort_order
+		from subscription_packages
+		%s
+		order by sort_order, price_thb, created_at
+	`, where))
+	if err != nil {
+		return items, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var item subscriptionPackage
+		if err := rows.Scan(&item.ID, &item.Name, &item.PriceTHB, &item.TotalSessions, &item.DurationDays, &item.BonusText, &item.Active, &item.SortOrder); err != nil {
+			return items, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (a *app) coinPurchaseOrders(ctx context.Context, adminID string, includeSlip bool, limit int) ([]coinPurchaseOrder, error) {
 	items, _, err := a.coinPurchaseOrdersPage(ctx, adminID, includeSlip, 1, limit)
 	return items, err
@@ -1588,7 +1802,8 @@ func (a *app) coinPurchaseOrdersPage(ctx context.Context, adminID string, includ
 	offsetPlaceholder := len(args) + 2
 	args = append(args, pageSize, (page-1)*pageSize)
 	rows, err := a.db.QueryContext(ctx, fmt.Sprintf(`
-		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.price_thb, o.coins, %s,
+		select o.id, o.admin_id, coalesce(u.email, ''), o.package_id, o.package_name, o.product_type,
+			o.price_thb, o.coins, o.total_sessions, o.duration_days, coalesce(o.subscription_id, ''), %s,
 			o.status, o.note, o.trans_ref, o.slip_qr_payload, o.detected_amount_thb,
 			o.detected_paid_at, o.detected_receiver, o.verification_status, o.verification_note,
 			o.verification_provider, o.provider_status, o.provider_error_code,
@@ -1608,7 +1823,11 @@ func (a *app) coinPurchaseOrdersPage(ctx context.Context, adminID string, includ
 	for rows.Next() {
 		var item coinPurchaseOrder
 		var detectedAmount sql.NullInt64
-		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PriceTHB, &item.Coins, &item.SlipImage, &item.Status, &item.Note, &item.TransRef, &item.SlipQRPayload, &detectedAmount, &item.DetectedPaidAt, &item.DetectedReceiver, &item.VerificationStatus, &item.VerificationNote, &item.VerificationProvider, &item.ProviderStatus, &item.ProviderErrorCode, &item.ProviderCheckedAt, &item.CreatedAt, &item.ReviewedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.AdminID, &item.AdminEmail, &item.PackageID, &item.PackageName, &item.ProductType,
+			&item.PriceTHB, &item.Coins, &item.TotalSessions, &item.DurationDays, &item.SubscriptionID, &item.SlipImage,
+			&item.Status, &item.Note, &item.TransRef, &item.SlipQRPayload, &detectedAmount, &item.DetectedPaidAt,
+			&item.DetectedReceiver, &item.VerificationStatus, &item.VerificationNote, &item.VerificationProvider,
+			&item.ProviderStatus, &item.ProviderErrorCode, &item.ProviderCheckedAt, &item.CreatedAt, &item.ReviewedAt); err != nil {
 			return items, 0, err
 		}
 		if detectedAmount.Valid {

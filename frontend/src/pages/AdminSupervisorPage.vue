@@ -48,11 +48,22 @@ const adminDefaultSettingsTabs = [
   { id: 'courts', label: 'สนาม', hint: 'รายชื่อสนาม', icon: Database },
   { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal }
 ]
-const liveMatchCost = computed(() => props.auth.liveMatchSessionCost)
-const liveShareCost = computed(() => props.auth.liveShareSessionCost)
+const benefits = computed(() => props.auth.benefits || { discountPercent: 0, pricing: {}, subscription: null })
+const subscription = computed(() => benefits.value.subscription || null)
+const canUseSubscription = computed(() => subscription.value?.status === 'active' && Number(subscription.value?.remaining || 0) > 0)
+function priceQuote(type, fallback) {
+  const quote = benefits.value.pricing?.[type]
+  if (quote) return quote
+  if (fallback === null || fallback === undefined) return null
+  return { baseCost: Number(fallback), discountPercent: 0, finalCost: Number(fallback) }
+}
+const liveMatchQuote = computed(() => priceQuote('liveMatch', props.auth.liveMatchSessionCost))
+const liveShareQuote = computed(() => priceQuote('liveShare', props.auth.liveShareSessionCost))
+const liveMatchCost = computed(() => liveMatchQuote.value?.finalCost ?? null)
+const liveShareCost = computed(() => liveShareQuote.value?.finalCost ?? null)
 const sessions = computed(() => props.auth.sessions || [])
-const canCreateLiveMatch = computed(() => liveMatchCost.value !== null && Number(props.auth.user?.coins || 0) >= Number(liveMatchCost.value || 0))
-const canCreateLiveShare = computed(() => liveShareCost.value !== null && Number(props.auth.user?.coins || 0) >= Number(liveShareCost.value || 0))
+const canCreateLiveMatch = computed(() => liveMatchCost.value !== null && (canUseSubscription.value || Number(props.auth.user?.coins || 0) >= Number(liveMatchCost.value || 0)))
+const canCreateLiveShare = computed(() => liveShareCost.value !== null && (canUseSubscription.value || Number(props.auth.user?.coins || 0) >= Number(liveShareCost.value || 0)))
 const createBlockedText = computed(() => {
   if (props.forms.sessionCreateType === 'liveShare' && liveShareCost.value === null) return 'ยังไม่ได้ตั้งราคา liveShare coin'
   if (props.forms.sessionCreateType === 'liveShare' && !canCreateLiveShare.value) return 'coin ไม่พอ'
@@ -447,12 +458,27 @@ const closeAdminDefaultSettingsModal = () => {
 
         <input v-model="forms.sessionCreateName" class="mt-4 h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 font-semibold outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800" placeholder="ชื่อ session" />
 
+        <div v-if="subscription" class="mt-3 rounded-md border px-3 py-2 text-sm" :class="canUseSubscription ? 'border-court-500 bg-court-500/10 text-court-700 dark:text-court-300' : 'border-stone-200 bg-paper-100 text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300'">
+          <p class="font-black">
+            {{ canUseSubscription ? `สิทธิ์รายเดือนเหลือ ${subscription.remaining}/${subscription.totalSessions} Session` : subscription.status === 'upcoming' ? 'แพ็กเกจยังไม่ถึงวันเริ่ม' : 'แพ็กเกจไม่มีสิทธิ์คงเหลือ' }}
+          </p>
+          <p class="mt-0.5 text-xs font-semibold">{{ subscription.startDate }} – {{ subscription.endDate }} · ระบบใช้สิทธิ์ก่อน Coin อัตโนมัติ</p>
+        </div>
+
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
           <button type="button" class="rounded-md border p-4 text-left transition" :class="forms.sessionCreateType === 'liveMatch' ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveMatch'">
             <Radio class="h-6 w-6 text-court-600 dark:text-court-300" />
             <p class="mt-3 text-lg font-black">liveMatch</p>
             <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">ใช้งานได้ 3 วันนับจากเวลาสร้าง session</p>
-            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ liveMatchCost === null ? 'ยังไม่ได้ตั้งราคา coin' : `${liveMatchCost} coin` }}</p>
+            <template v-if="liveMatchQuote">
+              <div v-if="liveMatchQuote.discountPercent > 0" class="mt-2 flex flex-wrap items-center gap-2 text-xs font-black">
+                <span class="text-stone-400 line-through">{{ liveMatchQuote.baseCost }} coin</span>
+                <span class="rounded bg-coral-100 px-2 py-0.5 text-coral-500">ลด {{ liveMatchQuote.discountPercent }}%</span>
+              </div>
+              <p class="mt-1 text-sm font-black text-stone-700 dark:text-stone-200">{{ liveMatchQuote.finalCost }} coin <span v-if="canUseSubscription" class="font-semibold text-stone-500">หลังสิทธิ์หมด</span></p>
+              <p v-if="canUseSubscription" class="mt-1 text-xs font-black text-court-700 dark:text-court-300">ครั้งนี้ใช้สิทธิ์รายเดือน</p>
+            </template>
+            <p v-else class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ยังไม่ได้ตั้งราคา coin</p>
             <p v-if="forms.sessionCreateType === 'liveMatch' && createBlockedText" class="mt-2 text-xs font-black text-red-700 dark:text-red-300">{{ createBlockedText }}</p>
           </button>
 
@@ -460,7 +486,15 @@ const closeAdminDefaultSettingsModal = () => {
             <Share2 class="h-6 w-6 text-stone-500" />
             <p class="mt-3 text-lg font-black">liveShare</p>
             <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">คิดค่าสนามและลูกแบดตามชั่วโมงเล่น</p>
-            <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ liveShareCost === null ? 'ยังไม่ได้ตั้งราคา coin' : `${liveShareCost} coin` }}</p>
+            <template v-if="liveShareQuote">
+              <div v-if="liveShareQuote.discountPercent > 0" class="mt-2 flex flex-wrap items-center gap-2 text-xs font-black">
+                <span class="text-stone-400 line-through">{{ liveShareQuote.baseCost }} coin</span>
+                <span class="rounded bg-coral-100 px-2 py-0.5 text-coral-500">ลด {{ liveShareQuote.discountPercent }}%</span>
+              </div>
+              <p class="mt-1 text-sm font-black text-stone-700 dark:text-stone-200">{{ liveShareQuote.finalCost }} coin <span v-if="canUseSubscription" class="font-semibold text-stone-500">หลังสิทธิ์หมด</span></p>
+              <p v-if="canUseSubscription" class="mt-1 text-xs font-black text-court-700 dark:text-court-300">ครั้งนี้ใช้สิทธิ์รายเดือน</p>
+            </template>
+            <p v-else class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ยังไม่ได้ตั้งราคา coin</p>
           </button>
         </div>
 

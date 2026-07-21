@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -12,12 +14,160 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/makiuchi-d/gozxing"
 	qrwriter "github.com/makiuchi-d/gozxing/qrcode"
 )
+
+type countingTTSSynthesizer struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (s *countingTTSSynthesizer) Synthesize(_ context.Context, text, voice string) ([]byte, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	return []byte("mp3:" + voice + ":" + text), nil
+}
+
+func (s *countingTTSSynthesizer) Calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func TestTTSCountsThaiCharactersCachesAndStopsAtSafetyLimit(t *testing.T) {
+	text := "บุฟเฟ่ต์สนามที่ 2 คุณท็อป คุณโอ๊ต คุณเอ คุณบี"
+	if got := ttsCharacterCount(text); got != 45 {
+		t.Fatalf("expected 45 characters including Thai marks and spaces, got %d", got)
+	}
+
+	cacheDir := t.TempDir()
+	synthesizer := &countingTTSSynthesizer{}
+	used := int64(0)
+	service := &ttsService{
+		enabled:      true,
+		voice:        defaultGoogleTTSVoice,
+		cacheDir:     cacheDir,
+		monthlyLimit: googleTTSMonthlySafetyLimit,
+		synthesizer:  synthesizer,
+		cache:        map[string][]byte{},
+	}
+	service.reserveUsage = func(_ context.Context, characters int64) (int64, bool, error) {
+		if used+characters > service.monthlyLimit {
+			return used, false, nil
+		}
+		used += characters
+		return used, true, nil
+	}
+
+	first, err := service.Synthesize(context.Background(), text)
+	if err != nil {
+		t.Fatalf("first synthesis failed: %v", err)
+	}
+	second, err := service.Synthesize(context.Background(), text)
+	if err != nil {
+		t.Fatalf("cached synthesis failed: %v", err)
+	}
+	if first.Cached || !second.Cached {
+		t.Fatalf("expected first result to be generated and second result cached: first=%#v second=%#v", first, second)
+	}
+	if synthesizer.Calls() != 1 || used != 45 {
+		t.Fatalf("expected one Google call and 45 billed characters, calls=%d used=%d", synthesizer.Calls(), used)
+	}
+
+	restartedSynthesizer := &countingTTSSynthesizer{}
+	restarted := &ttsService{
+		enabled:      true,
+		voice:        defaultGoogleTTSVoice,
+		cacheDir:     cacheDir,
+		monthlyLimit: googleTTSMonthlySafetyLimit,
+		synthesizer:  restartedSynthesizer,
+		cache:        map[string][]byte{},
+		reserveUsage: func(_ context.Context, _ int64) (int64, bool, error) {
+			t.Fatal("persistent cache should be read before reserving usage")
+			return 0, false, nil
+		},
+	}
+	restartedResult, err := restarted.Synthesize(context.Background(), text)
+	if err != nil || !restartedResult.Cached || restartedSynthesizer.Calls() != 0 {
+		t.Fatalf("expected persisted MP3 to avoid Google after restart, result=%#v calls=%d err=%v", restartedResult, restartedSynthesizer.Calls(), err)
+	}
+
+	limitService := &ttsService{
+		enabled:      true,
+		voice:        defaultGoogleTTSVoice,
+		cacheDir:     t.TempDir(),
+		monthlyLimit: googleTTSMonthlySafetyLimit,
+		synthesizer:  &countingTTSSynthesizer{},
+		cache:        map[string][]byte{},
+		reserveUsage: func(_ context.Context, characters int64) (int64, bool, error) {
+			return googleTTSMonthlySafetyLimit - 1, false, nil
+		},
+	}
+	if _, err := limitService.Synthesize(context.Background(), text); !errors.Is(err, errTTSLimit) {
+		t.Fatalf("expected safety limit fallback, got %v", err)
+	}
+}
+
+func TestEffectiveSessionCostRoundsNearestHalfUp(t *testing.T) {
+	tests := []struct {
+		base, discount, want int
+	}{
+		{49, 0, 49},
+		{49, 10, 44},
+		{49, 50, 25},
+		{49, 100, 0},
+		{39, 10, 35},
+	}
+	for _, test := range tests {
+		if got := effectiveSessionCost(test.base, test.discount); got != test.want {
+			t.Fatalf("effectiveSessionCost(%d, %d) = %d, want %d", test.base, test.discount, got, test.want)
+		}
+	}
+}
+
+func TestSubscriptionStatusUsesInclusiveBangkokEndDate(t *testing.T) {
+	item := adminSubscription{StartDate: "2026-07-01", EndDate: "2026-07-31", TotalSessions: 10, UsedSessions: 3, Remaining: 7}
+	if got := subscriptionStatus(item, "2026-06-30"); got != "upcoming" {
+		t.Fatalf("expected upcoming before start, got %q", got)
+	}
+	if got := subscriptionStatus(item, "2026-07-31"); got != "active" {
+		t.Fatalf("expected active through end date, got %q", got)
+	}
+	if got := subscriptionStatus(item, "2026-08-01"); got != "expired" {
+		t.Fatalf("expected expired after end date, got %q", got)
+	}
+	item.Remaining = 0
+	if got := subscriptionStatus(item, "2026-07-20"); got != "exhausted" {
+		t.Fatalf("expected exhausted with no remaining quota, got %q", got)
+	}
+	item.CancelledAt = "2026-07-20 10:00"
+	if got := subscriptionStatus(item, "2026-07-20"); got != "cancelled" {
+		t.Fatalf("expected cancelled to take precedence, got %q", got)
+	}
+}
+
+func TestValidateSubscriptionInput(t *testing.T) {
+	valid := subscriptionInput{StartDate: "2026-07-01", EndDate: "2026-07-31", TotalSessions: 20, PaidAmountTHB: 999}
+	if err := validateSubscriptionInput(valid); err != nil {
+		t.Fatalf("expected valid subscription input: %v", err)
+	}
+	invalid := valid
+	invalid.EndDate = "2026-06-30"
+	if err := validateSubscriptionInput(invalid); err == nil {
+		t.Fatal("expected reversed date range to fail")
+	}
+	invalid = valid
+	invalid.TotalSessions = 0
+	if err := validateSubscriptionInput(invalid); err == nil {
+		t.Fatal("expected zero quota to fail")
+	}
+}
 
 func supportMultipartRequest(t *testing.T, fields map[string]string, files map[string][]byte) *http.Request {
 	t.Helper()
@@ -227,6 +377,73 @@ func TestRandomMatchCreatesAllPossiblePendingMatches(t *testing.T) {
 	}
 }
 
+func TestCreateManualPendingMatchKeepsSelectedPositionsWithoutCoupon(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"light", "middle", "heavy"}},
+		Players: []Player{
+			{ID: 1, Active: true, Level: "light"},
+			{ID: 2, Active: true, Level: "middle"},
+			{ID: 3, Active: true, Level: "middle"},
+			{ID: 4, Active: true, Level: "heavy"},
+		},
+	}
+
+	created, err := createManualPendingMatch(&state, Match{A1: 4, A2: 2, B1: 1, B2: 3, Level: "middle"})
+	if err != nil {
+		t.Fatalf("createManualPendingMatch returned error: %v", err)
+	}
+	if created.ID != -1 || created.Court != "-" || created.A1 != 4 || created.A2 != 2 || created.B1 != 1 || created.B2 != 3 || created.Level != "middle" {
+		t.Fatalf("unexpected manual pending match: %#v", created)
+	}
+	if len(state.Pending) != 1 || state.NextIDs.Pending != 1 {
+		t.Fatalf("expected one pending match, state=%#v", state)
+	}
+}
+
+func TestCreateManualPendingMatchRejectsUnavailablePlayer(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true},
+			{ID: 2, Active: true},
+			{ID: 3, Active: true},
+			{ID: 4, Active: true},
+		},
+		Queue: []Match{{ID: 8, A1: 4}},
+	}
+
+	if _, err := createManualPendingMatch(&state, Match{A1: 1, A2: 2, B1: 3, B2: 4, Level: "middle"}); err == nil {
+		t.Fatal("expected busy player to be rejected")
+	}
+	if len(state.Pending) != 0 {
+		t.Fatalf("expected no pending match after rejection, got %#v", state.Pending)
+	}
+}
+
+func TestCreateManualPendingMatchEnforcesFixedCouple(t *testing.T) {
+	base := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true},
+			{ID: 2, Active: true},
+			{ID: 3, Active: true},
+			{ID: 4, Active: true},
+			{ID: 5, Active: true},
+		},
+		Couples: []Couple{{ID: 1, A: 1, B: 2}},
+	}
+
+	if _, err := createManualPendingMatch(&base, Match{A1: 1, A2: 3, B1: 4, B2: 5, Level: "middle"}); err == nil {
+		t.Fatal("expected selecting only one member of a fixed couple to fail")
+	}
+	if _, err := createManualPendingMatch(&base, Match{A1: 1, A2: 3, B1: 2, B2: 4, Level: "middle"}); err == nil {
+		t.Fatal("expected a fixed couple on opposite teams to fail")
+	}
+	if _, err := createManualPendingMatch(&base, Match{A1: 1, A2: 2, B1: 3, B2: 4, Level: "middle"}); err != nil {
+		t.Fatalf("expected a fixed couple on the same team to succeed: %v", err)
+	}
+}
+
 func TestRandomPriorityCanPreferLowestGamesOverLevelOrder(t *testing.T) {
 	basePlayers := []Player{
 		{ID: 1, Name: "l1", Games: 5, Active: true, Coupon: true, Level: "light"},
@@ -259,6 +476,55 @@ func TestRandomPriorityCanPreferLowestGamesOverLevelOrder(t *testing.T) {
 	}
 	if gamesFirst.Pending[0].Level != "middle" {
 		t.Fatalf("expected games priority to choose lower-games group first, got %q", gamesFirst.Pending[0].Level)
+	}
+}
+
+func TestArrangeTeamsRotatesTeammatesBeforeRepeating(t *testing.T) {
+	ids := []int{1, 2, 3, 4}
+	history := []Match{}
+
+	first := arrangeTeamsByTeammateHistory(ids, nil, history)
+	if !slices.Equal(first, []int{1, 2, 3, 4}) {
+		t.Fatalf("unexpected first teams: %#v", first)
+	}
+	history = append([]Match{{A1: first[0], A2: first[1], B1: first[2], B2: first[3]}}, history...)
+
+	second := arrangeTeamsByTeammateHistory(ids, nil, history)
+	if !slices.Equal(second, []int{1, 3, 2, 4}) {
+		t.Fatalf("expected unused teammate pairs on game two, got %#v", second)
+	}
+	history = append([]Match{{A1: second[0], A2: second[1], B1: second[2], B2: second[3]}}, history...)
+
+	third := arrangeTeamsByTeammateHistory(ids, nil, history)
+	if !slices.Equal(third, []int{1, 4, 2, 3}) {
+		t.Fatalf("expected final unused teammate pairs on game three, got %#v", third)
+	}
+}
+
+func TestArrangeTeamsKeepsFixedCoupleTogether(t *testing.T) {
+	teams := arrangeTeamsByTeammateHistory(
+		[]int{1, 2, 3, 4},
+		[]Couple{{A: 1, B: 2}},
+		[]Match{{A1: 1, A2: 2, B1: 3, B2: 4}},
+	)
+	if !((teams[0] == 1 && teams[1] == 2) || (teams[0] == 2 && teams[1] == 1) ||
+		(teams[2] == 1 && teams[3] == 2) || (teams[2] == 2 && teams[3] == 1)) {
+		t.Fatalf("expected fixed couple 1/2 to remain teammates, got %#v", teams)
+	}
+}
+
+func TestArrangeTeamsUsesLeastRecentPairingWhenCountsTie(t *testing.T) {
+	teams := arrangeTeamsByTeammateHistory(
+		[]int{1, 2, 3, 4},
+		nil,
+		[]Match{
+			{A1: 1, A2: 4, B1: 2, B2: 3},
+			{A1: 1, A2: 3, B1: 2, B2: 4},
+			{A1: 1, A2: 2, B1: 3, B2: 4},
+		},
+	)
+	if !slices.Equal(teams, []int{1, 2, 3, 4}) {
+		t.Fatalf("expected the oldest teammate pairing to be reused, got %#v", teams)
 	}
 }
 
@@ -787,7 +1053,7 @@ func TestDeletePlayerRejectsReferencedPlayer(t *testing.T) {
 	}
 }
 
-func TestCancelQueuedMatchMovesToCancelledHistory(t *testing.T) {
+func TestCancelQueuedMatchRemovesQueueWithoutHistory(t *testing.T) {
 	state := SessionState{
 		Players: []Player{
 			{ID: 1, Games: 2, Wins: 1, Shuttles: 3},
@@ -801,12 +1067,8 @@ func TestCancelQueuedMatchMovesToCancelledHistory(t *testing.T) {
 	if !cancelQueuedMatch(&state, 14) {
 		t.Fatal("expected queued match to cancel")
 	}
-	if len(state.Queue) != 0 || len(state.History) != 1 {
-		t.Fatalf("expected queue to move into history, queue=%#v history=%#v", state.Queue, state.History)
-	}
-	cancelled := state.History[0]
-	if cancelled.ID != 14 || cancelled.Status != "cancelled" || cancelled.Winner != "" || cancelled.Note != "ยกเลิกคิว" {
-		t.Fatalf("unexpected cancelled history match: %#v", cancelled)
+	if len(state.Queue) != 0 || len(state.History) != 0 {
+		t.Fatalf("expected queued match to be removed without history, queue=%#v history=%#v", state.Queue, state.History)
 	}
 	for _, player := range state.Players {
 		if player.Games != 2 || player.Shuttles != 3 {
@@ -1021,6 +1283,34 @@ func TestTelegramCoinOrderTextIncludesVerificationReason(t *testing.T) {
 		if !strings.Contains(text, expected) {
 			t.Fatalf("expected Telegram message to contain %q, got %q", expected, text)
 		}
+	}
+}
+
+func TestTelegramSubscriptionOrderTextIncludesEntitlement(t *testing.T) {
+	t.Setenv("APP_BASE_URL", "https://livematch.example")
+	text := telegramCoinOrderText(coinPurchaseOrder{
+		ID:             "order-sub-1",
+		ProductType:    "subscription",
+		PackageName:    "Pro 30",
+		PriceTHB:       999,
+		TotalSessions:  30,
+		DurationDays:   30,
+		SubscriptionID: "subscription-1",
+		Status:         "approved",
+	}, adminUser{Email: "admin@example.com"})
+
+	for _, expected := range []string{"Product: Subscription", "Package: Pro 30", "Sessions: 30", "Duration: 30 days", "Subscription: subscription-1"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("expected Telegram message to contain %q, got %q", expected, text)
+		}
+	}
+}
+
+func TestPromptPayPayloadsForSubscriptionPackagesUseFixedPrice(t *testing.T) {
+	payloads := promptPayPayloadsForSubscriptionPackages(promptPaySettings{ID: "0812345678", Type: "mobile"}, []subscriptionPackage{{ID: "pro", PriceTHB: 999}})
+	payload := payloads["pro"]
+	if !strings.Contains(payload, "5406999.00") {
+		t.Fatalf("expected fixed THB 999 in PromptPay payload, got %q", payload)
 	}
 }
 
