@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { Activity, BarChart3, ClipboardList, CreditCard, Download, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
 import { exportDashboardExcel } from '../excelExport'
+import HeroBackground from '../components/HeroBackground.vue'
 
 const props = defineProps([
   'state',
@@ -67,7 +68,8 @@ async function exportExcel() {
 
 <template>
   <section class="grid gap-4">
-    <div class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
+    <div class="lm-hero-bg rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
+      <HeroBackground />
       <div class="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p class="text-sm font-semibold text-court-600 dark:text-court-500">ภาพรวมวันนี้</p>

@@ -1,7 +1,9 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
+import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
+import LineArt from './components/LineArt.vue'
 import SupportIssueModal from './components/SupportIssueModal.vue'
 import AuthPage from './pages/AuthPage.vue'
 import BackofficePage from './pages/BackofficePage.vue'
@@ -719,6 +721,106 @@ describe('LiveMatch app', () => {
     expect(forms.coupleBId).toBe('')
   })
 
+  it('provides separate light and dark illustrations for empty states', () => {
+    const wrapper = mount(LineArt, { props: { name: 'queue', tone: 'sky' } })
+    const images = wrapper.findAll('img')
+
+    expect(images).toHaveLength(2)
+    expect(images.at(0).attributes('src')).toContain('livematch-court-hero.png')
+    expect(images.at(0).classes()).toContain('dark:hidden')
+    expect(images.at(1).attributes('src')).toContain('livematch-court-hero-dark.png')
+    expect(images.at(1).classes()).toContain('dark:block')
+  })
+
+  it('groups new session defaults into compact tabs', async () => {
+    const saveDefaults = vi.fn()
+    const wrapper = mount(AdminSupervisorPage, {
+      props: {
+        auth: {
+          user: { name: 'Admin', email: 'admin@example.com', coins: 10 },
+          sessions: [],
+          liveMatchSessionCost: 1,
+          liveShareSessionCost: 1,
+          defaultSettings: {
+            entryFee: 120,
+            clubEntryFee: 100,
+            courtFeePerHour: 150,
+            shuttleBrands: [{ id: 'default', name: 'Shuttle', price: 85, active: true }],
+            announcementTemplate: 'court {court}',
+            courtNames: ['Court 1'],
+            levels: ['เบา', 'กลาง', 'หนัก']
+          }
+        },
+        forms: {
+          sessionCreateType: 'liveMatch',
+          adminDefaultNewShuttleBrandName: '',
+          adminDefaultNewShuttleBrandPrice: 0,
+          adminDefaultNewCourtName: '',
+          adminDefaultNewLevelName: '',
+          adminDefaultSettingsStatus: ''
+        },
+        ui: { showAdminDefaultSettingsModal: true, showCreateSessionModal: false },
+        money: (value) => `${value}`,
+        createSession: vi.fn(),
+        openOwnedSession: vi.fn(),
+        refreshAdminSupervisor: vi.fn(),
+        saveAdminDefaultSettings: saveDefaults,
+        addAdminDefaultShuttleBrand: vi.fn(),
+        removeAdminDefaultShuttleBrand: vi.fn(),
+        addAdminDefaultCourt: vi.fn(),
+        removeAdminDefaultCourt: vi.fn(),
+        addAdminDefaultLevel: vi.fn(),
+        removeAdminDefaultLevel: vi.fn()
+      }
+    })
+
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(dialog.text()).toContain('ค่าใช้จ่ายและลูกแบด')
+    expect(dialog.get('textarea').element.parentElement.style.display).toBe('none')
+
+    const liveMatchTab = dialog.findAll('nav button').find((button) => button.text().includes('LiveMatch'))
+    await liveMatchTab.trigger('click')
+    expect(dialog.get('textarea').element.parentElement.style.display).toBe('')
+
+    const saveButton = dialog.findAll('button').find((button) => button.text().trim() === 'บันทึก')
+    await saveButton.trigger('click')
+    expect(saveDefaults).toHaveBeenCalledOnce()
+  })
+
+  it('shows every couple option and requires an explicit player click', async () => {
+    const forms = { coupleAId: '', coupleBId: '' }
+    const players = Array.from({ length: 12 }, (_, index) => ({
+      id: index + 1,
+      name: `player ${index + 1}`,
+      active: true
+    }))
+    const wrapper = mount(MatchSetupModal, {
+      props: {
+        state: { settings: { levels: ['light'] }, players, couples: [] },
+        forms,
+        ui: { showCouponModal: false, showCoupleModal: true },
+        couponGroups: [],
+        levelLabel: (level) => level,
+        playerName: (id) => `player ${id}`,
+        addCouple: () => {},
+        removeCouple: () => {},
+        updatePlayerRandomStatus: () => {}
+      }
+    })
+
+    const firstInput = wrapper.findAll('input').at(0)
+    await firstInput.trigger('focus')
+    expect(wrapper.get('[data-testid="couple-a-options"]').findAll('button')).toHaveLength(12)
+
+    await firstInput.setValue('1')
+    expect(forms.coupleAId).toBe('')
+
+    const filteredOptions = wrapper.get('[data-testid="couple-a-options"]').findAll('button')
+    expect(filteredOptions).toHaveLength(4)
+    await filteredOptions.at(0).trigger('mousedown')
+    expect(forms.coupleAId).toBe(1)
+  })
+
   it('confirms shuttle add without rendering a decrement button', async () => {
     let requested = null
     let confirmed = false
@@ -977,7 +1079,7 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('ค่าใช้จ่าย 120')
   })
 
-  it('renders reset readiness setting', () => {
+  it('renders reset readiness setting', async () => {
     const wrapper = mount(SettingsPage, {
       props: {
         state: {
@@ -1005,14 +1107,18 @@ describe('LiveMatch app', () => {
       }
     })
 
+    expect(wrapper.get('input[placeholder="ชื่อสนามหรือชื่อกิจกรรม"]').element.value).toBe('สนามเดิม')
     expect(wrapper.text()).toContain('จบเกมแล้วตั้งผู้เล่นเป็นยังไม่พร้อม')
     expect(wrapper.text()).toContain('เริ่มเกมแล้วนับลูกแบด 1 ลูกอัตโนมัติ')
+    expect(wrapper.text()).not.toContain('คำอ่านตอนเรียกคิว')
+
+    const matchTab = wrapper.findAll('button').find((button) => button.text().includes('จัดคู่ / เสียง'))
+    await matchTab.trigger('click')
+
     expect(wrapper.text()).toContain('คำอ่านตอนเรียกคิว')
     expect(wrapper.get('textarea').element.value).toContain('{court}')
     expect(wrapper.get('textarea').element.value).toContain('{pause}')
-    expect(wrapper.findAll('input[type="checkbox"]').at(1).element.checked).toBe(true)
-    expect(wrapper.findAll('input[type="checkbox"]').at(2).element.checked).toBe(true)
-    expect(wrapper.get('input[placeholder="ชื่อสนามหรือชื่อกิจกรรม"]').element.value).toBe('สนามเดิม')
+    expect(wrapper.findAll('label').filter((label) => label.text().includes('จับคู่ข้ามระดับมือ'))).toHaveLength(1)
   })
   it('renders readable member share labels', () => {
     const wrapper = mount(PlayersPage, {
@@ -1193,6 +1299,77 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('select').exists()).toBe(true)
     await wrapper.get('button[title="ยกเลิกคิวเกม"]').trigger('click')
     expect(cancelled?.id).toBe(9)
+  })
+
+  it('auto-selects the only shuttle brand when starting a queued match', async () => {
+    const startMatch = vi.fn()
+    const match = { id: 9, level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4 }
+    const forms = { matchCourts: { 9: 'สนาม 1' }, matchShuttleBrands: {} }
+    const wrapper = mount(QueuePage, {
+      props: {
+        state: {
+          queue: [match],
+          settings: { shuttleBrands: [{ id: 'yonex', name: 'Yonex', price: 90, active: true }] }
+        },
+        forms,
+        matchLevelLabel: () => 'กลาง',
+        openQueueQr: vi.fn(),
+        startMatch,
+        announceQueuedMatch: vi.fn(),
+        cancelQueuedMatch: vi.fn(),
+        playerName: (id) => `p${id}`,
+        availableCourtNames: ['สนาม 1']
+      }
+    })
+
+    const startButton = wrapper.findAll('button').find((button) => button.text().trim() === 'เริ่ม')
+    await startButton.trigger('click')
+
+    expect(forms.matchShuttleBrands[9]).toBe('yonex')
+    expect(startMatch).toHaveBeenCalledWith(match, 'สนาม 1')
+    expect(wrapper.find('[role="dialog"]').exists()).toBe(false)
+  })
+
+  it('opens a shuttle brand modal when more than one brand is active', async () => {
+    const startMatch = vi.fn()
+    const match = { id: 10, level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4 }
+    const forms = { matchCourts: { 10: 'สนาม 2' }, matchShuttleBrands: {} }
+    const wrapper = mount(QueuePage, {
+      props: {
+        state: {
+          queue: [match],
+          settings: {
+            shuttleBrands: [
+              { id: 'yonex', name: 'Yonex', price: 90, active: true },
+              { id: 'rsl', name: 'RSL', price: 85, active: true }
+            ]
+          }
+        },
+        forms,
+        matchLevelLabel: () => 'กลาง',
+        openQueueQr: vi.fn(),
+        startMatch,
+        announceQueuedMatch: vi.fn(),
+        cancelQueuedMatch: vi.fn(),
+        playerName: (id) => `p${id}`,
+        availableCourtNames: ['สนาม 2']
+      }
+    })
+
+    const startButton = wrapper.findAll('button').find((button) => button.text().trim() === 'เริ่ม')
+    await startButton.trigger('click')
+
+    const dialog = wrapper.get('[role="dialog"]')
+    expect(startMatch).not.toHaveBeenCalled()
+    expect(dialog.text()).toContain('เลือกลูกแบดลูกแรก')
+
+    const rslButton = dialog.findAll('button').find((button) => button.text().includes('RSL'))
+    await rslButton.trigger('click')
+    const confirmButton = dialog.findAll('button').find((button) => button.text().trim() === 'เริ่มเกม')
+    await confirmButton.trigger('click')
+
+    expect(forms.matchShuttleBrands[10]).toBe('rsl')
+    expect(startMatch).toHaveBeenCalledWith(match, 'สนาม 2')
   })
 
   it('announces a queued match after selecting a court', async () => {

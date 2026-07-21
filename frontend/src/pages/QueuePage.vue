@@ -1,5 +1,7 @@
 <script setup>
-import { Clock3, Play, QrCode, Volume2, XCircle } from '@lucide/vue'
+import { ref } from 'vue'
+import { CheckCircle2, Clock3, Play, QrCode, Volume2, X, XCircle } from '@lucide/vue'
+import LineArt from '../components/LineArt.vue'
 
 const props = defineProps([
   'state',
@@ -17,6 +19,38 @@ const props = defineProps([
 
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
 if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
+
+const startMatchSelection = ref(null)
+const startMatchBrandId = ref('')
+
+function requestStartMatch(match) {
+  if (props.isSessionReadOnly) return
+  const court = props.forms.matchCourts[match.id]
+  if (!court) return
+  const brands = activeBrands()
+  if (brands.length <= 1) {
+    props.forms.matchShuttleBrands[match.id] = brands[0]?.id || ''
+    props.startMatch(match, court)
+    return
+  }
+  startMatchSelection.value = match
+  startMatchBrandId.value = props.forms.matchShuttleBrands[match.id] || ''
+}
+
+function closeStartMatchModal() {
+  startMatchSelection.value = null
+  startMatchBrandId.value = ''
+}
+
+function confirmStartMatch() {
+  const match = startMatchSelection.value
+  if (!match || !startMatchBrandId.value) return
+  const court = props.forms.matchCourts[match.id]
+  if (!court) return
+  props.forms.matchShuttleBrands[match.id] = startMatchBrandId.value
+  closeStartMatchModal()
+  props.startMatch(match, court)
+}
 </script>
 
 <template>
@@ -39,7 +73,8 @@ if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
       </div>
     </div>
 
-    <div v-if="!state.queue.length" class="rounded-lg border border-stone-200 bg-white p-6 text-center shadow-soft dark:border-stone-700 dark:bg-stone-900">
+    <div v-if="!state.queue.length" class="lm-empty">
+      <LineArt name="queue" tone="sky" class="mx-auto mb-4 max-w-sm" />
       <p class="font-black">ยังไม่มีเกมรอคิว</p>
       <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ยืนยันคู่จากหน้าจัดคู่ก่อน แล้วเกมจะมาแสดงที่นี่</p>
     </div>
@@ -56,15 +91,6 @@ if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
               <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
               <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
             </select>
-            <select
-              v-if="activeBrands().length > 1"
-              v-model="forms.matchShuttleBrands[match.id]"
-              class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800"
-              :disabled="isSessionReadOnly"
-            >
-              <option disabled value="">เลือกลูกแบด</option>
-              <option v-for="brand in activeBrands()" :key="brand.id" :value="brand.id">{{ brand.name }}</option>
-            </select>
             <button
               v-if="forms.matchCourts[match.id]"
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-3 text-sm font-bold text-court-700 dark:border-court-900 dark:text-court-300"
@@ -76,9 +102,9 @@ if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
             </button>
             <button
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"
-              :class="forms.matchCourts[match.id] && (activeBrands().length <= 1 || forms.matchShuttleBrands[match.id]) ? 'bg-court-500' : 'bg-stone-400'"
-              :disabled="isSessionReadOnly || !forms.matchCourts[match.id] || (activeBrands().length > 1 && !forms.matchShuttleBrands[match.id])"
-              @click="startMatch(match, forms.matchCourts[match.id])"
+              :class="forms.matchCourts[match.id] ? 'bg-court-500' : 'bg-stone-400'"
+              :disabled="isSessionReadOnly || !forms.matchCourts[match.id]"
+              @click="requestStartMatch(match)"
             >
               <Play class="h-4 w-4" />
               เริ่ม
@@ -97,11 +123,55 @@ if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
           <p v-if="!forms.matchCourts[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">
             ต้องเลือกสนามก่อนเริ่มการแข่งขัน
           </p>
-          <p v-else-if="activeBrands().length > 1 && !forms.matchShuttleBrands[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">
-            ต้องเลือกลูกแบดก่อนเริ่มการแข่งขัน
-          </p>
         </div>
       </article>
     </div>
   </section>
+
+  <div
+    v-if="startMatchSelection"
+    class="fixed inset-0 z-50 grid place-items-end bg-black/45 p-3 sm:place-items-center"
+    role="dialog"
+    aria-modal="true"
+    aria-label="เลือกยี่ห้อลูกแบด"
+    @click.self="closeStartMatchModal"
+  >
+    <section class="w-full max-w-lg overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+      <header class="flex items-start justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700">
+        <div>
+          <p class="text-sm font-black text-court-700 dark:text-court-300">เริ่มเกมที่ {{ forms.matchCourts[startMatchSelection.id] }}</p>
+          <h2 class="mt-1 text-xl font-black">เลือกลูกแบดลูกแรก</h2>
+          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เกมที่ {{ startMatchSelection.id }} · เลือกยี่ห้อก่อนเริ่มการแข่งขัน</p>
+        </div>
+        <button class="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="closeStartMatchModal">
+          <X class="h-4 w-4" />
+        </button>
+      </header>
+
+      <div class="grid max-h-[55vh] gap-2 overflow-y-auto p-4 sm:grid-cols-2">
+        <button
+          v-for="brand in activeBrands()"
+          :key="brand.id"
+          type="button"
+          class="flex min-h-16 items-center justify-between gap-3 rounded-lg border p-3 text-left transition"
+          :class="startMatchBrandId === brand.id ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/15' : 'border-stone-200 bg-paper-50 hover:border-court-300 dark:border-stone-700 dark:bg-stone-800'"
+          @click="startMatchBrandId = brand.id"
+        >
+          <span>
+            <span class="block font-black">{{ brand.name }}</span>
+            <span class="mt-0.5 block text-xs font-semibold text-stone-500 dark:text-stone-400">{{ Number(brand.price || 0).toLocaleString('th-TH') }} บาท / ลูก</span>
+          </span>
+          <CheckCircle2 v-if="startMatchBrandId === brand.id" class="h-5 w-5 shrink-0 text-court-600 dark:text-court-300" />
+        </button>
+      </div>
+
+      <footer class="grid grid-cols-2 gap-2 border-t border-stone-200 p-3 dark:border-stone-700 sm:p-4">
+        <button class="h-11 rounded-md border border-stone-200 px-4 font-black dark:border-stone-700" @click="closeStartMatchModal">ยกเลิก</button>
+        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 font-black text-white disabled:cursor-not-allowed disabled:bg-stone-400" :class="startMatchBrandId ? 'bg-court-500' : 'bg-stone-400'" :disabled="!startMatchBrandId" @click="confirmStartMatch">
+          <Play class="h-4 w-4" />
+          เริ่มเกม
+        </button>
+      </footer>
+    </section>
+  </div>
 </template>

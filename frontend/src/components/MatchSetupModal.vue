@@ -46,28 +46,16 @@ function selectedPlayer(id) {
   return activePlayers.value.find((player) => player.id === Number(id))
 }
 
-function syncCoupleQueries() {
-  if (props.ui.showCoupleModal && !props.forms.coupleAId && !props.forms.coupleBId) {
-    coupleAQuery.value = ''
-    coupleBQuery.value = ''
-    return
-  }
-  coupleAQuery.value = optionLabel(selectedPlayer(props.forms.coupleAId))
-  coupleBQuery.value = optionLabel(selectedPlayer(props.forms.coupleBId))
-}
-
 watch(
-  () => [props.forms.coupleAId, props.forms.coupleBId, props.ui.showCoupleModal],
-  ([, , showCouple], [, , oldShowCouple] = []) => {
+  () => props.ui.showCoupleModal,
+  (showCouple, oldShowCouple) => {
     if (showCouple && !oldShowCouple) {
       props.forms.coupleAId = ''
       props.forms.coupleBId = ''
       coupleAQuery.value = ''
       coupleBQuery.value = ''
       openCoupleSelect.value = ''
-      return
     }
-    syncCoupleQueries()
   },
   { immediate: true }
 )
@@ -77,23 +65,16 @@ function filteredCouplePlayers(query, otherSelectedId) {
   return activePlayers.value
     .filter((player) => player.id !== Number(otherSelectedId))
     .filter((player) => !keyword || player.name.toLocaleLowerCase('th-TH').includes(keyword) || String(player.id).includes(keyword))
-    .slice(0, 8)
 }
 
 function updateCoupleInput(slot, value) {
   if (props.isSessionReadOnly) return
-  const normalized = value.trim().toLocaleLowerCase('th-TH')
-  const matched = activePlayers.value.find((player) => (
-    optionLabel(player).toLocaleLowerCase('th-TH') === normalized ||
-    player.name.toLocaleLowerCase('th-TH') === normalized ||
-    String(player.id) === normalized
-  ))
   if (slot === 'a') {
     coupleAQuery.value = value
-    if (matched && matched.id !== Number(props.forms.coupleBId)) props.forms.coupleAId = matched.id
+    if (optionLabel(selectedPlayer(props.forms.coupleAId)) !== value) props.forms.coupleAId = ''
   } else {
     coupleBQuery.value = value
-    if (matched && matched.id !== Number(props.forms.coupleAId)) props.forms.coupleBId = matched.id
+    if (optionLabel(selectedPlayer(props.forms.coupleBId)) !== value) props.forms.coupleBId = ''
   }
 }
 
@@ -107,6 +88,15 @@ function selectCouplePlayer(slot, player) {
     coupleBQuery.value = optionLabel(player)
   }
   openCoupleSelect.value = ''
+}
+
+async function submitCouple() {
+  if (props.isSessionReadOnly) return
+  await props.addCouple()
+  if (!props.forms.coupleAId && !props.forms.coupleBId) {
+    coupleAQuery.value = ''
+    coupleBQuery.value = ''
+  }
 }
 
 function closeModal() {
@@ -127,7 +117,7 @@ function changeGroupStatus(group, event) {
 
 <template>
   <div class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
-    <div class="max-h-[86vh] w-full max-w-xl overflow-auto rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+    <div class="max-h-[92vh] w-full max-w-xl overflow-y-auto rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
       <div class="flex items-center justify-between">
         <h2 class="text-lg font-bold">{{ ui.showCouponModal ? 'คูปองระดับมือ / สิทธิ์สุ่ม' : 'จับคู่' }}</h2>
         <button
@@ -177,8 +167,8 @@ function changeGroupStatus(group, event) {
       </div>
 
       <div v-else class="mt-4 space-y-3">
-        <div class="grid gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800 sm:grid-cols-[1fr_1fr_auto]">
-          <div class="relative">
+        <div class="grid items-start gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800 sm:grid-cols-[1fr_1fr_auto]">
+          <div>
             <input
               :value="coupleAQuery"
               class="h-11 w-full rounded-md border border-stone-200 bg-white px-3 font-semibold outline-none transition focus:border-court-500 focus:ring-2 focus:ring-court-500/20 dark:border-stone-700 dark:bg-stone-900"
@@ -189,7 +179,7 @@ function changeGroupStatus(group, event) {
               @input="updateCoupleInput('a', $event.target.value); openCoupleSelect = 'a'"
               @blur="setTimeout(() => { openCoupleSelect = '' }, 120)"
             />
-            <div v-if="openCoupleSelect === 'a'" class="absolute left-0 right-0 top-12 z-10 max-h-56 overflow-auto rounded-md border border-stone-200 bg-white p-1 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+            <div v-if="openCoupleSelect === 'a'" data-testid="couple-a-options" class="mt-2 max-h-72 overflow-y-auto rounded-md border border-stone-200 bg-white p-1 shadow-soft dark:border-stone-700 dark:bg-stone-900">
               <button
                 v-for="player in filteredCouplePlayers(coupleAQuery, forms.coupleBId)"
                 :key="player.id"
@@ -204,7 +194,7 @@ function changeGroupStatus(group, event) {
             </div>
           </div>
 
-          <div class="relative">
+          <div>
             <input
               :value="coupleBQuery"
               class="h-11 w-full rounded-md border border-stone-200 bg-white px-3 font-semibold outline-none transition focus:border-court-500 focus:ring-2 focus:ring-court-500/20 dark:border-stone-700 dark:bg-stone-900"
@@ -215,7 +205,7 @@ function changeGroupStatus(group, event) {
               @input="updateCoupleInput('b', $event.target.value); openCoupleSelect = 'b'"
               @blur="setTimeout(() => { openCoupleSelect = '' }, 120)"
             />
-            <div v-if="openCoupleSelect === 'b'" class="absolute left-0 right-0 top-12 z-10 max-h-56 overflow-auto rounded-md border border-stone-200 bg-white p-1 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+            <div v-if="openCoupleSelect === 'b'" data-testid="couple-b-options" class="mt-2 max-h-72 overflow-y-auto rounded-md border border-stone-200 bg-white p-1 shadow-soft dark:border-stone-700 dark:bg-stone-900">
               <button
                 v-for="player in filteredCouplePlayers(coupleBQuery, forms.coupleAId)"
                 :key="player.id"
@@ -230,7 +220,7 @@ function changeGroupStatus(group, event) {
             </div>
           </div>
 
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="addCouple">
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="submitCouple">
             <Plus class="h-4 w-4" />
             สร้างคู่
           </button>

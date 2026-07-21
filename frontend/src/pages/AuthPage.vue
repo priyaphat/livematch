@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { Check, KeyRound, Mail, MessageCircleWarning, Moon, ShieldCheck, Sparkles, Sun, Trophy, UserPlus, Zap } from '@lucide/vue'
 import SupportIssueModal from '../components/SupportIssueModal.vue'
+import HeroBackground from '../components/HeroBackground.vue'
 
 const props = defineProps([
   'forms',
@@ -35,7 +36,8 @@ const highlights = [
 
 <template>
   <section class="mx-auto grid max-w-6xl gap-4 lg:grid-cols-[1.08fr_0.92fr] lg:items-start">
-    <div class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+    <div class="lm-hero-bg overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+      <HeroBackground />
       <div class="grid gap-5 p-5 sm:p-6">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span class="inline-flex items-center gap-2 rounded-md bg-court-500/10 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">

@@ -82,11 +82,6 @@ watch(settingsTabs, (tabs) => {
           <input checked disabled type="checkbox" class="h-5 w-5" />
         </label>
 
-        <label v-if="!isLiveShare" class="flex items-center justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-          <span class="font-bold">จับคู่ข้ามระดับมือ</span>
-          <input v-model="state.settings.allowCrossLevel" type="checkbox" class="h-5 w-5" @change="saveSettings" />
-        </label>
-
         <label v-if="!isLiveShare" class="grid gap-3 rounded-lg border border-court-200 bg-white p-4 shadow-soft dark:border-court-900 dark:bg-stone-900">
           <span class="flex items-center justify-between gap-4">
             <span>
@@ -107,19 +102,6 @@ watch(settingsTabs, (tabs) => {
           </span>
         </label>
 
-        <label v-if="!isLiveShare" class="grid gap-3 rounded-lg border border-court-200 bg-white p-4 shadow-soft dark:border-court-900 dark:bg-stone-900 lg:col-span-2">
-          <span>
-            <span class="block font-black">คำอ่านตอนเรียกคิว</span>
-            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">ใช้ตัวแปร {court}, {pause}, {a}, {b}, {c}, {d}</span>
-          </span>
-          <textarea
-            v-model="state.settings.announcementTemplate"
-            rows="4"
-            class="min-h-28 rounded-md border border-stone-200 bg-paper-50 px-3 py-2 dark:border-stone-700 dark:bg-stone-800"
-            placeholder="บุฟเฟ่ต์สนามที่ {court}&#10;{pause}&#10;คุณ{a} คุณ{b} คุณ{c} คุณ{d}"
-            @change="saveSettings"
-          />
-        </label>
       </div>
 
       <div v-else-if="activeSettingsTab === 'costs'" class="grid gap-4 lg:grid-cols-2">

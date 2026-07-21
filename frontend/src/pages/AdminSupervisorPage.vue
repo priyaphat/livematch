@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
+import HeroBackground from '../components/HeroBackground.vue'
 import {
   Activity,
   BarChart3,
@@ -16,6 +17,7 @@ import {
   RefreshCw,
   Share2,
   ShieldCheck,
+  SlidersHorizontal,
   Users,
   X,
   XCircle
@@ -39,7 +41,13 @@ const props = defineProps([
 ])
 
 const sessionPage = ref(1)
+const adminDefaultSettingsTab = ref('costs')
 const sessionPageSize = 6
+const adminDefaultSettingsTabs = [
+  { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาเริ่มต้น', icon: CreditCard },
+  { id: 'courts', label: 'สนาม', hint: 'รายชื่อสนาม', icon: Database },
+  { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal }
+]
 const liveMatchCost = computed(() => props.auth.liveMatchSessionCost)
 const liveShareCost = computed(() => props.auth.liveShareSessionCost)
 const sessions = computed(() => props.auth.sessions || [])
@@ -111,11 +119,21 @@ const detailStats = computed(() => [
 const changeSessionPage = (nextPage) => {
   sessionPage.value = Math.min(sessionPages.value, Math.max(1, nextPage))
 }
+
+const openAdminDefaultSettingsModal = () => {
+  adminDefaultSettingsTab.value = 'costs'
+  props.ui.showAdminDefaultSettingsModal = true
+}
+
+const closeAdminDefaultSettingsModal = () => {
+  props.ui.showAdminDefaultSettingsModal = false
+}
 </script>
 
 <template>
   <section class="mx-auto grid max-w-6xl gap-4">
-    <header class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:grid-cols-[1fr_auto] sm:items-center">
+    <header class="lm-hero-bg grid gap-4 overflow-hidden rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 lg:grid-cols-[1fr_auto] lg:items-center">
+      <HeroBackground />
       <div class="min-w-0">
         <div class="inline-flex items-center gap-2 rounded-md bg-court-500/10 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">
           <ShieldCheck class="h-4 w-4" />
@@ -129,7 +147,7 @@ const changeSessionPage = (nextPage) => {
           <RefreshCw class="h-4 w-4" />
           รีเฟรช
         </button>
-        <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-black text-court-700 transition hover:bg-court-500/15 dark:border-court-900/60 dark:text-court-300 sm:flex-none" @click="ui.showAdminDefaultSettingsModal = true">
+        <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-black text-court-700 transition hover:bg-court-500/15 dark:border-court-900/60 dark:text-court-300 sm:flex-none" @click="openAdminDefaultSettingsModal">
           <Database class="h-4 w-4" />
           ค่าเริ่มต้น
         </button>
@@ -140,44 +158,63 @@ const changeSessionPage = (nextPage) => {
       </div>
     </header>
 
-    <div v-if="ui.showAdminDefaultSettingsModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="ค่าเริ่มต้น Session ใหม่" @click.self="ui.showAdminDefaultSettingsModal = false">
-    <section class="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-lg border border-court-200 bg-white p-4 shadow-soft dark:border-court-900/60 dark:bg-stone-900">
-      <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
+    <div v-if="ui.showAdminDefaultSettingsModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="ค่าเริ่มต้น Session ใหม่" @click.self="closeAdminDefaultSettingsModal">
+    <section class="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+      <div class="grid shrink-0 gap-3 border-b border-stone-200 p-4 dark:border-stone-700 sm:grid-cols-[1fr_auto] sm:items-start">
         <div>
           <p class="text-sm font-semibold text-court-700 dark:text-court-300">ค่าเริ่มต้น Session ใหม่</p>
           <h2 class="mt-1 text-xl font-black">ตั้งค่าส่วนกลางสำหรับกดสร้าง session</h2>
           <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ค่านี้ถูก copy ตอนสร้าง session ใหม่เท่านั้น ไม่แก้ session เก่าหรือ session ที่เปิดอยู่</p>
         </div>
         <div class="flex flex-wrap gap-2">
-        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-stone-200 px-4 text-sm font-black transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800" @click="ui.showAdminDefaultSettingsModal = false">
+        <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800" aria-label="ปิด modal" @click="closeAdminDefaultSettingsModal">
           <X class="h-4 w-4" />
-          ปิด
-        </button>
-        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600" @click="saveAdminDefaultSettings">
-          <CheckCircle2 class="h-4 w-4" />
-          บันทึกค่าเริ่มต้น
         </button>
         </div>
       </div>
 
-      <div class="grid gap-3 md:grid-cols-3">
-        <label class="grid gap-1 text-sm font-bold">
+      <nav class="scrollbar-none flex shrink-0 gap-2 overflow-x-auto border-b border-stone-200 bg-paper-50 p-2 dark:border-stone-700 dark:bg-stone-950" aria-label="หมวดค่าเริ่มต้น Session ใหม่">
+        <button
+          v-for="tab in adminDefaultSettingsTabs"
+          :key="tab.id"
+          type="button"
+          class="flex min-w-44 items-center gap-3 rounded-md px-3 py-2.5 text-left transition"
+          :class="adminDefaultSettingsTab === tab.id ? 'bg-white text-court-700 shadow-soft dark:bg-stone-800 dark:text-court-300' : 'text-stone-500 hover:bg-white/70 dark:text-stone-400 dark:hover:bg-stone-800/70'"
+          @click="adminDefaultSettingsTab = tab.id"
+        >
+          <span class="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-court-500/10">
+            <component :is="tab.icon" class="h-4 w-4" />
+          </span>
+          <span>
+            <span class="block text-sm font-black">{{ tab.label }}</span>
+            <span class="block text-xs font-semibold opacity-70">{{ tab.hint }}</span>
+          </span>
+        </button>
+      </nav>
+
+      <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+
+      <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-3 md:grid-cols-3">
+        <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
           ค่าเข้าสนามคนทั่วไป
           <input v-model.number="auth.defaultSettings.entryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
         </label>
-        <label class="grid gap-1 text-sm font-bold">
+        <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
           ค่าเข้าสนามสมาชิกชมรม
           <input v-model.number="auth.defaultSettings.clubEntryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
         </label>
-        <label class="grid gap-1 text-sm font-bold">
+        <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
           ค่าสนามต่อชั่วโมง liveShare
           <input v-model.number="auth.defaultSettings.courtFeePerHour" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
         </label>
       </div>
 
-      <div class="grid gap-4 lg:grid-cols-2">
-        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
-          <p class="font-black">ยี่ห้อลูกแบด</p>
+      <div class="grid gap-4 lg:grid-cols-2" :class="adminDefaultSettingsTab === 'match' ? 'lg:grid-cols-1' : ''">
+        <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700 lg:col-span-2">
+          <div>
+            <p class="font-black">ยี่ห้อลูกแบด</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">กำหนดยี่ห้อ ราคา และสถานะที่ใช้กับ Session ใหม่</p>
+          </div>
           <div v-for="(brand, index) in auth.defaultSettings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md bg-paper-100 p-2 dark:bg-stone-800 sm:grid-cols-[1fr_7rem_auto_auto] sm:items-center">
             <input v-model="brand.name" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ชื่อยี่ห้อ" />
             <input v-model.number="brand.price" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ราคา" />
@@ -196,16 +233,22 @@ const changeSessionPage = (nextPage) => {
           </div>
         </div>
 
-        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
-          <p class="font-black">คำอ่านตอนเรียกคิว</p>
+        <div v-show="adminDefaultSettingsTab === 'match'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <div>
+            <p class="font-black">คำอ่านตอนเรียกคิว</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ใช้เป็นข้อความเริ่มต้นของ Session แบบ LiveMatch</p>
+          </div>
           <textarea v-model="auth.defaultSettings.announcementTemplate" rows="5" class="rounded-md border border-stone-200 bg-paper-50 px-3 py-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-800" placeholder="บุฟเฟ่ต์สนามที่ {court}&#10;{pause}&#10;คุณ{a} คุณ{b} คุณ{c} คุณ{d}"></textarea>
           <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">ตัวแปร: court, pause, a, b, c, d</p>
         </div>
       </div>
 
       <div class="grid gap-4 lg:grid-cols-2">
-        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
-          <p class="font-black">ชื่อสนาม</p>
+        <div v-show="adminDefaultSettingsTab === 'courts'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700 lg:col-span-2">
+          <div>
+            <p class="font-black">ชื่อสนาม</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">เรียงตามลำดับที่ต้องการให้แสดงตอนเลือกสนาม</p>
+          </div>
           <div v-for="(court, index) in auth.defaultSettings.courtNames" :key="index" class="grid grid-cols-[1fr_auto] gap-2">
             <input v-model="auth.defaultSettings.courtNames[index]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
             <button class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 disabled:opacity-40 dark:border-rose-900/60 dark:text-rose-300" :disabled="auth.defaultSettings.courtNames.length <= 1" @click="removeAdminDefaultCourt(index)">ลบ</button>
@@ -216,8 +259,11 @@ const changeSessionPage = (nextPage) => {
           </div>
         </div>
 
-        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
-          <p class="font-black">ระดับมือ liveMatch</p>
+        <div v-show="adminDefaultSettingsTab === 'match'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700 lg:col-span-2">
+          <div>
+            <p class="font-black">ระดับมือ LiveMatch</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">เรียงจากระดับเบาไปหนักสำหรับใช้จับคู่</p>
+          </div>
           <div v-for="(level, index) in auth.defaultSettings.levels" :key="index" class="grid grid-cols-[1fr_auto] gap-2">
             <input v-model="auth.defaultSettings.levels[index]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
             <button class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 disabled:opacity-40 dark:border-rose-900/60 dark:text-rose-300" :disabled="auth.defaultSettings.levels.length <= 1" @click="removeAdminDefaultLevel(index)">ลบ</button>
@@ -229,7 +275,19 @@ const changeSessionPage = (nextPage) => {
         </div>
       </div>
 
-      <p v-if="forms.adminDefaultSettingsStatus" class="text-sm font-black text-court-700 dark:text-court-300">{{ forms.adminDefaultSettingsStatus }}</p>
+      </div>
+
+      <div class="flex shrink-0 items-center justify-between gap-3 border-t border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900 sm:p-4">
+        <p v-if="forms.adminDefaultSettingsStatus" class="min-w-0 flex-1 truncate text-sm font-black text-court-700 dark:text-court-300">{{ forms.adminDefaultSettingsStatus }}</p>
+        <span v-else class="hidden text-xs font-semibold text-stone-500 sm:block">นำไปใช้เมื่อสร้าง Session ใหม่เท่านั้น</span>
+        <div class="ml-auto grid grid-cols-2 gap-2">
+          <button class="h-11 rounded-md border border-stone-200 px-4 text-sm font-black dark:border-stone-700" @click="closeAdminDefaultSettingsModal">ยกเลิก</button>
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600" @click="saveAdminDefaultSettings">
+            <CheckCircle2 class="h-4 w-4" />
+            บันทึก
+          </button>
+        </div>
+      </div>
     </section>
     </div>
 

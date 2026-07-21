@@ -313,6 +313,68 @@ func TestStartMatchUsesInitialShuttleWhenSettingEnabled(t *testing.T) {
 	}
 }
 
+func TestStartMatchUsesSelectedShuttleBrandAndPrice(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{
+			Levels:                []string{"light", "middle", "heavy"},
+			StartMatchWithShuttle: true,
+			ShuttleFee:            85,
+			ShuttleBrands: []ShuttleBrand{
+				{ID: "yonex", Name: "Yonex", Price: 90, Active: true},
+				{ID: "rsl", Name: "RSL", Price: 85, Active: true},
+			},
+		},
+		Players: []Player{
+			{ID: 1, Level: "middle"},
+			{ID: 2, Level: "middle"},
+			{ID: 3, Level: "middle"},
+			{ID: 4, Level: "middle"},
+		},
+		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if !startMatch(&state, 1, "Court 1", "rsl") {
+		t.Fatal("expected match to start with selected shuttle brand")
+	}
+	if len(state.Live) != 1 || len(state.Live[0].ShuttleSeqItems) != 1 {
+		t.Fatalf("expected one initial shuttle item, got %#v", state.Live)
+	}
+	item := state.Live[0].ShuttleSeqItems[0]
+	if item.BrandID != "rsl" || item.Number != 1 {
+		t.Fatalf("expected RSL #1, got %#v", item)
+	}
+	if got := playerShuttleCost(state, 1); got != 85 {
+		t.Fatalf("expected selected RSL shuttle cost 85, got %d", got)
+	}
+}
+
+func TestPlayerShuttleCostSumsMixedBrandPrices(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{
+			ShuttleFee: 85,
+			ShuttleBrands: []ShuttleBrand{
+				{ID: "yonex", Name: "Yonex", Price: 90, Active: true},
+				{ID: "rsl", Name: "RSL", Price: 85, Active: true},
+			},
+		},
+		Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+		History: []Match{{
+			ID: 1, A1: 1, A2: 2, B1: 3, B2: 4, Status: "finished", Shuttles: 3,
+			ShuttleSeqItems: []ShuttleSeqItem{
+				{BrandID: "yonex", Number: 1},
+				{BrandID: "rsl", Number: 1},
+				{BrandID: "yonex", Number: 2},
+			},
+		}},
+	}
+
+	for _, player := range state.Players {
+		if got := playerShuttleCost(state, player.ID); got != 265 {
+			t.Fatalf("expected mixed brand shuttle cost 265 for player %d, got %d", player.ID, got)
+		}
+	}
+}
+
 func TestStartMatchUsesNoInitialShuttleWhenSettingDisabled(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, StartMatchWithShuttle: false},

@@ -12,6 +12,13 @@ import {
   Copy,
   CreditCard,
   Database,
+  House,
+  LayoutDashboard,
+  UsersRound,
+  ListTodo,
+  RadioTower,
+  Archive,
+  SlidersHorizontal,
   Medal,
   History,
   Home,
@@ -68,14 +75,14 @@ function defaultSessionSettingsTemplate() {
 }
 
 const tabs = computed(() => [
-  { id: 'home', label: t('หน้าแรก', 'Home'), icon: Home },
-  { id: 'dashboard', label: t('แดชบอร์ด', 'Dashboard'), icon: BarChart3 },
-  { id: 'players', label: t('สมาชิก', 'Players'), icon: Users },
+  { id: 'home', label: t('หน้าแรก', 'Home'), icon: House },
+  { id: 'dashboard', label: t('แดชบอร์ด', 'Dashboard'), icon: LayoutDashboard },
+  { id: 'players', label: t('สมาชิก', 'Players'), icon: UsersRound },
   { id: 'livematch', label: t('จัดคู่', 'Pairing'), icon: Shuffle },
-  { id: 'queue', label: t('รอคิว', 'Queue'), icon: Clock3 },
-  { id: 'liveboard', label: t('แข่งอยู่', 'Live board'), icon: Activity },
-  { id: 'history', label: t('ประวัติ', 'History'), icon: History },
-  { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: Settings },
+  { id: 'queue', label: t('รอคิว', 'Queue'), icon: ListTodo },
+  { id: 'liveboard', label: t('แข่งอยู่', 'Live board'), icon: RadioTower },
+  { id: 'history', label: t('ประวัติ', 'History'), icon: Archive },
+  { id: 'settings', label: t('ตั้งค่า', 'Settings'), icon: SlidersHorizontal },
   ...(isLiveShare.value ? [{ id: 'liveShareHours', label: t('ชั่วโมงเล่น', 'Hours'), icon: Clock3 }] : []),
   { id: 'help', label: t('วิธีใช้', 'Guide'), icon: BookOpen }
 ])
@@ -2791,10 +2798,10 @@ const pageProps = computed(() => ({
     <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :player-name="playerName" :match-level-label="matchLevelLabel" />
 
     <template v-else>
-    <header v-if="showAppHeader" class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/95 backdrop-blur dark:border-stone-700 dark:bg-paper-900/95">
+    <header v-if="showAppHeader" class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/80 shadow-[0_10px_30px_rgba(34,41,37,0.06)] backdrop-blur-xl dark:border-stone-700 dark:bg-paper-900/80">
       <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-2 px-3 sm:gap-3 sm:px-4">
         <button class="flex min-w-0 items-center gap-2 text-left sm:gap-3" @click="isAdmin ? selectAdminTab('dashboard') : state.tab = 'home'">
-          <span class="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-court-500 text-white shadow-soft">
+          <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-court-500 to-skycourt-500 text-white shadow-soft">
             <Medal class="h-5 w-5" />
           </span>
           <span class="hidden min-w-0 xs:block sm:block">
@@ -2815,7 +2822,7 @@ const pageProps = computed(() => ({
           </button>
           <button
             v-if="auth.user && !isAdmin"
-            class="grid h-9 w-9 place-items-center rounded-md border border-court-200 bg-white text-court-700 transition hover:bg-court-50 dark:border-court-900 dark:bg-stone-800 dark:text-court-300 sm:inline-flex sm:h-10 sm:w-auto sm:gap-2 sm:px-3 sm:text-xs sm:font-black"
+            class="grid h-9 w-9 place-items-center rounded-xl border border-court-200 bg-white text-court-700 transition hover:bg-court-500/10 dark:border-court-900 dark:bg-stone-800 dark:text-court-300 sm:inline-flex sm:h-10 sm:w-auto sm:gap-2 sm:px-3 sm:text-xs sm:font-black"
             title="ซื้อ coin"
             @click="openCoinModal('shop')"
           >
@@ -2824,7 +2831,7 @@ const pageProps = computed(() => ({
           </button>
           <button
             v-if="auth.user && !isAdmin"
-            class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 bg-white text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 sm:h-10 sm:w-10"
+            class="grid h-9 w-9 place-items-center rounded-xl border border-stone-200 bg-white text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 sm:h-10 sm:w-10"
             title="ออกจากระบบ"
             @click="logout"
           >
@@ -2875,12 +2882,12 @@ const pageProps = computed(() => ({
           </button>
         </div>
       </div>
-      <nav v-if="isAdmin" class="scrollbar-none mx-auto hidden max-w-7xl gap-1 overflow-x-auto px-4 pb-3 md:flex">
+      <nav v-if="isAdmin" class="scrollbar-none mx-auto hidden max-w-7xl gap-1.5 overflow-x-auto px-4 pb-3 md:flex">
         <button
           v-for="tab in adminTabs"
           :key="tab.id"
-          class="flex h-10 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-medium transition"
-          :class="state.tab === tab.id ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-white dark:text-stone-300 dark:hover:bg-stone-800'"
+          class="flex h-10 shrink-0 items-center gap-2 rounded-full px-3 text-sm font-black transition"
+          :class="state.tab === tab.id ? 'bg-court-500 text-white shadow-soft dark:bg-court-500 dark:text-white' : 'text-stone-600 hover:bg-white/80 dark:text-stone-300 dark:hover:bg-stone-800'"
           @click="selectAdminTab(tab.id)"
         >
           <component :is="tab.icon" class="h-4 w-4" />
@@ -2928,14 +2935,14 @@ const pageProps = computed(() => ({
 
     <nav
       v-if="isAdmin"
-      class="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-paper-50/95 px-2 pb-[max(0.65rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(34,41,37,0.08)] backdrop-blur dark:border-stone-700 dark:bg-paper-900/95 md:hidden"
+      class="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-paper-50/85 px-2 pb-[max(0.65rem,env(safe-area-inset-bottom))] pt-2 shadow-[0_-12px_30px_rgba(34,41,37,0.08)] backdrop-blur-xl dark:border-stone-700 dark:bg-paper-900/85 md:hidden"
     >
       <div class="mx-auto flex max-w-lg gap-1 overflow-x-auto">
         <button
           v-for="tab in mobileTabs"
           :key="tab.id"
-          class="flex h-14 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-md text-[11px] font-semibold leading-none transition"
-          :class="state.tab === tab.id ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-500 active:bg-stone-100 dark:text-stone-400 dark:active:bg-stone-800'"
+          class="flex h-14 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-2xl text-[11px] font-bold leading-none transition"
+          :class="state.tab === tab.id ? 'bg-court-500 text-white shadow-soft dark:bg-court-500 dark:text-white' : 'text-stone-500 active:bg-stone-100 dark:text-stone-400 dark:active:bg-stone-800'"
           @click="selectAdminTab(tab.id)"
         >
           <component :is="tab.icon" class="h-5 w-5 shrink-0" />

@@ -1,8 +1,14 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [vue()],
+  resolve: {
+    alias: {
+      '@lucide/vue': fileURLToPath(new URL('./src/icons/phosphorCompat.js', import.meta.url))
+    }
+  },
   server: {
     host: '0.0.0.0',
     port: 5173,

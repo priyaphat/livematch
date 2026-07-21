@@ -1,5 +1,6 @@
 <script setup>
 import { Check, Plus, RotateCcw, X } from '@lucide/vue'
+import LineArt from '../components/LineArt.vue'
 
 const props = defineProps([
   'state',
@@ -33,6 +34,11 @@ if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId =
 
 <template>
   <section class="grid gap-3">
+    <div v-if="!state.live.length" class="lm-empty">
+      <LineArt name="scoreboard" tone="mint" class="mx-auto mb-4 max-w-sm" />
+      <p class="font-black">ยังไม่มีเกมที่กำลังแข่ง</p>
+      <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เริ่มเกมจากหน้ารอคิว แล้วเกมจะมาแสดงที่นี่</p>
+    </div>
     <article v-for="match in state.live" :key="match.id" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
