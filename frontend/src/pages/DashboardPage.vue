@@ -1,5 +1,5 @@
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Activity, BarChart3, ClipboardList, CreditCard, Download, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
 import { exportDashboardExcel } from '../excelExport'
 
@@ -34,6 +34,22 @@ const props = defineProps([
 
 const exportLoading = ref(false)
 const exportError = ref('')
+
+const shuttleBrandSummary = computed(() => {
+  const counts = new Map()
+  const brandName = (brandId) => props.state.settings.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
+  for (const match of [...(props.state.live || []), ...(props.state.history || [])]) {
+    if (match.status === 'cancelled' && match.shuttleReturned) continue
+    const items = Array.isArray(match.shuttleSequenceItems) && match.shuttleSequenceItems.length
+      ? match.shuttleSequenceItems
+      : String(match.shuttleSequence || '').split(',').filter(Boolean).map((part) => ({ brandId: 'default', number: Number(part) }))
+    for (const item of items) {
+      const id = item.brandId || 'default'
+      counts.set(id, (counts.get(id) || 0) + 1)
+    }
+  }
+  return Array.from(counts.entries()).map(([brandId, count]) => ({ brandId, name: brandName(brandId), count }))
+})
 
 async function exportExcel() {
   if (exportLoading.value) return
@@ -130,6 +146,15 @@ async function exportExcel() {
           <p class="text-sm font-bold text-rose-700 dark:text-rose-300">ยกเลิก</p>
           <p class="mt-1 text-3xl font-black">{{ cancelledMatches.length }}</p>
           <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">หักออกจากเกมทั้งหมดแล้ว</p>
+        </div>
+      </div>
+
+      <div v-if="shuttleBrandSummary.length" class="mt-4 rounded-md border border-shuttle-400/50 bg-shuttle-400/10 p-4">
+        <p class="text-sm font-black text-amber-800 dark:text-shuttle-400">ลูกแบดตามยี่ห้อ</p>
+        <div class="mt-2 flex flex-wrap gap-2">
+          <span v-for="item in shuttleBrandSummary" :key="item.brandId" class="rounded-md bg-white px-2.5 py-1 text-xs font-black text-stone-700 dark:bg-stone-900 dark:text-stone-200">
+            {{ item.name }} {{ item.count }} ลูก
+          </span>
         </div>
       </div>
     </div>

@@ -28,7 +28,14 @@ const props = defineProps([
   'money',
   'createSession',
   'openOwnedSession',
-  'refreshAdminSupervisor'
+  'refreshAdminSupervisor',
+  'saveAdminDefaultSettings',
+  'addAdminDefaultShuttleBrand',
+  'removeAdminDefaultShuttleBrand',
+  'addAdminDefaultCourt',
+  'removeAdminDefaultCourt',
+  'addAdminDefaultLevel',
+  'removeAdminDefaultLevel'
 ])
 
 const sessionPage = ref(1)
@@ -122,12 +129,109 @@ const changeSessionPage = (nextPage) => {
           <RefreshCw class="h-4 w-4" />
           รีเฟรช
         </button>
+        <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-black text-court-700 transition hover:bg-court-500/15 dark:border-court-900/60 dark:text-court-300 sm:flex-none" @click="ui.showAdminDefaultSettingsModal = true">
+          <Database class="h-4 w-4" />
+          ค่าเริ่มต้น
+        </button>
         <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600 sm:flex-none" @click="ui.showCreateSessionModal = true">
           <Plus class="h-4 w-4" />
           สร้าง session
         </button>
       </div>
     </header>
+
+    <div v-if="ui.showAdminDefaultSettingsModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="ค่าเริ่มต้น Session ใหม่" @click.self="ui.showAdminDefaultSettingsModal = false">
+    <section class="max-h-[92vh] w-full max-w-5xl overflow-y-auto rounded-lg border border-court-200 bg-white p-4 shadow-soft dark:border-court-900/60 dark:bg-stone-900">
+      <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
+        <div>
+          <p class="text-sm font-semibold text-court-700 dark:text-court-300">ค่าเริ่มต้น Session ใหม่</p>
+          <h2 class="mt-1 text-xl font-black">ตั้งค่าส่วนกลางสำหรับกดสร้าง session</h2>
+          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ค่านี้ถูก copy ตอนสร้าง session ใหม่เท่านั้น ไม่แก้ session เก่าหรือ session ที่เปิดอยู่</p>
+        </div>
+        <div class="flex flex-wrap gap-2">
+        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-stone-200 px-4 text-sm font-black transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800" @click="ui.showAdminDefaultSettingsModal = false">
+          <X class="h-4 w-4" />
+          ปิด
+        </button>
+        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600" @click="saveAdminDefaultSettings">
+          <CheckCircle2 class="h-4 w-4" />
+          บันทึกค่าเริ่มต้น
+        </button>
+        </div>
+      </div>
+
+      <div class="grid gap-3 md:grid-cols-3">
+        <label class="grid gap-1 text-sm font-bold">
+          ค่าเข้าสนามคนทั่วไป
+          <input v-model.number="auth.defaultSettings.entryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+        </label>
+        <label class="grid gap-1 text-sm font-bold">
+          ค่าเข้าสนามสมาชิกชมรม
+          <input v-model.number="auth.defaultSettings.clubEntryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+        </label>
+        <label class="grid gap-1 text-sm font-bold">
+          ค่าสนามต่อชั่วโมง liveShare
+          <input v-model.number="auth.defaultSettings.courtFeePerHour" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+        </label>
+      </div>
+
+      <div class="grid gap-4 lg:grid-cols-2">
+        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <p class="font-black">ยี่ห้อลูกแบด</p>
+          <div v-for="(brand, index) in auth.defaultSettings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md bg-paper-100 p-2 dark:bg-stone-800 sm:grid-cols-[1fr_7rem_auto_auto] sm:items-center">
+            <input v-model="brand.name" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ชื่อยี่ห้อ" />
+            <input v-model.number="brand.price" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ราคา" />
+            <label class="flex items-center gap-2 text-sm font-bold">
+              <input v-model="brand.active" type="checkbox" />
+              active
+            </label>
+            <button class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 disabled:opacity-40 dark:border-rose-900/60 dark:text-rose-300" :disabled="auth.defaultSettings.shuttleBrands.length <= 1" @click="removeAdminDefaultShuttleBrand(index)">
+              ลบ
+            </button>
+          </div>
+          <div class="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
+            <input v-model="forms.adminDefaultNewShuttleBrandName" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="เพิ่มยี่ห้อ" />
+            <input v-model.number="forms.adminDefaultNewShuttleBrandPrice" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ราคา" />
+            <button class="h-10 rounded-md bg-stone-900 px-3 text-sm font-black text-white dark:bg-white dark:text-stone-900" @click="addAdminDefaultShuttleBrand">เพิ่ม</button>
+          </div>
+        </div>
+
+        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <p class="font-black">คำอ่านตอนเรียกคิว</p>
+          <textarea v-model="auth.defaultSettings.announcementTemplate" rows="5" class="rounded-md border border-stone-200 bg-paper-50 px-3 py-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-800" placeholder="บุฟเฟ่ต์สนามที่ {court}&#10;{pause}&#10;คุณ{a} คุณ{b} คุณ{c} คุณ{d}"></textarea>
+          <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">ตัวแปร: court, pause, a, b, c, d</p>
+        </div>
+      </div>
+
+      <div class="grid gap-4 lg:grid-cols-2">
+        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <p class="font-black">ชื่อสนาม</p>
+          <div v-for="(court, index) in auth.defaultSettings.courtNames" :key="index" class="grid grid-cols-[1fr_auto] gap-2">
+            <input v-model="auth.defaultSettings.courtNames[index]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+            <button class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 disabled:opacity-40 dark:border-rose-900/60 dark:text-rose-300" :disabled="auth.defaultSettings.courtNames.length <= 1" @click="removeAdminDefaultCourt(index)">ลบ</button>
+          </div>
+          <div class="grid grid-cols-[1fr_auto] gap-2">
+            <input v-model="forms.adminDefaultNewCourtName" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ชื่อสนามใหม่" />
+            <button class="h-10 rounded-md bg-stone-900 px-3 text-sm font-black text-white dark:bg-white dark:text-stone-900" @click="addAdminDefaultCourt">เพิ่มสนาม</button>
+          </div>
+        </div>
+
+        <div class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <p class="font-black">ระดับมือ liveMatch</p>
+          <div v-for="(level, index) in auth.defaultSettings.levels" :key="index" class="grid grid-cols-[1fr_auto] gap-2">
+            <input v-model="auth.defaultSettings.levels[index]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+            <button class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 disabled:opacity-40 dark:border-rose-900/60 dark:text-rose-300" :disabled="auth.defaultSettings.levels.length <= 1" @click="removeAdminDefaultLevel(index)">ลบ</button>
+          </div>
+          <div class="grid grid-cols-[1fr_auto] gap-2">
+            <input v-model="forms.adminDefaultNewLevelName" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ระดับใหม่" />
+            <button class="h-10 rounded-md bg-stone-900 px-3 text-sm font-black text-white dark:bg-white dark:text-stone-900" @click="addAdminDefaultLevel">เพิ่มระดับ</button>
+          </div>
+        </div>
+      </div>
+
+      <p v-if="forms.adminDefaultSettingsStatus" class="text-sm font-black text-court-700 dark:text-court-300">{{ forms.adminDefaultSettingsStatus }}</p>
+    </section>
+    </div>
 
     <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
       <article

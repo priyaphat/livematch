@@ -23,8 +23,13 @@ const props = defineProps([
 
 const filteredPlayers = computed(() => {
   const keyword = props.forms.playerSearch.trim().toLocaleLowerCase('th-TH')
+  const paymentFilter = props.forms.playerPaymentFilter || 'all'
   return props.state.players.filter((player) => player.active && (
     !keyword || player.name.toLocaleLowerCase('th-TH').includes(keyword) || String(player.id).includes(keyword)
+  ) && (
+    paymentFilter === 'all' ||
+    (paymentFilter === 'paid' && player.paid) ||
+    (paymentFilter === 'unpaid' && !player.paid)
   ))
 })
 
@@ -35,6 +40,7 @@ const pagedPlayers = computed(() => {
 })
 const editingPlayer = ref(null)
 const editingName = ref('')
+const editingClubMember = ref(false)
 const exportLoading = ref(false)
 const exportError = ref('')
 const deleteBlockReasons = computed(() => (
@@ -45,16 +51,18 @@ function openEditPlayer(player) {
   if (props.isSessionReadOnly) return
   editingPlayer.value = player
   editingName.value = player.name
+  editingClubMember.value = Boolean(player.clubMember)
 }
 
 function closeEditPlayer() {
   editingPlayer.value = null
   editingName.value = ''
+  editingClubMember.value = false
 }
 
 async function saveEditPlayer() {
   if (!editingPlayer.value || !editingName.value.trim()) return
-  await props.renamePlayer(editingPlayer.value, editingName.value)
+  await props.renamePlayer(editingPlayer.value, editingName.value, editingClubMember.value)
   closeEditPlayer()
 }
 
@@ -69,6 +77,10 @@ async function deleteEditPlayer() {
 }
 
 watch(() => props.forms.playerSearch, () => {
+  props.forms.playerPage = 1
+})
+
+watch(() => props.forms.playerPaymentFilter, () => {
   props.forms.playerPage = 1
 })
 
@@ -100,6 +112,10 @@ async function exportExcel() {
         <Plus class="h-4 w-4" />
         เพิ่ม
       </button>
+      <label class="flex items-center gap-2 text-sm font-bold md:col-span-2">
+        <input v-model="forms.newPlayerClubMember" type="checkbox" :disabled="isSessionReadOnly" />
+        สมาชิกชมรม
+      </label>
     </div>
 
     <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
@@ -143,11 +159,16 @@ async function exportExcel() {
     </div>
 
     <div class="overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">
-      <div class="grid gap-3 border-b border-stone-200 bg-paper-100 p-3 dark:border-stone-800 dark:bg-stone-800 sm:grid-cols-[1fr_auto]">
+      <div class="grid gap-3 border-b border-stone-200 bg-paper-100 p-3 dark:border-stone-800 dark:bg-stone-800 lg:grid-cols-[1fr_auto_auto]">
         <label class="flex h-11 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900">
           <Search class="h-4 w-4 text-court-600" />
           <input v-model="forms.playerSearch" class="min-w-0 flex-1 bg-transparent outline-none" placeholder="ค้นหาชื่อหรือเลขสมาชิก" />
         </label>
+        <select v-model="forms.playerPaymentFilter" class="h-11 rounded-md border border-stone-200 bg-white px-3 font-bold dark:border-stone-700 dark:bg-stone-900">
+          <option value="all">ทั้งหมด</option>
+          <option value="paid">จ่ายแล้ว</option>
+          <option value="unpaid">ยังไม่จ่าย</option>
+        </select>
         <select v-model.number="forms.playerPageSize" class="h-11 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900">
           <option :value="8">8 แถว</option>
           <option :value="16">16 แถว</option>
@@ -173,7 +194,7 @@ async function exportExcel() {
         @click="forms.selectedPlayerId = player.id"
       >
         <div class="grid grid-cols-[1fr_4rem_4rem_6rem] items-baseline gap-2">
-          <span class="truncate text-base font-black">{{ player.name }}</span>
+          <span class="truncate text-base font-black">{{ player.name }} <span v-if="player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">ชมรม</span></span>
           <span class="text-right font-bold">{{ player.games }}</span>
           <span class="text-right font-bold">{{ player.shuttles }}</span>
           <span class="text-right font-black tabular-nums text-court-700 dark:text-court-300">{{ money(playerCost(player)) }}</span>
@@ -241,6 +262,11 @@ async function exportExcel() {
             aria-label="แก้ชื่อสมาชิก"
             @keyup.enter="saveEditPlayer"
           />
+        </label>
+
+        <label class="mt-3 flex items-center gap-2 text-sm font-bold">
+          <input v-model="editingClubMember" type="checkbox" :disabled="isSessionReadOnly" />
+          สมาชิกชมรม
         </label>
 
         <div class="mt-4 grid gap-2 sm:grid-cols-2">

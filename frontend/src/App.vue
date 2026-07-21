@@ -53,6 +53,20 @@ import { persistTheme, readStoredTheme } from './theme'
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const defaultAnnouncementTemplate = 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}'
 
+function defaultSessionSettingsTemplate() {
+  return {
+    entryFee: 120,
+    clubEntryFee: 120,
+    courtFeePerHour: 150,
+    shuttleFee: 85,
+    shuttleBrands: [{ id: 'default', name: 'ลูกแบดทั่วไป', price: 85, active: true }],
+    courtCount: 4,
+    courtNames: ['สนาม 1', 'สนาม 2', 'สนาม 3', 'สนาม 4'],
+    levels: ['เบา', 'กลาง', 'หนัก'],
+    announcementTemplate: defaultAnnouncementTemplate
+  }
+}
+
 const tabs = computed(() => [
   { id: 'home', label: t('หน้าแรก', 'Home'), icon: Home },
   { id: 'dashboard', label: t('แดชบอร์ด', 'Dashboard'), icon: BarChart3 },
@@ -87,12 +101,14 @@ const state = reactive({
   },
   settings: {
     entryFee: 120,
+    clubEntryFee: 100,
     courtFeePerHour: 150,
     shuttleFee: 85,
+    shuttleBrands: [{ id: 'default', name: 'ลูกแบดทั่วไป', price: 85, active: true }],
     sessionFee: 0,
     courtCount: 4,
     courtNames: ['สนาม 1', 'สนาม 2', 'สนาม 3', 'สนาม 4'],
-    levels: ['light', 'middle', 'heavy'],
+    levels: ['เบา', 'กลาง', 'หนัก'],
     allowCrossLevel: true,
     crossLevelRange: 1,
     randomPriority: 'level',
@@ -103,8 +119,8 @@ const state = reactive({
     announcementTemplate: defaultAnnouncementTemplate
   },
   players: [
-    { id: 1, name: 'ต้น', games: 4, wins: 2, draws: 0, losses: 2, shuttles: 4, paid: true, active: true, level: 'middle', coupon: true },
-    { id: 2, name: 'แพรว', games: 3, wins: 2, draws: 0, losses: 1, shuttles: 3, paid: false, active: true, level: 'middle', coupon: true },
+    { id: 1, name: 'ต้น', games: 4, wins: 2, draws: 0, losses: 2, shuttles: 4, paid: true, active: true, level: 'กลาง', coupon: true, clubMember: true },
+    { id: 2, name: 'แพรว', games: 3, wins: 2, draws: 0, losses: 1, shuttles: 3, paid: false, active: true, level: 'กลาง', coupon: true, clubMember: false },
     { id: 3, name: 'บอล', games: 2, wins: 1, draws: 0, losses: 1, shuttles: 2, paid: false, active: true, level: 'light', coupon: true },
     { id: 4, name: 'เมย์', games: 2, wins: 1, draws: 0, losses: 1, shuttles: 2, paid: true, active: true, level: 'light', coupon: true },
     { id: 5, name: 'ฟ้า', games: 5, wins: 3, draws: 0, losses: 2, shuttles: 5, paid: true, active: true, level: 'heavy', coupon: true },
@@ -142,6 +158,7 @@ const forms = reactive({
   loginError: '',
   newPlayerName: '',
   playerSearch: '',
+  playerPaymentFilter: 'all',
   playerPage: 1,
   playerPageSize: 8,
   coupleSearch: '',
@@ -231,11 +248,21 @@ const forms = reactive({
   finishWinner: '',
   cancelNote: '',
   cancelShuttleReturned: false,
+  newPlayerClubMember: false,
   selectedPlayerId: 1,
   coupleAId: '',
   coupleBId: '',
   matchCourts: {},
+  matchShuttleBrands: {},
+  addShuttleBrandId: '',
   playerNameEdits: {},
+  newShuttleBrandName: '',
+  newShuttleBrandPrice: 0,
+  adminDefaultNewShuttleBrandName: '',
+  adminDefaultNewShuttleBrandPrice: 0,
+  adminDefaultNewCourtName: '',
+  adminDefaultNewLevelName: '',
+  adminDefaultSettingsStatus: '',
   newCourtName: '',
   newLevelName: ''
 })
@@ -252,6 +279,7 @@ const ui = reactive({
   returnShuttleMatch: null,
   showQrModal: false,
   showCreateSessionModal: false,
+  showAdminDefaultSettingsModal: false,
   showCoinModal: false,
   showBackofficeAdminModal: false,
   showBackofficeSlipModal: false,
@@ -276,6 +304,7 @@ const auth = reactive({
   liveShareSessionCost: null,
   coinPackages: [],
   coinPaymentQrImage: '',
+  defaultSettings: defaultSessionSettingsTemplate(),
   promptPayId: '',
   promptPayType: 'mobile',
   promptPayReceiverName: '',
@@ -376,6 +405,22 @@ function normalizeClientSettings() {
   if (state.settings.sessionFee === undefined) {
     state.settings.sessionFee = 0
   }
+  if (state.settings.clubEntryFee === undefined || state.settings.clubEntryFee === null) {
+    state.settings.clubEntryFee = state.settings.entryFee || 0
+  }
+  if (!Array.isArray(state.settings.shuttleBrands) || !state.settings.shuttleBrands.length) {
+    state.settings.shuttleBrands = [{ id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), active: true }]
+  }
+  if (!activeShuttleBrands().length) {
+    state.settings.shuttleBrands[0].active = true
+  }
+  state.settings.shuttleFee = Number(state.settings.shuttleBrands[0]?.price || state.settings.shuttleFee || 0)
+  for (const player of state.players || []) {
+    if (player.clubMember === undefined) player.clubMember = false
+  }
+  for (const match of [...(state.live || []), ...(state.history || []), ...(state.queue || []), ...(state.pending || [])]) {
+    normalizeMatchShuttleItems(match)
+  }
   if (state.settings.courtFeePerHour === undefined || state.settings.courtFeePerHour === null) {
     state.settings.courtFeePerHour = 150
   }
@@ -394,6 +439,9 @@ function normalizeClientSettings() {
   if (!state.liveShare.courtHours) state.liveShare.courtHours = {}
   if (!state.liveShare.playerHours) state.liveShare.playerHours = {}
   if (!state.liveShare.shuttleHours) state.liveShare.shuttleHours = {}
+  state.returnedShuttles = (state.returnedShuttles || []).map((item) => (
+    typeof item === 'number' ? { brandId: 'default', number: item } : { brandId: item.brandId || 'default', number: Number(item.number || 0) }
+  )).filter((item) => item.number > 0)
   if (state.session.type === 'liveShare') {
     state.settings.startMatchWithShuttle = false
   }
@@ -901,6 +949,7 @@ function applyAdminPayload(payload) {
   auth.user = payload.user || null
   auth.sessions = payload.sessions || []
   auth.coinLedger = payload.coinLedger || []
+  auth.defaultSettings = normalizeSessionDefaults(payload.defaultSettings || auth.defaultSettings)
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
 }
@@ -1155,7 +1204,69 @@ function playerCost(player) {
   if (isLiveShare.value) {
     return liveShareHourlyPlayerCost(player)
   }
-  return state.settings.entryFee + player.shuttles * state.settings.shuttleFee + sessionFeeShare.value
+  return playerEntryFee(player) + playerShuttleCost(player.id) + sessionFeeShare.value
+}
+
+function playerEntryFee(player) {
+  return Number(player?.clubMember ? state.settings.clubEntryFee : state.settings.entryFee) || 0
+}
+
+function activeShuttleBrands() {
+  return (state.settings.shuttleBrands || []).filter((brand) => brand.active)
+}
+
+function defaultShuttleBrand() {
+  return activeShuttleBrands()[0] || state.settings.shuttleBrands?.[0] || { id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), active: true }
+}
+
+function shuttleBrandById(brandId) {
+  return (state.settings.shuttleBrands || []).find((brand) => brand.id === brandId) || defaultShuttleBrand()
+}
+
+function shuttleBrandName(brandId) {
+  return shuttleBrandById(brandId).name || 'ลูกแบด'
+}
+
+function normalizeMatchShuttleItems(match) {
+  if (!match) return []
+  if (!Array.isArray(match.shuttleSequenceItems)) {
+    match.shuttleSequenceItems = []
+  }
+  if (!match.shuttleSequenceItems.length && match.shuttleSequence) {
+    match.shuttleSequenceItems = shuttleSequenceNumbers(match.shuttleSequence).map((number) => ({ brandId: 'default', number }))
+  }
+  return match.shuttleSequenceItems
+}
+
+function matchShuttleItems(match) {
+  return normalizeMatchShuttleItems(match)
+}
+
+function matchShuttleSummary(match) {
+  const counts = new Map()
+  for (const item of matchShuttleItems(match)) {
+    counts.set(item.brandId, (counts.get(item.brandId) || 0) + 1)
+  }
+  return Array.from(counts.entries()).map(([brandId, count]) => `${shuttleBrandName(brandId)} ${count}`).join(' · ')
+}
+
+function matchShuttleSequenceText(match) {
+  return matchShuttleItems(match).map((item) => `${shuttleBrandName(item.brandId)} #${item.number}`).join(', ') || match?.shuttleSequence || '-'
+}
+
+function playerShuttleCost(playerId) {
+  let total = 0
+  for (const match of [...state.live, ...state.history]) {
+    if (!matchPlayers(match).includes(playerId)) continue
+    if (isCancelledMatch(match) && match.shuttleReturned) continue
+    const items = matchShuttleItems(match)
+    if (items.length) {
+      total += items.reduce((sum, item) => sum + Number(shuttleBrandById(item.brandId).price || 0), 0)
+    } else {
+      total += Number(match.shuttles || 0) * Number(state.settings.shuttleFee || 0)
+    }
+  }
+  return total
 }
 
 const sessionFeeShare = computed(() => {
@@ -1284,8 +1395,9 @@ function addPlayer() {
   const name = forms.newPlayerName.trim()
   if (!name) return
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
-  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: 'middle', coupon: false })
+  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: forms.newPlayerClubMember })
   forms.newPlayerName = ''
+  forms.newPlayerClubMember = false
 }
 
 function renamePlayer(player, name) {
@@ -1322,6 +1434,33 @@ function togglePayment(player) {
     player.coupon = false
     state.couples = state.couples.filter((couple) => couple.a !== player.id && couple.b !== player.id)
   }
+}
+
+function normalizeSessionDefaults(input = {}) {
+  const base = defaultSessionSettingsTemplate()
+  const next = {
+    ...base,
+    ...input,
+    courtNames: Array.isArray(input.courtNames) ? input.courtNames.map((name) => String(name || '').trim()).filter(Boolean) : base.courtNames,
+    levels: Array.isArray(input.levels) ? input.levels.map((name) => String(name || '').trim()).filter(Boolean) : base.levels,
+    shuttleBrands: Array.isArray(input.shuttleBrands) ? input.shuttleBrands.map((brand) => ({
+      id: String(brand.id || brand.name || `brand-${Date.now()}`).trim() || `brand-${Date.now()}`,
+      name: String(brand.name || '').trim(),
+      price: Math.max(0, Number(brand.price || 0)),
+      active: Boolean(brand.active)
+    })).filter((brand) => brand.name) : base.shuttleBrands
+  }
+  next.entryFee = Math.max(0, Number(next.entryFee || 0))
+  next.clubEntryFee = Math.max(0, Number(next.clubEntryFee || next.entryFee || 0))
+  next.courtFeePerHour = Math.max(0, Number(next.courtFeePerHour || 0))
+  if (!next.courtNames.length) next.courtNames = [...base.courtNames]
+  if (!next.levels.length) next.levels = [...base.levels]
+  if (!next.shuttleBrands.length) next.shuttleBrands = [...base.shuttleBrands]
+  if (!next.shuttleBrands.some((brand) => brand.active)) next.shuttleBrands[0].active = true
+  next.shuttleFee = Number(next.shuttleBrands[0]?.price || next.shuttleFee || 0)
+  next.courtCount = next.courtNames.length
+  if (!String(next.announcementTemplate || '').trim()) next.announcementTemplate = defaultAnnouncementTemplate
+  return next
 }
 
 function randomMatch() {
@@ -1432,14 +1571,16 @@ function pickFourGroupsFrom(groups, index, selected) {
   return pickFourGroupsFrom(groups, index + 1, selected)
 }
 
-function startMatch(match, court = '') {
+function startMatch(match, court = '', brandId = defaultShuttleBrand().id) {
   if (!court) return
   if (!matchLevelsAllowed(match)) return
   state.queue = state.queue.filter((item) => item.id !== match.id)
-  const started = { ...match, court, shuttles: 0, shuttleSequence: '', status: 'กำลังเล่น', startedAt: currentTime() }
+  const started = { ...match, court, shuttles: 0, shuttleSequence: '', shuttleSequenceItems: [], status: 'กำลังเล่น', startedAt: currentTime() }
   if (state.settings.startMatchWithShuttle) {
+    const number = nextShuttleNumber(brandId)
     started.shuttles = 1
-    started.shuttleSequence = appendShuttleNumber(started.shuttleSequence, nextShuttleNumber())
+    started.shuttleSequenceItems.push({ brandId, number })
+    started.shuttleSequence = appendShuttleNumber(started.shuttleSequence, number)
   }
   state.live.push(started)
   state.tab = 'liveboard'
@@ -1476,11 +1617,12 @@ function cancelQueuedMatch(match) {
   delete forms.matchCourts[match.id]
 }
 
-function adjustShuttle(match, delta) {
+function adjustShuttle(match, delta, brandId = defaultShuttleBrand().id) {
   if (delta <= 0) return
   for (let index = 0; index < delta; index += 1) {
-    const nextNumber = nextShuttleNumber()
+    const nextNumber = nextShuttleNumber(brandId)
     match.shuttles += 1
+    normalizeMatchShuttleItems(match).push({ brandId, number: nextNumber })
     match.shuttleSequence = appendShuttleNumber(match.shuttleSequence || '', nextNumber)
   }
 }
@@ -1492,9 +1634,20 @@ function closeLive(match, cancelled = false, note = '', shuttleReturned = false)
     endedAt: currentTime(),
     winner: cancelled ? '' : forms.finishWinner,
     shuttleSequence: match.shuttleSequence || '',
+    shuttleSequenceItems: matchShuttleItems(match),
     shuttleReturned: cancelled && shuttleReturned && match.shuttles > 0 && Boolean(match.shuttleSequence),
     status: cancelled ? 'cancelled' : 'finished',
     note: note || forms.finishNote || (cancelled ? 'ยกเลิกการแข่งขัน' : 'จบการแข่งขัน')
+  }
+  if (ended.shuttleReturned) {
+    const latest = matchShuttleItems(ended).at(-1)
+    if (latest) {
+      ended.returnedShuttleBrandId = latest.brandId
+      ended.returnedShuttleNumber = latest.number
+      if (!state.returnedShuttles.some((item) => (item.brandId || 'default') === latest.brandId && item.number === latest.number)) {
+        state.returnedShuttles.push({ brandId: latest.brandId, number: latest.number })
+      }
+    }
   }
   state.history.unshift(ended)
   for (const id of matchPlayers(match)) {
@@ -1570,6 +1723,7 @@ function requestCancelMatch(match) {
 function requestAddShuttle(match) {
   if (!ensureSessionActive()) return
   ui.shuttleMatch = match
+  forms.addShuttleBrandId = latestShuttleBrandId(match) || defaultShuttleBrand().id
   ui.showShuttleModal = true
 }
 
@@ -1749,7 +1903,11 @@ async function announceQueuedMatch(match, court = '') {
 }
 
 function latestShuttleNumber(match) {
-  return shuttleSequenceNumbers(match?.shuttleSequence || '').at(-1) || null
+  return matchShuttleItems(match).at(-1)?.number || shuttleSequenceNumbers(match?.shuttleSequence || '').at(-1) || null
+}
+
+function latestShuttleBrandId(match) {
+  return matchShuttleItems(match).at(-1)?.brandId || defaultShuttleBrand().id
 }
 
 function requestReturnShuttle(match) {
@@ -1760,8 +1918,9 @@ function requestReturnShuttle(match) {
 
 async function confirmAddShuttle() {
   if (!ui.shuttleMatch) return
-  await adjustShuttleApi(ui.shuttleMatch, 1)
+  await adjustShuttleApi(ui.shuttleMatch, 1, forms.addShuttleBrandId || latestShuttleBrandId(ui.shuttleMatch) || defaultShuttleBrand().id)
   ui.shuttleMatch = null
+  forms.addShuttleBrandId = ''
   ui.showShuttleModal = false
 }
 
@@ -1785,17 +1944,23 @@ function appendShuttleNumber(sequence, number) {
   return sequence ? `${sequence},${number}` : `${number}`
 }
 
-function nextShuttleNumber() {
+function nextShuttleNumber(brandId = defaultShuttleBrand().id) {
+  brandId = brandId || defaultShuttleBrand().id
   if ((state.returnedShuttles || []).length) {
-    state.returnedShuttles.sort((a, b) => a - b)
-    return state.returnedShuttles.shift()
+    state.returnedShuttles.sort((a, b) => String(a.brandId || 'default').localeCompare(String(b.brandId || 'default')) || a.number - b.number)
+    const index = state.returnedShuttles.findIndex((item) => (item.brandId || 'default') === brandId)
+    if (index >= 0) {
+      const [item] = state.returnedShuttles.splice(index, 1)
+      return item.number
+    }
   }
   const matches = [...state.live, ...state.history]
-  const maxSequence = matches.reduce((max, match) => Math.max(max, maxShuttleSequenceNumber(match.shuttleSequence || '')), 0)
+  const maxSequence = matches.reduce((max, match) => Math.max(max, ...matchShuttleItems(match).filter((item) => item.brandId === brandId).map((item) => item.number), 0), 0)
   const allocationCount = new Map()
   const returnCount = new Map()
   for (const match of matches) {
-    for (const number of shuttleSequenceNumbers(match.shuttleSequence || '')) {
+    for (const item of matchShuttleItems(match).filter((entry) => entry.brandId === brandId)) {
+      const number = item.number
       allocationCount.set(number, (allocationCount.get(number) || 0) + 1)
       if (match.status === 'cancelled' && match.shuttleReturned) {
         returnCount.set(number, (returnCount.get(number) || 0) + 1)
@@ -1812,14 +1977,15 @@ function nextShuttleNumber() {
 }
 
 function returnLatestShuttle(match) {
-  const numbers = shuttleSequenceNumbers(match.shuttleSequence || '')
-  if (match.shuttles <= 1 || numbers.length <= 1) return
-  const returned = numbers.pop()
+  const items = matchShuttleItems(match)
+  if (match.shuttles <= 1 || items.length <= 1) return
+  const returned = items.pop()
   match.shuttles -= 1
-  match.shuttleSequence = numbers.join(',')
-  if (!state.returnedShuttles.includes(returned)) {
-    state.returnedShuttles.push(returned)
-    state.returnedShuttles.sort((a, b) => a - b)
+  match.shuttleSequence = items.map((item) => item.number).join(',')
+  match.returnedShuttleBrandId = returned.brandId
+  match.returnedShuttleNumber = returned.number
+  if (!state.returnedShuttles.some((item) => (item.brandId || 'default') === returned.brandId && item.number === returned.number)) {
+    state.returnedShuttles.push({ brandId: returned.brandId, number: returned.number })
   }
 }
 
@@ -1955,6 +2121,85 @@ function removeLevel(index) {
   if (usedLevels.value.has(state.settings.levels[index])) return
   state.settings.levels.splice(index, 1)
   saveSettings().catch(() => {})
+}
+
+function addShuttleBrand() {
+  if (!ensureSessionActive()) return
+  const name = forms.newShuttleBrandName.trim()
+  if (!name) return
+  const idBase = name.toLowerCase().replace(/[^a-z0-9ก-๙]+/gi, '-').replace(/^-|-$/g, '') || `brand-${Date.now()}`
+  let id = idBase
+  let suffix = 2
+  while ((state.settings.shuttleBrands || []).some((brand) => brand.id === id)) {
+    id = `${idBase}-${suffix}`
+    suffix += 1
+  }
+  state.settings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.newShuttleBrandPrice || 0)), active: true })
+  forms.newShuttleBrandName = ''
+  forms.newShuttleBrandPrice = 0
+  saveSettings().catch(() => {})
+}
+
+function addAdminDefaultShuttleBrand() {
+  const name = forms.adminDefaultNewShuttleBrandName.trim()
+  if (!name) return
+  const idBase = name.toLowerCase().replace(/[^a-z0-9ก-๙]+/gi, '-').replace(/^-|-$/g, '') || `brand-${Date.now()}`
+  let id = idBase
+  let suffix = 2
+  while ((auth.defaultSettings.shuttleBrands || []).some((brand) => brand.id === id)) {
+    id = `${idBase}-${suffix}`
+    suffix += 1
+  }
+  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), active: true })
+  forms.adminDefaultNewShuttleBrandName = ''
+  forms.adminDefaultNewShuttleBrandPrice = 0
+}
+
+function removeAdminDefaultShuttleBrand(index) {
+  if ((auth.defaultSettings.shuttleBrands || []).length <= 1) return
+  auth.defaultSettings.shuttleBrands.splice(index, 1)
+  if (!auth.defaultSettings.shuttleBrands.some((brand) => brand.active)) {
+    auth.defaultSettings.shuttleBrands[0].active = true
+  }
+}
+
+function addAdminDefaultCourt() {
+  const name = forms.adminDefaultNewCourtName.trim() || `สนาม ${(auth.defaultSettings.courtNames || []).length + 1}`
+  auth.defaultSettings.courtNames.push(name)
+  forms.adminDefaultNewCourtName = ''
+}
+
+function removeAdminDefaultCourt(index) {
+  if ((auth.defaultSettings.courtNames || []).length <= 1) return
+  auth.defaultSettings.courtNames.splice(index, 1)
+}
+
+function addAdminDefaultLevel() {
+  const name = forms.adminDefaultNewLevelName.trim()
+  if (!name || auth.defaultSettings.levels.includes(name)) return
+  auth.defaultSettings.levels.push(name)
+  forms.adminDefaultNewLevelName = ''
+}
+
+function removeAdminDefaultLevel(index) {
+  if ((auth.defaultSettings.levels || []).length <= 1) return
+  auth.defaultSettings.levels.splice(index, 1)
+}
+
+async function saveAdminDefaultSettings() {
+  forms.adminDefaultSettingsStatus = ''
+  auth.defaultSettings = normalizeSessionDefaults(auth.defaultSettings)
+  try {
+    applyAdminPayload(await api('/api/admin/default-settings', {
+      method: 'PUT',
+      body: JSON.stringify(auth.defaultSettings)
+    }))
+    forms.adminDefaultSettingsStatus = 'บันทึกค่าเริ่มต้นแล้ว'
+    showToast('บันทึกค่าเริ่มต้นแล้ว', 'success')
+  } catch (error) {
+    forms.adminDefaultSettingsStatus = error.message || 'บันทึกค่าเริ่มต้นไม่สำเร็จ'
+    showToast(forms.adminDefaultSettingsStatus)
+  }
 }
 
 function playerShareLink() {
@@ -2100,25 +2345,27 @@ async function addPlayerApi() {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players`, {
       method: 'POST',
-      body: JSON.stringify({ name, level: state.settings.levels[0] || 'middle', coupon: false })
+      body: JSON.stringify({ name, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: forms.newPlayerClubMember })
     }))
     forms.newPlayerName = ''
+    forms.newPlayerClubMember = false
   } catch {
     addPlayer()
   }
 }
 
-async function renamePlayerApi(player, name) {
+async function renamePlayerApi(player, name, clubMember = player.clubMember) {
   if (!ensureSessionActive()) return
   const nextName = name.trim()
-  if (!nextName || nextName === player.name) return
+  if (!nextName) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: nextName })
+      body: JSON.stringify({ name: nextName, clubMember })
     }))
   } catch {
     renamePlayer(player, nextName)
+    player.clubMember = clubMember
   }
 }
 
@@ -2198,14 +2445,15 @@ async function randomMatchApi() {
 async function startMatchApi(match, court = '') {
   if (!ensureSessionActive()) return
   if (!court) return
+  const brandId = forms.matchShuttleBrands[match.id] || defaultShuttleBrand().id
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/queue/${match.id}/start`, {
       method: 'POST',
-      body: JSON.stringify({ court })
+      body: JSON.stringify({ court, brandId })
     }))
     state.tab = 'liveboard'
   } catch {
-    startMatch(match, court)
+    startMatch(match, court, brandId)
   }
 }
 
@@ -2238,15 +2486,15 @@ async function cancelQueuedMatchApi(match) {
   }
 }
 
-async function adjustShuttleApi(match, delta) {
+async function adjustShuttleApi(match, delta, brandId = defaultShuttleBrand().id) {
   if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/shuttles`, {
       method: 'PATCH',
-      body: JSON.stringify({ delta })
+      body: JSON.stringify({ delta, brandId })
     }))
   } catch {
-    adjustShuttle(match, delta)
+    adjustShuttle(match, delta, brandId)
   }
 }
 
@@ -2404,11 +2652,17 @@ const pageProps = computed(() => ({
   isLiveShare: isLiveShare.value,
   money,
   playerCost,
+  playerEntryFee,
   playerLiveShareHours,
   playerDeleteBlockReasons,
   playerScore,
   levelLabel,
   matchLevelLabel,
+  activeShuttleBrands,
+  defaultShuttleBrand,
+  shuttleBrandName,
+  matchShuttleSummary,
+  matchShuttleSequenceText,
   addPlayer: addPlayerApi,
   renamePlayer: renamePlayerApi,
   deletePlayer: deletePlayerApi,
@@ -2430,6 +2684,7 @@ const pageProps = computed(() => ({
   requestAddShuttle,
   confirmAddShuttle,
   latestShuttleNumber,
+  latestShuttleBrandId,
   requestReturnShuttle,
   confirmReturnShuttle,
   closeLive: closeLiveApi,
@@ -2444,6 +2699,14 @@ const pageProps = computed(() => ({
   removeCourt,
   addLevel,
   removeLevel,
+  addShuttleBrand,
+  addAdminDefaultShuttleBrand,
+  removeAdminDefaultShuttleBrand,
+  addAdminDefaultCourt,
+  removeAdminDefaultCourt,
+  addAdminDefaultLevel,
+  removeAdminDefaultLevel,
+  saveAdminDefaultSettings,
   saveSettings: saveSettingsApi,
   saveLiveShareHours: saveLiveShareHoursApi,
   selectAdminTab,

@@ -12,6 +12,29 @@ function numeric(value) {
   return Number.isFinite(number) ? number : 0
 }
 
+function brandName(state, brandId) {
+  return (state.settings?.shuttleBrands || []).find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
+}
+
+function shuttleItems(match) {
+  if (Array.isArray(match.shuttleSequenceItems) && match.shuttleSequenceItems.length) return match.shuttleSequenceItems
+  return String(match.shuttleSequence || '').split(',').filter(Boolean).map((part) => ({ brandId: 'default', number: Number.parseInt(part, 10) }))
+}
+
+function shuttleSequenceText(state, match) {
+  const items = shuttleItems(match).filter((item) => Number.isFinite(Number(item.number)))
+  return items.length ? items.map((item) => `${brandName(state, item.brandId || 'default')} #${item.number}`).join(', ') : match.shuttleSequence || '-'
+}
+
+function shuttleSummaryText(state, match) {
+  const counts = new Map()
+  for (const item of shuttleItems(match)) {
+    const id = item.brandId || 'default'
+    counts.set(id, (counts.get(id) || 0) + 1)
+  }
+  return Array.from(counts.entries()).map(([id, count]) => `${brandName(state, id)} ${count}`).join(' · ')
+}
+
 function localDateStamp(date = new Date()) {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -39,6 +62,7 @@ export function buildMembersExportData({ state, playerCost, playerLiveShareHours
   const headers = [
     'ID',
     'ชื่อ',
+    'สมาชิกชมรม',
     'ระดับมือ',
     ...(isLiveShare ? ['ชั่วโมงเล่น'] : []),
     'จำนวนเกม',
@@ -53,6 +77,7 @@ export function buildMembersExportData({ state, playerCost, playerLiveShareHours
   const rows = players.map((player) => [
     player.id,
     player.name,
+    player.clubMember ? 'ใช่' : 'ไม่ใช่',
     levelLabel(player.level),
     ...(isLiveShare ? [numeric(playerLiveShareHours(player.id))] : []),
     numeric(player.games),
@@ -98,6 +123,7 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
     'เวลาเริ่ม',
     'เวลาจบ',
     'ลูกแบด',
+    'สรุปยี่ห้อลูกแบด',
     'สถานะ',
     'ผู้ชนะ',
     'Shuttle sequence',
@@ -116,9 +142,10 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
       match.startedAt || '-',
       match.endedAt || '-',
       numeric(match.shuttles),
+      shuttleSummaryText(state, match),
       match.status === 'cancelled' ? 'ยกเลิก' : 'บันทึกผล',
       historyWinnerText(match, playerName),
-      match.shuttleSequence || '-',
+      shuttleSequenceText(state, match),
       match.note || ''
     ])
 

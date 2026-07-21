@@ -1,7 +1,7 @@
 <script setup>
 import { Clock3, Play, QrCode, Volume2, XCircle } from '@lucide/vue'
 
-defineProps([
+const props = defineProps([
   'state',
   'forms',
   'matchLevelLabel',
@@ -11,8 +11,12 @@ defineProps([
   'cancelQueuedMatch',
   'playerName',
   'availableCourtNames',
+  'activeShuttleBrands',
   'isSessionReadOnly'
 ])
+
+const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
 </script>
 
 <template>
@@ -52,6 +56,15 @@ defineProps([
               <option disabled value="">{{ availableCourtNames.length ? 'เลือกสนาม' : 'สนามเต็ม' }}</option>
               <option v-for="court in availableCourtNames" :key="court" :value="court">{{ court }}</option>
             </select>
+            <select
+              v-if="activeBrands().length > 1"
+              v-model="forms.matchShuttleBrands[match.id]"
+              class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800"
+              :disabled="isSessionReadOnly"
+            >
+              <option disabled value="">เลือกลูกแบด</option>
+              <option v-for="brand in activeBrands()" :key="brand.id" :value="brand.id">{{ brand.name }}</option>
+            </select>
             <button
               v-if="forms.matchCourts[match.id]"
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-3 text-sm font-bold text-court-700 dark:border-court-900 dark:text-court-300"
@@ -63,8 +76,8 @@ defineProps([
             </button>
             <button
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"
-              :class="forms.matchCourts[match.id] ? 'bg-court-500' : 'bg-stone-400'"
-              :disabled="isSessionReadOnly || !forms.matchCourts[match.id]"
+              :class="forms.matchCourts[match.id] && (activeBrands().length <= 1 || forms.matchShuttleBrands[match.id]) ? 'bg-court-500' : 'bg-stone-400'"
+              :disabled="isSessionReadOnly || !forms.matchCourts[match.id] || (activeBrands().length > 1 && !forms.matchShuttleBrands[match.id])"
               @click="startMatch(match, forms.matchCourts[match.id])"
             >
               <Play class="h-4 w-4" />
@@ -83,6 +96,9 @@ defineProps([
           </div>
           <p v-if="!forms.matchCourts[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">
             ต้องเลือกสนามก่อนเริ่มการแข่งขัน
+          </p>
+          <p v-else-if="activeBrands().length > 1 && !forms.matchShuttleBrands[match.id]" class="text-xs font-semibold text-amber-700 dark:text-shuttle-400 sm:col-span-2">
+            ต้องเลือกลูกแบดก่อนเริ่มการแข่งขัน
           </p>
         </div>
       </article>

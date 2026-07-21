@@ -104,11 +104,13 @@ describe('Excel export data', () => {
       'เวลาเริ่ม',
       'เวลาจบ',
       'ลูกแบด',
+      'สรุปยี่ห้อลูกแบด',
       'สถานะ',
       'ผู้ชนะ',
       'Shuttle sequence',
       'หมายเหตุ'
     ])
-    expect(data.rows[0][11]).toBe('p1 + p2')
+    expect(data.rows[0][12]).toBe('p1 + p2')
+    expect(data.rows[0][13]).toBe('ลูกแบดทั่วไป #1, ลูกแบดทั่วไป #2')
   })
 })

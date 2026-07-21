@@ -25,6 +25,8 @@ type app struct {
 }
 
 const defaultAnnouncementTemplate = "บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}"
+const defaultShuttleBrandID = "default"
+const defaultShuttleBrandName = "ลูกแบดทั่วไป"
 
 type HealthResponse struct {
 	Status    string    `json:"status"`
@@ -40,20 +42,20 @@ type SessionRecord struct {
 }
 
 type SessionState struct {
-	Tab              string         `json:"tab"`
-	Theme            string         `json:"theme"`
-	Session          SessionInfo    `json:"session"`
-	Settings         Settings       `json:"settings"`
-	Players          []Player       `json:"players"`
-	Couples          []Couple       `json:"couples"`
-	ReturnedShuttles []int          `json:"returnedShuttles"`
-	Pending          []Match        `json:"pending"`
-	Queue            []Match        `json:"queue"`
-	Live             []Match        `json:"live"`
-	History          []Match        `json:"history"`
-	LiveShare        LiveShareHours `json:"liveShare"`
-	NextIDs          NextIDs        `json:"nextIds"`
-	UpdatedAt        time.Time      `json:"updatedAt"`
+	Tab              string            `json:"tab"`
+	Theme            string            `json:"theme"`
+	Session          SessionInfo       `json:"session"`
+	Settings         Settings          `json:"settings"`
+	Players          []Player          `json:"players"`
+	Couples          []Couple          `json:"couples"`
+	ReturnedShuttles []ReturnedShuttle `json:"returnedShuttles"`
+	Pending          []Match           `json:"pending"`
+	Queue            []Match           `json:"queue"`
+	Live             []Match           `json:"live"`
+	History          []Match           `json:"history"`
+	LiveShare        LiveShareHours    `json:"liveShare"`
+	NextIDs          NextIDs           `json:"nextIds"`
+	UpdatedAt        time.Time         `json:"updatedAt"`
 }
 
 type SessionInfo struct {
@@ -70,35 +72,55 @@ type SessionInfo struct {
 }
 
 type Settings struct {
-	EntryFee                int      `json:"entryFee"`
-	CourtFeePerHour         int      `json:"courtFeePerHour"`
-	ShuttleFee              int      `json:"shuttleFee"`
-	SessionFee              int      `json:"sessionFee"`
-	CourtCount              int      `json:"courtCount"`
-	CourtNames              []string `json:"courtNames"`
-	Levels                  []string `json:"levels"`
-	AllowCrossLevel         bool     `json:"allowCrossLevel"`
-	CrossLevelRange         int      `json:"crossLevelRange"`
-	RandomPriority          string   `json:"randomPriority"`
-	ShowPaymentOnShare      bool     `json:"showPaymentOnShare"`
-	ShowTotalOnShare        bool     `json:"showTotalOnShare"`
-	ResetPlayersAfterFinish bool     `json:"resetPlayersAfterFinish"`
-	StartMatchWithShuttle   bool     `json:"startMatchWithShuttle"`
-	AnnouncementTemplate    string   `json:"announcementTemplate"`
+	EntryFee                int            `json:"entryFee"`
+	ClubEntryFee            int            `json:"clubEntryFee"`
+	CourtFeePerHour         int            `json:"courtFeePerHour"`
+	ShuttleFee              int            `json:"shuttleFee"`
+	ShuttleBrands           []ShuttleBrand `json:"shuttleBrands"`
+	SessionFee              int            `json:"sessionFee"`
+	CourtCount              int            `json:"courtCount"`
+	CourtNames              []string       `json:"courtNames"`
+	Levels                  []string       `json:"levels"`
+	AllowCrossLevel         bool           `json:"allowCrossLevel"`
+	CrossLevelRange         int            `json:"crossLevelRange"`
+	RandomPriority          string         `json:"randomPriority"`
+	ShowPaymentOnShare      bool           `json:"showPaymentOnShare"`
+	ShowTotalOnShare        bool           `json:"showTotalOnShare"`
+	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
+	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
+	AnnouncementTemplate    string         `json:"announcementTemplate"`
 }
 
 type Player struct {
-	ID       int    `json:"id"`
-	Name     string `json:"name"`
-	Games    int    `json:"games"`
-	Wins     int    `json:"wins"`
-	Draws    int    `json:"draws"`
-	Losses   int    `json:"losses"`
-	Shuttles int    `json:"shuttles"`
-	Paid     bool   `json:"paid"`
-	Active   bool   `json:"active"`
-	Level    string `json:"level"`
-	Coupon   bool   `json:"coupon"`
+	ID         int    `json:"id"`
+	Name       string `json:"name"`
+	Games      int    `json:"games"`
+	Wins       int    `json:"wins"`
+	Draws      int    `json:"draws"`
+	Losses     int    `json:"losses"`
+	Shuttles   int    `json:"shuttles"`
+	Paid       bool   `json:"paid"`
+	Active     bool   `json:"active"`
+	Level      string `json:"level"`
+	Coupon     bool   `json:"coupon"`
+	ClubMember bool   `json:"clubMember"`
+}
+
+type ShuttleBrand struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Price  int    `json:"price"`
+	Active bool   `json:"active"`
+}
+
+type ShuttleSeqItem struct {
+	BrandID string `json:"brandId"`
+	Number  int    `json:"number"`
+}
+
+type ReturnedShuttle struct {
+	BrandID string `json:"brandId"`
+	Number  int    `json:"number"`
 }
 
 type Couple struct {
@@ -108,21 +130,24 @@ type Couple struct {
 }
 
 type Match struct {
-	ID              int    `json:"id"`
-	Court           string `json:"court"`
-	Level           string `json:"level"`
-	A1              int    `json:"a1"`
-	A2              int    `json:"a2"`
-	B1              int    `json:"b1"`
-	B2              int    `json:"b2"`
-	Shuttles        int    `json:"shuttles"`
-	Winner          string `json:"winner"`
-	ShuttleSeq      string `json:"shuttleSequence"`
-	ShuttleReturned bool   `json:"shuttleReturned"`
-	Status          string `json:"status"`
-	StartedAt       string `json:"startedAt"`
-	EndedAt         string `json:"endedAt"`
-	Note            string `json:"note"`
+	ID                     int              `json:"id"`
+	Court                  string           `json:"court"`
+	Level                  string           `json:"level"`
+	A1                     int              `json:"a1"`
+	A2                     int              `json:"a2"`
+	B1                     int              `json:"b1"`
+	B2                     int              `json:"b2"`
+	Shuttles               int              `json:"shuttles"`
+	Winner                 string           `json:"winner"`
+	ShuttleSeq             string           `json:"shuttleSequence"`
+	ShuttleSeqItems        []ShuttleSeqItem `json:"shuttleSequenceItems"`
+	ShuttleReturned        bool             `json:"shuttleReturned"`
+	ReturnedShuttleBrandID string           `json:"returnedShuttleBrandId"`
+	ReturnedShuttleNumber  int              `json:"returnedShuttleNumber"`
+	Status                 string           `json:"status"`
+	StartedAt              string           `json:"startedAt"`
+	EndedAt                string           `json:"endedAt"`
+	Note                   string           `json:"note"`
 }
 
 type LiveShareHours struct {
@@ -226,8 +251,10 @@ func (a *app) migrate(ctx context.Context) error {
 		create table if not exists session_settings (
 			session_id text primary key references sessions(id) on delete cascade,
 			entry_fee integer not null default 120,
+			club_entry_fee integer not null default 120,
 			court_fee_per_hour integer not null default 150,
 			shuttle_fee integer not null default 85,
+			shuttle_brands jsonb not null default '[]'::jsonb,
 			session_fee integer not null default 0,
 			court_count integer not null default 4,
 			court_names jsonb not null default '["สนาม 1","สนาม 2","สนาม 3","สนาม 4"]'::jsonb,
@@ -244,7 +271,9 @@ func (a *app) migrate(ctx context.Context) error {
 คุณ{a} คุณ{b} คุณ{c} คุณ{d}'
 		);
 		alter table session_settings add column if not exists random_priority text not null default 'level';
+		alter table session_settings add column if not exists club_entry_fee integer not null default 120;
 		alter table session_settings add column if not exists court_fee_per_hour integer not null default 150;
+		alter table session_settings add column if not exists shuttle_brands jsonb not null default '[]'::jsonb;
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
 		alter table session_settings add column if not exists show_total_on_share boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
@@ -266,12 +295,14 @@ func (a *app) migrate(ctx context.Context) error {
 			active boolean not null default true,
 			level text not null default 'middle',
 			coupon boolean not null default false,
+			club_member boolean not null default false,
 			primary key (session_id, id)
 		);
 		alter table players add column if not exists wins integer not null default 0;
 		alter table players add column if not exists draws integer not null default 0;
 		alter table players add column if not exists losses integer not null default 0;
 		alter table players alter column coupon set default false;
+		alter table players add column if not exists club_member boolean not null default false;
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -292,7 +323,10 @@ func (a *app) migrate(ctx context.Context) error {
 			shuttles integer not null default 0,
 			winner text not null default '',
 			shuttle_sequence text not null default '',
+			shuttle_sequence_items jsonb not null default '[]'::jsonb,
 			shuttle_returned boolean not null default false,
+			returned_shuttle_brand_id text not null default '',
+			returned_shuttle_number integer not null default 0,
 			status text not null default '',
 			started_at text not null default '',
 			ended_at text not null default '',
@@ -303,12 +337,19 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
 		alter table matches add column if not exists winner text not null default '';
 		alter table matches add column if not exists shuttle_sequence text not null default '';
+		alter table matches add column if not exists shuttle_sequence_items jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists shuttle_returned boolean not null default false;
+		alter table matches add column if not exists returned_shuttle_brand_id text not null default '';
+		alter table matches add column if not exists returned_shuttle_number integer not null default 0;
 		create table if not exists returned_shuttles (
 			session_id text not null references sessions(id) on delete cascade,
+			brand_id text not null default 'default',
 			shuttle_number integer not null check (shuttle_number > 0),
-			primary key (session_id, shuttle_number)
+			primary key (session_id, brand_id, shuttle_number)
 		);
+		alter table returned_shuttles add column if not exists brand_id text not null default 'default';
+		alter table returned_shuttles drop constraint if exists returned_shuttles_pkey;
+		alter table returned_shuttles add primary key (session_id, brand_id, shuttle_number);
 		create table if not exists live_share_hours (
 			session_id text not null references sessions(id) on delete cascade,
 			kind text not null check (kind in ('court', 'player', 'shuttle')),
@@ -331,6 +372,12 @@ func (a *app) migrate(ctx context.Context) error {
 			password_hash text not null,
 			verified_at timestamptz,
 			coins integer not null default 0,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists admin_default_settings (
+			admin_id text primary key references admin_users(id) on delete cascade,
+			settings jsonb not null,
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);
@@ -988,9 +1035,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPost && action == "players":
 		var body struct {
-			Name   string `json:"name"`
-			Level  string `json:"level"`
-			Coupon *bool  `json:"coupon"`
+			Name       string `json:"name"`
+			Level      string `json:"level"`
+			Coupon     *bool  `json:"coupon"`
+			ClubMember bool   `json:"clubMember"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
@@ -1004,17 +1052,18 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			coupon = *body.Coupon
 		}
 		state.NextIDs.Player++
-		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon}
+		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember}
 		state.Players = append(state.Players, player)
-		a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon})
+		a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon, "clubMember": player.ClubMember})
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
 		playerID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Name   *string `json:"name"`
-			Paid   *bool   `json:"paid"`
-			Level  *string `json:"level"`
-			Coupon *bool   `json:"coupon"`
-			Active *bool   `json:"active"`
+			Name       *string `json:"name"`
+			Paid       *bool   `json:"paid"`
+			Level      *string `json:"level"`
+			Coupon     *bool   `json:"coupon"`
+			Active     *bool   `json:"active"`
+			ClubMember *bool   `json:"clubMember"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		logDetails := map[string]any{}
@@ -1054,6 +1103,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				if body.Active != nil {
 					logDetails["active"] = *body.Active
 					state.Players[i].Active = *body.Active
+				}
+				if body.ClubMember != nil {
+					logDetails["clubMember"] = *body.ClubMember
+					state.Players[i].ClubMember = *body.ClubMember
 				}
 				if body.Level != nil || body.Coupon != nil {
 					syncCoupledPlayerStatus(&state, state.Players[i].ID)
@@ -1205,18 +1258,24 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "start":
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Court string `json:"court"`
+			Court   string `json:"court"`
+			BrandID string `json:"brandId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body.Court == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "court is required"})
 			return
 		}
-		if !startMatch(&state, matchID, body.Court) {
+		brandID := selectableShuttleBrandID(state, body.BrandID)
+		if brandID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "shuttle brand is required"})
+			return
+		}
+		if !startMatch(&state, matchID, body.Court, brandID) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSavedWithActivity(w, r, state, "start_match", "match", strconv.Itoa(matchID), map[string]any{"court": body.Court})
+		a.respondSavedWithActivity(w, r, state, "start_match", "match", strconv.Itoa(matchID), map[string]any{"court": body.Court, "brandId": brandID})
 	case r.Method == http.MethodDelete && action == "queue" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		if !cancelQueuedMatch(&state, matchID) {
@@ -1227,11 +1286,13 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPatch && action == "live" && len(parts) >= 4 && parts[3] == "shuttles":
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Delta int `json:"delta"`
+			Delta   int    `json:"delta"`
+			BrandID string `json:"brandId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		adjustShuttles(&state, matchID, body.Delta)
-		a.respondSavedWithActivity(w, r, state, "adjust_match_shuttles", "match", strconv.Itoa(matchID), map[string]any{"delta": body.Delta})
+		brandID := selectableShuttleBrandID(state, body.BrandID)
+		adjustShuttles(&state, matchID, body.Delta, brandID)
+		a.respondSavedWithActivity(w, r, state, "adjust_match_shuttles", "match", strconv.Itoa(matchID), map[string]any{"delta": body.Delta, "brandId": brandID})
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 5 && parts[3] == "shuttles" && parts[4] == "return":
 		matchID, _ := strconv.Atoi(parts[2])
 		number, ok := returnLatestShuttle(&state, matchID)
@@ -1308,6 +1369,10 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	if err != nil {
 		return err
 	}
+	shuttleBrands, err := json.Marshal(state.Settings.ShuttleBrands)
+	if err != nil {
+		return err
+	}
 
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1329,13 +1394,15 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
+			club_entry_fee = excluded.club_entry_fee,
 			court_fee_per_hour = excluded.court_fee_per_hour,
 			shuttle_fee = excluded.shuttle_fee,
+			shuttle_brands = excluded.shuttle_brands,
 			session_fee = excluded.session_fee,
 			court_count = excluded.court_count,
 			court_names = excluded.court_names,
@@ -1348,7 +1415,7 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		return err
 	}
 
@@ -1360,9 +1427,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember); err != nil {
 			return err
 		}
 	}
@@ -1377,20 +1444,24 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	}
 	for _, number := range state.ReturnedShuttles {
 		if _, err = tx.ExecContext(ctx, `
-			insert into returned_shuttles (session_id, shuttle_number)
-			values ($1, $2)
-		`, state.Session.ID, number); err != nil {
+			insert into returned_shuttles (session_id, brand_id, shuttle_number)
+			values ($1, $2, $3)
+		`, state.Session.ID, normalizedBrandID(number.BrandID), number.Number); err != nil {
 			return err
 		}
 	}
 
 	insertMatch := func(phase string, match Match) error {
-		_, err := tx.ExecContext(ctx, `
+		seqItems, err := json.Marshal(normalizedShuttleSeqItems(match, state))
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_returned, status, started_at, ended_at, note
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, match.ShuttleReturned, match.Status, match.StartedAt, match.EndedAt, match.Note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -1463,15 +1534,17 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	state.UpdatedAt = updatedAt
 	applySessionValidity(&state, createdAt)
 
-	var courtNamesRaw, levelsRaw []byte
+	var courtNamesRaw, levelsRaw, shuttleBrandsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
 		&state.Settings.EntryFee,
+		&state.Settings.ClubEntryFee,
 		&state.Settings.CourtFeePerHour,
 		&state.Settings.ShuttleFee,
+		&shuttleBrandsRaw,
 		&state.Settings.SessionFee,
 		&state.Settings.CourtCount,
 		&courtNamesRaw,
@@ -1494,11 +1567,14 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	if len(levelsRaw) > 0 {
 		_ = json.Unmarshal(levelsRaw, &state.Settings.Levels)
 	}
+	if len(shuttleBrandsRaw) > 0 {
+		_ = json.Unmarshal(shuttleBrandsRaw, &state.Settings.ShuttleBrands)
+	}
 	normalizeSettings(&state.Settings)
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon
+		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member
 		from players
 		where session_id = $1
 		order by id
@@ -1509,7 +1585,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember); err != nil {
 			return SessionState{}, err
 		}
 		state.Players = append(state.Players, player)
@@ -1546,7 +1622,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_returned, status, started_at, ended_at, note
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note
 		from matches
 		where session_id = $1
 		order by id
@@ -1558,9 +1634,14 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var phase string
 		var match Match
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &match.ShuttleReturned, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
+		var seqItemsRaw []byte
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
 			return SessionState{}, err
 		}
+		if len(seqItemsRaw) > 0 {
+			_ = json.Unmarshal(seqItemsRaw, &match.ShuttleSeqItems)
+		}
+		match.ShuttleSeqItems = normalizedShuttleSeqItems(match, state)
 		switch phase {
 		case "pending":
 			state.Pending = append(state.Pending, match)
@@ -1583,21 +1664,22 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select shuttle_number
+		select brand_id, shuttle_number
 		from returned_shuttles
 		where session_id = $1
-		order by shuttle_number
+		order by brand_id, shuttle_number
 	`, id)
 	if err != nil {
 		return SessionState{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var number int
-		if err := rows.Scan(&number); err != nil {
+		var item ReturnedShuttle
+		if err := rows.Scan(&item.BrandID, &item.Number); err != nil {
 			return SessionState{}, err
 		}
-		state.ReturnedShuttles = append(state.ReturnedShuttles, number)
+		item.BrandID = normalizedBrandID(item.BrandID)
+		state.ReturnedShuttles = append(state.ReturnedShuttles, item)
 	}
 	if err := rows.Err(); err != nil {
 		return SessionState{}, err
@@ -1651,12 +1733,14 @@ func defaultState(id, name, passcode string) SessionState {
 		},
 		Settings: Settings{
 			EntryFee:                120,
+			ClubEntryFee:            120,
 			CourtFeePerHour:         150,
 			ShuttleFee:              85,
+			ShuttleBrands:           []ShuttleBrand{{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: 85, Active: true}},
 			SessionFee:              0,
 			CourtCount:              4,
 			CourtNames:              []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
-			Levels:                  []string{"light", "middle", "heavy"},
+			Levels:                  []string{"เบา", "กลาง", "หนัก"},
 			AllowCrossLevel:         true,
 			CrossLevelRange:         1,
 			RandomPriority:          "level",
@@ -1944,7 +2028,15 @@ func keepCouplesTogether(ids []int, couples []Couple) []int {
 	return ids
 }
 
-func startMatch(state *SessionState, matchID int, court string) bool {
+func startMatch(state *SessionState, matchID int, court string, brandIDs ...string) bool {
+	brandID := ""
+	if len(brandIDs) > 0 {
+		brandID = brandIDs[0]
+	}
+	brandID = selectableShuttleBrandID(*state, brandID)
+	if brandID == "" {
+		brandID = defaultShuttleBrandID
+	}
 	for i, match := range state.Queue {
 		if match.ID == matchID {
 			if !matchLevelsAllowed(*state, match) {
@@ -1954,9 +2046,12 @@ func startMatch(state *SessionState, matchID int, court string) bool {
 			match.Court = court
 			match.Shuttles = 0
 			match.ShuttleSeq = ""
+			match.ShuttleSeqItems = []ShuttleSeqItem{}
 			if state.Settings.StartMatchWithShuttle {
 				match.Shuttles = 1
-				match.ShuttleSeq = appendShuttleNumber(match.ShuttleSeq, nextShuttleNumber(state))
+				number := nextShuttleNumber(state, brandID)
+				match.ShuttleSeqItems = append(match.ShuttleSeqItems, ShuttleSeqItem{BrandID: normalizedBrandID(brandID), Number: number})
+				match.ShuttleSeq = appendShuttleNumber(match.ShuttleSeq, number)
 			}
 			match.Status = "กำลังเล่น"
 			match.StartedAt = nowHHMM()
@@ -2090,15 +2185,24 @@ func cancelQueuedMatch(state *SessionState, matchID int) bool {
 	return false
 }
 
-func adjustShuttles(state *SessionState, matchID, delta int) {
+func adjustShuttles(state *SessionState, matchID, delta int, brandIDs ...string) {
+	brandID := ""
+	if len(brandIDs) > 0 {
+		brandID = brandIDs[0]
+	}
 	for i := range state.Live {
 		if state.Live[i].ID == matchID {
 			if delta <= 0 {
 				return
 			}
+			brandID = selectableShuttleBrandID(*state, brandID)
+			if brandID == "" {
+				return
+			}
 			for range delta {
-				nextNumber := nextShuttleNumber(state)
+				nextNumber := nextShuttleNumber(state, brandID)
 				state.Live[i].Shuttles++
+				state.Live[i].ShuttleSeqItems = append(state.Live[i].ShuttleSeqItems, ShuttleSeqItem{BrandID: normalizedBrandID(brandID), Number: nextNumber})
 				state.Live[i].ShuttleSeq = appendShuttleNumber(state.Live[i].ShuttleSeq, nextNumber)
 			}
 			return
@@ -2109,23 +2213,26 @@ func adjustShuttles(state *SessionState, matchID, delta int) {
 func returnLatestShuttle(state *SessionState, matchID int) (int, bool) {
 	for i := range state.Live {
 		match := &state.Live[i]
-		numbers := shuttleSequenceNumbers(match.ShuttleSeq)
-		if match.ID != matchID || match.Shuttles <= 1 || len(numbers) <= 1 {
+		items := normalizedShuttleSeqItems(*match, *state)
+		if match.ID != matchID || match.Shuttles <= 1 || len(items) <= 1 {
 			continue
 		}
-		number := numbers[len(numbers)-1]
-		numbers = numbers[:len(numbers)-1]
-		parts := make([]string, 0, len(numbers))
-		for _, item := range numbers {
-			parts = append(parts, strconv.Itoa(item))
+		returned := items[len(items)-1]
+		items = items[:len(items)-1]
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			parts = append(parts, strconv.Itoa(item.Number))
 		}
 		match.Shuttles--
+		match.ShuttleSeqItems = items
 		match.ShuttleSeq = strings.Join(parts, ",")
-		if !slices.Contains(state.ReturnedShuttles, number) {
-			state.ReturnedShuttles = append(state.ReturnedShuttles, number)
-			slices.Sort(state.ReturnedShuttles)
+		match.ReturnedShuttleBrandID = normalizedBrandID(returned.BrandID)
+		match.ReturnedShuttleNumber = returned.Number
+		if !returnedShuttleContains(state.ReturnedShuttles, ReturnedShuttle{BrandID: returned.BrandID, Number: returned.Number}) {
+			state.ReturnedShuttles = append(state.ReturnedShuttles, ReturnedShuttle{BrandID: normalizedBrandID(returned.BrandID), Number: returned.Number})
+			sortReturnedShuttles(state.ReturnedShuttles)
 		}
-		return number, true
+		return returned.Number, true
 	}
 	return 0, false
 }
@@ -2154,6 +2261,18 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 			match.Winner = ""
 			match.Status = "cancelled"
 			match.ShuttleReturned = shuttleReturned && match.Shuttles > 0 && match.ShuttleSeq != ""
+			if match.ShuttleReturned {
+				items := normalizedShuttleSeqItems(match, *state)
+				if len(items) > 0 {
+					last := items[len(items)-1]
+					match.ReturnedShuttleBrandID = normalizedBrandID(last.BrandID)
+					match.ReturnedShuttleNumber = last.Number
+					if !returnedShuttleContains(state.ReturnedShuttles, ReturnedShuttle{BrandID: last.BrandID, Number: last.Number}) {
+						state.ReturnedShuttles = append(state.ReturnedShuttles, ReturnedShuttle{BrandID: normalizedBrandID(last.BrandID), Number: last.Number})
+						sortReturnedShuttles(state.ReturnedShuttles)
+					}
+				}
+			}
 		}
 		for j := range state.Players {
 			if slices.Contains(matchPlayers(match), state.Players[j].ID) && (!cancelled || !match.ShuttleReturned) {
@@ -2371,7 +2490,7 @@ func totalRevenue(state SessionState) int {
 	share := sessionFeeShare(state)
 	for _, player := range state.Players {
 		if player.Active {
-			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee + share
+			total += playerEntryFee(state, player) + playerShuttleCost(state, player.ID) + share
 		}
 	}
 	return total
@@ -2391,7 +2510,43 @@ func paidRevenue(state SessionState) int {
 	share := sessionFeeShare(state)
 	for _, player := range state.Players {
 		if player.Active && player.Paid {
-			total += state.Settings.EntryFee + player.Shuttles*state.Settings.ShuttleFee + share
+			total += playerEntryFee(state, player) + playerShuttleCost(state, player.ID) + share
+		}
+	}
+	return total
+}
+
+func playerEntryFee(state SessionState, player Player) int {
+	if player.ClubMember {
+		return state.Settings.ClubEntryFee
+	}
+	return state.Settings.EntryFee
+}
+
+func shuttleBrandPrice(state SessionState, brandID string) int {
+	brandID = normalizedBrandID(brandID)
+	for _, brand := range state.Settings.ShuttleBrands {
+		if normalizedBrandID(brand.ID) == brandID {
+			return brand.Price
+		}
+	}
+	return state.Settings.ShuttleFee
+}
+
+func playerShuttleCost(state SessionState, playerID int) int {
+	total := 0
+	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
+		if !slices.Contains(matchPlayers(match), playerID) {
+			continue
+		}
+		if isCancelledMatch(match) && match.ShuttleReturned {
+			continue
+		}
+		for _, item := range normalizedShuttleSeqItems(match, state) {
+			total += shuttleBrandPrice(state, item.BrandID)
+		}
+		if len(normalizedShuttleSeqItems(match, state)) == 0 {
+			total += match.Shuttles * state.Settings.ShuttleFee
 		}
 	}
 	return total
@@ -2602,29 +2757,35 @@ func appendShuttleNumber(sequence string, number int) string {
 	return sequence + "," + strconv.Itoa(number)
 }
 
-func nextShuttleNumber(state *SessionState) int {
-	if len(state.ReturnedShuttles) > 0 {
-		slices.Sort(state.ReturnedShuttles)
-		number := state.ReturnedShuttles[0]
-		state.ReturnedShuttles = state.ReturnedShuttles[1:]
-		return number
+func nextShuttleNumber(state *SessionState, brandID string) int {
+	brandID = normalizedBrandID(brandID)
+	sortReturnedShuttles(state.ReturnedShuttles)
+	for index, item := range state.ReturnedShuttles {
+		if normalizedBrandID(item.BrandID) == brandID {
+			state.ReturnedShuttles = append(state.ReturnedShuttles[:index], state.ReturnedShuttles[index+1:]...)
+			return item.Number
+		}
 	}
 	maxNumber := 0
 	legacyCount := 0
 	allocationCount := map[int]int{}
 	returnCount := map[int]int{}
 	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
-		if sequenceMax := maxShuttleSequenceNumber(match.ShuttleSeq); sequenceMax > maxNumber {
-			maxNumber = sequenceMax
-		}
-		if match.ShuttleSeq == "" {
+		items := normalizedShuttleSeqItems(match, *state)
+		if len(items) == 0 {
 			legacyCount += match.Shuttles
 			continue
 		}
-		for _, number := range shuttleSequenceNumbers(match.ShuttleSeq) {
-			allocationCount[number]++
-			if match.Status == "cancelled" && match.ShuttleReturned {
-				returnCount[number]++
+		for _, item := range items {
+			if normalizedBrandID(item.BrandID) != brandID {
+				continue
+			}
+			if item.Number > maxNumber {
+				maxNumber = item.Number
+			}
+			allocationCount[item.Number]++
+			if match.Status == "cancelled" && match.ShuttleReturned && normalizedBrandID(match.ReturnedShuttleBrandID) == brandID {
+				returnCount[item.Number]++
 			}
 		}
 	}
@@ -2637,6 +2798,92 @@ func nextShuttleNumber(state *SessionState) int {
 		return legacyCount + 1
 	}
 	return maxNumber + 1
+}
+
+func normalizedBrandID(brandID string) string {
+	if strings.TrimSpace(brandID) == "" {
+		return defaultShuttleBrandID
+	}
+	return strings.TrimSpace(brandID)
+}
+
+func defaultShuttleBrand(settings Settings) ShuttleBrand {
+	price := settings.ShuttleFee
+	if price <= 0 {
+		price = 85
+	}
+	return ShuttleBrand{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: price, Active: true}
+}
+
+func activeShuttleBrands(settings Settings) []ShuttleBrand {
+	brands := []ShuttleBrand{}
+	for _, brand := range settings.ShuttleBrands {
+		if brand.Active {
+			brands = append(brands, brand)
+		}
+	}
+	return brands
+}
+
+func selectableShuttleBrandID(state SessionState, brandID string) string {
+	rawBrandID := strings.TrimSpace(brandID)
+	brandID = normalizedBrandID(brandID)
+	active := activeShuttleBrands(state.Settings)
+	if len(active) == 0 {
+		return defaultShuttleBrandID
+	}
+	if len(active) == 1 && rawBrandID == "" {
+		return normalizedBrandID(active[0].ID)
+	}
+	if rawBrandID == "" && len(active) > 1 {
+		return ""
+	}
+	for _, brand := range active {
+		if normalizedBrandID(brand.ID) == brandID {
+			return brandID
+		}
+	}
+	if len(active) == 1 {
+		return normalizedBrandID(active[0].ID)
+	}
+	return ""
+}
+
+func normalizedShuttleSeqItems(match Match, state SessionState) []ShuttleSeqItem {
+	items := []ShuttleSeqItem{}
+	for _, item := range match.ShuttleSeqItems {
+		if item.Number > 0 {
+			items = append(items, ShuttleSeqItem{BrandID: normalizedBrandID(item.BrandID), Number: item.Number})
+		}
+	}
+	if len(items) > 0 {
+		return items
+	}
+	for _, number := range shuttleSequenceNumbers(match.ShuttleSeq) {
+		items = append(items, ShuttleSeqItem{BrandID: defaultShuttleBrandID, Number: number})
+	}
+	return items
+}
+
+func returnedShuttleContains(items []ReturnedShuttle, target ReturnedShuttle) bool {
+	for _, item := range items {
+		if normalizedBrandID(item.BrandID) == normalizedBrandID(target.BrandID) && item.Number == target.Number {
+			return true
+		}
+	}
+	return false
+}
+
+func sortReturnedShuttles(items []ReturnedShuttle) {
+	slices.SortFunc(items, func(a, b ReturnedShuttle) int {
+		if normalizedBrandID(a.BrandID) < normalizedBrandID(b.BrandID) {
+			return -1
+		}
+		if normalizedBrandID(a.BrandID) > normalizedBrandID(b.BrandID) {
+			return 1
+		}
+		return a.Number - b.Number
+	})
 }
 
 func shuttleSequenceNumbers(sequence string) []int {
@@ -2750,6 +2997,12 @@ func normalizeSettings(settings *Settings) {
 	if settings.EntryFee < 0 {
 		settings.EntryFee = 0
 	}
+	if settings.ClubEntryFee < 0 {
+		settings.ClubEntryFee = 0
+	}
+	if settings.ClubEntryFee == 0 {
+		settings.ClubEntryFee = settings.EntryFee
+	}
 	if settings.CourtFeePerHour < 0 {
 		settings.CourtFeePerHour = 0
 	}
@@ -2759,6 +3012,28 @@ func normalizeSettings(settings *Settings) {
 	if settings.ShuttleFee < 0 {
 		settings.ShuttleFee = 0
 	}
+	brands := []ShuttleBrand{}
+	seenBrands := map[string]bool{}
+	for _, brand := range settings.ShuttleBrands {
+		brand.ID = normalizedBrandID(brand.ID)
+		brand.Name = strings.TrimSpace(brand.Name)
+		if brand.Name == "" || seenBrands[brand.ID] {
+			continue
+		}
+		if brand.Price < 0 {
+			brand.Price = 0
+		}
+		seenBrands[brand.ID] = true
+		brands = append(brands, brand)
+	}
+	if len(brands) == 0 {
+		brands = []ShuttleBrand{defaultShuttleBrand(*settings)}
+	}
+	if len(activeShuttleBrands(Settings{ShuttleBrands: brands})) == 0 {
+		brands[0].Active = true
+	}
+	settings.ShuttleBrands = brands
+	settings.ShuttleFee = settings.ShuttleBrands[0].Price
 	if settings.SessionFee < 0 {
 		settings.SessionFee = 0
 	}
@@ -2767,7 +3042,7 @@ func normalizeSettings(settings *Settings) {
 	}
 	settings.CourtCount = len(settings.CourtNames)
 	if len(settings.Levels) == 0 {
-		settings.Levels = []string{"light", "middle", "heavy"}
+		settings.Levels = []string{"เบา", "กลาง", "หนัก"}
 	}
 	settings.CrossLevelRange = 1
 	if settings.RandomPriority != "games" {

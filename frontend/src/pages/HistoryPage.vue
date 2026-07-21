@@ -7,6 +7,9 @@ const props = defineProps([
   'state',
   'playerName',
   'matchLevelLabel',
+  'shuttleBrandName',
+  'matchShuttleSummary',
+  'matchShuttleSequenceText',
   'updateHistoryWinner',
   'isSessionReadOnly'
 ])
@@ -14,6 +17,9 @@ const props = defineProps([
 const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
 const exportLoading = ref(false)
 const exportError = ref('')
+const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.settings?.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
+const shuttleSummary = (match) => props.matchShuttleSummary?.(match) || ''
+const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) || match?.shuttleSequence || '-'
 
 function winnerText(match) {
   if (!match.winner) return '-'
@@ -87,6 +93,7 @@ async function exportExcel() {
             class="ml-2 mt-2 inline-flex rounded-md bg-shuttle-400/20 px-2 py-1 text-xs font-black text-amber-800 dark:text-shuttle-400"
           >
             คืนลูกแล้ว
+            <span v-if="match.returnedShuttleNumber"> · {{ brandName(match.returnedShuttleBrandId) }} #{{ match.returnedShuttleNumber }}</span>
           </span>
         </div>
         <div class="text-right">
@@ -126,10 +133,11 @@ async function exportExcel() {
           <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
             <p class="text-xs text-stone-500 dark:text-stone-400">ลูกแบด</p>
             <p class="font-black">{{ match.shuttles }}</p>
+            <p v-if="shuttleSummary(match)" class="text-[11px] font-bold text-stone-500 dark:text-stone-400">{{ shuttleSummary(match) }}</p>
           </div>
           <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
             <p class="text-xs text-stone-500 dark:text-stone-400">Sequence</p>
-            <p class="font-black">{{ match.shuttleSequence || '-' }}</p>
+            <p class="font-black">{{ shuttleSequenceText(match) }}</p>
           </div>
         </div>
 

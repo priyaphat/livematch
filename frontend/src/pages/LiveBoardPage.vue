@@ -1,7 +1,7 @@
 <script setup>
 import { Check, Plus, RotateCcw, X } from '@lucide/vue'
 
-defineProps([
+const props = defineProps([
   'state',
   'forms',
   'ui',
@@ -9,6 +9,11 @@ defineProps([
   'requestAddShuttle',
   'confirmAddShuttle',
   'latestShuttleNumber',
+  'latestShuttleBrandId',
+  'activeShuttleBrands',
+  'shuttleBrandName',
+  'matchShuttleSummary',
+  'matchShuttleSequenceText',
   'requestReturnShuttle',
   'confirmReturnShuttle',
   'requestFinishMatch',
@@ -17,6 +22,13 @@ defineProps([
   'confirmCancelMatch',
   'isSessionReadOnly'
 ])
+
+const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.settings?.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
+const shuttleSummary = (match) => props.matchShuttleSummary?.(match) || ''
+const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) || match?.shuttleSequence || '-'
+const latestBrandId = (match) => props.latestShuttleBrandId?.(match) || match?.shuttleSequenceItems?.at?.(-1)?.brandId || 'default'
+if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId = ''
 </script>
 
 <template>
@@ -27,8 +39,12 @@ defineProps([
           <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · {{ match.court }} · {{ match.status }}</p>
           <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
         </div>
-        <span class="rounded-md bg-shuttle-400 px-3 py-1 text-sm font-bold text-stone-900">ลูกแบด {{ match.shuttles }}<span v-if="match.shuttleSequence"> · {{ match.shuttleSequence }}</span></span>
+        <span class="rounded-md bg-shuttle-400 px-3 py-1 text-sm font-bold text-stone-900">ลูกแบด {{ match.shuttles }}<span v-if="shuttleSummary(match)"> · {{ shuttleSummary(match) }}</span></span>
       </div>
+      <details v-if="match.shuttles" class="mt-3 rounded-md bg-paper-100 p-3 text-sm dark:bg-stone-800">
+        <summary class="cursor-pointer font-bold">ดู sequence ลูกแบด</summary>
+        <p class="mt-2 text-stone-600 dark:text-stone-300">{{ shuttleSequenceText(match) }}</p>
+      </details>
 
       <div class="mt-4 flex flex-wrap gap-2">
         <button class="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-3 font-semibold disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" @click="requestAddShuttle(match)">
@@ -62,6 +78,13 @@ defineProps([
           </button>
         </div>
 
+        <label v-if="activeBrands().length > 1" class="mt-4 grid gap-2 text-sm font-bold">
+          ยี่ห้อลูกแบด
+          <select v-model="forms.addShuttleBrandId" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
+            <option v-for="brand in activeBrands()" :key="brand.id" :value="brand.id">{{ brand.name }}</option>
+          </select>
+        </label>
+
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showShuttleModal = false">กลับ</button>
           <button class="h-11 rounded-md bg-shuttle-400 font-bold text-stone-950 disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmAddShuttle">เพิ่มลูกแบด</button>
@@ -74,7 +97,7 @@ defineProps([
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="text-lg font-black">ยืนยันคืนลูกแบด</h2>
-            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">คืนลูกหมายเลข {{ latestShuttleNumber(ui.returnShuttleMatch) }} แล้วนำกลับไปใช้ในเกมถัดไป</p>
+            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">คืนลูกหมายเลข {{ latestShuttleNumber(ui.returnShuttleMatch) }} · {{ brandName(latestBrandId(ui.returnShuttleMatch)) }} #{{ latestShuttleNumber(ui.returnShuttleMatch) }} แล้วนำกลับไปใช้ในเกมถัดไป</p>
           </div>
           <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal คืนลูก" @click="ui.showReturnShuttleModal = false">
             <X class="h-4 w-4" />

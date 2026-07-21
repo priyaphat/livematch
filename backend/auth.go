@@ -242,15 +242,70 @@ func (a *app) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUser) {
 	sessions, _ := a.adminSessions(r.Context(), user.ID)
 	ledger, _ := a.coinLedger(r.Context(), user.ID, 8)
+	defaultSettings, _ := a.adminDefaultSettings(r.Context(), user.ID)
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
 		"coinLedger":           ledger,
+		"defaultSettings":      defaultSettings,
 		"liveMatchSessionCost": nullableCost(liveMatchCost, hasLiveMatchCost),
 		"liveShareSessionCost": nullableCost(liveShareCost, hasLiveShareCost),
 	})
+}
+
+func defaultAdminSettings() Settings {
+	settings := defaultState("", "", "").Settings
+	normalizeSettings(&settings)
+	return settings
+}
+
+func normalizeAdminDefaultSettings(settings *Settings) {
+	normalizeSettings(settings)
+	courts := []string{}
+	for _, court := range settings.CourtNames {
+		if name := strings.TrimSpace(court); name != "" {
+			courts = append(courts, name)
+		}
+	}
+	if len(courts) == 0 {
+		courts = []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"}
+	}
+	settings.CourtNames = courts
+	settings.CourtCount = len(courts)
+	levels := []string{}
+	for _, level := range settings.Levels {
+		if name := strings.TrimSpace(level); name != "" {
+			levels = append(levels, name)
+		}
+	}
+	if len(levels) == 0 {
+		levels = []string{"เบา", "กลาง", "หนัก"}
+	}
+	settings.Levels = levels
+	if strings.TrimSpace(settings.AnnouncementTemplate) == "" {
+		settings.AnnouncementTemplate = defaultAnnouncementTemplate
+	}
+}
+
+func (a *app) adminDefaultSettings(ctx context.Context, adminID string) (Settings, error) {
+	settings := defaultAdminSettings()
+	var raw []byte
+	err := a.db.QueryRowContext(ctx, `
+		select settings from admin_default_settings where admin_id = $1
+	`, adminID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return settings, nil
+	}
+	if err != nil {
+		return settings, err
+	}
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &settings)
+	}
+	normalizeAdminDefaultSettings(&settings)
+	return settings, nil
 }
 
 func (a *app) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
@@ -380,6 +435,8 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 	switch {
 	case r.Method == http.MethodGet && action == "supervisor":
 		a.writeAdminMe(w, r, user)
+	case r.Method == http.MethodPut && action == "default-settings":
+		a.handleAdminDefaultSettings(w, r, user)
 	case r.Method == http.MethodPost && action == "sessions":
 		a.handleCreateOwnedSession(w, r, user)
 	case r.Method == http.MethodGet && action == "coin-shop":
@@ -391,6 +448,40 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
+	var settings Settings
+	_ = json.NewDecoder(r.Body).Decode(&settings)
+	normalizeAdminDefaultSettings(&settings)
+	raw, err := json.Marshal(settings)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid default settings"})
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(r.Context(), `
+		insert into admin_default_settings (admin_id, settings)
+		values ($1, $2)
+		on conflict (admin_id) do update set settings = excluded.settings, updated_at = now()
+	`, user.ID, raw); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "update_admin_default_settings", "admin_default_settings", user.ID, map[string]any{"courtCount": len(settings.CourtNames), "levelCount": len(settings.Levels), "shuttleBrandCount": len(settings.ShuttleBrands)}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	a.writeAdminMe(w, r, user)
 }
 
 func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, user adminUser) {
@@ -420,6 +511,23 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	id := "session-" + randHex(6)
 	state := defaultState(id, name, "")
 	state.Session.Type = sessionType
+	defaultSettings, err := a.adminDefaultSettings(r.Context(), user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	state.Settings.EntryFee = defaultSettings.EntryFee
+	state.Settings.ClubEntryFee = defaultSettings.ClubEntryFee
+	state.Settings.CourtFeePerHour = defaultSettings.CourtFeePerHour
+	state.Settings.ShuttleFee = defaultSettings.ShuttleFee
+	state.Settings.ShuttleBrands = defaultSettings.ShuttleBrands
+	state.Settings.CourtNames = append([]string{}, defaultSettings.CourtNames...)
+	state.Settings.CourtCount = len(state.Settings.CourtNames)
+	if sessionType == "liveMatch" {
+		state.Settings.AnnouncementTemplate = defaultSettings.AnnouncementTemplate
+		state.Settings.Levels = append([]string{}, defaultSettings.Levels...)
+	}
+	normalizeSettings(&state.Settings)
 	if sessionType == "liveShare" {
 		state.Settings.StartMatchWithShuttle = false
 	}
@@ -427,6 +535,7 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	stateJSON, _ := json.Marshal(state)
 	courtNames, _ := json.Marshal(state.Settings.CourtNames)
 	levels, _ := json.Marshal(state.Settings.Levels)
+	shuttleBrands, _ := json.Marshal(state.Settings.ShuttleBrands)
 
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -457,9 +566,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into session_settings (
-			session_id, entry_fee, court_fee_per_hour, shuttle_fee, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, reset_players_after_finish, start_match_with_shuttle
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-	`, id, state.Settings.EntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle); err != nil {
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
