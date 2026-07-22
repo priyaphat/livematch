@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import HeroBackground from '../components/HeroBackground.vue'
 import {
   Activity,
+  CalendarDays,
   BarChart3,
   CheckCircle2,
   ChevronLeft,
@@ -31,6 +32,7 @@ const props = defineProps([
   'createSession',
   'openOwnedSession',
   'refreshAdminSupervisor',
+  'navigateAdminFeature',
   'saveAdminDefaultSettings',
   'addAdminDefaultShuttleBrand',
   'removeAdminDefaultShuttleBrand',
@@ -167,7 +169,22 @@ const closeAdminDefaultSettingsModal = () => {
           สร้าง session
         </button>
       </div>
-    </header>
+  </header>
+
+    <section v-if="auth.features?.memberEnabled || auth.features?.bookingEnabled" class="grid gap-3 sm:grid-cols-2">
+      <button v-if="auth.features?.memberEnabled" class="group rounded-xl border border-court-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-court-500 dark:border-court-900 dark:bg-stone-900" @click="navigateAdminFeature('members')">
+        <span class="grid h-12 w-12 place-items-center rounded-xl bg-court-500/10 text-court-700 dark:text-court-300"><Users class="h-6 w-6" /></span>
+        <h2 class="mt-4 text-xl font-black">ระบบสมาชิก</h2>
+        <p class="mt-1 text-sm font-semibold text-stone-500">จัดการรายชื่อ โปรไฟล์ และประวัติสมาชิก</p>
+        <p class="mt-3 text-sm font-black text-court-700 dark:text-court-300">{{ Number(auth.memberCount || 0).toLocaleString('th-TH') }} สมาชิก →</p>
+      </button>
+      <button v-if="auth.features?.bookingEnabled" class="group rounded-xl border border-sky-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-sky-500 dark:border-sky-900 dark:bg-stone-900" @click="navigateAdminFeature('booking')">
+        <span class="grid h-12 w-12 place-items-center rounded-xl bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300"><CalendarDays class="h-6 w-6" /></span>
+        <h2 class="mt-4 text-xl font-black">ระบบจองสนาม</h2>
+        <p class="mt-1 text-sm font-semibold text-stone-500">ตารางสนาม การชำระเงิน และอนุมัติการจอง</p>
+        <p class="mt-3 text-sm font-black text-sky-700 dark:text-sky-300">{{ Number(auth.bookingCount || 0).toLocaleString('th-TH') }} รายการ →</p>
+      </button>
+    </section>
 
     <div v-if="ui.showAdminDefaultSettingsModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="ค่าเริ่มต้น Session ใหม่" @click.self="closeAdminDefaultSettingsModal">
     <section class="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">

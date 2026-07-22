@@ -20,7 +20,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const adminCookieName = "livematch_admin_session"
+const (
+	adminCookieName      = "livematch_admin_session"
+	backofficeCookieName = "livematch_backoffice_session"
+)
 
 var (
 	errCoinOrderNotFound           = errors.New("coin order not found")
@@ -272,6 +275,10 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	benefits, _ := a.adminBenefits(r.Context(), user.ID, false)
+	features := a.features(r.Context(), user.ID)
+	memberCount, bookingCount := 0, 0
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, user.ID).Scan(&memberCount)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, user.ID).Scan(&bookingCount)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
@@ -280,6 +287,9 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 		"liveMatchSessionCost": nullableCost(liveMatchCost, hasLiveMatchCost),
 		"liveShareSessionCost": nullableCost(liveShareCost, hasLiveShareCost),
 		"benefits":             benefits,
+		"features":             features,
+		"memberCount":          memberCount,
+		"bookingCount":         bookingCount,
 	})
 }
 
@@ -473,6 +483,10 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.handleAdminCoinOrders(w, r, user)
 	case r.Method == http.MethodPost && action == "coin-orders":
 		a.handleCreateCoinOrder(w, r, user)
+	case strings.HasPrefix(action, "members"):
+		a.handleAdminMembers(w, r, user, action)
+	case strings.HasPrefix(action, "booking"):
+		a.handleAdminBooking(w, r, user, action)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -906,13 +920,22 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	backofficeUser, ok := a.authenticateBackoffice(r)
+	backofficeUser, ok := a.authenticateBackofficeSession(r)
+	if !ok {
+		backofficeUser, ok = a.authenticateBackoffice(r)
+		if ok {
+			a.issueBackofficeSession(w, r, backofficeUser)
+		}
+	}
 	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid backoffice login"})
 		return
 	}
 	action := strings.TrimPrefix(r.URL.Path, "/api/backoffice/")
 	switch {
+	case r.Method == http.MethodPost && action == "logout":
+		a.clearBackofficeSession(w, r)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	case r.Method == http.MethodGet && action == "summary":
 		a.handleBackofficeSummary(w, r)
 	case r.Method == http.MethodGet && action == "activity-logs":
@@ -933,6 +956,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeAdminSubscriptionCancel(w, r, backofficeUser)
 	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/"):
 		a.handleBackofficeAdminDetail(w, r)
+	case r.Method == http.MethodPatch && strings.HasPrefix(action, "admins/") && strings.HasSuffix(action, "/features"):
+		a.handleBackofficeAdminFeatures(w, r, backofficeUser)
 	case r.Method == http.MethodPut && action == "settings":
 		a.handleBackofficeSettings(w, r, backofficeUser)
 	case r.Method == http.MethodPut && action == "coin-shop":
@@ -1133,12 +1158,19 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 	ledger, _ := a.coinLedger(r.Context(), adminID, 20)
 	orders, _ := a.coinPurchaseOrders(r.Context(), adminID, true, 20)
 	benefits, _ := a.adminBenefits(r.Context(), adminID, true)
+	features := a.features(r.Context(), adminID)
+	memberCount, bookingCount := 0, 0
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, adminID).Scan(&memberCount)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, adminID).Scan(&bookingCount)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":       user,
-		"sessions":   sessions,
-		"coinLedger": ledger,
-		"orders":     orders,
-		"benefits":   benefits,
+		"user":         user,
+		"sessions":     sessions,
+		"coinLedger":   ledger,
+		"orders":       orders,
+		"benefits":     benefits,
+		"features":     features,
+		"memberCount":  memberCount,
+		"bookingCount": bookingCount,
 	})
 }
 
@@ -1849,6 +1881,15 @@ func (a *app) systemSetting(ctx context.Context, key string) (string, error) {
 }
 
 func (a *app) insertActivityLogTx(ctx context.Context, tx *sql.Tx, actorType, actorID, action, targetType, targetID string, details map[string]any) error {
+	if details == nil {
+		details = map[string]any{}
+	}
+	if requestID, ok := ctx.Value(requestIDContextKey).(string); ok && requestID != "" {
+		details["requestId"] = requestID
+	}
+	if requestIP, ok := ctx.Value(requestIPContextKey).(string); ok && requestIP != "" {
+		details["ip"] = requestIP
+	}
 	rawDetails, err := json.Marshal(details)
 	if err != nil {
 		return err
@@ -1861,6 +1902,15 @@ func (a *app) insertActivityLogTx(ctx context.Context, tx *sql.Tx, actorType, ac
 }
 
 func (a *app) insertActivityLog(ctx context.Context, actorType, actorID, action, targetType, targetID string, details map[string]any) {
+	if details == nil {
+		details = map[string]any{}
+	}
+	if requestID, ok := ctx.Value(requestIDContextKey).(string); ok && requestID != "" {
+		details["requestId"] = requestID
+	}
+	if requestIP, ok := ctx.Value(requestIPContextKey).(string); ok && requestIP != "" {
+		details["ip"] = requestIP
+	}
 	rawDetails, err := json.Marshal(details)
 	if err != nil {
 		return
@@ -1979,6 +2029,40 @@ func (a *app) authenticateBackoffice(r *http.Request) (string, bool) {
 	return username, true
 }
 
+func (a *app) authenticateBackofficeSession(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie(backofficeCookieName)
+	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+		return "", false
+	}
+	var username string
+	err = a.db.QueryRowContext(r.Context(), `
+		select s.username
+		from backoffice_sessions s
+		join backoffice_users u on u.username=s.username
+		where s.token_hash=$1 and s.expires_at>now() and u.active
+	`, tokenDigest(cookie.Value)).Scan(&username)
+	return username, err == nil
+}
+
+func (a *app) issueBackofficeSession(w http.ResponseWriter, r *http.Request, username string) {
+	token := randHex(24)
+	expiresAt := time.Now().Add(30 * 24 * time.Hour)
+	if _, err := a.db.ExecContext(r.Context(), `insert into backoffice_sessions (token_hash,username,expires_at) values ($1,$2,$3)`, tokenDigest(token), username, expiresAt); err != nil {
+		return
+	}
+	_, _ = a.db.ExecContext(r.Context(), `delete from backoffice_sessions where expires_at<=now()`)
+	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
+	http.SetCookie(w, &http.Cookie{Name: backofficeCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: int((30 * 24 * time.Hour).Seconds())})
+}
+
+func (a *app) clearBackofficeSession(w http.ResponseWriter, r *http.Request) {
+	if cookie, err := r.Cookie(backofficeCookieName); err == nil && strings.TrimSpace(cookie.Value) != "" {
+		_, _ = a.db.ExecContext(r.Context(), `delete from backoffice_sessions where token_hash=$1`, tokenDigest(cookie.Value))
+	}
+	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
+	http.SetCookie(w, &http.Cookie{Name: backofficeCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: -1})
+}
+
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
 }
@@ -2004,25 +2088,27 @@ func readAdminCookie(r *http.Request) (string, bool) {
 }
 
 func setAdminCookie(w http.ResponseWriter, r *http.Request, token string) {
+	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
 	})
 }
 
 func clearAdminCookie(w http.ResponseWriter, r *http.Request) {
+	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminCookieName,
 		Value:    "",
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
-		Secure:   r.TLS != nil,
+		Secure:   secure,
 		MaxAge:   -1,
 	})
 }

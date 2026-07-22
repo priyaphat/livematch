@@ -18,7 +18,8 @@ const props = defineProps([
   'openPlayersQr',
   'saveSettings',
   'togglePayment',
-  'isSessionReadOnly'
+  'isSessionReadOnly',
+  'apiRequest'
 ])
 
 const filteredPlayers = computed(() => {
@@ -41,10 +42,31 @@ const pagedPlayers = computed(() => {
 const editingPlayer = ref(null)
 const editingName = ref('')
 const editingClubMember = ref(false)
+const editingPhone = ref('')
+const editingMemberId = ref('')
+const editingMemberOptions = ref([])
+const memberOptions = ref([])
+const memberLoading = ref(false)
+const memberDropdownOpen = ref(false)
+const memberSearchCompleted = ref('')
+const memberSearchError = ref('')
+const showCreateMember = ref(false)
+const newMemberType = ref('general')
+let memberSearchTimer
+let memberSearchSequence = 0
+let memberBlurTimer
+let editingMemberSearchTimer
 const exportLoading = ref(false)
 const exportError = ref('')
 const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
+))
+const newPlayerPhoneDigits = computed(() => String(props.forms.newPlayerPhone || '').replace(/\D/g, ''))
+const canCreateMissingMember = computed(() => (
+  newPlayerPhoneDigits.value.length >= 9 &&
+  !memberLoading.value &&
+  memberSearchCompleted.value === newPlayerPhoneDigits.value &&
+  !memberOptions.value.length
 ))
 
 function openEditPlayer(player) {
@@ -52,18 +74,41 @@ function openEditPlayer(player) {
   editingPlayer.value = player
   editingName.value = player.name
   editingClubMember.value = Boolean(player.clubMember)
+  editingPhone.value = ''
+  editingMemberId.value = player.memberId || ''
+  editingMemberOptions.value = []
 }
 
 function closeEditPlayer() {
   editingPlayer.value = null
   editingName.value = ''
   editingClubMember.value = false
+  editingPhone.value = ''
+  editingMemberId.value = ''
+  editingMemberOptions.value = []
 }
 
 async function saveEditPlayer() {
   if (!editingPlayer.value || !editingName.value.trim()) return
-  await props.renamePlayer(editingPlayer.value, editingName.value, editingClubMember.value)
+  await props.renamePlayer(editingPlayer.value, editingName.value, editingClubMember.value, editingMemberId.value)
   closeEditPlayer()
+}
+
+function searchEditingMember() {
+  clearTimeout(editingMemberSearchTimer)
+  if (String(editingPhone.value || '').replace(/\D/g, '').length <= 5) {
+    editingMemberOptions.value = []
+    return
+  }
+  editingMemberSearchTimer = setTimeout(async () => {
+    const payload = await props.apiRequest(`/api/admin/members/search?phone=${encodeURIComponent(editingPhone.value)}`)
+    editingMemberOptions.value = payload.items || []
+  }, 300)
+}
+
+function selectEditingMember() {
+  const member = editingMemberOptions.value.find((item) => item.id === editingMemberId.value)
+  if (member) editingName.value = member.name
 }
 
 async function deleteEditPlayer() {
@@ -84,6 +129,66 @@ watch(() => props.forms.playerPaymentFilter, () => {
   props.forms.playerPage = 1
 })
 
+watch(() => props.forms.newPlayerPhone, (phone) => {
+  clearTimeout(memberSearchTimer)
+  const digits = String(phone || '').replace(/\D/g, '')
+  const selectedMember = memberOptions.value.find((item) => item.id === props.forms.newPlayerMemberId)
+  if (selectedMember && String(selectedMember.phone || '').replace(/\D/g, '') === digits) {
+    memberDropdownOpen.value = false
+    return
+  }
+  props.forms.newPlayerMemberId = ''
+  memberOptions.value = []
+  memberSearchCompleted.value = ''
+  memberSearchError.value = ''
+  memberLoading.value = false
+  memberSearchSequence += 1
+  if (digits.length <= 5) {
+    memberDropdownOpen.value = false
+    return
+  }
+  memberDropdownOpen.value = true
+  memberLoading.value = true
+  const searchSequence = memberSearchSequence
+  memberSearchTimer = setTimeout(async () => {
+    try {
+      const payload = await props.apiRequest(`/api/admin/members/search?phone=${encodeURIComponent(phone)}`)
+      if (searchSequence !== memberSearchSequence) return
+      memberOptions.value = payload.items || []
+      memberSearchCompleted.value = digits
+    } catch (error) {
+      if (searchSequence === memberSearchSequence) memberSearchError.value = error.message || 'ค้นหาสมาชิกไม่สำเร็จ'
+    } finally {
+      if (searchSequence === memberSearchSequence) memberLoading.value = false
+    }
+  }, 300)
+})
+
+function selectMember(member) {
+  clearTimeout(memberBlurTimer)
+  props.forms.newPlayerMemberId = member.id
+  props.forms.newPlayerPhone = member.phone
+  props.forms.newPlayerName = member.name
+  memberOptions.value = [member]
+  memberSearchCompleted.value = String(member.phone || '').replace(/\D/g, '')
+  memberDropdownOpen.value = false
+}
+
+function closeMemberDropdownLater() {
+  clearTimeout(memberBlurTimer)
+  memberBlurTimer = window.setTimeout(() => { memberDropdownOpen.value = false }, 120)
+}
+
+async function createAndSelectMember() {
+  const created = await props.apiRequest('/api/admin/members', { method: 'POST', body: JSON.stringify({ name: props.forms.newPlayerName, phone: props.forms.newPlayerPhone, memberType: newMemberType.value }) })
+  memberOptions.value = [created]
+  props.forms.newPlayerMemberId = created.id
+  props.forms.newPlayerName = created.name
+  memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
+  memberDropdownOpen.value = false
+  showCreateMember.value = false
+}
+
 async function exportExcel() {
   if (exportLoading.value) return
   exportLoading.value = true
@@ -100,22 +205,60 @@ async function exportExcel() {
 
 <template>
   <section class="grid gap-4">
-    <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 md:grid-cols-[1fr_auto]">
-      <input
-        v-model="forms.newPlayerName"
-        class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800"
-        placeholder="ชื่อสมาชิกใหม่"
-        :disabled="isSessionReadOnly"
-        @keyup.enter="addPlayer"
-      />
-      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="addPlayer">
+    <div data-testid="member-combobox-row" class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 md:grid-cols-[1fr_auto]">
+      <div class="relative">
+        <div class="relative">
+          <input
+            v-model="forms.newPlayerPhone"
+            inputmode="tel"
+            autocomplete="off"
+            role="combobox"
+            aria-label="ค้นหาสมาชิกด้วยเบอร์โทร"
+            :aria-expanded="memberDropdownOpen"
+            aria-controls="new-player-member-options"
+            class="h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 pr-10 outline-none transition focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
+            placeholder="ค้นหาสมาชิกด้วยเบอร์โทร (เกิน 5 หลัก)"
+            :disabled="isSessionReadOnly"
+            @focus="memberDropdownOpen = newPlayerPhoneDigits.length > 5"
+            @blur="closeMemberDropdownLater"
+            @keydown.esc="memberDropdownOpen = false"
+          />
+          <span v-if="memberLoading" class="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-court-500 border-t-transparent" aria-label="กำลังค้นหา" />
+        </div>
+        <div
+          v-if="memberDropdownOpen"
+          id="new-player-member-options"
+          role="listbox"
+          class="absolute inset-x-0 top-full z-40 mt-1 max-h-64 overflow-auto rounded-md border border-stone-200 bg-white p-1 shadow-lg dark:border-stone-700 dark:bg-stone-900"
+        >
+          <p v-if="memberLoading" class="px-3 py-3 text-sm font-semibold text-stone-500">กำลังค้นหาสมาชิก...</p>
+          <template v-else>
+            <button
+              v-for="member in memberOptions"
+              :key="member.id"
+              type="button"
+              role="option"
+              :aria-selected="forms.newPlayerMemberId === member.id"
+              class="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left hover:bg-paper-100 dark:hover:bg-stone-800"
+              @mousedown.prevent
+              @click="selectMember(member)"
+            >
+              <span><b class="block">{{ member.phone }}</b><small class="text-stone-500">{{ member.name }}</small></span>
+              <Check v-if="forms.newPlayerMemberId === member.id" class="h-4 w-4 shrink-0 text-court-600" />
+            </button>
+          </template>
+          <p v-if="!memberLoading && memberSearchError" class="px-3 py-3 text-sm font-bold text-red-600">{{ memberSearchError }}</p>
+          <div v-else-if="!memberLoading && memberSearchCompleted === newPlayerPhoneDigits && !memberOptions.length" class="p-2">
+            <p class="px-1 pb-2 text-sm font-semibold text-stone-500">ไม่พบสมาชิกจากเบอร์นี้</p>
+            <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="showCreateMember=true; memberDropdownOpen=false"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
+          </div>
+          <p v-else-if="!memberLoading && newPlayerPhoneDigits.length <= 5" class="px-3 py-3 text-sm font-semibold text-stone-500">กรอกเบอร์ให้เกิน 5 หลักเพื่อค้นหา</p>
+        </div>
+      </div>
+      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly || !forms.newPlayerMemberId" @click="addPlayer">
         <Plus class="h-4 w-4" />
         เพิ่ม
       </button>
-      <label class="flex items-center gap-2 text-sm font-bold md:col-span-2">
-        <input v-model="forms.newPlayerClubMember" type="checkbox" :disabled="isSessionReadOnly" />
-        สมาชิกชมรม
-      </label>
     </div>
 
     <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
@@ -264,10 +407,15 @@ async function exportExcel() {
           />
         </label>
 
-        <label class="mt-3 flex items-center gap-2 text-sm font-bold">
-          <input v-model="editingClubMember" type="checkbox" :disabled="isSessionReadOnly" />
-          สมาชิกชมรม
+        <label class="mt-3 grid gap-2 text-sm font-bold">
+          ผูกสมาชิกด้วยเบอร์โทร
+          <input v-model="editingPhone" inputmode="tel" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="กรอกมากกว่า 5 หลัก" @input="searchEditingMember" />
         </label>
+        <select v-if="editingMemberOptions.length" v-model="editingMemberId" class="mt-2 h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="selectEditingMember">
+          <option value="">ไม่ผูกสมาชิก</option>
+          <option v-for="member in editingMemberOptions" :key="member.id" :value="member.id">{{ member.phone }} · {{ member.name }}</option>
+        </select>
+        <p v-else-if="editingMemberId" class="mt-2 text-xs font-bold text-court-700">เชื่อมกับสมาชิกแล้ว</p>
 
         <div class="mt-4 grid gap-2 sm:grid-cols-2">
           <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="saveEditPlayer">
@@ -288,5 +436,6 @@ async function exportExcel() {
         </p>
       </div>
     </div>
+    <div v-if="showCreateMember" class="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-3"><form class="w-full max-w-md rounded-lg bg-white p-4 dark:bg-stone-900" @submit.prevent="createAndSelectMember"><h2 class="text-xl font-black">เพิ่มสมาชิกใหม่</h2><div class="mt-3 grid gap-3"><input v-model="forms.newPlayerName" required placeholder="ชื่อ" class="h-11 rounded-md border bg-transparent px-3"/><input :value="forms.newPlayerPhone" disabled class="h-11 rounded-md border bg-stone-100 px-3"/><select v-model="newMemberType" class="h-11 rounded-md border bg-transparent px-3"><option value="general">สมาชิกทั่วไป</option><option value="club">สมาชิกชมรม</option></select><div class="grid grid-cols-2 gap-2"><button type="button" class="h-11 rounded-md border" @click="showCreateMember=false">ยกเลิก</button><button class="h-11 rounded-md bg-court-500 font-black text-white">เพิ่มสมาชิก</button></div></div></form></div>
   </section>
 </template>

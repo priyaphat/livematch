@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -105,6 +106,7 @@ type Player struct {
 	Level      string `json:"level"`
 	Coupon     bool   `json:"coupon"`
 	ClubMember bool   `json:"clubMember"`
+	MemberID   string `json:"memberId,omitempty"`
 }
 
 type ShuttleBrand struct {
@@ -166,6 +168,13 @@ type NextIDs struct {
 
 var errPlayerNotFound = errors.New("player not found")
 
+type requestContextKey string
+
+const (
+	requestIDContextKey requestContextKey = "request_id"
+	requestIPContextKey requestContextKey = "request_ip"
+)
+
 func main() {
 	db, err := openDB()
 	if err != nil {
@@ -177,6 +186,7 @@ func main() {
 	if err := a.migrate(context.Background()); err != nil {
 		log.Fatal(err)
 	}
+	go a.runExpiredBookingHoldCleanup(context.Background())
 	a.tts = newTTSService(db)
 
 	mux := http.NewServeMux()
@@ -186,6 +196,10 @@ func main() {
 	mux.HandleFunc("/api/backoffice/", a.handleBackofficeRoutes)
 	mux.HandleFunc("/api/support-issues", a.handleSupportIssues)
 	mux.HandleFunc("/api/telegram/webhook/", a.handleTelegramWebhook)
+	mux.HandleFunc("/api/booking-telegram/webhook/", a.handleBookingTelegramWebhook)
+	mux.HandleFunc("/api/public-auth/", a.handlePublicAuth)
+	mux.HandleFunc("/api/public-booking/", a.handlePublicBooking)
+	mux.HandleFunc("/api/profile/", a.handleProfile)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
 	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
 	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
@@ -305,6 +319,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players add column if not exists losses integer not null default 0;
 		alter table players alter column coupon set default false;
 		alter table players add column if not exists club_member boolean not null default false;
+		alter table players add column if not exists member_id text;
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -399,6 +414,12 @@ func (a *app) migrate(ctx context.Context) error {
 		create table if not exists admin_sessions (
 			token_hash text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
+			created_at timestamptz not null default now(),
+			expires_at timestamptz not null
+		);
+		create table if not exists backoffice_sessions (
+			token_hash text primary key,
+			username text not null references backoffice_users(username) on delete cascade,
 			created_at timestamptz not null default now(),
 			expires_at timestamptz not null
 		);
@@ -532,6 +553,155 @@ func (a *app) migrate(ctx context.Context) error {
 			details text not null default '{}',
 			created_at timestamptz not null default now()
 		);
+		create extension if not exists btree_gist;
+		create table if not exists admin_features (
+			admin_id text primary key references admin_users(id) on delete cascade,
+			member_enabled boolean not null default false,
+			booking_enabled boolean not null default false,
+			updated_by text not null default '',
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists public_users (
+			id text primary key,
+			google_sub text not null unique,
+			email text not null unique,
+			google_name text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists public_user_sessions (
+			token_hash text primary key,
+			public_user_id text not null references public_users(id) on delete cascade,
+			expires_at timestamptz not null,
+			created_at timestamptz not null default now()
+		);
+		create table if not exists oauth_login_states (
+			state_hash text primary key,
+			nonce text not null,
+			admin_id text not null references admin_users(id) on delete cascade,
+			return_path text not null default '',
+			expires_at timestamptz not null,
+			created_at timestamptz not null default now()
+		);
+		create table if not exists members (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			public_user_id text references public_users(id) on delete set null,
+			name text not null,
+			phone text not null,
+			contact_email text not null default '',
+			member_type text not null default 'general' check (member_type in ('general','club')),
+			active boolean not null default true,
+			profile_token_hash text not null unique,
+			profile_token text not null default '',
+			deleted_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique (admin_id, phone),
+			unique (admin_id, public_user_id)
+		);
+		alter table members add column if not exists profile_token text not null default '';
+		alter table members drop constraint if exists members_admin_id_phone_key;
+		create unique index if not exists idx_members_admin_phone_active on members(admin_id, phone) where deleted_at is null;
+		alter table players drop constraint if exists players_member_id_fkey;
+		alter table players add constraint players_member_id_fkey foreign key (member_id) references members(id) on delete set null;
+		create table if not exists player_payment_events (
+			id bigserial primary key,
+			session_id text not null references sessions(id) on delete cascade,
+			player_id integer not null,
+			member_id text references members(id) on delete set null,
+			paid boolean not null,
+			amount_thb integer not null default 0,
+			actor_id text not null default '',
+			created_at timestamptz not null default now()
+		);
+		create table if not exists booking_settings (
+			admin_id text primary key references admin_users(id) on delete cascade,
+			public_token_hash text not null unique,
+			public_token text not null default '',
+			open_time time not null default '16:00',
+			close_time time not null default '22:00',
+			interval_minutes integer not null default 60 check (interval_minutes > 0 and interval_minutes % 10 = 0),
+			allow_overnight boolean not null default false,
+			use_same_price boolean not null default true,
+			promptpay_type text not null default 'mobile',
+			promptpay_id text not null default '',
+			promptpay_receiver_name text not null default '',
+			logo_data text not null default '',
+			telegram_bot_token text not null default '',
+			telegram_bot_fingerprint text not null default '',
+			telegram_chat_id text not null default '',
+			telegram_webhook_id text not null default '',
+			telegram_secret_hash text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		alter table booking_settings add column if not exists public_token text not null default '';
+		alter table booking_settings add column if not exists telegram_bot_fingerprint text not null default '';
+		create unique index if not exists idx_booking_settings_telegram_bot on booking_settings(telegram_bot_fingerprint) where telegram_bot_fingerprint <> '';
+		create table if not exists booking_courts (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			price_per_interval integer not null default 100 check (price_per_interval >= 0),
+			sort_order integer not null default 0,
+			active boolean not null default true,
+			deleted_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create table if not exists bookings (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			court_id text not null references booking_courts(id),
+			member_id text references members(id) on delete set null,
+			booked_by text not null default 'member' check (booked_by in ('member','admin')),
+			booker_name text not null default '',
+			start_at timestamptz not null,
+			end_at timestamptz not null,
+			interval_minutes integer not null,
+			unit_price_thb integer not null,
+			total_price_thb integer not null,
+			status text not null check (status in ('hold','pending_review','confirmed','rejected','cancelled','expired')),
+			payment_status text not null default 'unpaid' check (payment_status in ('unpaid','pending','paid','rejected')),
+			hold_expires_at timestamptz,
+			note text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			check (end_at > start_at)
+		);
+		alter table bookings add column if not exists booking_batch_id text;
+		create index if not exists idx_bookings_batch on bookings(admin_id, booking_batch_id) where booking_batch_id is not null;
+		create table if not exists booking_occupancies (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			court_id text not null references booking_courts(id),
+			booking_id text references bookings(id) on delete cascade,
+			kind text not null check (kind in ('booking','closure')),
+			occupied_range tstzrange not null,
+			active boolean not null default true,
+			note text not null default '',
+			created_at timestamptz not null default now()
+		);
+		alter table booking_occupancies drop constraint if exists booking_occupancies_no_overlap;
+		alter table booking_occupancies add constraint booking_occupancies_no_overlap exclude using gist (court_id with =, occupied_range with &&) where (active);
+		create table if not exists booking_payments (
+			id text primary key,
+			booking_id text not null references bookings(id) on delete cascade,
+			member_id text references members(id) on delete set null,
+			amount_thb integer not null,
+			slip_data text not null default '',
+			status text not null check (status in ('pending','approved','rejected','manual_paid')),
+			note text not null default '',
+			reviewed_by text not null default '',
+			created_at timestamptz not null default now(),
+			reviewed_at timestamptz
+		);
+		create index if not exists idx_members_admin on members(admin_id, active, created_at desc);
+		create index if not exists idx_booking_courts_admin on booking_courts(admin_id, active, sort_order);
+		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);
+		create index if not exists idx_booking_payments_booking on booking_payments(booking_id, created_at desc);
+		create index if not exists idx_player_payment_member on player_payment_events(member_id, created_at desc);
 		create index if not exists idx_sessions_admin on sessions(admin_id);
 		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
@@ -1105,6 +1275,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Level      string `json:"level"`
 			Coupon     *bool  `json:"coupon"`
 			ClubMember bool   `json:"clubMember"`
+			MemberID   string `json:"memberId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
@@ -1117,8 +1288,18 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		if body.Coupon != nil {
 			coupon = *body.Coupon
 		}
+		if body.MemberID != "" {
+			var memberName, memberType string
+			user, _ := a.currentAdmin(r.Context(), r)
+			if err := a.db.QueryRowContext(r.Context(), `select name, member_type from members where id=$1 and admin_id=$2 and active and deleted_at is null`, body.MemberID, user.ID).Scan(&memberName, &memberType); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "member not found"})
+				return
+			}
+			body.Name = memberName
+			body.ClubMember = memberType == "club"
+		}
 		state.NextIDs.Player++
-		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember}
+		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember, MemberID: body.MemberID}
 		state.Players = append(state.Players, player)
 		a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon, "clubMember": player.ClubMember})
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
@@ -1130,6 +1311,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Coupon     *bool   `json:"coupon"`
 			Active     *bool   `json:"active"`
 			ClubMember *bool   `json:"clubMember"`
+			MemberID   *string `json:"memberId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		logDetails := map[string]any{}
@@ -1173,6 +1355,21 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				if body.ClubMember != nil {
 					logDetails["clubMember"] = *body.ClubMember
 					state.Players[i].ClubMember = *body.ClubMember
+				}
+				if body.MemberID != nil {
+					memberID := strings.TrimSpace(*body.MemberID)
+					if memberID != "" {
+						user, _ := a.currentAdmin(r.Context(), r)
+						var memberName, memberType string
+						if err := a.db.QueryRowContext(r.Context(), `select name,member_type from members where id=$1 and admin_id=$2 and active and deleted_at is null`, memberID, user.ID).Scan(&memberName, &memberType); err != nil {
+							writeJSON(w, http.StatusBadRequest, map[string]string{"error": "member not found"})
+							return
+						}
+						state.Players[i].Name = memberName
+						state.Players[i].ClubMember = memberType == "club"
+					}
+					state.Players[i].MemberID = memberID
+					logDetails["memberId"] = memberID
 				}
 				if body.Level != nil || body.Coupon != nil {
 					syncCoupledPlayerStatus(&state, state.Players[i].ID)
@@ -1434,6 +1631,20 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 		details["sessionId"] = state.Session.ID
 		details["sessionName"] = state.Session.Name
 		a.insertActivityLog(r.Context(), "admin", user.ID, action, targetType, targetID, details)
+		if action == "toggle_player_paid" {
+			playerID, _ := strconv.Atoi(targetID)
+			for _, player := range state.Players {
+				if player.ID != playerID || player.MemberID == "" {
+					continue
+				}
+				amount := playerEntryFee(state, player) + playerShuttleCost(state, player.ID) + sessionFeeShare(state)
+				if isLiveShare(state) {
+					amount = liveSharePlayerCost(state, player)
+				}
+				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,actor_id) values ($1,$2,$3,$4,$5,$6)`, state.Session.ID, player.ID, player.MemberID, player.Paid, amount, user.ID)
+				break
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, state)
 }
@@ -1507,9 +1718,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''))
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID); err != nil {
 			return err
 		}
 	}
@@ -1654,7 +1865,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member
+		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, '')
 		from players
 		where session_id = $1
 		order by id
@@ -1665,7 +1876,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID); err != nil {
 			return SessionState{}, err
 		}
 		state.Players = append(state.Players, player)
@@ -3429,16 +3640,60 @@ func randHex(n int) string {
 
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		origin := r.Header.Get("Origin")
-		if origin == "" {
-			origin = "*"
+		requestID := randHex(12)
+		requestIP, _, splitErr := net.SplitHostPort(r.RemoteAddr)
+		if splitErr != nil {
+			requestIP = r.RemoteAddr
 		}
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
+		ctx = context.WithValue(ctx, requestIPContextKey, requestIP)
+		r = r.WithContext(ctx)
+		w.Header().Set("X-Request-ID", requestID)
+		origin := r.Header.Get("Origin")
+		allowed := origin == ""
+		for _, candidate := range strings.Split(os.Getenv("APP_ALLOWED_ORIGINS")+","+os.Getenv("APP_BASE_URL"), ",") {
+			if strings.TrimSpace(candidate) != "" && strings.EqualFold(strings.TrimRight(origin, "/"), strings.TrimRight(strings.TrimSpace(candidate), "/")) {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin not allowed"})
+			return
+		}
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Add("Vary", "Origin")
+		}
 		w.Header().Set("Access-Control-Allow-Credentials", "true")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Backoffice-Username, X-Backoffice-Password")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, X-Backoffice-Username, X-Backoffice-Password")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://accounts.google.com https://oauth2.googleapis.com")
+		if strings.HasPrefix(strings.ToLower(os.Getenv("APP_BASE_URL")), "https://") {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		csrfCookie, csrfErr := r.Cookie("livematch_csrf")
+		csrfToken := ""
+		if csrfErr == nil {
+			csrfToken = csrfCookie.Value
+		}
+		if csrfToken == "" {
+			csrfToken = randHex(24)
+			secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
+			http.SetCookie(w, &http.Cookie{Name: "livematch_csrf", Value: csrfToken, Path: "/", Secure: secure, SameSite: http.SameSiteStrictMode, MaxAge: int((7 * 24 * time.Hour).Seconds())})
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		unsafe := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
+		_, hasAdminSession := r.Cookie(adminCookieName)
+		_, hasPublicSession := r.Cookie(publicCookieName)
+		if unsafe && (hasAdminSession == nil || hasPublicSession == nil) && r.Header.Get("X-CSRF-Token") != csrfToken {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid csrf token"})
 			return
 		}
 		next.ServeHTTP(w, r)

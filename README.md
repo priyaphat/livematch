@@ -22,6 +22,25 @@ Services:
 
 Backend connects to PostgreSQL through the Docker network with host `postgres`.
 
+## ระบบสมาชิกและระบบจองสนาม
+
+ฟีเจอร์ใหม่ปิดเป็นค่าเริ่มต้นสำหรับ admin เดิม เปิดได้ที่ `/backoffice` → สมาชิก → Admin DB Preview โดยแยกสวิตช์ “ระบบสมาชิก” และ “ระบบจองสนาม” ต่อ admin การปิดสิทธิ์มีผลทั้งการ์ดใน dashboard และ API โดยตรง
+
+ก่อนใช้งาน public booking ให้ตั้งค่า Google OpenID Connect และ security values ใน `.env`:
+
+```text
+GOOGLE_CLIENT_ID=google-client-id
+GOOGLE_CLIENT_SECRET=google-client-secret
+GOOGLE_REDIRECT_URL=http://localhost:5173/api/public-auth/google/callback
+APP_ALLOWED_ORIGINS=http://localhost:5173
+APP_ENCRYPTION_KEY=long-random-secret-at-least-32-characters
+COOKIE_SECURE=false
+```
+
+Production ต้องใช้ HTTPS, เปลี่ยน redirect URL ให้ตรงกับ Google Console, กำหนด `COOKIE_SECURE=true` และใส่ production origin ใน `APP_ALLOWED_ORIGINS` ระบบชำระเงิน v1 ใช้ PromptPay QR และให้ admin ตรวจสลิปด้วยตนเอง
+
+Telegram สำหรับอนุมัติการจองตั้งค่า Bot token/Chat ID แยกในหน้าจัดการระบบจองของแต่ละ admin โดย bot ต้องไม่ซ้ำกับ bot ของ Backoffice หรือ admin รายอื่น ระบบจะลงทะเบียน webhook เฉพาะ admin และส่งสลิปพร้อมปุ่มอนุมัติ/ปฏิเสธ
+
 ## Telegram Alert
 
 Coin order alerts use Telegram Bot messages. Set the bot token and chat ID in `/backoffice` under the setting/overview page.

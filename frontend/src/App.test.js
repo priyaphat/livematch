@@ -1,5 +1,5 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
@@ -20,6 +20,11 @@ import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
 import { applyStoredTheme } from './theme'
+
+beforeEach(() => {
+  sessionStorage.removeItem('livematch_admin_navigation')
+  window.history.replaceState({}, '', '/')
+})
 
 function sessionStatePayload(type = 'liveMatch', extraSession = {}) {
   return {
@@ -661,6 +666,38 @@ describe('LiveMatch app', () => {
     expect(calls.some((call) => call.includes('/api/sessions/test-session/dashboard'))).toBe(true)
     expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(1)
     expect(wrapper.text()).toContain('Test Session')
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
+
+  it('restores the active session and match tab after refresh', async () => {
+    sessionStorage.setItem('livematch_admin_navigation', JSON.stringify({ sessionId: 'test-session', tab: 'livematch' }))
+    const statePayload = sessionStatePayload('liveMatch')
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((url) => {
+      const target = String(url)
+      if (target.includes('/api/auth/me')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', verified: true, coins: 5 },
+            sessions: [{ id: 'test-session', name: 'Test Session', type: 'liveMatch', updatedAt: '2026-06-23 21:00' }],
+            coinLedger: [],
+            liveMatchSessionCost: 1
+          })
+        })
+      }
+      if (target.includes('/dashboard')) return Promise.resolve({ ok: true, json: () => Promise.resolve({ players: [] }) })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(statePayload) })
+    })
+
+    const wrapper = mount(App)
+    await vi.waitFor(() => {
+      expect(wrapper.findComponent(LiveMatchPage).exists()).toBe(true)
+    })
+    expect(window.location.search).toContain('session=test-session')
+    expect(window.location.search).toContain('tab=livematch')
 
     wrapper.unmount()
     globalThis.fetch = originalFetch

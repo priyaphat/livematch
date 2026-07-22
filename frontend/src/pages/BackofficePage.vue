@@ -18,6 +18,7 @@ const props = defineProps([
   'saveBackofficeSupportIssue',
   'openBackofficeAdminDetail',
   'saveBackofficeAdminDiscount',
+  'saveBackofficeAdminFeatures',
   'saveBackofficeAdminSubscription',
   'cancelBackofficeAdminSubscription',
   'saveBackofficeSettings',
@@ -53,6 +54,7 @@ const adminDetailSessions = computed(() => adminDetail.value.sessions || [])
 const adminDetailLedger = computed(() => adminDetail.value.coinLedger || [])
 const adminDetailOrders = computed(() => adminDetail.value.orders || [])
 const adminBenefits = computed(() => adminDetail.value.benefits || { discountPercent: 0, pricing: {}, subscription: null, subscriptionHistory: [] })
+const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false }))
 const adminSubscription = computed(() => adminBenefits.value.subscription || null)
 const adminSubscriptionHistory = computed(() => adminBenefits.value.subscriptionHistory || [])
 const slipOKQuota = computed(() => props.forms.backofficeSlipOKQuota || {})
@@ -735,7 +737,7 @@ function closeSlipPreview() {
                 <p class="text-right text-lg font-black tabular-nums">{{ user.coins }} coin</p>
                 <button class="inline-flex h-10 items-center gap-2 rounded-md border border-stone-200 px-3 text-sm font-black dark:border-stone-700" @click="openBackofficeAdminDetail(user.id)">
                   <Eye class="h-4 w-4" />
-                  ดู
+                  Admin DB Preview / ตั้งค่าสิทธิ์
                 </button>
               </div>
             </div>
@@ -927,6 +929,17 @@ function closeSlipPreview() {
               <p class="mt-2 text-sm font-black">{{ adminDetailUser.createdAt || '-' }}</p>
             </article>
           </div>
+
+          <section class="rounded-lg border border-court-200 bg-court-500/5 p-4 dark:border-court-900/60">
+            <div class="flex flex-wrap items-center justify-between gap-3">
+              <div><h3 class="font-black">สิทธิ์ระบบของ Admin</h3><p class="mt-1 text-xs font-semibold text-stone-500">ควบคุมการแสดงการ์ดและป้องกัน API โดยตรง</p></div>
+              <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white" @click="saveBackofficeAdminFeatures(adminFeatures)"><Save class="h-4 w-4" />บันทึกสิทธิ์</button>
+            </div>
+            <div class="mt-3 grid gap-3 sm:grid-cols-2">
+              <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบสมาชิก <small class="block font-semibold text-stone-500">{{ Number(adminDetail.memberCount || 0).toLocaleString('th-TH') }} คน</small></span><input v-model="adminFeatures.memberEnabled" type="checkbox" class="h-5 w-5" /></label>
+              <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบจองสนาม <small class="block font-semibold text-stone-500">{{ Number(adminDetail.bookingCount || 0).toLocaleString('th-TH') }} รายการ</small></span><input v-model="adminFeatures.bookingEnabled" type="checkbox" class="h-5 w-5" /></label>
+            </div>
+          </section>
 
           <section class="grid gap-4 lg:grid-cols-2">
             <article class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">

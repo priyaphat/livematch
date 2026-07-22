@@ -2,6 +2,7 @@ import {
   PhArchive,
   PhArrowClockwise,
   PhArrowCounterClockwise,
+  PhCalendar,
   PhCaretLeft,
   PhCaretRight,
   PhChartBar,
@@ -51,6 +52,7 @@ import {
   PhTrash,
   PhTrophy,
   PhUpload,
+  PhUser,
   PhUserPlus,
   PhUsers,
   PhUsersThree,
@@ -59,8 +61,10 @@ import {
 } from '@phosphor-icons/vue'
 
 export const Activity = PhPulse
+export const ArrowLeft = PhCaretLeft
 export const Archive = PhArchive
 export const BarChart3 = PhChartBar
+export const CalendarDays = PhCalendar
 export const BookOpen = PhClipboardText
 export const Check = PhCheck
 export const CheckCircle2 = PhCheckCircle
@@ -88,6 +92,7 @@ export const ListTodo = PhListPlus
 export const Loader2 = PhSpinnerGap
 export const Lock = PhLock
 export const LogOut = PhXCircle
+export const LogIn = PhKey
 export const Mail = PhEnvelope
 export const MailCheck = PhEnvelopeSimpleOpen
 export const Medal = PhMedal
@@ -117,6 +122,7 @@ export const Trash2 = PhTrash
 export const Trophy = PhTrophy
 export const Upload = PhUpload
 export const UserPlus = PhUserPlus
+export const UserRound = PhUser
 export const Users = PhUsers
 export const UsersRound = PhUsersThree
 export const Volume2 = PhMegaphone

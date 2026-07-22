@@ -1,54 +1,46 @@
-# Design QA — PNG Hero Background
+# Booking UI Design QA
 
-- Source visual truth: `D:\VibeStudio\LiveMatch\frontend\src\assets\livematch-court-hero.png`
-- Dark source asset: `D:\VibeStudio\LiveMatch\frontend\src\assets\livematch-court-hero-dark.png`
-- Implementation screenshots:
-  - `D:\VibeStudio\LiveMatch\design-qa-hero-light.png`
-  - `D:\VibeStudio\LiveMatch\design-qa-hero-dark.png`
-  - `D:\VibeStudio\LiveMatch\design-qa-hero-mobile-dark.png`
-- Combined comparison: `D:\VibeStudio\LiveMatch\design-qa-hero-comparison.png`
-- Viewports: 1440 × 900 desktop and 390 × 844 mobile
-- State: authentication screen, light mode and dark mode
+- Source visual truth: `C:/Users/OTAMOS/.codex/generated_images/019f8932-9ceb-72b0-aa33-8e15d9f3b88e/exec-1be63ccd-a828-48db-989c-15cb2c55afda.png`
+- Public implementation screenshots: `artifacts/booking-ui-qa/public-desktop.png`, `artifacts/booking-ui-qa/public-mobile.png`
+- Target viewport: admin 1440 × 1024; public desktop 1440 × 1024; public mobile 390 × 844
+- Density normalization: browser CSS pixel viewport at device scale 1
+- State: public Google sign-in screen verified; authenticated admin schedule pending verification
 
-**Full-view comparison evidence**
+## Full-view comparison evidence
 
-- The selected badminton court artwork is rendered as an actual raster `<img>` layer that fills the hero card.
-- Light and dark themes swap between dedicated PNG assets without CSS-generated artwork or gradients.
-- The line-art court, net, shuttlecock, paper palette, and negative-space direction remain consistent with the selected visual.
+- Public booking uses the selected direction's warm paper/dark token surfaces, green primary action, compact branded command header, restrained borders, and centered authentication hierarchy.
+- Desktop and mobile public layouts were captured from the running application. No horizontal overflow or console errors were detected.
+- The authenticated admin schedule cannot yet be captured in the in-app browser because that browser has no LiveMatch admin session.
 
-**Focused region comparison evidence**
+## Focused region comparison evidence
 
-- The desktop authentication hero was inspected at native viewport resolution for heading contrast, image crop, border radius, and card alignment.
-- The same hero was inspected at mobile width for text wrapping, background crop, and horizontal overflow. `scrollWidth` matched `clientWidth`.
-- Dark-mode text, controls, and the generated night illustration were visually inspected together. No bright light-mode image flash or cream rectangle remained.
+- Public authentication header, primary action, supporting privacy note, border radii, and spacing were checked at desktop and mobile widths.
+- Admin command bar, booking grid, and side inspector comparison is blocked until an authenticated admin state is available.
 
-**Required fidelity surfaces**
+## Findings
 
-- Fonts and typography: existing Noto Sans Thai + Inter stack is unchanged; heading and UI hierarchy remain readable in both themes.
-- Spacing and layout rhythm: existing card layout and responsive spacing are preserved; no horizontal overflow at 390 px.
-- Colors and visual tokens: light uses the paper/ink palette; dark uses a dedicated forest-green PNG and existing dark tokens.
-- Image quality and asset fidelity: both backgrounds are opaque PNG files with matching composition and sufficient native resolution; no CSS/SVG substitute is used.
-- Copy and content: no text, variable, prop, function, API field, or business content was changed.
+- [P1] Authenticated admin visual comparison is unavailable.
+  - Location: `/admin/booking`
+  - Evidence: the in-app browser redirects to the LiveMatch login page without an admin session.
+  - Impact: the primary selected visual target cannot be verified against the rendered admin implementation.
+  - Fix: sign in to an admin account in the in-app browser, then capture the schedule and inspector states at 1440 × 1024.
 
-**Findings**
+## Comparison history
 
-- No actionable P0, P1, or P2 issues remain for the requested PNG-background conversion.
-- P3: the illustration remains intentionally visible beneath some hero copy on narrow/tall cards; opacity is reduced on mobile to protect readability.
+- Pass 1: Public desktop initially served the previous Vite module after source updates. Frontend was restarted; the new UI was then captured successfully.
+- Pass 2: Public desktop and 390 × 844 mobile captures show no actionable P0/P1/P2 layout issues. Console error list is empty.
 
-**Comparison history**
+## Implementation checklist
 
-- Initial implementation used CSS pseudo-elements with gradient overlays, which made the illustration feel decorative rather than a real background.
-- Replaced the pseudo-element artwork with a reusable `<img>` background layer and dedicated light/dark PNG sources.
-- First visual pass showed excessive illustration contrast beneath copy. Reduced desktop opacity and added a lower mobile opacity while retaining a clearly visible background.
-- Final desktop and mobile captures show the real PNG background, stable theme switching, readable content, and no layout overflow.
+- [x] Public authentication desktop layout
+- [x] Public authentication mobile layout
+- [x] Public console errors
+- [ ] Authenticated admin schedule capture
+- [ ] Admin selected-slot inspector capture
+- [ ] Final source/implementation comparison
 
-**Implementation checklist**
+## Follow-up polish
 
-- [x] Real PNG image layer
-- [x] Dedicated light and dark assets
-- [x] Desktop and mobile responsive crop
-- [x] Light/dark theme verification
-- [x] Console error check
-- [x] No business-logic changes
+- Validate the real venue-uploaded logo crop across unusually wide and tall source images.
 
-final result: passed
+final result: blocked

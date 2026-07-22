@@ -57,11 +57,52 @@ import SettingsPage from './pages/SettingsPage.vue'
 import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
 import VerifyEmailPage from './pages/VerifyEmailPage.vue'
+import MemberAdminPage from './pages/MemberAdminPage.vue'
+import BookingAdminPage from './pages/BookingAdminPage.vue'
+import PublicBookingPage from './pages/PublicBookingPage.vue'
+import PublicProfilePage from './pages/PublicProfilePage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
-import { persistTheme, readStoredTheme } from './theme'
+import { persistPublicTheme, persistTheme, readStoredPublicTheme, readStoredTheme } from './theme'
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
+const routePath = window.location.pathname
+const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : ''
+const publicBookingToken = routePath.startsWith('/booking/') ? routePath.slice('/booking/'.length).split('/')[0] : ''
+const publicProfileToken = routePath.startsWith('/p/') ? routePath.slice('/p/'.length).split('/')[0] : ''
+const isPublicBookingSurface = Boolean(publicBookingToken || publicProfileToken)
+const adminNavigationKey = 'livematch_admin_navigation'
+const restorableAdminTabs = new Set(['dashboard', 'players', 'livematch', 'queue', 'liveboard', 'history', 'settings', 'liveShareHours', 'help'])
 const defaultAnnouncementTemplate = 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}'
+
+function readAdminNavigation() {
+  const params = new URLSearchParams(window.location.search)
+  const sessionId = params.get('session') || ''
+  const tab = params.get('tab') || ''
+  if (sessionId) return { sessionId, tab: restorableAdminTabs.has(tab) ? tab : 'dashboard' }
+  try {
+    const saved = JSON.parse(window.sessionStorage.getItem(adminNavigationKey) || 'null')
+    return saved?.sessionId ? { sessionId: saved.sessionId, tab: restorableAdminTabs.has(saved.tab) ? saved.tab : 'dashboard' } : null
+  } catch {
+    return null
+  }
+}
+
+function persistAdminNavigation(sessionId, tab = 'dashboard') {
+  const safeTab = restorableAdminTabs.has(tab) ? tab : 'dashboard'
+  try { window.sessionStorage.setItem(adminNavigationKey, JSON.stringify({ sessionId, tab: safeTab })) } catch { /* URL remains the fallback. */ }
+  const url = new URL(window.location.href)
+  url.searchParams.set('session', sessionId)
+  url.searchParams.set('tab', safeTab)
+  window.history.replaceState({}, '', url)
+}
+
+function clearAdminNavigation() {
+  try { window.sessionStorage.removeItem(adminNavigationKey) } catch { /* Ignore unavailable storage. */ }
+  const url = new URL(window.location.href)
+  url.searchParams.delete('session')
+  url.searchParams.delete('tab')
+  window.history.replaceState({}, '', url)
+}
 
 function defaultSessionSettingsTemplate() {
   return {
@@ -96,7 +137,7 @@ const currentTab = computed(() => tabs.value.find((tab) => tab.id === state.tab)
 
 const state = reactive({
   tab: 'home',
-  theme: readStoredTheme(),
+  theme: isPublicBookingSurface ? readStoredPublicTheme() : readStoredTheme(),
   session: {
     id: 'demo-session',
     name: 'แบดวันอังคาร',
@@ -167,6 +208,8 @@ const forms = reactive({
   createdPasscode: '',
   loginError: '',
   newPlayerName: '',
+  newPlayerPhone: '',
+  newPlayerMemberId: '',
   playerSearch: '',
   playerPaymentFilter: 'all',
   playerPage: 1,
@@ -338,7 +381,10 @@ const auth = reactive({
   subscriptionPromptPayPayloads: {},
   promptPayAvailable: false,
   subscriptionEligibility: { canPurchase: true, reason: '', renewal: false, estimatedStartDate: '' },
-  coinOrders: []
+  coinOrders: [],
+  features: { memberEnabled: false, bookingEnabled: false },
+  memberCount: 0,
+  bookingCount: 0
 })
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
@@ -374,12 +420,14 @@ function closeToast() {
 
 async function api(path, options = {}) {
   const isFormData = options.body instanceof FormData
+  const csrfToken = document.cookie.split('; ').find((item) => item.startsWith('livematch_csrf='))?.split('=').slice(1).join('=') || ''
   const response = await fetch(`${apiUrl}${path}`, {
     ...options,
     credentials: 'include',
     headers: {
       ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       'Accept': 'application/json',
+      ...(csrfToken ? { 'X-CSRF-Token': decodeURIComponent(csrfToken) } : {}),
       ...(options.headers || {})
     }
   })
@@ -393,6 +441,7 @@ async function api(path, options = {}) {
 }
 
 function backofficeAuthHeaders() {
+  if (!forms.backofficeUsername || !forms.backofficePassword) return {}
   return {
     Authorization: `Basic ${btoa(`${forms.backofficeUsername}:${forms.backofficePassword}`)}`
   }
@@ -522,6 +571,9 @@ async function selectAdminTab(tabId) {
   if (state.tab === tabId && ui.loadingTab) return
   const previousTab = state.tab
   state.tab = tabId
+  if (state.session.unlocked && state.session.id && restorableAdminTabs.has(tabId)) {
+    persistAdminNavigation(state.session.id, tabId)
+  }
   if (!state.session.unlocked || tabId === 'home') return
   ui.loadingTab = tabId
   try {
@@ -545,14 +597,17 @@ onMounted(() => {
     confirmVerifyEmail(params.get('token'))
     return
   }
-  if (backoffice.isPage) return
+  if (backoffice.isPage) {
+    restoreBackoffice()
+    return
+  }
   const resetToken = params.get('token')
   if (window.location.pathname === '/reset-password' && resetToken) {
     forms.authMode = 'reset'
     forms.resetToken = resetToken
   }
   loadSharedView()
-  restoreAdminAccount()
+  restoreAdminAccount(true)
 })
 
 async function confirmVerifyEmail(token) {
@@ -659,14 +714,15 @@ async function resetPassword() {
   }
 }
 
-async function openOwnedSession(sessionId) {
+async function openOwnedSession(sessionId, requestedTab = 'dashboard') {
   try {
     const nextState = await api(`/api/sessions/${sessionId}/dashboard?open=1`)
     mergeSessionPatch(nextState)
     const fullState = await api(`/api/sessions/${sessionId}/state`)
     applyServerState(fullState)
     state.session.unlocked = true
-    state.tab = 'dashboard'
+    state.tab = restorableAdminTabs.has(requestedTab) ? requestedTab : 'dashboard'
+    persistAdminNavigation(sessionId, state.tab)
     if (state.session.readOnly || state.session.expired) {
       showToast(sessionReadOnlyMessage.value, 'info')
     }
@@ -686,7 +742,26 @@ async function refreshAdminSupervisor() {
 async function backToAdminDashboard() {
   state.session.unlocked = false
   state.tab = 'home'
+  clearAdminNavigation()
   await refreshAdminSupervisor()
+}
+
+async function restoreBackoffice() {
+  forms.backofficeError = ''
+  backoffice.loading = true
+  try {
+    forms.backofficeSummary = await api('/api/backoffice/summary')
+    forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
+    forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
+    syncBackofficeCoinShopForms()
+    await Promise.all([loadBackofficeCoinOrders(), loadBackofficeCoinLedger(), loadBackofficeActivityLogs(), loadBackofficeSupportIssues()])
+    backoffice.unlocked = true
+  } catch (error) {
+    backoffice.unlocked = false
+    if (error.status !== 401) forms.backofficeError = error.message || 'โหลดหลังบ้านไม่สำเร็จ'
+  } finally {
+    backoffice.loading = false
+  }
 }
 
 async function loadBackoffice() {
@@ -706,6 +781,7 @@ async function loadBackoffice() {
       loadBackofficeSupportIssues()
     ])
     backoffice.unlocked = true
+    forms.backofficePassword = ''
   } catch (error) {
     forms.backofficeError = error.message || 'เข้าสู่หลังบ้านไม่สำเร็จ'
   } finally {
@@ -1101,6 +1177,24 @@ function applyAdminPayload(payload) {
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
   auth.benefits = payload.benefits || { discountPercent: 0, pricing: {}, subscription: null }
+  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false }
+  auth.memberCount = Number(payload.memberCount || 0)
+  auth.bookingCount = Number(payload.bookingCount || 0)
+}
+
+function navigateAdminFeature(feature) {
+  window.location.href = feature === 'members' ? '/admin/members' : '/admin/booking'
+}
+
+async function saveBackofficeAdminFeatures(features) {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  if (!adminId) return
+  try {
+    applyBackofficeAdminDetail(await api(`/api/backoffice/admins/${adminId}/features`, {
+      method: 'PATCH', headers: backofficeAuthHeaders(), body: JSON.stringify(features)
+    }))
+    forms.backofficeBenefitStatus = 'บันทึกสิทธิ์ระบบแล้ว'
+  } catch (error) { forms.backofficeBenefitStatus = error.message || 'บันทึกสิทธิ์ไม่สำเร็จ' }
 }
 
 function applyCoinShopPayload(payload) {
@@ -1164,10 +1258,19 @@ async function submitCoinOrder() {
   }
 }
 
-async function restoreAdminAccount() {
+async function restoreAdminAccount(restoreNavigation = false) {
   if (share.isPublic) return
   try {
-    applyAdminPayload(await api('/api/auth/me'))
+    const payload = await api('/api/auth/me')
+    applyAdminPayload(payload)
+    if (restoreNavigation) {
+      const navigation = readAdminNavigation()
+      if (navigation && auth.sessions.some((session) => session.id === navigation.sessionId)) {
+        await openOwnedSession(navigation.sessionId, navigation.tab)
+      } else if (navigation) {
+        clearAdminNavigation()
+      }
+    }
   } catch {
     auth.user = null
   }
@@ -1184,6 +1287,7 @@ async function logout() {
   auth.coinLedger = []
   state.session.unlocked = false
   state.tab = 'home'
+  clearAdminNavigation()
   forms.authPassword = ''
   forms.loginError = ''
 }
@@ -1191,13 +1295,18 @@ async function logout() {
 watch(
   () => state.theme,
   (theme) => {
-    state.theme = persistTheme(theme)
+    state.theme = isPublicBookingSurface
+      ? persistPublicTheme(theme)
+      : persistTheme(theme)
   },
   { immediate: true }
 )
 
 function toggleTheme() {
-  state.theme = persistTheme(state.theme === 'dark' ? 'light' : 'dark')
+  const nextTheme = state.theme === 'dark' ? 'light' : 'dark'
+  state.theme = isPublicBookingSurface
+    ? persistPublicTheme(nextTheme)
+    : persistTheme(nextTheme)
 }
 
 const playerById = (id) => state.players.find((player) => player.id === id)
@@ -2037,12 +2146,14 @@ async function requestCloudAnnouncementAudio(parts) {
 }
 
 async function fetchCloudAnnouncementBlob(text) {
+	const csrfToken = document.cookie.split('; ').find((item) => item.startsWith('livematch_csrf='))?.split('=').slice(1).join('=') || ''
   const response = await fetch(`${apiUrl}/api/sessions/${state.session.id}/announcement-audio`, {
     method: 'POST',
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      Accept: 'audio/mpeg, application/json'
+      Accept: 'audio/mpeg, application/json',
+      ...(csrfToken ? { 'X-CSRF-Token': decodeURIComponent(csrfToken) } : {})
     },
     body: JSON.stringify({ text })
   })
@@ -2625,23 +2736,24 @@ async function addPlayerApi() {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players`, {
       method: 'POST',
-      body: JSON.stringify({ name, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: forms.newPlayerClubMember })
+      body: JSON.stringify({ name, memberId: forms.newPlayerMemberId, level: state.settings.levels[0] || 'กลาง', coupon: false })
     }))
     forms.newPlayerName = ''
-    forms.newPlayerClubMember = false
-  } catch {
-    addPlayer()
+    forms.newPlayerPhone = ''
+    forms.newPlayerMemberId = ''
+  } catch (error) {
+    showToast(error.message || 'เพิ่มผู้เล่นไม่สำเร็จ')
   }
 }
 
-async function renamePlayerApi(player, name, clubMember = player.clubMember) {
+async function renamePlayerApi(player, name, clubMember = player.clubMember, memberId = player.memberId) {
   if (!ensureSessionActive()) return
   const nextName = name.trim()
   if (!nextName) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: nextName, clubMember })
+      body: JSON.stringify({ name: nextName, clubMember, memberId })
     }))
   } catch {
     renamePlayer(player, nextName)
@@ -2915,6 +3027,7 @@ async function saveLiveShareHoursApi() {
 }
 
 const pageProps = computed(() => ({
+  apiRequest: api,
   state,
   forms,
   ui,
@@ -3018,6 +3131,7 @@ const pageProps = computed(() => ({
   resetPassword,
   openOwnedSession,
   refreshAdminSupervisor,
+  navigateAdminFeature,
   backToAdminDashboard,
   logout,
   coinReasonText,
@@ -3045,6 +3159,7 @@ const pageProps = computed(() => ({
   changeBackofficeActivityUser,
   openBackofficeAdminDetail,
   saveBackofficeAdminDiscount,
+  saveBackofficeAdminFeatures,
   saveBackofficeAdminSubscription,
   cancelBackofficeAdminSubscription,
   saveBackofficeSettings,
@@ -3087,6 +3202,11 @@ const pageProps = computed(() => ({
 
     <VerifyEmailPage v-if="verifyEmail.isPage" v-bind="pageProps" />
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
+    <PublicBookingPage v-else-if="publicBookingToken" :api-request="api" :token="publicBookingToken" :theme="state.theme" @toggle-theme="toggleTheme" />
+    <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />
+    <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" />
+    <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" />
+    <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
     <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :player-name="playerName" :match-level-label="matchLevelLabel" />
