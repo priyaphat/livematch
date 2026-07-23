@@ -102,4 +102,41 @@ describe('BookingAdminPage', () => {
 
     wrapper.unmount()
   })
+
+  it('paginates pending reviews and requests booking history pages from the API', async () => {
+    const pending = Array.from({ length: 11 }, (_, index) => ({
+      id: `pending-${index + 1}`,
+      courtId: 'court-1',
+      courtName: 'สนาม 1',
+      bookerName: `ผู้จอง ${index + 1}`,
+      startAt: `${testToday}T17:00:00+07:00`,
+      endAt: `${testToday}T18:00:00+07:00`,
+      status: 'pending_review',
+      totalPriceThb: 100,
+    }))
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/history?')) {
+        const page = Number(new URL(url, 'http://localhost').searchParams.get('page') || 1)
+        return Promise.resolve({ items: page === 1 ? [{ ...pending[0], status: 'confirmed' }] : [{ ...pending[10], status: 'confirmed' }], page, pageSize: 20, total: 21 })
+      }
+      return Promise.resolve({ ...overview(), bookings: pending })
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('หน้า 1 / 2 · 11 รายการ'))
+    expect(wrapper.text()).toContain('ผู้จอง 10')
+    expect(wrapper.text()).not.toContain('ผู้จอง 11 · สนาม 1')
+
+    const pendingNext = wrapper.findAll('button').find((button) => button.text() === 'ถัดไป')
+    await pendingNext.trigger('click')
+    expect(wrapper.text()).toContain('ผู้จอง 11')
+
+    const historyTab = wrapper.findAll('nav button').find((button) => button.text().includes('ประวัติการจอง'))
+    await historyTab.trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('หน้า 1 / 2'))
+    const historyNext = wrapper.findAll('button').find((button) => button.text() === 'ถัดไป')
+    await historyNext.trigger('click')
+    await vi.waitFor(() => expect(apiRequest.mock.calls.at(-1)[0]).toContain('page=2'))
+    expect(apiRequest.mock.calls.at(-1)[0]).toContain('pageSize=20')
+    wrapper.unmount()
+  })
 })

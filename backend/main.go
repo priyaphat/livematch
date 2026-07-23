@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -175,7 +174,40 @@ const (
 	requestIPContextKey requestContextKey = "request_ip"
 )
 
+func validateProductionConfig() error {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
+		return nil
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/")
+	if !strings.HasPrefix(strings.ToLower(baseURL), "https://") {
+		return errors.New("APP_BASE_URL must use HTTPS when APP_ENV=production")
+	}
+	missing := []string{}
+	for _, key := range []string{"APP_ALLOWED_ORIGINS", "APP_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL"} {
+		if strings.TrimSpace(os.Getenv(key)) == "" {
+			missing = append(missing, key)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("production configuration missing: %s", strings.Join(missing, ", "))
+	}
+	if !strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true") {
+		return errors.New("COOKIE_SECURE must be true when APP_BASE_URL uses HTTPS")
+	}
+	if len(strings.TrimSpace(os.Getenv("APP_ENCRYPTION_KEY"))) < 32 {
+		return errors.New("APP_ENCRYPTION_KEY must contain at least 32 characters")
+	}
+	redirect := strings.TrimSpace(os.Getenv("GOOGLE_REDIRECT_URL"))
+	if !strings.HasPrefix(strings.ToLower(redirect), "https://") {
+		return errors.New("GOOGLE_REDIRECT_URL must use HTTPS in production")
+	}
+	return nil
+}
+
 func main() {
+	if err := validateProductionConfig(); err != nil {
+		log.Fatal(err)
+	}
 	db, err := openDB()
 	if err != nil {
 		log.Fatal(err)
@@ -187,6 +219,7 @@ func main() {
 		log.Fatal(err)
 	}
 	go a.runExpiredBookingHoldCleanup(context.Background())
+	go a.runRateLimitCleanup(context.Background())
 	a.tts = newTTSService(db)
 
 	mux := http.NewServeMux()
@@ -725,6 +758,13 @@ func (a *app) migrate(ctx context.Context) error {
 			updated_at timestamptz not null default now()
 		);
 		create index if not exists idx_support_issues_status_created on support_issues(status, created_at desc);
+		create table if not exists request_rate_limits (
+			rate_key text primary key,
+			window_start timestamptz not null,
+			reset_at timestamptz not null,
+			request_count integer not null check (request_count > 0)
+		);
+		create index if not exists idx_request_rate_limits_reset on request_rate_limits(reset_at);
 	`)
 	if err != nil {
 		return err
@@ -3641,10 +3681,7 @@ func randHex(n int) string {
 func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := randHex(12)
-		requestIP, _, splitErr := net.SplitHostPort(r.RemoteAddr)
-		if splitErr != nil {
-			requestIP = r.RemoteAddr
-		}
+		requestIP := clientIP(r)
 		ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
 		ctx = context.WithValue(ctx, requestIPContextKey, requestIP)
 		r = r.WithContext(ctx)

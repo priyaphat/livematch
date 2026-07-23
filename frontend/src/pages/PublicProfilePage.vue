@@ -5,12 +5,15 @@ import {
   CalendarDays,
   CreditCard,
   History,
+  LogOut,
   Moon,
   Save,
   Sun,
   Upload,
   UserRound,
+  X,
 } from "@lucide/vue";
+import { statusText, statusTone } from "../statusDefinitions";
 
 const props = defineProps(["apiRequest", "token", "theme"]);
 const emit = defineEmits(["toggle-theme"]);
@@ -20,44 +23,57 @@ const state = reactive({
   bookings: [],
   payments: [],
   matches: [],
+  pagination: {},
+  upcomingCount: 0,
   loading: true,
   error: "",
   now: Date.now(),
+  clockOffsetMs: 0,
 });
 const activeSection = ref("bookings");
 const saveStatus = ref("");
 const uploadingId = ref("");
 const uploadStatus = ref("");
+const loggingOut = ref(false);
+const toastMessage = ref("");
+const historyPages = reactive({ bookings: 1, payments: 1, matches: 1, pageSize: 10 });
 let clock;
+let toastTimer;
 let refreshingExpired = false;
-const statusText = (status) =>
-  ({
-    hold: "กำลังจอง",
-    pending_review: "รอตรวจสอบ",
-    confirmed: "ยืนยันแล้ว",
-    rejected: "ไม่อนุมัติ",
-    cancelled: "ยกเลิก",
-    expired: "หมดเวลา",
-    paid: "ชำระแล้ว",
-    unpaid: "ยังไม่ชำระ",
-    pending: "รอตรวจ",
-  })[status] || status;
-const upcomingCount = computed(
-  () =>
-    state.bookings.filter((booking) =>
-      ["hold", "pending_review", "confirmed"].includes(booking.status),
-    ).length,
-);
+const upcomingCount = computed(() => Number(state.upcomingCount || 0));
+
+function historyTotal(section) {
+  return Number(state.pagination?.[section]?.total || 0);
+}
+function historyTotalPages(section) {
+  const meta = state.pagination?.[section];
+  return Math.max(1, Math.ceil(historyTotal(section) / Number(meta?.pageSize || historyPages.pageSize)));
+}
 
 async function load() {
   state.loading = true;
   try {
-    Object.assign(state, await props.apiRequest(`/api/profile/${props.token}`));
+    const params = new URLSearchParams({
+      bookingPage: historyPages.bookings,
+      paymentPage: historyPages.payments,
+      matchPage: historyPages.matches,
+      pageSize: historyPages.pageSize,
+    });
+    const data = await props.apiRequest(`/api/profile/${props.token}?${params}`);
+    Object.assign(state, data);
+    if (data.serverNow) {
+      state.clockOffsetMs = timestamp(data.serverNow) - Date.now();
+      state.now = Date.now() + state.clockOffsetMs;
+    }
   } catch (error) {
     state.error = error.message;
   } finally {
     state.loading = false;
   }
+}
+async function loadHistoryPage(section, page) {
+  historyPages[section] = Math.max(1, Number(page) || 1);
+  await load();
 }
 async function save() {
   saveStatus.value = "";
@@ -79,6 +95,18 @@ function goBooking() {
   if (state.bookingToken)
     window.location.assign(`/booking/${state.bookingToken}`);
 }
+async function logout() {
+  if (loggingOut.value) return;
+  loggingOut.value = true;
+  state.error = "";
+  try {
+    await props.apiRequest("/api/public-auth/logout", { method: "POST" });
+    window.location.assign(state.bookingToken ? `/booking/${state.bookingToken}` : "/");
+  } catch (error) {
+    state.error = error.message;
+    loggingOut.value = false;
+  }
+}
 function timestamp(value) {
   const normalized = String(value || "").replace(/([+-]\d{2})$/, "$1:00");
   const result = Date.parse(normalized);
@@ -90,6 +118,11 @@ function remainingText(booking) {
     Math.ceil((timestamp(booking.holdExpiresAt) - state.now) / 1000),
   );
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+function showProfileToast(message) {
+  window.clearTimeout(toastTimer);
+  toastMessage.value = message;
+  toastTimer = window.setTimeout(() => { toastMessage.value = ""; }, 5000);
 }
 function uploadSlip(event, booking) {
   const file = event.target.files?.[0];
@@ -114,7 +147,8 @@ function uploadSlip(event, booking) {
       uploadStatus.value = "อัปโหลดสลิปแล้ว รอผู้ดูแลตรวจสอบ";
       await load();
     } catch (error) {
-      state.error = error.message;
+      showProfileToast(error.message || "อัปโหลดสลิปไม่สำเร็จ กรุณาตรวจสอบสถานะการจอง");
+      await load();
     } finally {
       uploadingId.value = "";
     }
@@ -124,7 +158,7 @@ function uploadSlip(event, booking) {
 onMounted(async () => {
   await load();
   clock = window.setInterval(async () => {
-    state.now = Date.now();
+    state.now = Date.now() + state.clockOffsetMs;
     const expired = state.bookings.some(
       (booking) =>
         booking.status === "hold" &&
@@ -138,11 +172,18 @@ onMounted(async () => {
     }
   }, 1000);
 });
-onUnmounted(() => window.clearInterval(clock));
+onUnmounted(() => {
+  window.clearInterval(clock);
+  window.clearTimeout(toastTimer);
+});
 </script>
 
 <template>
   <main class="profile-shell">
+    <div v-if="toastMessage" class="booking-toast booking-toast--error" role="alert">
+      <X class="h-4 w-4" /><span>{{ toastMessage }}</span>
+      <button aria-label="ปิดข้อความ" @click="toastMessage = ''">×</button>
+    </div>
     <header class="profile-header">
       <div class="flex items-center gap-3">
         <button
@@ -156,7 +197,7 @@ onUnmounted(() => window.clearInterval(clock));
           <p
             class="text-xs font-black uppercase tracking-[0.16em] text-court-700"
           >
-            LiveMatch profile
+            โปรไฟล์ LiveMatch
           </p>
           <h1 class="text-xl font-black sm:text-2xl">ข้อมูลสมาชิกและประวัติ</h1>
         </div>
@@ -185,6 +226,13 @@ onUnmounted(() => window.clearInterval(clock));
         >
           <CalendarDays class="h-4 w-4" />จองสนาม
         </button>
+        <button
+          class="booking-secondary-button h-11"
+          :disabled="loggingOut"
+          @click="logout"
+        >
+          <LogOut class="h-4 w-4" />{{ loggingOut ? "กำลังออกจากระบบ" : "ออกจากระบบ" }}
+        </button>
         </template>
       </div>
     </header>
@@ -209,7 +257,7 @@ onUnmounted(() => window.clearInterval(clock));
           ><span>รายการที่กำลังดำเนินการ</span>
         </div>
         <div class="profile-stat">
-          <strong>{{ state.bookings.length }}</strong
+          <strong>{{ historyTotal("bookings") }}</strong
           ><span>ประวัติการจองทั้งหมด</span>
         </div>
       </section>
@@ -252,21 +300,21 @@ onUnmounted(() => window.clearInterval(clock));
               @click="activeSection = 'bookings'"
             >
               <CalendarDays class="h-4 w-4" />การจอง
-              <span>{{ state.bookings.length }}</span>
+              <span>{{ historyTotal("bookings") }}</span>
             </button>
             <button
               :class="activeSection === 'payments' && 'is-active'"
               @click="activeSection = 'payments'"
             >
               <CreditCard class="h-4 w-4" />การชำระเงิน
-              <span>{{ state.payments.length }}</span>
+              <span>{{ historyTotal("payments") }}</span>
             </button>
             <button
               :class="activeSection === 'matches' && 'is-active'"
               @click="activeSection = 'matches'"
             >
-              <History class="h-4 w-4" />Match history
-              <span>{{ state.matches.length }}</span>
+              <History class="h-4 w-4" />ประวัติการแข่งขัน
+              <span>{{ historyTotal("matches") }}</span>
             </button>
           </nav>
 
@@ -297,7 +345,7 @@ onUnmounted(() => window.clearInterval(clock));
                 </p>
               </div>
               <div class="profile-booking-actions text-right">
-                <span class="profile-status">{{
+                <span class="profile-status" :data-tone="statusTone(booking.status)">{{
                   statusText(booking.status)
                 }}</span>
                 <p class="mt-2 font-black">฿{{ booking.totalPriceThb }}</p>
@@ -326,6 +374,11 @@ onUnmounted(() => window.clearInterval(clock));
             <p v-if="!state.bookings.length" class="profile-empty">
               ยังไม่มีประวัติการจอง
             </p>
+            <div v-if="historyTotal('bookings') > historyPages.pageSize" class="profile-pager">
+              <button :disabled="historyPages.bookings <= 1 || state.loading" @click="loadHistoryPage('bookings', historyPages.bookings - 1)">ก่อนหน้า</button>
+              <span>หน้า {{ historyPages.bookings }} / {{ historyTotalPages('bookings') }}</span>
+              <button :disabled="historyPages.bookings >= historyTotalPages('bookings') || state.loading" @click="loadHistoryPage('bookings', historyPages.bookings + 1)">ถัดไป</button>
+            </div>
           </div>
 
           <div v-else-if="activeSection === 'payments'" class="profile-list">
@@ -346,7 +399,7 @@ onUnmounted(() => window.clearInterval(clock));
                 </p>
               </div>
               <div class="text-right">
-                <span class="profile-status">{{
+                <span class="profile-status" :data-tone="statusTone(payment.status)">{{
                   statusText(payment.status)
                 }}</span>
                 <p class="mt-2 font-black">฿{{ payment.amountThb }}</p>
@@ -355,6 +408,11 @@ onUnmounted(() => window.clearInterval(clock));
             <p v-if="!state.payments.length" class="profile-empty">
               ยังไม่มีรายการชำระเงิน
             </p>
+            <div v-if="historyTotal('payments') > historyPages.pageSize" class="profile-pager">
+              <button :disabled="historyPages.payments <= 1 || state.loading" @click="loadHistoryPage('payments', historyPages.payments - 1)">ก่อนหน้า</button>
+              <span>หน้า {{ historyPages.payments }} / {{ historyTotalPages('payments') }}</span>
+              <button :disabled="historyPages.payments >= historyTotalPages('payments') || state.loading" @click="loadHistoryPage('payments', historyPages.payments + 1)">ถัดไป</button>
+            </div>
           </div>
 
           <div v-else class="profile-list">
@@ -373,13 +431,18 @@ onUnmounted(() => window.clearInterval(clock));
                 </p>
               </div>
               <div class="text-right">
-                <span class="profile-status">{{ match.status }}</span>
+                <span class="profile-status" :data-tone="statusTone(match.status)">{{ statusText(match.status) }}</span>
                 <p class="mt-2 font-black">{{ match.court }}</p>
               </div>
             </article>
             <p v-if="!state.matches.length" class="profile-empty">
               ยังไม่มีประวัติการแข่งขันที่เชื่อมสมาชิก
             </p>
+            <div v-if="historyTotal('matches') > historyPages.pageSize" class="profile-pager">
+              <button :disabled="historyPages.matches <= 1 || state.loading" @click="loadHistoryPage('matches', historyPages.matches - 1)">ก่อนหน้า</button>
+              <span>หน้า {{ historyPages.matches }} / {{ historyTotalPages('matches') }}</span>
+              <button :disabled="historyPages.matches >= historyTotalPages('matches') || state.loading" @click="loadHistoryPage('matches', historyPages.matches + 1)">ถัดไป</button>
+            </div>
           </div>
         </section>
       </div>

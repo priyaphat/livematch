@@ -45,7 +45,7 @@ describe('PlayersPage member combobox', () => {
     const member = { id: 'member-1', phone: '0882250419', name: 'สมาชิกทดสอบ' }
     const apiRequest = vi.fn().mockResolvedValue({ items: [member] })
     const { wrapper, forms } = mountPlayers(apiRequest)
-    const input = wrapper.find('input[aria-label="ค้นหาสมาชิกด้วยเบอร์โทร"]')
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"]')
 
     expect(wrapper.find('[data-testid="member-combobox-row"]').findAll('input')).toHaveLength(1)
 
@@ -65,5 +65,33 @@ describe('PlayersPage member combobox', () => {
     expect(forms.newPlayerMemberId).toBe('member-1')
     expect(forms.newPlayerPhone).toBe('0882250419')
     expect(forms.newPlayerName).toBe('สมาชิกทดสอบ')
+  })
+
+  it('adds a typed name as a session-only guest without creating a member', async () => {
+    const addPlayer = vi.fn()
+    const { wrapper, forms } = mountPlayers(vi.fn())
+    await wrapper.setProps({ addPlayer })
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"]')
+
+    await input.setValue('ขาจร วันนี้')
+    await wrapper.find('[data-testid="member-combobox-row"] button').trigger('click')
+
+    expect(forms.newPlayerName).toBe('ขาจร วันนี้')
+    expect(forms.newPlayerMemberId).toBe('')
+    expect(addPlayer).toHaveBeenCalledOnce()
+  })
+
+  it('does not add an unmatched phone number as a guest name', async () => {
+    vi.useFakeTimers()
+    const addPlayer = vi.fn()
+    const { wrapper } = mountPlayers(vi.fn().mockResolvedValue({ items: [] }))
+    await wrapper.setProps({ addPlayer })
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"]')
+
+    await input.setValue('0882250419')
+    await vi.advanceTimersByTimeAsync(300)
+
+    expect(wrapper.find('[data-testid="member-combobox-row"] > button').attributes('disabled')).toBeDefined()
+    expect(addPlayer).not.toHaveBeenCalled()
   })
 })

@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App.vue'
 import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
@@ -88,7 +88,7 @@ async function openMockedOwnedSession(type = 'liveMatch', extraSession = {}) {
   })
 
   const wrapper = mount(App)
-  for (let index = 0; index < 5; index += 1) await Promise.resolve()
+  await flushPromises()
   const openButton = wrapper.findAll('button').find((button) => ['เปิด', 'Open'].some((label) => button.text().includes(label)))
   expect(openButton?.exists()).toBe(true)
   await openButton.trigger('click')
@@ -598,7 +598,7 @@ describe('LiveMatch app', () => {
     const guideButton = wrapper.findAll('header nav button').find((button) => button.text().includes('วิธีใช้') || button.text().includes('Guide'))
     expect(guideButton?.exists()).toBe(true)
     await guideButton.trigger('click')
-    await Promise.resolve()
+    await flushPromises()
     expect(wrapper.text()).toContain('วิธีใช้ LiveMatch')
 
     wrapper.unmount()
@@ -659,7 +659,7 @@ describe('LiveMatch app', () => {
     })
 
     const wrapper = mount(App)
-    for (let index = 0; index < 5; index += 1) await Promise.resolve()
+    await flushPromises()
     await wrapper.findAll('button').find((button) => button.text().includes('เปิด')).trigger('click')
     for (let index = 0; index < 5; index += 1) await Promise.resolve()
 
@@ -775,9 +775,9 @@ describe('LiveMatch app', () => {
     const images = wrapper.findAll('img')
 
     expect(images).toHaveLength(2)
-    expect(images.at(0).attributes('src')).toContain('livematch-court-hero.png')
+    expect(wrapper.findAll('source').at(0).attributes('srcset')).toContain('livematch-court-hero.webp')
     expect(images.at(0).classes()).toContain('dark:hidden')
-    expect(images.at(1).attributes('src')).toContain('livematch-court-hero-dark.png')
+    expect(wrapper.findAll('source').at(1).attributes('srcset')).toContain('livematch-court-hero-dark.webp')
     expect(images.at(1).classes()).toContain('dark:block')
   })
 

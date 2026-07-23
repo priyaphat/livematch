@@ -32,7 +32,9 @@ Backend connects to PostgreSQL through the Docker network with host `postgres`.
 GOOGLE_CLIENT_ID=google-client-id
 GOOGLE_CLIENT_SECRET=google-client-secret
 GOOGLE_REDIRECT_URL=http://localhost:5173/api/public-auth/google/callback
+APP_ENV=development
 APP_ALLOWED_ORIGINS=http://localhost:5173
+APP_TRUSTED_PROXY_CIDRS=
 APP_ENCRYPTION_KEY=long-random-secret-at-least-32-characters
 COOKIE_SECURE=false
 ```

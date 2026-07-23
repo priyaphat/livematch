@@ -150,7 +150,7 @@ const closeAdminDefaultSettingsModal = () => {
       <div class="min-w-0">
         <div class="inline-flex items-center gap-2 rounded-md bg-court-500/10 px-3 py-1 text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">
           <ShieldCheck class="h-4 w-4" />
-          Admin dashboard
+          แดชบอร์ดผู้ดูแล
         </div>
         <h1 class="mt-3 truncate text-2xl font-black leading-tight sm:text-3xl">สวัสดี {{ auth.user?.name || auth.user?.email }}</h1>
         <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ภาพรวม session, รายรับ และสถานะเกมของบัญชี admin นี้</p>

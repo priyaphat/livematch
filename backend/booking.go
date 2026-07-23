@@ -71,6 +71,52 @@ func requireBookingRate(w http.ResponseWriter, r *http.Request, scope string, li
 	return false
 }
 
+func (a *app) requireRequestRate(w http.ResponseWriter, r *http.Request, scope string, limit int, window time.Duration) bool {
+	key := scope + ":" + clientIP(r)
+	var count int
+	var reset time.Time
+	err := a.db.QueryRowContext(r.Context(), `
+		insert into request_rate_limits (rate_key, window_start, reset_at, request_count)
+		values ($1, now(), now() + make_interval(secs => $2), 1)
+		on conflict (rate_key) do update set
+			window_start = case when request_rate_limits.reset_at <= now() then now() else request_rate_limits.window_start end,
+			reset_at = case when request_rate_limits.reset_at <= now() then now() + make_interval(secs => $2) else request_rate_limits.reset_at end,
+			request_count = case when request_rate_limits.reset_at <= now() then 1 else request_rate_limits.request_count + 1 end
+		returning request_count, reset_at
+	`, key, int(window.Seconds())).Scan(&count, &reset)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "rate limit unavailable"})
+		return false
+	}
+	if count <= limit {
+		return true
+	}
+	retry := int(time.Until(reset).Seconds())
+	if retry < 1 {
+		retry = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(retry))
+	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many requests"})
+	return false
+}
+
+func (a *app) runRateLimitCleanup(ctx context.Context) {
+	cleanup := func() {
+		_, _ = a.db.ExecContext(ctx, `delete from request_rate_limits where reset_at < now() - interval '1 day'`)
+	}
+	cleanup()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
+}
+
 type adminFeatures struct {
 	MemberEnabled  bool `json:"memberEnabled"`
 	BookingEnabled bool `json:"bookingEnabled"`
@@ -233,6 +279,22 @@ func displayPhone(phone string) string {
 	return phone
 }
 
+func requestPage(r *http.Request, pageKey, sizeKey string, defaultSize, maxSize int) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get(pageKey))
+	size, _ := strconv.Atoi(r.URL.Query().Get(sizeKey))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > maxSize {
+		size = defaultSize
+	}
+	return page, size
+}
+
+func pageMeta(page, pageSize, total int) map[string]int {
+	return map[string]int{"page": page, "pageSize": pageSize, "total": total}
+}
+
 func phoneSearchDigits(raw string) string {
 	var digits strings.Builder
 	for _, char := range raw {
@@ -328,6 +390,9 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 			writeJSON(w, 200, map[string]any{"items": []memberRecord{}})
 			return
 		}
+		if !a.requireRequestRate(w, r, "member-phone-search:"+user.ID, 60, 10*time.Minute) {
+			return
+		}
 		items, _, err := a.listMembers(r.Context(), user.ID, q, 1, 12, true)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -358,6 +423,9 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 }
 
 func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adminID, memberID string) {
+	bookingPage, pageSize := requestPage(r, "bookingPage", "pageSize", 6, 50)
+	paymentPage, _ := requestPage(r, "paymentPage", "pageSize", 6, 50)
+	matchPage, _ := requestPage(r, "matchPage", "pageSize", 6, 50)
 	var m memberRecord
 	var phone string
 	if err := a.db.QueryRowContext(r.Context(), `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),m.member_type,m.active,m.public_user_id is not null,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id where m.id=$1 and m.admin_id=$2 and m.deleted_at is null`, memberID, adminID).Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.Active, &m.Linked, &m.CreatedAt); err != nil {
@@ -366,8 +434,10 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 	m.Phone = displayPhone(phone)
 
+	var bookingTotal, paymentTotal, matchTotal int
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where member_id=$1 and admin_id=$2`, memberID, adminID).Scan(&bookingTotal)
 	bookings := []bookingRecord{}
-	rows, _ := a.db.QueryContext(r.Context(), `select b.id,b.court_id,c.name,b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.member_id=$1 and b.admin_id=$2 order by b.start_at desc limit 100`, memberID, adminID)
+	rows, _ := a.db.QueryContext(r.Context(), `select b.id,b.court_id,c.name,b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.member_id=$1 and b.admin_id=$2 order by b.start_at desc limit $3 offset $4`, memberID, adminID, pageSize, (bookingPage-1)*pageSize)
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -386,7 +456,8 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	payments := []map[string]any{}
-	paymentRows, _ := a.db.QueryContext(r.Context(), `select 'booking',p.booking_id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.session_id,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2 order by 5 desc`, memberID, adminID)
+	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
+	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at from (select 'booking' as kind,p.booking_id as id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.session_id,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if paymentRows != nil {
 		defer paymentRows.Close()
 		for paymentRows.Next() {
@@ -399,7 +470,8 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	matches := []map[string]any{}
-	matchRows, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit 100`, memberID, adminID)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history'`, memberID, adminID).Scan(&matchTotal)
+	matchRows, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit $3 offset $4`, memberID, adminID, pageSize, (matchPage-1)*pageSize)
 	if matchRows != nil {
 		defer matchRows.Close()
 		for matchRows.Next() {
@@ -412,7 +484,7 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	players := []map[string]any{}
-	playerRows, _ := a.db.QueryContext(r.Context(), `select p.id,s.id,s.name,p.name,p.games,p.wins,p.draws,p.losses,p.paid,p.active from players p join sessions s on s.id=p.session_id where p.member_id=$1 and s.admin_id=$2 order by s.updated_at desc`, memberID, adminID)
+	playerRows, _ := a.db.QueryContext(r.Context(), `select p.id,s.id,s.name,p.name,p.games,p.wins,p.draws,p.losses,p.paid,p.active from players p join sessions s on s.id=p.session_id where p.member_id=$1 and s.admin_id=$2 order by s.updated_at desc limit 100`, memberID, adminID)
 	if playerRows != nil {
 		defer playerRows.Close()
 		for playerRows.Next() {
@@ -425,7 +497,14 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 		}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{"member": m, "bookings": bookings, "payments": payments, "matches": matches, "players": players})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"member": m, "bookings": bookings, "payments": payments, "matches": matches, "players": players,
+		"pagination": map[string]any{
+			"bookings": pageMeta(bookingPage, pageSize, bookingTotal),
+			"payments": pageMeta(paymentPage, pageSize, paymentTotal),
+			"matches":  pageMeta(matchPage, pageSize, matchTotal),
+		},
+	})
 }
 
 func (a *app) patchMember(w http.ResponseWriter, r *http.Request, adminID, memberID, actorType, actorID string, admin bool) {
@@ -582,6 +661,7 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 }
 
 func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminID string) {
+	page, pageSize := requestPage(r, "page", "pageSize", 20, 100)
 	startText := strings.TrimSpace(r.URL.Query().Get("startDate"))
 	endText := strings.TrimSpace(r.URL.Query().Get("endDate"))
 	today := time.Now().In(bangkokLocation).Format("2006-01-02")
@@ -606,6 +686,18 @@ func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminI
 	if strings.HasPrefix(phone, "0") {
 		phone = strings.TrimPrefix(phone, "0")
 	}
+	var total int
+	if err = a.db.QueryRowContext(r.Context(), `
+		select count(*)
+		from bookings b
+		left join members m on m.id=b.member_id and m.admin_id=b.admin_id
+		where b.admin_id=$1 and b.start_at >= $2 and b.start_at < $3
+			and ($4='' or b.court_id=$4)
+			and ($5='' or regexp_replace(coalesce(m.phone,''),'[^0-9]','','g') like '%' || $5 || '%')`,
+		adminID, start, end.AddDate(0, 0, 1), courtID, phone).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	rows, err := a.db.QueryContext(r.Context(), `
 		select b.id,b.court_id,c.name,coalesce(b.member_id,''),b.booker_name,b.booked_by,
 			b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,
@@ -617,7 +709,8 @@ func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminI
 		where b.admin_id=$1 and b.start_at >= $2 and b.start_at < $3
 			and ($4='' or b.court_id=$4)
 			and ($5='' or regexp_replace(coalesce(m.phone,''),'[^0-9]','','g') like '%' || $5 || '%')
-		order by b.start_at desc,b.created_at desc limit 500`, adminID, start, end.AddDate(0, 0, 1), courtID, phone)
+		order by b.start_at desc,b.created_at desc limit $6 offset $7`,
+		adminID, start, end.AddDate(0, 0, 1), courtID, phone, pageSize, (page-1)*pageSize)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -644,7 +737,10 @@ func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminI
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "startDate": startText, "endDate": endText})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items, "startDate": startText, "endDate": endText,
+		"page": page, "pageSize": pageSize, "total": total,
+	})
 }
 
 func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
@@ -1176,7 +1272,7 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 			closures = append(closures, map[string]any{"id": id, "courtId": court, "startAt": start.Format(time.RFC3339), "endAt": end.Format(time.RFC3339), "note": note})
 		}
 	}
-	payload := map[string]any{"settings": s, "courts": courts, "bookings": bookings, "closures": closures, "date": date}
+	payload := map[string]any{"settings": s, "courts": courts, "bookings": bookings, "closures": closures, "date": date, "serverNow": time.Now().Format(time.RFC3339)}
 	if !admin {
 		s.PublicToken = ""
 		s.PromptPayID = ""
@@ -1261,12 +1357,21 @@ func (a *app) writePublicBookingQueues(w http.ResponseWriter, r *http.Request, a
 			items[i].PromptPayPayload, _ = promptPayPayload(promptPaySettings{ID: s.PromptPayID, Type: s.PromptPayType, ReceiverName: s.PromptPayReceiverName}, items[i].TotalPriceTHB)
 		}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "serverNow": time.Now().Format(time.RFC3339)})
 }
 
 func mustBookingTime(value string) time.Time {
 	parsed, _ := time.Parse(time.RFC3339, value)
 	return parsed
+}
+
+type bookingReviewResult struct {
+	BatchID    string   `json:"batchId,omitempty"`
+	BookingIDs []string `json:"bookingIds"`
+}
+
+func cancellableBookingStatus(status string) bool {
+	return status == "hold" || status == "pending_review" || status == "confirmed" || status == "cancelled"
 }
 
 func (a *app) reviewBookingHTTP(w http.ResponseWriter, r *http.Request, adminID, bookingID, actorType, actorID string) {
@@ -1279,83 +1384,147 @@ func (a *app) reviewBookingHTTP(w http.ResponseWriter, r *http.Request, adminID,
 		writeJSON(w, 400, map[string]string{"error": "กรุณาระบุเหตุผล"})
 		return
 	}
-	if err := a.reviewBooking(r.Context(), adminID, bookingID, b.Action, b.Note, actorType, actorID); err != nil {
+	result, err := a.reviewBooking(r.Context(), adminID, bookingID, b.Action, b.Note, actorType, actorID)
+	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"status": "ok"})
+	writeJSON(w, 200, map[string]any{"status": "ok", "batchId": result.BatchID, "bookingIds": result.BookingIDs})
 }
 
-func (a *app) reviewBooking(ctx context.Context, adminID, bookingID, action, note, actorType, actorID string) error {
+func (a *app) reviewBooking(ctx context.Context, adminID, bookingID, action, note, actorType, actorID string) (bookingReviewResult, error) {
+	result := bookingReviewResult{BookingIDs: []string{}}
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return result, err
 	}
 	defer tx.Rollback()
-	var status, payment string
-	if err = tx.QueryRowContext(ctx, `select status,payment_status from bookings where id=$1 and admin_id=$2 for update`, bookingID, adminID).Scan(&status, &payment); err != nil {
-		return errors.New("booking not found")
+	var batchID sql.NullString
+	if err = tx.QueryRowContext(ctx, `select booking_batch_id from bookings where id=$1 and admin_id=$2`, bookingID, adminID).Scan(&batchID); err != nil {
+		return result, errors.New("booking not found")
 	}
+	result.BatchID = batchID.String
+	rows, err := tx.QueryContext(ctx, `
+		select id,status,payment_status from bookings
+		where admin_id=$1 and (id=$2 or ($3<>'' and booking_batch_id=$3))
+		order by id for update
+	`, adminID, bookingID, result.BatchID)
+	if err != nil {
+		return result, err
+	}
+	type reviewRow struct{ id, status, payment string }
+	items := []reviewRow{}
+	for rows.Next() {
+		var item reviewRow
+		if err = rows.Scan(&item.id, &item.status, &item.payment); err != nil {
+			_ = rows.Close()
+			return result, err
+		}
+		items = append(items, item)
+		result.BookingIDs = append(result.BookingIDs, item.id)
+	}
+	_ = rows.Close()
+	if len(items) == 0 {
+		return result, errors.New("booking not found")
+	}
+	status, payment := items[0].status, items[0].payment
 	nextStatus, nextPayment := status, payment
 	active := true
 	switch action {
 	case "approve":
-		if status == "confirmed" && payment == "paid" {
-			return nil
+		allDone := true
+		for _, item := range items {
+			if item.status != "confirmed" || item.payment != "paid" {
+				allDone = false
+			}
+			if item.status != "pending_review" && !(item.status == "confirmed" && item.payment == "paid") {
+				return result, errors.New("รายการในชุดนี้ไม่ได้รอตรวจสอบ")
+			}
 		}
-		if status != "pending_review" {
-			return errors.New("รายการนี้ไม่ได้รอตรวจสอบ")
+		if allDone {
+			return result, nil
 		}
 		nextStatus = "confirmed"
 		nextPayment = "paid"
 	case "reject":
-		if status == "rejected" {
-			return nil
+		allDone := true
+		for _, item := range items {
+			if item.status != "rejected" {
+				allDone = false
+			}
+			if item.status != "pending_review" && item.status != "rejected" {
+				return result, errors.New("รายการในชุดนี้ไม่ได้รอตรวจสอบ")
+			}
 		}
-		if status != "pending_review" {
-			return errors.New("รายการนี้ไม่ได้รอตรวจสอบ")
+		if allDone {
+			return result, nil
 		}
 		nextStatus = "rejected"
 		nextPayment = "rejected"
 		active = false
 	case "cancel":
-		if status == "cancelled" {
-			return nil
+		allDone := true
+		for _, item := range items {
+			if item.status != "cancelled" {
+				allDone = false
+			}
+			if !cancellableBookingStatus(item.status) {
+				return result, errors.New("ไม่สามารถยกเลิกรายการในชุดนี้")
+			}
 		}
-		if status != "confirmed" && status != "pending_review" {
-			return errors.New("ไม่สามารถยกเลิกรายการนี้")
+		if allDone {
+			return result, nil
 		}
 		nextStatus = "cancelled"
 		active = false
 	case "paid":
-		if status != "confirmed" {
-			return errors.New("booking ยังไม่ยืนยัน")
+		for _, item := range items {
+			if item.status != "confirmed" {
+				return result, errors.New("booking ยังไม่ยืนยัน")
+			}
 		}
 		nextPayment = "paid"
 	default:
-		return errors.New("invalid action")
+		return result, errors.New("invalid action")
 	}
-	_, err = tx.ExecContext(ctx, `update bookings set status=$3,payment_status=$4,note=$5,updated_at=now() where id=$1 and admin_id=$2`, bookingID, adminID, nextStatus, nextPayment, strings.TrimSpace(note))
+	_, err = tx.ExecContext(ctx, `update bookings set status=$4,payment_status=$5,note=$6,updated_at=now() where admin_id=$1 and (id=$2 or ($3<>'' and booking_batch_id=$3))`, adminID, bookingID, result.BatchID, nextStatus, nextPayment, strings.TrimSpace(note))
 	if err != nil {
-		return err
+		return result, err
 	}
 	if !active {
-		_, err = tx.ExecContext(ctx, `update booking_occupancies set active=false where booking_id=$1`, bookingID)
+		_, err = tx.ExecContext(ctx, `
+			update booking_occupancies set active=false
+			where booking_id in (
+				select id from bookings where admin_id=$1 and (id=$2 or ($3<>'' and booking_batch_id=$3))
+			)
+		`, adminID, bookingID, result.BatchID)
 		if err != nil {
-			return err
+			return result, err
 		}
 	}
 	if action == "approve" || action == "reject" || action == "paid" {
 		payStatus := map[string]string{"approve": "approved", "reject": "rejected", "paid": "manual_paid"}[action]
-		_, err = tx.ExecContext(ctx, `update booking_payments set status=$2,note=$3,reviewed_by=$4,reviewed_at=now() where id=(select id from booking_payments where booking_id=$1 order by created_at desc limit 1)`, bookingID, payStatus, note, actorID)
+		_, err = tx.ExecContext(ctx, `
+			update booking_payments set status=$4,note=$5,reviewed_by=$6,reviewed_at=now()
+			where id=(
+				select p.id from booking_payments p
+				join bookings b on b.id=p.booking_id
+				where b.admin_id=$1 and (b.id=$2 or ($3<>'' and b.booking_batch_id=$3))
+				order by p.created_at desc limit 1
+			)
+		`, adminID, bookingID, result.BatchID, payStatus, note, actorID)
 		if err != nil {
-			return err
+			return result, err
 		}
 	}
-	if err = a.insertActivityLogTx(ctx, tx, actorType, actorID, action+"_booking", "booking", bookingID, map[string]any{"adminId": adminID, "fromStatus": status, "toStatus": nextStatus, "paymentStatus": nextPayment, "note": note}); err != nil {
-		return err
+	targetID := bookingID
+	if result.BatchID != "" {
+		targetID = result.BatchID
 	}
-	return tx.Commit()
+	if err = a.insertActivityLogTx(ctx, tx, actorType, actorID, action+"_booking_batch", "booking_batch", targetID, map[string]any{"adminId": adminID, "bookingIds": result.BookingIDs, "fromStatus": status, "toStatus": nextStatus, "paymentStatus": nextPayment, "note": note}); err != nil {
+		return result, err
+	}
+	return result, tx.Commit()
 }
 
 func (a *app) handlePublicBooking(w http.ResponseWriter, r *http.Request) {
@@ -1392,7 +1561,7 @@ func (a *app) handlePublicBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, tenantToken string) {
-	if !requireBookingRate(w, r, "booking-hold:"+adminID, 20, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "booking-hold:"+adminID, 20, 10*time.Minute) {
 		return
 	}
 	u, ok := a.currentPublicUser(r.Context(), r)
@@ -1513,7 +1682,7 @@ func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, 
 }
 
 func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID, bookingID string) {
-	if !requireBookingRate(w, r, "booking-slip:"+adminID, 10, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "booking-slip:"+adminID, 10, 10*time.Minute) {
 		return
 	}
 	u, ok := a.currentPublicUser(r.Context(), r)
@@ -1541,7 +1710,14 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		writeJSON(w, 404, map[string]string{"error": "booking not found"})
 		return
 	}
-	if status != "hold" || time.Now().After(expires) {
+	if status != "hold" {
+		message := bookingSlipConflictMessage(status)
+		_ = a.insertActivityLogTx(r.Context(), tx, "public_user", u.ID, "upload_slip_after_booking_changed", "booking_batch", bookingID, map[string]any{"adminId": adminID, "batchId": batchID, "status": status})
+		_ = tx.Commit()
+		writeJSON(w, 409, map[string]string{"error": message})
+		return
+	}
+	if time.Now().After(expires) {
 		_ = a.insertActivityLogTx(r.Context(), tx, "system", adminID, "delete_expired_booking_hold", "booking_batch", bookingID, map[string]any{"adminId": adminID, "batchId": batchID, "reason": "payment_timeout"})
 		_, _ = tx.ExecContext(r.Context(), `delete from bookings where admin_id=$3 and (id=$1 or ($2<>'' and booking_batch_id=$2)) and status='hold'`, bookingID, batchID, adminID)
 		_ = tx.Commit()
@@ -1569,6 +1745,23 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	}
 	go a.notifyAdminBooking(context.Background(), adminID, primaryBookingID)
 	writeJSON(w, 200, map[string]any{"status": "pending_review"})
+}
+
+func bookingSlipConflictMessage(status string) string {
+	switch status {
+	case "cancelled":
+		return "รายการจองนี้ถูกผู้ดูแลยกเลิกแล้ว กรุณาเลือกเวลาใหม่"
+	case "rejected":
+		return "รายการจองนี้ไม่ได้รับอนุมัติ กรุณาเลือกเวลาใหม่"
+	case "pending_review":
+		return "ส่งสลิปแล้วและกำลังรอผู้ดูแลตรวจสอบ"
+	case "confirmed":
+		return "รายการจองนี้ได้รับการยืนยันแล้ว"
+	case "expired":
+		return "เวลาชำระเงินหมดแล้ว รายการจองถูกยกเลิก กรุณาเลือกเวลาใหม่"
+	default:
+		return "สถานะรายการจองเปลี่ยนแปลงแล้ว กรุณารีเฟรชและตรวจสอบอีกครั้ง"
+	}
 }
 
 type publicUser struct{ ID, Email, Name string }
@@ -1614,7 +1807,7 @@ func (a *app) handlePublicAuth(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) startGoogleLogin(w http.ResponseWriter, r *http.Request) {
-	if !requireBookingRate(w, r, "google-start", 20, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "google-start", 20, 10*time.Minute) {
 		return
 	}
 	tenant := strings.TrimSpace(r.URL.Query().Get("tenant"))
@@ -1638,7 +1831,7 @@ func (a *app) startGoogleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) finishGoogleLogin(w http.ResponseWriter, r *http.Request) {
-	if !requireBookingRate(w, r, "google-callback", 30, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "google-callback", 30, 10*time.Minute) {
 		return
 	}
 	state := r.URL.Query().Get("state")
@@ -1725,7 +1918,7 @@ func (a *app) publicMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) claimMember(w http.ResponseWriter, r *http.Request) {
-	if !requireBookingRate(w, r, "member-claim", 10, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "member-claim", 10, 10*time.Minute) {
 		return
 	}
 	u, ok := a.currentPublicUser(r.Context(), r)
@@ -1789,7 +1982,7 @@ func (a *app) claimMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
-	if !requireBookingRate(w, r, "profile", 120, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "profile", 120, 10*time.Minute) {
 		return
 	}
 	token := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/profile/"), "/")
@@ -1818,14 +2011,19 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	bookingPage, pageSize := requestPage(r, "bookingPage", "pageSize", 10, 50)
+	paymentPage, _ := requestPage(r, "paymentPage", "pageSize", 10, 50)
+	matchPage, _ := requestPage(r, "matchPage", "pageSize", 10, 50)
 	m.Phone = displayPhone(phone)
 	a.expireHolds(r.Context(), adminID)
 	bookingToken := ""
 	if features.BookingEnabled {
 		_ = a.db.QueryRowContext(r.Context(), `select public_token from booking_settings where admin_id=$1`, adminID).Scan(&bookingToken)
 	}
+	var bookingTotal, paymentTotal, matchTotal, upcomingTotal int
+	_ = a.db.QueryRowContext(r.Context(), `select count(*),count(*) filter (where status in ('hold','pending_review','confirmed')) from bookings where member_id=$1 and admin_id=$2`, m.ID, adminID).Scan(&bookingTotal, &upcomingTotal)
 	bookings := []bookingRecord{}
-	rows, _ := a.db.QueryContext(r.Context(), `select b.id,b.court_id,c.name,b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.member_id=$1 order by b.start_at desc limit 100`, m.ID)
+	rows, _ := a.db.QueryContext(r.Context(), `select b.id,b.court_id,c.name,b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.member_id=$1 and b.admin_id=$2 order by b.start_at desc limit $3 offset $4`, m.ID, adminID, pageSize, (bookingPage-1)*pageSize)
 	if rows != nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -1842,7 +2040,8 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payments := []map[string]any{}
-	pr, _ := a.db.QueryContext(r.Context(), `select 'booking',p.booking_id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from booking_payments p where p.member_id=$1 union all select 'match',e.session_id,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from player_payment_events e where e.member_id=$1 order by 5 desc`, m.ID)
+	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, m.ID, adminID).Scan(&paymentTotal)
+	pr, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at from (select 'booking' as kind,p.booking_id as id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.session_id,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc limit $3 offset $4`, m.ID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if pr != nil {
 		defer pr.Close()
 		for pr.Next() {
@@ -1853,7 +2052,8 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	matches := []map[string]any{}
-	mr, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and mt.phase='history' order by s.updated_at desc,mt.id desc limit 100`, m.ID)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history'`, m.ID, adminID).Scan(&matchTotal)
+	mr, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit $3 offset $4`, m.ID, adminID, pageSize, (matchPage-1)*pageSize)
 	if mr != nil {
 		defer mr.Close()
 		for mr.Next() {
@@ -1863,7 +2063,15 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 			matches = append(matches, map[string]any{"sessionName": session, "matchId": matchID, "court": court, "startedAt": started, "endedAt": ended, "status": status, "winner": winner, "playerId": playerID})
 		}
 	}
-	writeJSON(w, 200, map[string]any{"member": m, "bookingToken": bookingToken, "bookings": bookings, "payments": payments, "matches": matches})
+	writeJSON(w, 200, map[string]any{
+		"member": m, "bookingToken": bookingToken, "bookings": bookings, "payments": payments, "matches": matches,
+		"upcomingCount": upcomingTotal, "serverNow": time.Now().Format(time.RFC3339),
+		"pagination": map[string]any{
+			"bookings": pageMeta(bookingPage, pageSize, bookingTotal),
+			"payments": pageMeta(paymentPage, pageSize, paymentTotal),
+			"matches":  pageMeta(matchPage, pageSize, matchTotal),
+		},
+	})
 }
 
 func encryptionKey() ([]byte, error) {
@@ -2024,7 +2232,7 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 	if parts[1] == "reject" {
 		note = "ปฏิเสธผ่าน Telegram"
 	}
-	err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
+	_, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": err.Error()})
 		return

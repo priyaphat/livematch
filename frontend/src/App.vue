@@ -1,8 +1,7 @@
 ﻿<script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { createAnnouncementAudioCache } from './utils/announcementAudioCache.js'
 import { arrangeTeamsByTeammateHistory } from './utils/teamRotation.js'
-import QRCode from 'qrcode'
 import {
   Activity,
   BarChart3,
@@ -41,28 +40,28 @@ import {
 } from '@lucide/vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
 import ManualTeamModal from './components/ManualTeamModal.vue'
-import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import AuthPage from './pages/AuthPage.vue'
-import BackofficePage from './pages/BackofficePage.vue'
-import DashboardPage from './pages/DashboardPage.vue'
-import HistoryPage from './pages/HistoryPage.vue'
-import HomePage from './pages/HomePage.vue'
-import HelpPage from './pages/HelpPage.vue'
-import LiveBoardPage from './pages/LiveBoardPage.vue'
-import LiveShareHoursPage from './pages/LiveShareHoursPage.vue'
-import LiveMatchPage from './pages/LiveMatchPage.vue'
-import PlayersPage from './pages/PlayersPage.vue'
-import QueuePage from './pages/QueuePage.vue'
-import SettingsPage from './pages/SettingsPage.vue'
-import SharedPlayersPage from './pages/SharedPlayersPage.vue'
-import SharedQueuePage from './pages/SharedQueuePage.vue'
-import VerifyEmailPage from './pages/VerifyEmailPage.vue'
-import MemberAdminPage from './pages/MemberAdminPage.vue'
-import BookingAdminPage from './pages/BookingAdminPage.vue'
-import PublicBookingPage from './pages/PublicBookingPage.vue'
-import PublicProfilePage from './pages/PublicProfilePage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 import { persistPublicTheme, persistTheme, readStoredPublicTheme, readStoredTheme } from './theme'
+const BackofficePage = defineAsyncComponent(() => import('./pages/BackofficePage.vue'))
+const AdminSupervisorPage = defineAsyncComponent(() => import('./pages/AdminSupervisorPage.vue'))
+const DashboardPage = defineAsyncComponent(() => import('./pages/DashboardPage.vue'))
+const HistoryPage = defineAsyncComponent(() => import('./pages/HistoryPage.vue'))
+const HomePage = defineAsyncComponent(() => import('./pages/HomePage.vue'))
+const HelpPage = defineAsyncComponent(() => import('./pages/HelpPage.vue'))
+const LiveBoardPage = defineAsyncComponent(() => import('./pages/LiveBoardPage.vue'))
+const LiveShareHoursPage = defineAsyncComponent(() => import('./pages/LiveShareHoursPage.vue'))
+const LiveMatchPage = defineAsyncComponent(() => import('./pages/LiveMatchPage.vue'))
+const PlayersPage = defineAsyncComponent(() => import('./pages/PlayersPage.vue'))
+const QueuePage = defineAsyncComponent(() => import('./pages/QueuePage.vue'))
+const SettingsPage = defineAsyncComponent(() => import('./pages/SettingsPage.vue'))
+const SharedPlayersPage = defineAsyncComponent(() => import('./pages/SharedPlayersPage.vue'))
+const SharedQueuePage = defineAsyncComponent(() => import('./pages/SharedQueuePage.vue'))
+const VerifyEmailPage = defineAsyncComponent(() => import('./pages/VerifyEmailPage.vue'))
+const MemberAdminPage = defineAsyncComponent(() => import('./pages/MemberAdminPage.vue'))
+const BookingAdminPage = defineAsyncComponent(() => import('./pages/BookingAdminPage.vue'))
+const PublicBookingPage = defineAsyncComponent(() => import('./pages/PublicBookingPage.vue'))
+const PublicProfilePage = defineAsyncComponent(() => import('./pages/PublicProfilePage.vue'))
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const routePath = window.location.pathname
@@ -1595,6 +1594,7 @@ async function refreshCoinPaymentQr() {
   const payload = selectedPromptPayPayload.value
   if (payload) {
     try {
+      const QRCode = (await import('qrcode')).default
       forms.coinPaymentQrDataUrl = await QRCode.toDataURL(payload, {
         margin: 1,
         width: 256,
@@ -2637,6 +2637,7 @@ async function openQr(title, link) {
   forms.qrTitle = title
   forms.qrLink = link
   forms.qrStatus = ''
+  const QRCode = (await import('qrcode')).default
   forms.qrDataUrl = await QRCode.toDataURL(link, {
     width: 320,
     margin: 2,

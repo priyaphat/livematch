@@ -31,15 +31,20 @@ const state = reactive({
   error: "",
   loading: false,
   now: Date.now(),
+  clockOffsetMs: 0,
 });
 const claim = reactive({ name: "", phone: "" });
 const selections = ref([]);
 const payment = ref(null);
 const qr = ref("");
 const toast = reactive({ message: "", tone: "error" });
+const scheduleScroll = ref(null);
 let timer;
 let clock;
 let toastTimer;
+let loadRequest = 0;
+let loadInFlight = false;
+let loadQueued = false;
 
 const slots = computed(() => {
   const [openHour, openMinute] = String(state.settings.openTime || "16:00")
@@ -147,12 +152,14 @@ function changeDate(days) {
   const date = new Date(Date.UTC(year, month - 1, day));
   date.setUTCDate(date.getUTCDate() + days);
   state.date = date.toISOString().slice(0, 10);
+  if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
   load();
 }
 function goToday() {
   if (!canChangeBookingDate.value) return;
   state.date = today;
+  if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
   load();
 }
@@ -219,15 +226,31 @@ function slotClass(court, minute) {
   return `public-slot--${tone} booking-state--${tone}`;
 }
 async function load() {
+  if (loadInFlight) {
+    loadQueued = true;
+    loadRequest += 1;
+    return;
+  }
+  loadInFlight = true;
+  const request = ++loadRequest;
+  const requestedDate = state.date;
+  const previousScroll = scheduleScroll.value?.scrollLeft || 0;
   state.loading = true;
   state.error = "";
   try {
-    Object.assign(
-      state,
-      await props.apiRequest(
-        `/api/public-booking/${props.token}/availability?date=${state.date}`,
-      ),
+    const availability = await props.apiRequest(
+      `/api/public-booking/${props.token}/availability?date=${requestedDate}`,
     );
+    if (request !== loadRequest || requestedDate !== state.date) return;
+    Object.assign(state, availability);
+    if (availability.serverNow) {
+      state.clockOffsetMs = timestamp(availability.serverNow) - Date.now();
+      state.now = Date.now() + state.clockOffsetMs;
+    }
+    requestAnimationFrame(() => {
+      if (scheduleScroll.value && requestedDate === state.date)
+        scheduleScroll.value.scrollLeft = previousScroll;
+    });
     try {
       const me = await props.apiRequest(
         `/api/public-auth/me?tenant=${props.token}`,
@@ -242,11 +265,13 @@ async function load() {
           const queues = await props.apiRequest(
             `/api/public-booking/${props.token}/mine`,
           );
+          if (request !== loadRequest) return;
+          if (queues.serverNow) state.clockOffsetMs = timestamp(queues.serverNow) - Date.now();
           state.queues = (queues.items || []).filter(
             (queue) => queue.status === "hold",
           );
-        } catch {
-          state.queues = [];
+        } catch (error) {
+          showToast(error.message || "โหลดคิวจองไม่สำเร็จ กรุณาลองใหม่");
         }
       } else {
         state.queues = [];
@@ -265,12 +290,17 @@ async function load() {
       state.date = today;
       clearSelection();
       showToast(error.message);
-      await load();
+      loadQueued = true;
       return;
     }
     state.error = error.message;
   } finally {
-    state.loading = false;
+    if (request === loadRequest) state.loading = false;
+    loadInFlight = false;
+    if (loadQueued) {
+      loadQueued = false;
+      queueMicrotask(load);
+    }
   }
 }
 function googleLogin() {
@@ -453,8 +483,9 @@ async function holdBatch() {
 }
 function upload(event) {
   const file = event.target.files?.[0];
+  event.target.value = "";
   if (!file || file.size > 5 * 1024 * 1024) {
-    state.error = "ไฟล์ใหญ่เกิน 5 MB";
+    showToast("ไฟล์ใหญ่เกิน 5 MB");
     return;
   }
   const reader = new FileReader();
@@ -467,7 +498,10 @@ function upload(event) {
       payment.value.status = "pending_review";
       await load();
     } catch (error) {
-      state.error = error.message;
+      showToast(error.message || "อัปโหลดสลิปไม่สำเร็จ กรุณาตรวจสอบสถานะการจอง");
+      payment.value = null;
+      qr.value = "";
+      await load();
     }
   };
   reader.readAsDataURL(file);
@@ -477,7 +511,7 @@ onMounted(async () => {
   await load();
   timer = setInterval(load, 30000);
   clock = setInterval(() => {
-    state.now = Date.now();
+    state.now = Date.now() + state.clockOffsetMs;
     const expiredQueueIds = state.queues
       .filter(
         (queue) =>
@@ -531,7 +565,7 @@ onUnmounted(() => {
           <p
             class="text-xs font-black uppercase tracking-[0.16em] text-court-700"
           >
-            LiveMatch booking
+            ระบบจองสนาม LiveMatch
           </p>
           <h1 class="text-xl font-black sm:text-2xl">จองสนามแบดมินตัน</h1>
         </div>
@@ -552,7 +586,7 @@ onUnmounted(() => {
           class="booking-secondary-button"
           @click="goToProfile"
         >
-          <UserRound class="h-4 w-4" />Profile
+          <UserRound class="h-4 w-4" />โปรไฟล์
         </button>
         <div class="hidden text-right sm:block">
           <p class="text-sm font-black">{{ state.member.name }}</p>
@@ -736,7 +770,7 @@ onUnmounted(() => {
       </section>
 
       <section class="public-schedule-card">
-        <div class="public-schedule-scroll">
+        <div ref="scheduleScroll" class="public-schedule-scroll">
           <table class="public-timeline-table border-collapse">
             <thead>
               <tr class="booking-table-head">
@@ -903,7 +937,11 @@ onUnmounted(() => {
     <div
       v-if="payment"
       class="fixed inset-0 z-50 grid place-items-end bg-black/60 p-3 sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="public-payment-title"
       @click.self="payment = null"
+      @keydown.esc="payment = null"
     >
       <section class="public-payment-sheet">
         <button
@@ -920,7 +958,7 @@ onUnmounted(() => {
           >
             กรุณาชำระภายใน {{ paymentCountdown }} นาที
           </p>
-          <h2 class="mt-1 text-2xl font-black">
+          <h2 id="public-payment-title" class="mt-1 text-2xl font-black">
             ชำระ ฿{{ payment.totalPriceThb?.toLocaleString("th-TH") }}
           </h2>
           <img
@@ -954,14 +992,14 @@ onUnmounted(() => {
           </div>
           <h2 class="mt-5 text-2xl font-black">ส่งสลิปแล้ว</h2>
           <p class="mt-2 text-stone-500">
-            รอผู้ดูแลตรวจสอบ คุณสามารถติดตามสถานะได้ใน Profile
+            รอผู้ดูแลตรวจสอบ คุณสามารถติดตามสถานะได้ในโปรไฟล์
           </p>
           <button
             v-if="state.member?.profileToken"
             class="booking-primary-button mt-6 h-12"
             @click="goToProfile"
           >
-            ไปที่ Profile
+            ไปที่โปรไฟล์
           </button>
         </template>
       </section>

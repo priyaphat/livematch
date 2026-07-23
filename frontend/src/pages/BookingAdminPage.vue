@@ -42,9 +42,15 @@ const qrDataUrl = ref("");
 const qrStatus = ref("");
 const settingsStatus = ref("");
 const lastUpdated = ref(null);
+const scheduleScroll = ref(null);
 const newCourt = reactive({ name: "", pricePerInterval: 100 });
 const historyItems = ref([]);
 const historyLoading = ref(false);
+const historyPage = ref(1);
+const historyPageSize = ref(20);
+const historyTotal = ref(0);
+const pendingPage = ref(1);
+const pendingPageSize = 10;
 const historyFilters = reactive({
   startDate: today,
   endDate: today,
@@ -67,6 +73,16 @@ const tabs = computed(() => [
 ]);
 const pendingBookings = computed(() =>
   state.bookings.filter((booking) => booking.status === "pending_review"),
+);
+const pendingTotalPages = computed(() =>
+  Math.max(1, Math.ceil(pendingBookings.value.length / pendingPageSize)),
+);
+const pagedPendingBookings = computed(() => {
+  const start = (pendingPage.value - 1) * pendingPageSize;
+  return pendingBookings.value.slice(start, start + pendingPageSize);
+});
+const historyTotalPages = computed(() =>
+  Math.max(1, Math.ceil(historyTotal.value / historyPageSize.value)),
 );
 const displayDate = computed(() =>
   new Intl.DateTimeFormat("th-TH", {
@@ -134,11 +150,13 @@ function changeDate(days) {
   const date = new Date(Date.UTC(year, month - 1, day));
   date.setUTCDate(date.getUTCDate() + days);
   state.date = date.toISOString().slice(0, 10);
+  if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   loadOverview();
 }
 
 function goToday() {
   state.date = today;
+  if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   loadOverview();
 }
 
@@ -215,6 +233,7 @@ function applyOverview(
 ) {
   state.bookings = data.bookings || [];
   state.closures = data.closures || [];
+  pendingPage.value = Math.min(pendingPage.value, pendingTotalPages.value);
   if (includeConfiguration || !settingsReady) {
     Object.assign(savedScheduleSettings, data.settings || {});
     if (replaceSettingsDraft || !settingsReady)
@@ -230,6 +249,8 @@ async function loadOverview(
   replaceSettingsDraft = false,
 ) {
   const request = ++overviewRequest;
+  const requestedDate = state.date;
+  const previousScroll = scheduleScroll.value?.scrollLeft || 0;
   if (!silent) state.loading = true;
   state.error = "";
   try {
@@ -238,6 +259,10 @@ async function loadOverview(
     );
     if (request !== overviewRequest) return;
     applyOverview(data, includeConfiguration, replaceSettingsDraft);
+    requestAnimationFrame(() => {
+      if (scheduleScroll.value && state.date === requestedDate)
+        scheduleScroll.value.scrollLeft = previousScroll;
+    });
     lastUpdated.value = new Date();
   } catch (error) {
     if (request === overviewRequest) state.error = error.message;
@@ -246,13 +271,16 @@ async function loadOverview(
   }
 }
 
-async function loadHistory() {
+async function loadHistory(page = historyPage.value) {
+  historyPage.value = Math.max(1, Number(page) || 1);
   historyLoading.value = true;
   state.error = "";
   try {
     const params = new URLSearchParams({
       startDate: historyFilters.startDate,
       endDate: historyFilters.endDate,
+      page: String(historyPage.value),
+      pageSize: String(historyPageSize.value),
     });
     if (historyFilters.courtId) params.set("courtId", historyFilters.courtId);
     if (historyFilters.phone.trim())
@@ -261,6 +289,9 @@ async function loadHistory() {
       `/api/admin/booking/history?${params.toString()}`,
     );
     historyItems.value = data.items || [];
+    historyPage.value = data.page || historyPage.value;
+    historyPageSize.value = data.pageSize || historyPageSize.value;
+    historyTotal.value = data.total || 0;
   } catch (error) {
     state.error = error.message;
   } finally {
@@ -282,7 +313,7 @@ function resetHistoryFilters() {
     courtId: "",
     phone: "",
   });
-  loadHistory();
+  loadHistory(1);
 }
 
 function bookingStatusLabel(status) {
@@ -520,7 +551,7 @@ onUnmounted(() => {
           <p
             class="text-xs font-black uppercase tracking-[0.16em] text-court-700"
           >
-            LiveMatch booking
+            ระบบจองสนาม LiveMatch
           </p>
           <h1 class="truncate text-xl font-black sm:text-2xl">
             ศูนย์จัดการตารางจองสนาม
@@ -561,7 +592,7 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div class="flex flex-wrap items-center justify-end gap-2">
+      <div class="booking-command-actions flex items-center justify-end gap-2">
         <span
           v-if="lastUpdated"
           class="hidden items-center gap-1.5 text-xs font-bold text-stone-500 xl:inline-flex"
@@ -614,7 +645,7 @@ onUnmounted(() => {
             <p
               class="text-xs font-black uppercase tracking-[0.14em] text-court-700"
             >
-              Daily schedule
+              ตารางประจำวัน
             </p>
             <h2 class="text-lg font-black">ตารางการจองสนาม</h2>
           </div>
@@ -625,15 +656,15 @@ onUnmounted(() => {
             · ช่องละ {{ savedScheduleSettings.intervalMinutes || 60 }} นาที
           </p>
         </div>
-        <div class="overflow-x-auto">
-          <table class="w-full min-w-[900px] border-collapse">
+        <div ref="scheduleScroll" class="max-w-full overflow-x-auto overscroll-x-contain">
+          <table class="w-full min-w-[720px] border-collapse">
             <thead>
               <tr class="booking-table-head">
                 <th class="sticky left-0 z-10 min-w-28 p-3">เวลา / สนาม</th>
                 <th
                   v-for="court in courts"
                   :key="court.id"
-                  class="min-w-44 p-3"
+                  class="min-w-32 p-3"
                 >
                   {{ court.name }}
                 </th>
@@ -674,15 +705,15 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <aside v-if="editor" class="booking-inspector">
+      <aside v-if="editor" class="booking-inspector" role="dialog" aria-modal="true" aria-labelledby="booking-inspector-title" @keydown.esc="closeEditor">
         <div class="flex items-start justify-between gap-3 border-b pb-4">
           <div>
             <p
               class="text-xs font-black uppercase tracking-[0.14em] text-court-700"
             >
-              Quick action
+              จัดการรายการ
             </p>
-            <h2 class="mt-1 text-xl font-black">
+            <h2 id="booking-inspector-title" class="mt-1 text-xl font-black">
               {{
                 review
                   ? "รายละเอียดการจอง"
@@ -904,7 +935,7 @@ onUnmounted(() => {
       </h2>
       <div class="mt-3 grid gap-2">
         <article
-          v-for="booking in pendingBookings"
+          v-for="booking in pagedPendingBookings"
           :key="booking.id"
           class="grid gap-3 rounded-lg bg-purple-50 p-3 dark:bg-purple-950/20 sm:grid-cols-[1fr_auto] sm:items-center"
         >
@@ -934,6 +965,11 @@ onUnmounted(() => {
           ไม่มีรายการรอตรวจสอบ
         </p>
       </div>
+      <div v-if="pendingBookings.length > pendingPageSize" class="mt-4 flex items-center justify-between border-t pt-3 dark:border-stone-700">
+        <button class="booking-secondary-button h-10" :disabled="pendingPage <= 1" @click="pendingPage--">ก่อนหน้า</button>
+        <span class="text-sm font-black">หน้า {{ pendingPage }} / {{ pendingTotalPages }} · {{ pendingBookings.length }} รายการ</span>
+        <button class="booking-secondary-button h-10" :disabled="pendingPage >= pendingTotalPages" @click="pendingPage++">ถัดไป</button>
+      </div>
     </section>
 
     <section
@@ -946,7 +982,7 @@ onUnmounted(() => {
         </h2>
         <form
           class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_1fr_auto_auto] lg:items-end"
-          @submit.prevent="loadHistory"
+          @submit.prevent="loadHistory(1)"
         >
           <label class="booking-field">
             <span>วันเริ่มต้น</span>
@@ -1049,8 +1085,13 @@ onUnmounted(() => {
           ไม่พบประวัติการจองตามตัวกรอง
         </p>
       </div>
-      <div class="border-t px-4 py-3 text-xs font-bold text-stone-500 dark:border-stone-700">
-        แสดง {{ historyItems.length }} รายการ · สูงสุด 500 รายการต่อการค้นหา
+      <div class="flex flex-wrap items-center justify-between gap-3 border-t px-4 py-3 text-sm font-bold text-stone-500 dark:border-stone-700">
+        <span>แสดง {{ historyItems.length }} จาก {{ historyTotal }} รายการ</span>
+        <div class="flex items-center gap-2">
+          <button class="booking-secondary-button h-10" :disabled="historyPage <= 1 || historyLoading" @click="loadHistory(historyPage - 1)">ก่อนหน้า</button>
+          <span>หน้า {{ historyPage }} / {{ historyTotalPages }}</span>
+          <button class="booking-secondary-button h-10" :disabled="historyPage >= historyTotalPages || historyLoading" @click="loadHistory(historyPage + 1)">ถัดไป</button>
+        </div>
       </div>
     </section>
 
@@ -1127,7 +1168,8 @@ onUnmounted(() => {
               class="h-10 rounded-lg border bg-transparent px-3"
           /></label>
           <label class="grid gap-1 text-sm font-bold sm:col-span-2"
-            >โลโก้<input
+            >โลโก้<span class="inline-flex h-11 cursor-pointer items-center justify-center rounded-lg border border-stone-300 bg-white px-4 font-black dark:border-stone-600 dark:bg-stone-800">เลือกโลโก้</span><input
+              class="sr-only"
               type="file"
               accept="image/png,image/jpeg,image/webp"
               @change="fileData($event, 'logoData', 2 * 1024 * 1024)"
@@ -1313,7 +1355,11 @@ onUnmounted(() => {
     <div
       v-if="review"
       class="fixed inset-0 z-50 grid place-items-end bg-black/60 p-3 sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="booking-review-title"
       @click.self="review = null"
+      @keydown.esc="review = null"
     >
       <form
         class="max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-4 shadow-2xl dark:bg-stone-900"
@@ -1322,7 +1368,7 @@ onUnmounted(() => {
         <div class="flex items-start justify-between gap-3">
           <div>
             <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700">Slip review</p>
-            <h2 class="mt-1 text-xl font-black">รายละเอียดการจอง</h2>
+            <h2 id="booking-review-title" class="mt-1 text-xl font-black">รายละเอียดการจอง</h2>
           </div>
           <button
             type="button"
@@ -1385,13 +1431,17 @@ onUnmounted(() => {
     <div
       v-if="qrModal"
       class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="booking-qr-title"
       @click.self="qrModal = false"
+      @keydown.esc="qrModal = false"
     >
       <div class="w-full max-w-md rounded-xl bg-white p-4 dark:bg-stone-900">
         <div class="flex items-center justify-between">
           <div>
             <p class="text-sm font-black text-court-700">QR Code</p>
-            <h2 class="text-xl font-black">ลิงก์ลงทะเบียนและจองสนาม</h2>
+            <h2 id="booking-qr-title" class="text-xl font-black">ลิงก์ลงทะเบียนและจองสนาม</h2>
           </div>
           <button
             class="grid h-9 w-9 place-items-center rounded-lg border"

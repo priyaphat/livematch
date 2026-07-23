@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { setLanguage, translateText } from './i18n'
+import { installDomTranslator, setLanguage, translateText } from './i18n'
 
 afterEach(() => setLanguage('th'))
 
@@ -34,5 +34,15 @@ describe('bilingual UI dictionary', () => {
     expect(translated).toBe('Telegram notifications')
     expect(translateText(translated)).toBe('Telegram notifications')
     expect(translateText('เชื่อมต่อ SlipOK สำเร็จ')).toBe('SlipOK connected successfully')
+  })
+
+  it('never translates API/user data inside an explicit ignore boundary', async () => {
+    document.body.innerHTML = '<main><span data-i18n-ignore>ประวัติ</span><b>ประวัติ</b></main>'
+    setLanguage('en')
+    const stop = installDomTranslator(() => document.querySelector('main'))
+    await Promise.resolve()
+    expect(document.querySelector('[data-i18n-ignore]').textContent).toBe('ประวัติ')
+    expect(document.querySelector('b').textContent).toBe('History')
+    stop()
   })
 })

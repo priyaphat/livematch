@@ -12,6 +12,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -46,19 +47,51 @@ var supportRateLimit = struct {
 	entries map[string]supportRateEntry
 }{entries: map[string]supportRateEntry{}}
 
-func supportClientIP(r *http.Request) string {
-	if value := strings.TrimSpace(r.Header.Get("X-Real-IP")); value != "" {
-		return value
-	}
-	if value := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0]); value != "" {
-		return value
-	}
+func remoteClientIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err == nil {
 		return host
 	}
 	return r.RemoteAddr
 }
+
+func trustedProxy(ip string) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return false
+	}
+	for _, raw := range strings.Split(os.Getenv("APP_TRUSTED_PROXY_CIDRS"), ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if candidate := net.ParseIP(raw); candidate != nil && candidate.Equal(parsed) {
+			return true
+		}
+		if _, network, err := net.ParseCIDR(raw); err == nil && network.Contains(parsed) {
+			return true
+		}
+	}
+	return false
+}
+
+func clientIP(r *http.Request) string {
+	remote := remoteClientIP(r)
+	if !trustedProxy(remote) {
+		return remote
+	}
+	for _, value := range strings.Split(r.Header.Get("X-Forwarded-For"), ",") {
+		if parsed := net.ParseIP(strings.TrimSpace(value)); parsed != nil {
+			return parsed.String()
+		}
+	}
+	if parsed := net.ParseIP(strings.TrimSpace(r.Header.Get("X-Real-IP"))); parsed != nil {
+		return parsed.String()
+	}
+	return remote
+}
+
+func supportClientIP(r *http.Request) string { return clientIP(r) }
 
 func allowSupportSubmission(ip string, now time.Time) bool {
 	supportRateLimit.Lock()
@@ -83,10 +116,6 @@ func (a *app) handleSupportIssues(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-	if !allowSupportSubmission(supportClientIP(r), time.Now()) {
-		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "ส่งรายการถี่เกินไป กรุณาลองใหม่ภายหลัง"})
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxSupportBodySize)
@@ -132,6 +161,9 @@ func (a *app) handleSupportIssues(w http.ResponseWriter, r *http.Request) {
 		images = append(images, fmt.Sprintf("data:%s;base64,%s", mimeType, base64.StdEncoding.EncodeToString(raw)))
 	}
 	imagesJSON, _ := json.Marshal(images)
+	if !a.requireRequestRate(w, r, "support", 5, time.Hour) {
+		return
+	}
 	id := "issue-" + randHex(6)
 	if _, err := a.db.ExecContext(r.Context(), `
 		insert into support_issues (id, title, details, contact, images)

@@ -93,7 +93,7 @@ const highlights = [
         <div>
           <p class="text-sm font-black text-court-700 dark:text-court-300">Admin account</p>
           <h2 class="mt-1 text-2xl font-black">เริ่มใช้งาน LiveMatch</h2>
-          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">สมัคร ยืนยันอีเมล แล้วเข้า Admin dashboard เพื่อสร้าง session ด้วย coin</p>
+          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">สมัคร ยืนยันอีเมล แล้วเข้าแดชบอร์ดผู้ดูแลเพื่อสร้าง session ด้วย coin</p>
         </div>
         <div class="flex shrink-0 items-center gap-2">
           <button

@@ -62,6 +62,14 @@ const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
 ))
 const newPlayerPhoneDigits = computed(() => String(props.forms.newPlayerPhone || '').replace(/\D/g, ''))
+const newPlayerEntry = computed(() => String(props.forms.newPlayerPhone || '').trim())
+const isPhoneLookup = computed(() => (
+  /^[\d\s()+-]+$/.test(newPlayerEntry.value) && newPlayerPhoneDigits.value.length > 5
+))
+const canAddPlayer = computed(() => (
+  !props.isSessionReadOnly &&
+  Boolean(props.forms.newPlayerMemberId || (newPlayerEntry.value && !isPhoneLookup.value))
+))
 const canCreateMissingMember = computed(() => (
   newPlayerPhoneDigits.value.length >= 9 &&
   !memberLoading.value &&
@@ -143,7 +151,7 @@ watch(() => props.forms.newPlayerPhone, (phone) => {
   memberSearchError.value = ''
   memberLoading.value = false
   memberSearchSequence += 1
-  if (digits.length <= 5) {
+  if (!isPhoneLookup.value) {
     memberDropdownOpen.value = false
     return
   }
@@ -163,6 +171,14 @@ watch(() => props.forms.newPlayerPhone, (phone) => {
     }
   }, 300)
 })
+
+async function addPlayerFromEntry() {
+  if (!canAddPlayer.value) return
+  if (!props.forms.newPlayerMemberId) {
+    props.forms.newPlayerName = newPlayerEntry.value
+  }
+  await props.addPlayer()
+}
 
 function selectMember(member) {
   clearTimeout(memberBlurTimer)
@@ -210,18 +226,19 @@ async function exportExcel() {
         <div class="relative">
           <input
             v-model="forms.newPlayerPhone"
-            inputmode="tel"
+            inputmode="text"
             autocomplete="off"
             role="combobox"
-            aria-label="ค้นหาสมาชิกด้วยเบอร์โทร"
+            aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"
             :aria-expanded="memberDropdownOpen"
             aria-controls="new-player-member-options"
             class="h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 pr-10 outline-none transition focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
-            placeholder="ค้นหาสมาชิกด้วยเบอร์โทร (เกิน 5 หลัก)"
+            placeholder="พิมพ์ชื่อขาจร หรือเบอร์สมาชิก (เกิน 5 หลัก)"
             :disabled="isSessionReadOnly"
-            @focus="memberDropdownOpen = newPlayerPhoneDigits.length > 5"
+            @focus="memberDropdownOpen = isPhoneLookup"
             @blur="closeMemberDropdownLater"
             @keydown.esc="memberDropdownOpen = false"
+            @keydown.enter.prevent="addPlayerFromEntry"
           />
           <span v-if="memberLoading" class="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin rounded-full border-2 border-court-500 border-t-transparent" aria-label="กำลังค้นหา" />
         </div>
@@ -255,10 +272,13 @@ async function exportExcel() {
           <p v-else-if="!memberLoading && newPlayerPhoneDigits.length <= 5" class="px-3 py-3 text-sm font-semibold text-stone-500">กรอกเบอร์ให้เกิน 5 หลักเพื่อค้นหา</p>
         </div>
       </div>
-      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly || !forms.newPlayerMemberId" @click="addPlayer">
+      <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="!canAddPlayer" @click="addPlayerFromEntry">
         <Plus class="h-4 w-4" />
         เพิ่ม
       </button>
+      <p class="text-xs font-medium text-stone-500 md:col-span-2">
+        พิมพ์ชื่อเพื่อเพิ่มเป็นขาจรเฉพาะ Match นี้ หรือพิมพ์เบอร์เกิน 5 หลักเพื่อค้นหาและผูกสมาชิก
+      </p>
     </div>
 
     <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">

@@ -1,11 +1,13 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ArrowLeft, CalendarDays, CreditCard, Eye, History, Pencil, Plus, RefreshCw, Search, Trash2, Users, X } from '@lucide/vue'
+import { statusText } from '../statusDefinitions'
 
 const props = defineProps(['apiRequest', 'auth'])
 const state = reactive({ items: [], total: 0, page: 1, pageSize: 20, search: '', loading: false, error: '' })
 const modal = ref(null)
 const detail = ref(null)
+const detailPages = reactive({ bookings: 1, payments: 1, matches: 1, pageSize: 6 })
 const confirmDelete = ref(null)
 let searchTimer
 const totalPages = computed(() => Math.max(1, Math.ceil(state.total / state.pageSize)))
@@ -22,12 +24,29 @@ function openCreate() { modal.value = { id: '', name: '', phone: '', memberType:
 function openEdit(item) { modal.value = { ...item } }
 function goBack() { window.location.assign('/') }
 async function openDetail(item) {
+  Object.assign(detailPages, { bookings: 1, payments: 1, matches: 1 })
   state.error = ''
-  try { detail.value = await props.apiRequest(`/api/admin/members/${item.id}`) }
+  try { detail.value = await props.apiRequest(`/api/admin/members/${item.id}?bookingPage=1&paymentPage=1&matchPage=1&pageSize=${detailPages.pageSize}`) }
+  catch (error) { state.error = error.message }
+}
+function detailTotalPages(section) {
+  const meta = detail.value?.pagination?.[section]
+  return Math.max(1, Math.ceil(Number(meta?.total || 0) / Number(meta?.pageSize || detailPages.pageSize)))
+}
+async function loadDetailPage(section, page) {
+  if (!detail.value?.member?.id) return
+  detailPages[section] = Math.max(1, Number(page) || 1)
+  const params = new URLSearchParams({
+    bookingPage: detailPages.bookings,
+    paymentPage: detailPages.payments,
+    matchPage: detailPages.matches,
+    pageSize: detailPages.pageSize
+  })
+  state.error = ''
+  try { detail.value = await props.apiRequest(`/api/admin/members/${detail.value.member.id}?${params}`) }
   catch (error) { state.error = error.message }
 }
 function editFromDetail() { const member = detail.value?.member; detail.value = null; if (member) openEdit(member) }
-const statusText = (status) => ({ hold: 'กำลังจอง', pending_review: 'รอตรวจสอบ', confirmed: 'ยืนยันแล้ว', rejected: 'ไม่อนุมัติ', cancelled: 'ยกเลิก', expired: 'หมดเวลา', paid: 'ชำระแล้ว', unpaid: 'ยังไม่ชำระ', pending: 'รอตรวจ', approved: 'อนุมัติแล้ว' }[status] || status)
 async function save() {
   const item = modal.value
   try {
@@ -46,38 +65,46 @@ onMounted(() => load(1))
 </script>
 
 <template>
-  <section class="mx-auto grid max-w-6xl gap-4 p-4 text-stone-900 dark:text-stone-100">
+  <section class="mx-auto grid min-w-0 max-w-6xl gap-4 overflow-x-hidden p-3 text-stone-900 dark:text-stone-100 sm:p-4">
     <header class="rounded-xl border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
-      <div class="flex flex-wrap items-center justify-between gap-3">
+      <div class="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
           <button class="grid h-10 w-10 place-items-center rounded-lg border border-stone-200 dark:border-stone-700" aria-label="กลับ Admin dashboard" @click="goBack"><ArrowLeft class="h-5 w-5" /></button>
-          <div><p class="text-sm font-black text-court-700 dark:text-court-300">Admin dashboard</p><h1 class="text-2xl font-black">ระบบสมาชิก</h1></div>
+          <div><p class="text-sm font-black text-court-700 dark:text-court-300">แดชบอร์ดผู้ดูแล</p><h1 class="text-2xl font-black">ระบบสมาชิก</h1></div>
         </div>
-        <div class="flex gap-2">
+        <div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
           <button class="inline-flex h-11 items-center gap-2 rounded-lg border border-stone-200 px-4 font-bold dark:border-stone-700" @click="load()"><RefreshCw class="h-4 w-4" />รีเฟรช</button>
           <button class="inline-flex h-11 items-center gap-2 rounded-lg bg-court-500 px-4 font-black text-white" @click="openCreate"><Plus class="h-4 w-4" />ลงทะเบียนสมาชิก</button>
         </div>
       </div>
     </header>
-    <div class="rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+    <div class="min-w-0 rounded-xl border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900 sm:p-4">
       <label class="flex h-11 items-center gap-2 rounded-lg border border-stone-200 px-3 dark:border-stone-700"><Search class="h-4 w-4" /><input v-model="state.search" class="min-w-0 flex-1 bg-transparent outline-none" placeholder="ค้นหาชื่อ เบอร์ หรืออีเมล" /></label>
       <p v-if="state.error" class="mt-3 rounded-lg bg-red-50 p-3 font-bold text-red-700 dark:bg-red-950/40 dark:text-red-200">{{ state.error }}</p>
-      <div class="mt-4 overflow-x-auto">
+      <div class="mt-4 hidden max-w-full overflow-x-auto md:block">
         <table class="w-full min-w-[760px] text-sm"><thead><tr class="bg-paper-100 text-left dark:bg-stone-800"><th class="p-3">ชื่อ</th><th class="p-3">เบอร์</th><th class="p-3">อีเมล</th><th class="p-3">ประเภท</th><th class="p-3">สถานะ</th><th class="p-3 text-right">จัดการ</th></tr></thead>
           <tbody><tr v-for="item in state.items" :key="item.id" class="border-b border-stone-100 dark:border-stone-800"><td class="p-3 font-black">{{ item.name }}</td><td class="p-3">{{ item.phone }}</td><td class="p-3">{{ item.email || '-' }}</td><td class="p-3">{{ item.memberType === 'club' ? 'สมาชิกชมรม' : 'สมาชิกทั่วไป' }}</td><td class="p-3"><span class="rounded-full px-2 py-1 text-xs font-black" :class="item.active ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-600'">{{ item.active ? 'ใช้งาน' : 'ปิดใช้งาน' }}</span></td><td class="p-3"><div class="flex justify-end gap-2"><button class="inline-flex h-9 items-center gap-1 rounded-lg border border-stone-200 px-2 font-bold dark:border-stone-700" @click="openDetail(item)"><Eye class="h-4 w-4" />ดูข้อมูล</button><button class="grid h-9 w-9 place-items-center rounded-lg border border-stone-200 dark:border-stone-700" aria-label="แก้ไข" @click="openEdit(item)"><Pencil class="h-4 w-4" /></button><button class="grid h-9 w-9 place-items-center rounded-lg border border-red-200 text-red-700" aria-label="ลบ" @click="confirmDelete=item"><Trash2 class="h-4 w-4" /></button></div></td></tr></tbody>
         </table>
         <p v-if="!state.loading && !state.items.length" class="p-8 text-center text-stone-500"><Users class="mx-auto mb-2 h-8 w-8" />ยังไม่มีสมาชิก</p>
       </div>
+      <div class="mt-4 grid gap-3 md:hidden">
+        <article v-for="item in state.items" :key="item.id" class="min-w-0 rounded-xl border border-stone-200 p-3 dark:border-stone-700" data-i18n-ignore>
+          <div class="flex min-w-0 items-start justify-between gap-3"><div class="min-w-0"><h2 class="truncate text-lg font-black">{{ item.name }}</h2><p class="break-all text-sm text-stone-500">{{ item.phone }} · {{ item.email || '-' }}</p></div><span class="shrink-0 rounded-full px-2 py-1 text-xs font-black" :class="item.active ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-600'">{{ item.active ? 'ใช้งาน' : 'ปิดใช้งาน' }}</span></div>
+          <p class="mt-2 text-sm font-bold">{{ item.memberType === 'club' ? 'สมาชิกชมรม' : 'สมาชิกทั่วไป' }}</p>
+          <div class="mt-3 grid grid-cols-[1fr_auto_auto] gap-2"><button class="inline-flex h-10 items-center justify-center gap-1 rounded-lg border font-bold dark:border-stone-700" @click="openDetail(item)"><Eye class="h-4 w-4" />ดูข้อมูล</button><button class="grid h-10 w-10 place-items-center rounded-lg border dark:border-stone-700" aria-label="แก้ไข" @click="openEdit(item)"><Pencil class="h-4 w-4" /></button><button class="grid h-10 w-10 place-items-center rounded-lg border border-red-200 text-red-700" aria-label="ลบ" @click="confirmDelete=item"><Trash2 class="h-4 w-4" /></button></div>
+        </article>
+        <p v-if="!state.loading && !state.items.length" class="p-8 text-center text-stone-500"><Users class="mx-auto mb-2 h-8 w-8" />ยังไม่มีสมาชิก</p>
+      </div>
       <div class="mt-4 flex items-center justify-between"><button class="rounded-lg border px-3 py-2 disabled:opacity-40" :disabled="state.page<=1" @click="load(state.page-1)">ก่อนหน้า</button><span class="font-bold">หน้า {{ state.page }} / {{ totalPages }}</span><button class="rounded-lg border px-3 py-2 disabled:opacity-40" :disabled="state.page>=totalPages" @click="load(state.page+1)">ถัดไป</button></div>
     </div>
-    <div v-if="detail" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" @click.self="detail=null">
-      <div class="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-xl bg-white p-4 dark:bg-stone-900">
-        <div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black text-court-700">ข้อมูลสมาชิก</p><h2 class="text-2xl font-black">{{ detail.member.name }}</h2></div><button aria-label="ปิด" @click="detail=null"><X class="h-5 w-5" /></button></div>
+    <div v-if="detail" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="member-detail-title" @click.self="detail=null" @keydown.esc="detail=null">
+      <div class="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-xl bg-white p-4 dark:bg-stone-900" tabindex="-1">
+        <div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black text-court-700">ข้อมูลสมาชิก</p><h2 id="member-detail-title" class="text-2xl font-black" data-i18n-ignore>{{ detail.member.name }}</h2></div><button aria-label="ปิด" @click="detail=null"><X class="h-5 w-5" /></button></div>
         <div class="mt-4 grid gap-3 rounded-lg bg-paper-100 p-4 dark:bg-stone-800 sm:grid-cols-2 lg:grid-cols-4"><div><small class="font-bold text-stone-500">เบอร์โทร</small><p class="font-black">{{ detail.member.phone }}</p></div><div><small class="font-bold text-stone-500">อีเมล</small><p class="break-all font-black">{{ detail.member.email || '-' }}</p></div><div><small class="font-bold text-stone-500">ประเภท</small><p class="font-black">{{ detail.member.memberType==='club'?'สมาชิกชมรม':'สมาชิกทั่วไป' }}</p></div><div><small class="font-bold text-stone-500">สถานะ</small><p class="font-black">{{ detail.member.active?'ใช้งาน':'ปิดใช้งาน' }} · {{ detail.member.linked?'เชื่อม Google แล้ว':'ยังไม่เชื่อม Google' }}</p></div></div>
         <div class="mt-4 grid gap-4 lg:grid-cols-2">
-          <section class="rounded-lg border p-3"><h3 class="flex items-center gap-2 font-black"><CalendarDays class="h-4 w-4" />ประวัติจองสนาม</h3><div class="mt-2 grid gap-2"><article v-for="booking in detail.bookings" :key="booking.id" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><div class="flex justify-between gap-2"><b>{{ booking.courtName }}</b><b class="text-court-700">{{ statusText(booking.status) }}</b></div><p class="text-sm text-stone-500">{{ new Date(booking.startAt).toLocaleString('th-TH') }} · ฿{{ booking.totalPriceThb }}</p></article><p v-if="!detail.bookings.length" class="text-sm text-stone-500">ยังไม่มีประวัติการจอง</p></div></section>
-          <section class="rounded-lg border p-3"><h3 class="flex items-center gap-2 font-black"><CreditCard class="h-4 w-4" />Payment log</h3><div class="mt-2 grid gap-2"><article v-for="payment in detail.payments" :key="`${payment.kind}-${payment.id}-${payment.createdAt}`" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><div class="flex justify-between"><b>{{ payment.kind==='booking'?'ค่าจองสนาม':'ค่า Match' }}</b><b>฿{{ payment.amountThb }}</b></div><p class="text-sm text-stone-500">{{ statusText(payment.status) }} · {{ payment.createdAt }}</p></article><p v-if="!detail.payments.length" class="text-sm text-stone-500">ยังไม่มี Payment log</p></div></section>
-          <section class="rounded-lg border p-3 lg:col-span-2"><h3 class="flex items-center gap-2 font-black"><History class="h-4 w-4" />Match history</h3><div class="mt-2 grid gap-2 sm:grid-cols-2"><article v-for="match in detail.matches" :key="`${match.sessionName}-${match.matchId}`" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><div class="flex justify-between"><b>{{ match.sessionName }} · เกม {{ match.matchId }}</b><b>{{ match.court }}</b></div><p class="text-sm text-stone-500">{{ match.startedAt }} - {{ match.endedAt }} · {{ match.status }}</p></article><p v-if="!detail.matches.length" class="text-sm text-stone-500">ยังไม่มี Match history</p></div></section>
+          <section class="rounded-lg border p-3"><h3 class="flex items-center gap-2 font-black"><CalendarDays class="h-4 w-4" />ประวัติจองสนาม</h3><div class="mt-2 grid gap-2"><article v-for="booking in detail.bookings" :key="booking.id" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><div class="flex justify-between gap-2"><b>{{ booking.courtName }}</b><b class="text-court-700">{{ statusText(booking.status) }}</b></div><p class="text-sm text-stone-500">{{ new Date(booking.startAt).toLocaleString('th-TH') }} · ฿{{ booking.totalPriceThb }}</p></article><p v-if="!detail.bookings.length" class="text-sm text-stone-500">ยังไม่มีประวัติการจอง</p></div><div v-if="detail.pagination?.bookings?.total > detailPages.pageSize" class="mt-3 flex items-center justify-between gap-2 text-xs font-bold"><button class="rounded border px-2 py-1 disabled:opacity-40" :disabled="detailPages.bookings<=1" @click="loadDetailPage('bookings',detailPages.bookings-1)">ก่อนหน้า</button><span>{{ detailPages.bookings }} / {{ detailTotalPages('bookings') }}</span><button class="rounded border px-2 py-1 disabled:opacity-40" :disabled="detailPages.bookings>=detailTotalPages('bookings')" @click="loadDetailPage('bookings',detailPages.bookings+1)">ถัดไป</button></div></section>
+          <section class="rounded-lg border p-3"><h3 class="flex items-center gap-2 font-black"><CreditCard class="h-4 w-4" />ประวัติการชำระเงิน</h3><div class="mt-2 grid gap-2"><article v-for="payment in detail.payments" :key="`${payment.kind}-${payment.id}-${payment.createdAt}`" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><div class="flex justify-between"><b>{{ payment.kind==='booking'?'ค่าจองสนาม':'ค่าแข่งขัน' }}</b><b>฿{{ payment.amountThb }}</b></div><p class="text-sm text-stone-500">{{ statusText(payment.status) }} · {{ payment.createdAt }}</p></article><p v-if="!detail.payments.length" class="text-sm text-stone-500">ยังไม่มีประวัติการชำระเงิน</p></div><div v-if="detail.pagination?.payments?.total > detailPages.pageSize" class="mt-3 flex items-center justify-between gap-2 text-xs font-bold"><button class="rounded border px-2 py-1 disabled:opacity-40" :disabled="detailPages.payments<=1" @click="loadDetailPage('payments',detailPages.payments-1)">ก่อนหน้า</button><span>{{ detailPages.payments }} / {{ detailTotalPages('payments') }}</span><button class="rounded border px-2 py-1 disabled:opacity-40" :disabled="detailPages.payments>=detailTotalPages('payments')" @click="loadDetailPage('payments',detailPages.payments+1)">ถัดไป</button></div></section>
+          <section class="rounded-lg border p-3 lg:col-span-2"><h3 class="flex items-center gap-2 font-black"><History class="h-4 w-4" />ประวัติการแข่งขัน</h3><div class="mt-2 grid gap-2 sm:grid-cols-2"><article v-for="match in detail.matches" :key="`${match.sessionName}-${match.matchId}`" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800" data-i18n-ignore><div class="flex justify-between"><b>{{ match.sessionName }} · เกม {{ match.matchId }}</b><b>{{ match.court }}</b></div><p class="text-sm text-stone-500">{{ match.startedAt }} - {{ match.endedAt }} · {{ statusText(match.status) }}</p></article><p v-if="!detail.matches.length" class="text-sm text-stone-500">ยังไม่มีประวัติการแข่งขัน</p></div><div v-if="detail.pagination?.matches?.total > detailPages.pageSize" class="mt-3 flex items-center justify-between gap-2 text-xs font-bold"><button class="rounded border px-2 py-1 disabled:opacity-40" :disabled="detailPages.matches<=1" @click="loadDetailPage('matches',detailPages.matches-1)">ก่อนหน้า</button><span>{{ detailPages.matches }} / {{ detailTotalPages('matches') }}</span><button class="rounded border px-2 py-1 disabled:opacity-40" :disabled="detailPages.matches>=detailTotalPages('matches')" @click="loadDetailPage('matches',detailPages.matches+1)">ถัดไป</button></div></section>
         </div>
         <div class="mt-4 grid grid-cols-2 gap-2"><button class="h-11 rounded-lg border font-bold" @click="detail=null">ปิด</button><button class="h-11 rounded-lg bg-court-500 font-black text-white" @click="editFromDetail">แก้ไขข้อมูล</button></div>
       </div>

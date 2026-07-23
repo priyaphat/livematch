@@ -519,6 +519,7 @@ function translateNode(node) {
     return
   }
   if (node.nodeType !== Node.ELEMENT_NODE) return
+  if (node.hasAttribute('data-i18n-ignore') || node.closest?.('[data-i18n-ignore]')) return
   const tag = node.tagName
   if (tag === 'SCRIPT' || tag === 'STYLE') return
   for (const attribute of ['placeholder', 'title', 'aria-label']) {
@@ -533,19 +534,15 @@ function translateNode(node) {
 
 export function installDomTranslator(rootGetter) {
   document.documentElement.lang = language.value
-  let observer
   const translateRoot = () => {
     const root = rootGetter()
     if (!root) return
-    observer?.disconnect()
     translateNode(root)
-    observer?.observe(root, { childList: true, subtree: true, characterData: true, attributes: true })
   }
   nextTick(translateRoot)
-  observer = new MutationObserver(() => nextTick(translateRoot))
-  watch(language, () => {
+  const stop = watch(language, () => {
     document.documentElement.lang = language.value
     nextTick(translateRoot)
   })
-  return () => observer?.disconnect()
+  return stop
 }

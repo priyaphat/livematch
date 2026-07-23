@@ -238,4 +238,52 @@ describe("PublicBookingPage", () => {
     ).toBeGreaterThan(1);
     wrapper.unmount();
   });
+
+  it("shows the cancellation reason as a toast when slip upload loses to admin cancel", async () => {
+    const baseApi = apiMock({
+      queues: [{
+        id: "batch-cancelled",
+        status: "hold",
+        holdExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        totalPriceThb: 100,
+        startAt: "2026-07-22T18:00:00+07:00",
+        endAt: "2026-07-22T19:00:00+07:00",
+        courtNames: ["สนาม 1"],
+        promptPayPayload: "",
+      }],
+    });
+    const apiRequest = vi.fn((url, options) => {
+      if (url.includes("/slip/")) {
+        return Promise.reject(new Error("รายการจองนี้ถูกผู้ดูแลยกเลิกแล้ว กรุณาเลือกเวลาใหม่"));
+      }
+      return baseApi(url, options);
+    });
+    vi.stubGlobal("FileReader", class {
+      readAsDataURL() {
+        this.result = "data:image/png;base64,iVBORw0KGgo=";
+        queueMicrotask(() => this.onload?.());
+      }
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="active-booking-queues"]').exists()).toBe(true));
+    const reopenButton = wrapper
+      .get('[data-testid="active-booking-queues"]')
+      .findAll("button")
+      .find((button) => button.text().includes("แสดง QR"));
+    await reopenButton.trigger("click");
+    const input = wrapper.get('input[type="file"]');
+    Object.defineProperty(input.element, "files", {
+      configurable: true,
+      value: [new File(["slip"], "slip.png", { type: "image/png" })],
+    });
+    await input.trigger("change");
+    await vi.waitFor(() =>
+      expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain("ถูกผู้ดูแลยกเลิกแล้ว"),
+    );
+    expect(wrapper.find(".public-payment-sheet").exists()).toBe(false);
+    wrapper.unmount();
+    vi.unstubAllGlobals();
+  });
 });
