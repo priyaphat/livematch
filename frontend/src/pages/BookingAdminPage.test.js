@@ -83,6 +83,14 @@ describe('BookingAdminPage', () => {
     await settingsTab.trigger('click')
     const openTime = wrapper.find('input[type="time"]')
     const interval = wrapper.find('input[min="10"]')
+    const activeCourtToggle = wrapper.findAll('label').find((label) => label.text().includes('เปิดใช้งาน')).find('input[type="checkbox"]')
+    expect(activeCourtToggle.element.checked).toBe(true)
+    await activeCourtToggle.setValue(false)
+    await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url, options]) =>
+      url.includes('/api/admin/booking/courts/court-1') &&
+      options?.method === 'PATCH' &&
+      JSON.parse(options.body).active === false
+    )).toBe(true))
     expect(wrapper.findAll('tbody tr')).toHaveLength(6)
     await openTime.setValue('17:30')
     await interval.setValue('30')

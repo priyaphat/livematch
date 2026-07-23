@@ -874,11 +874,35 @@ func (a *app) createBookingCourt(w http.ResponseWriter, r *http.Request, user ad
 
 func (a *app) changeBookingCourt(w http.ResponseWriter, r *http.Request, user adminUser, id string) {
 	if r.Method == http.MethodDelete {
-		_, err := a.db.ExecContext(r.Context(), `update booking_courts set active=false,deleted_at=now(),updated_at=now() where id=$1 and admin_id=$2`, id, user.ID)
+		var refs int
+		if err := a.db.QueryRowContext(r.Context(), `select (select count(*) from bookings where court_id=$1 and admin_id=$2)+(select count(*) from booking_occupancies where court_id=$1 and admin_id=$2)`, id, user.ID).Scan(&refs); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		var result sql.Result
+		var err error
+		hardDeleted := refs == 0
+		if hardDeleted {
+			result, err = a.db.ExecContext(r.Context(), `delete from booking_courts where id=$1 and admin_id=$2`, id, user.ID)
+		} else {
+			result, err = a.db.ExecContext(r.Context(), `update booking_courts set active=false,deleted_at=now(),updated_at=now() where id=$1 and admin_id=$2`, id, user.ID)
+		}
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
+		changed, _ := result.RowsAffected()
+		if changed == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "court not found"})
+			return
+		}
+		action := "disable_booking_court"
+		if hardDeleted {
+			action = "delete_booking_court"
+		}
+		a.insertActivityLog(r.Context(), "admin", user.ID, action, "booking_court", id, map[string]any{"hardDeleted": hardDeleted, "references": refs})
+		writeJSON(w, http.StatusOK, map[string]any{"hardDeleted": hardDeleted, "active": false})
+		return
 	} else {
 		var b struct {
 			Name             string
@@ -894,7 +918,7 @@ func (a *app) changeBookingCourt(w http.ResponseWriter, r *http.Request, user ad
 		if b.Active != nil {
 			active = *b.Active
 		}
-		_, err := a.db.ExecContext(r.Context(), `update booking_courts set name=coalesce(nullif($3,''),name),price_per_interval=$4,active=$5,updated_at=now() where id=$1 and admin_id=$2`, id, user.ID, strings.TrimSpace(b.Name), max(0, b.PricePerInterval), active)
+		_, err := a.db.ExecContext(r.Context(), `update booking_courts set name=coalesce(nullif($3,''),name),price_per_interval=$4,active=$5,deleted_at=case when $5 then null else deleted_at end,updated_at=now() where id=$1 and admin_id=$2`, id, user.ID, strings.TrimSpace(b.Name), max(0, b.PricePerInterval), active)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return

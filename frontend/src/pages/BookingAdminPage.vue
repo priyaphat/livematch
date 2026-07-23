@@ -74,6 +74,7 @@ const tabs = computed(() => [
 const pendingBookings = computed(() =>
   state.bookings.filter((booking) => booking.status === "pending_review"),
 );
+const activeCourts = computed(() => courts.value.filter((court) => court.active));
 const pendingTotalPages = computed(() =>
   Math.max(1, Math.ceil(pendingBookings.value.length / pendingPageSize)),
 );
@@ -161,7 +162,7 @@ function goToday() {
 }
 
 function openNewBooking() {
-  const court = courts.value[0];
+  const court = activeCourts.value[0];
   const minute = slots.value[0];
   if (court && minute !== undefined) openCell(court, minute);
 }
@@ -494,15 +495,19 @@ async function updateCourt(court) {
     await loadOverview(false, true);
   } catch (error) {
     state.error = error.message;
+    await loadOverview(false, true);
   }
 }
 
 async function deleteCourt(court) {
-  if (!window.confirm(`ปิดใช้งาน ${court.name}?`)) return;
+  if (!window.confirm(`ลบ ${court.name}? หากสนามนี้มีประวัติใช้งาน ระบบจะปิดใช้งานแทน`)) return;
   try {
-    await props.apiRequest(`/api/admin/booking/courts/${court.id}`, {
+    const result = await props.apiRequest(`/api/admin/booking/courts/${court.id}`, {
       method: "DELETE",
     });
+    settingsStatus.value = result.hardDeleted
+      ? `ลบ ${court.name} แล้ว`
+      : `สนาม ${court.name} มีประวัติใช้งาน จึงปิดใช้งานแทน`;
     await loadOverview(false, true);
   } catch (error) {
     state.error = error.message;
@@ -662,7 +667,7 @@ onUnmounted(() => {
               <tr class="booking-table-head">
                 <th class="sticky left-0 z-10 min-w-28 p-3">เวลา / สนาม</th>
                 <th
-                  v-for="court in courts"
+                  v-for="court in activeCourts"
                   :key="court.id"
                   class="min-w-32 p-3"
                 >
@@ -677,7 +682,7 @@ onUnmounted(() => {
                 class="border-b dark:border-stone-700"
               >
                 <th class="booking-time-cell">{{ timeLabel(minute) }} น.</th>
-                <td v-for="court in courts" :key="court.id" class="p-1.5">
+                <td v-for="court in activeCourts" :key="court.id" class="p-1.5">
                   <button
                     class="booking-slot"
                     :class="cellClass(cell(court, minute))"
@@ -1197,7 +1202,8 @@ onUnmounted(() => {
           <div
             v-for="court in courts"
             :key="court.id"
-            class="grid gap-2 sm:grid-cols-[1fr_7rem_auto_auto]"
+            class="grid gap-2 rounded-lg border border-stone-200 p-2 dark:border-stone-700 sm:grid-cols-[1fr_7rem_auto_auto_auto] sm:items-center"
+            :class="!court.active && 'opacity-60'"
           >
             <input
               v-model="court.name"
@@ -1207,7 +1213,10 @@ onUnmounted(() => {
               type="number"
               min="0"
               class="h-10 rounded-lg border bg-transparent px-3"
-            /><button
+            /><label class="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border px-3 font-bold">
+              <input v-model="court.active" type="checkbox" @change="updateCourt(court)" />
+              เปิดใช้งาน
+            </label><button
               class="h-10 rounded-lg border px-3 font-bold"
               @click="updateCourt(court)"
             >
