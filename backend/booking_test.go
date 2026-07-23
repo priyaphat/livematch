@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -119,5 +120,16 @@ func TestPublicBookingDateFollowsAllowOvernightSetting(t *testing.T) {
 	unlocked := bookingSettingsRecord{AllowOvernight: true}
 	if !publicBookingDateAllowed(unlocked, tomorrowStart, tomorrowStart.Add(time.Hour), now) {
 		t.Fatal("another day must be bookable when allowOvernight is true")
+	}
+}
+
+func TestTelegramReviewTextConfirmsTheSelectedAction(t *testing.T) {
+	short, message := telegramReviewText("approve", "ผู้จอง", "สนาม 1", "23/07/2026 18:00", 2)
+	if short != "อนุมัติแล้ว" || !strings.Contains(message, "✅ อนุมัติการจองแล้ว") || !strings.Contains(message, "จำนวน 2 ช่วง") {
+		t.Fatalf("unexpected approve confirmation: %q / %q", short, message)
+	}
+	short, message = telegramReviewText("reject", "ผู้จอง", "สนาม 1", "23/07/2026 18:00", 1)
+	if short != "ปฏิเสธแล้ว" || !strings.Contains(message, "❌ ปฏิเสธการจองแล้ว") {
+		t.Fatalf("unexpected reject confirmation: %q / %q", short, message)
 	}
 }

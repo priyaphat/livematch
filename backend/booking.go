@@ -2213,6 +2213,37 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 		resp.Body.Close()
 	}
 }
+
+func telegramBotForm(ctx context.Context, token, method string, values url.Values) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+token+"/"+method, strings.NewReader(values.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("telegram %s: %s", method, resp.Status)
+	}
+	return nil
+}
+
+func telegramReviewText(action, name, court, start string, itemCount int) (string, string) {
+	if itemCount < 1 {
+		itemCount = 1
+	}
+	short := "อนุมัติแล้ว"
+	title := "✅ อนุมัติการจองแล้ว"
+	if action == "reject" {
+		short = "ปฏิเสธแล้ว"
+		title = "❌ ปฏิเสธการจองแล้ว"
+	}
+	return short, fmt.Sprintf("%s\nผู้จอง: %s\nสนาม: %s\nเวลา: %s\nจำนวน %d ช่วง", title, name, court, start, itemCount)
+}
+
 func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/booking-telegram/webhook/"), "/")
 	var adminID, encrypted, chatID, secretHash string
@@ -2232,6 +2263,7 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 				ID int64 `json:"id"`
 			} `json:"from"`
 			Message struct {
+				ID   int64 `json:"message_id"`
 				Chat struct {
 					ID int64 `json:"id"`
 				} `json:"chat"`
@@ -2248,7 +2280,7 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	parts := strings.Split(q.Data, ":")
-	if len(parts) != 3 || parts[0] != "booking" {
+	if len(parts) != 3 || parts[0] != "booking" || (parts[1] != "approve" && parts[1] != "reject") {
 		writeJSON(w, 200, map[string]string{"status": "ignored"})
 		return
 	}
@@ -2256,10 +2288,38 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 	if parts[1] == "reject" {
 		note = "ปฏิเสธผ่าน Telegram"
 	}
-	_, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
+	result, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
+	token, tokenErr := decryptSecret(encrypted)
 	if err != nil {
-		writeJSON(w, 409, map[string]string{"error": err.Error()})
+		if tokenErr == nil {
+			message := "ดำเนินการไม่สำเร็จ: " + err.Error()
+			_ = telegramBotForm(r.Context(), token, "answerCallbackQuery", url.Values{
+				"callback_query_id": {q.ID},
+				"text":              {message},
+				"show_alert":        {"true"},
+			})
+			_ = telegramBotForm(r.Context(), token, "sendMessage", url.Values{"chat_id": {chatID}, "text": {message}})
+		}
+		writeJSON(w, 200, map[string]string{"status": "error", "error": err.Error()})
 		return
+	}
+	var name, court, start string
+	if queryErr := a.db.QueryRowContext(r.Context(), `select b.booker_name,c.name,to_char(b.start_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.id=$1 and b.admin_id=$2`, parts[2], adminID).Scan(&name, &court, &start); queryErr != nil {
+		name, court, start = "-", "-", "-"
+	}
+	if tokenErr == nil {
+		short, message := telegramReviewText(parts[1], name, court, start, len(result.BookingIDs))
+		_ = telegramBotForm(r.Context(), token, "answerCallbackQuery", url.Values{
+			"callback_query_id": {q.ID},
+			"text":              {short},
+		})
+		emptyKeyboard, _ := json.Marshal(map[string]any{"inline_keyboard": [][]map[string]string{}})
+		_ = telegramBotForm(r.Context(), token, "editMessageReplyMarkup", url.Values{
+			"chat_id":      {chatID},
+			"message_id":   {strconv.FormatInt(q.Message.ID, 10)},
+			"reply_markup": {string(emptyKeyboard)},
+		})
+		_ = telegramBotForm(r.Context(), token, "sendMessage", url.Values{"chat_id": {chatID}, "text": {message}})
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
