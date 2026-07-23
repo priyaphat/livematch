@@ -97,8 +97,9 @@ async function openMockedOwnedSession(type = 'liveMatch', extraSession = {}) {
 }
 
 describe('LiveMatch app', () => {
-  it('hides admin screens before admin account login', () => {
+  it('hides admin screens before admin account login', async () => {
     const wrapper = mount(App)
+    await flushPromises()
 
     expect(wrapper.text()).toContain('LiveMatch')
     expect(wrapper.text()).toContain('เข้าสู่ระบบ')
@@ -109,6 +110,7 @@ describe('LiveMatch app', () => {
   it('toggles interface language', async () => {
     localStorage.setItem('livematch.language', 'th')
     const wrapper = mount(App)
+    await flushPromises()
     const languageButton = wrapper.findAll('button').find((button) => button.text() === 'EN')
     expect(languageButton.exists()).toBe(true)
     await languageButton.trigger('click')
@@ -120,6 +122,7 @@ describe('LiveMatch app', () => {
     localStorage.removeItem('livematch.theme')
     document.documentElement.classList.remove('dark')
     const wrapper = mount(App)
+    await flushPromises()
 
     const darkButton = wrapper.findAll('button').find((button) => button.attributes('title') === 'Dark mode')
     expect(darkButton.exists()).toBe(true)
@@ -132,6 +135,7 @@ describe('LiveMatch app', () => {
     document.documentElement.classList.remove('dark')
 
     const restoredWrapper = mount(App)
+    await flushPromises()
     expect(document.documentElement.classList.contains('dark')).toBe(true)
 
     const themeButton = restoredWrapper.findAll('button').find((button) => button.attributes('title') === 'Light mode')
@@ -144,6 +148,24 @@ describe('LiveMatch app', () => {
     restoredWrapper.unmount()
     localStorage.removeItem('livematch.theme')
     document.documentElement.classList.remove('dark')
+  })
+
+  it('shows an auth boot screen instead of flashing the login page while restoring a session', async () => {
+    const originalFetch = globalThis.fetch
+    let resolveAuth
+    globalThis.fetch = vi.fn(() => new Promise((resolve) => { resolveAuth = resolve }))
+    const wrapper = mount(App)
+
+    expect(wrapper.get('[data-testid="auth-boot-screen"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('กำลังเตรียมข้อมูลผู้ดูแล')
+    expect(wrapper.text()).not.toContain('เข้าสู่ระบบ')
+
+    resolveAuth({ ok: false, status: 401, json: () => Promise.resolve({ error: 'login required' }) })
+    await flushPromises()
+    expect(wrapper.find('[data-testid="auth-boot-screen"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('เข้าสู่ระบบ')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
   })
 
   it('creates the theme storage key when the app opens', () => {

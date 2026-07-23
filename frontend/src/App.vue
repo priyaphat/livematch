@@ -363,6 +363,7 @@ const share = reactive({
 })
 const auth = reactive({
   loading: false,
+  ready: false,
   user: null,
   sessions: [],
   coinLedger: [],
@@ -1258,7 +1259,10 @@ async function submitCoinOrder() {
 }
 
 async function restoreAdminAccount(restoreNavigation = false) {
-  if (share.isPublic) return
+  if (share.isPublic) {
+    auth.ready = true
+    return
+  }
   try {
     const payload = await api('/api/auth/me')
     applyAdminPayload(payload)
@@ -1272,6 +1276,8 @@ async function restoreAdminAccount(restoreNavigation = false) {
     }
   } catch {
     auth.user = null
+  } finally {
+    auth.ready = true
   }
 }
 
@@ -3205,6 +3211,12 @@ const pageProps = computed(() => ({
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
     <PublicBookingPage v-else-if="publicBookingToken" :api-request="api" :token="publicBookingToken" :theme="state.theme" @toggle-theme="toggleTheme" />
     <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />
+    <div v-else-if="!auth.ready && !share.isPublic" data-testid="auth-boot-screen" class="grid min-h-screen place-items-center px-4">
+      <div class="grid justify-items-center gap-3 text-center" role="status" aria-live="polite">
+        <span class="h-10 w-10 animate-spin rounded-full border-4 border-court-200 border-t-court-600 dark:border-stone-700 dark:border-t-court-400" />
+        <p class="font-black">กำลังเตรียมข้อมูลผู้ดูแล</p>
+      </div>
+    </div>
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
