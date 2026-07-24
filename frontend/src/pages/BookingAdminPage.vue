@@ -8,6 +8,7 @@ import {
   Clock3,
   ClipboardList,
   Copy,
+  Download,
   Eye,
   History,
   Plus,
@@ -19,6 +20,7 @@ import {
   X,
   XCircle,
 } from "@lucide/vue";
+import { exportBookingAdminExcel } from "../adminExcelExport";
 
 const props = defineProps(["apiRequest"]);
 const today = new Date().toLocaleDateString("en-CA", {
@@ -57,6 +59,13 @@ const historyFilters = reactive({
   courtId: "",
   phone: "",
 });
+const exportFilters = reactive({
+  startDate: today,
+  endDate: today,
+  status: "all",
+});
+const exportLoading = ref(false);
+const exportStatus = ref("");
 let timer;
 let settingsReady = false;
 let overviewRequest = 0;
@@ -69,6 +78,7 @@ const tabs = computed(() => [
     count: pendingBookings.value.length,
   },
   { id: "history", label: "ประวัติการจอง", icon: History },
+  { id: "export", label: "รายงาน", icon: Download },
   { id: "settings", label: "ตั้งค่า", icon: Settings },
 ]);
 const pendingBookings = computed(() =>
@@ -315,6 +325,28 @@ function resetHistoryFilters() {
     phone: "",
   });
   loadHistory(1);
+}
+
+async function downloadBookingExport() {
+  state.error = "";
+  exportStatus.value = "";
+  if (
+    !exportFilters.startDate ||
+    !exportFilters.endDate ||
+    exportFilters.endDate < exportFilters.startDate
+  ) {
+    state.error = "กรุณาเลือกช่วงวันที่ให้ถูกต้อง";
+    return;
+  }
+  exportLoading.value = true;
+  try {
+    await exportBookingAdminExcel(props.apiRequest, exportFilters);
+    exportStatus.value = "สร้างไฟล์ Excel สำเร็จ";
+  } catch (error) {
+    state.error = error.message;
+  } finally {
+    exportLoading.value = false;
+  }
 }
 
 function bookingStatusLabel(status) {
@@ -1097,6 +1129,64 @@ onUnmounted(() => {
           <span>หน้า {{ historyPage }} / {{ historyTotalPages }}</span>
           <button class="booking-secondary-button h-10" :disabled="historyPage >= historyTotalPages || historyLoading" @click="loadHistory(historyPage + 1)">ถัดไป</button>
         </div>
+      </div>
+    </section>
+
+    <section
+      v-else-if="activeTab === 'export'"
+      class="rounded-xl border bg-white p-4 dark:border-stone-700 dark:bg-stone-900"
+    >
+      <div class="mx-auto max-w-3xl">
+        <h2 class="flex items-center gap-2 text-lg font-black">
+          <Download class="h-5 w-5" />รายงานรายละเอียดการจองสนาม
+        </h2>
+        <p class="mt-1 text-sm text-stone-500">
+          ไฟล์จะแสดงผู้จอง สนาม ช่วงเวลา ยอดเงิน เวลาโอน เวลาอนุมัติ และสถานะทั้งหมด โดยไม่รวมรูปสลิป
+        </p>
+        <form
+          class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end"
+          @submit.prevent="downloadBookingExport"
+        >
+          <label class="booking-field">
+            <span>วันที่เริ่มต้น</span>
+            <input v-model="exportFilters.startDate" type="date" required />
+          </label>
+          <label class="booking-field">
+            <span>วันที่สิ้นสุด</span>
+            <input
+              v-model="exportFilters.endDate"
+              type="date"
+              :min="exportFilters.startDate"
+              required
+            />
+          </label>
+          <label class="booking-field">
+            <span>สถานะการจอง</span>
+            <select v-model="exportFilters.status">
+              <option value="all">ทั้งหมด</option>
+              <option value="hold">กำลังจอง</option>
+              <option value="pending_review">รอตรวจสอบ</option>
+              <option value="confirmed">ยืนยันแล้ว</option>
+              <option value="rejected">ไม่อนุมัติ</option>
+              <option value="cancelled">ยกเลิก</option>
+              <option value="expired">หมดเวลา</option>
+            </select>
+          </label>
+          <button
+            type="submit"
+            class="booking-primary-button h-11 justify-center"
+            :disabled="exportLoading"
+          >
+            <Download class="h-4 w-4" />
+            {{ exportLoading ? "กำลังสร้างไฟล์..." : "ดาวน์โหลดรายงาน" }}
+          </button>
+        </form>
+        <p
+          v-if="exportStatus"
+          class="mt-4 rounded-lg bg-green-50 p-3 font-bold text-green-700 dark:bg-green-950/30 dark:text-green-200"
+        >
+          {{ exportStatus }}
+        </p>
       </div>
     </section>
 

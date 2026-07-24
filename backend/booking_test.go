@@ -123,6 +123,19 @@ func TestPublicBookingDateFollowsAllowOvernightSetting(t *testing.T) {
 	}
 }
 
+func TestValidBookingExportStatus(t *testing.T) {
+	for _, status := range []string{"", "all", "hold", "pending_review", "confirmed", "rejected", "cancelled", "expired"} {
+		if !validBookingExportStatus(status) {
+			t.Fatalf("expected %q to be a valid export status", status)
+		}
+	}
+	for _, status := range []string{"paid", "pending", "unknown"} {
+		if validBookingExportStatus(status) {
+			t.Fatalf("expected %q to be rejected", status)
+		}
+	}
+}
+
 func TestTelegramReviewTextConfirmsTheSelectedAction(t *testing.T) {
 	short, message := telegramReviewText("approve", "ผู้จอง", "สนาม 1", "23/07/2026 18:00", 2)
 	if short != "อนุมัติแล้ว" || !strings.Contains(message, "✅ อนุมัติการจองแล้ว") || !strings.Contains(message, "จำนวน 2 ช่วง") {

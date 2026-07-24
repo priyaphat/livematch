@@ -42,7 +42,7 @@ describe('BookingAdminPage', () => {
     expect(wrapper.find('.booking-state--closed').exists()).toBe(true)
     expect(wrapper.find('.booking-state--free').exists()).toBe(true)
     expect(wrapper.text()).toContain('ประวัติการจอง')
-    expect(wrapper.findAll('nav button')).toHaveLength(3)
+    expect(wrapper.findAll('nav button')).toHaveLength(4)
 
     const detailButton = wrapper.findAll('button').find((button) => button.text().includes('ดูรายละเอียด'))
     await detailButton.trigger('click')

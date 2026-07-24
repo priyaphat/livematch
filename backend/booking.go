@@ -384,6 +384,8 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 			return
 		}
 		writeJSON(w, 200, map[string]any{"items": items, "total": total, "page": max(1, page), "pageSize": max(1, size)})
+	case r.Method == http.MethodGet && path == "/export":
+		a.writeAdminMembersExport(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "/search":
 		q := strings.TrimSpace(r.URL.Query().Get("phone"))
 		if len(phoneSearchDigits(q)) <= 5 {
@@ -420,6 +422,172 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) writeAdminMembersExport(w http.ResponseWriter, r *http.Request, adminID string) {
+	members := make([]map[string]any, 0)
+	rows, err := a.db.QueryContext(r.Context(), `
+		select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),
+			m.member_type,m.active,m.public_user_id is not null,
+			to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			to_char(m.updated_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			(select count(*) from players p join sessions s on s.id=p.session_id where p.member_id=m.id and s.admin_id=m.admin_id),
+			(select count(*) from bookings b where b.member_id=m.id and b.admin_id=m.admin_id),
+			(select count(*) from booking_payments bp join bookings b on b.id=bp.booking_id where bp.member_id=m.id and b.admin_id=m.admin_id),
+			coalesce((select sum(bp.amount_thb) from booking_payments bp join bookings b on b.id=bp.booking_id where bp.member_id=m.id and b.admin_id=m.admin_id and bp.status in ('approved','manual_paid')),0)
+		from members m
+		left join public_users u on u.id=m.public_user_id
+		where m.admin_id=$1 and m.deleted_at is null
+		order by m.created_at,m.name`, adminID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for rows.Next() {
+		var id, name, phone, email, memberType, createdAt, updatedAt string
+		var active, linked bool
+		var playerCount, bookingCount, paymentCount, approvedAmount int
+		if err = rows.Scan(&id, &name, &phone, &email, &memberType, &active, &linked, &createdAt, &updatedAt, &playerCount, &bookingCount, &paymentCount, &approvedAmount); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		members = append(members, map[string]any{
+			"id": id, "name": name, "phone": displayPhone(phone), "email": email,
+			"memberType": memberType, "active": active, "linked": linked,
+			"createdAt": createdAt, "updatedAt": updatedAt, "playerCount": playerCount,
+			"bookingCount": bookingCount, "paymentCount": paymentCount, "approvedAmountThb": approvedAmount,
+		})
+	}
+	rows.Close()
+	if err = rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	bookings := make([]map[string]any, 0)
+	rows, err = a.db.QueryContext(r.Context(), `
+		select b.id,coalesce(b.booking_batch_id,''),coalesce(b.member_id,''),coalesce(m.name,b.booker_name),
+			coalesce(m.phone,''),coalesce(nullif(m.contact_email,''),u.email,''),c.name,b.booked_by,
+			to_char(b.start_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			to_char(b.end_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.note,
+			to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI')
+		from bookings b
+		join booking_courts c on c.id=b.court_id and c.admin_id=b.admin_id
+		left join members m on m.id=b.member_id and m.admin_id=b.admin_id
+		left join public_users u on u.id=m.public_user_id
+		where b.admin_id=$1
+		order by b.start_at desc,b.created_at desc`, adminID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for rows.Next() {
+		var id, batchID, memberID, name, phone, email, court, bookedBy, startAt, endAt, status, paymentStatus, note, createdAt string
+		var interval, unitPrice, totalPrice int
+		if err = rows.Scan(&id, &batchID, &memberID, &name, &phone, &email, &court, &bookedBy, &startAt, &endAt, &interval, &unitPrice, &totalPrice, &status, &paymentStatus, &note, &createdAt); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		bookings = append(bookings, map[string]any{
+			"id": id, "batchId": batchID, "memberId": memberID, "memberName": name,
+			"phone": displayPhone(phone), "email": email, "courtName": court, "bookedBy": bookedBy,
+			"startAt": startAt, "endAt": endAt, "intervalMinutes": interval,
+			"unitPriceThb": unitPrice, "totalPriceThb": totalPrice, "status": status,
+			"paymentStatus": paymentStatus, "note": note, "createdAt": createdAt,
+		})
+	}
+	rows.Close()
+
+	payments := make([]map[string]any, 0)
+	rows, err = a.db.QueryContext(r.Context(), `
+		select kind,reference_id,coalesce(member_id,''),member_name,phone,email,amount_thb,status,note,reviewed_by,created_at,reviewed_at
+		from (
+			select 'booking' as kind,bp.booking_id as reference_id,bp.member_id,
+				coalesce(m.name,b.booker_name) as member_name,coalesce(m.phone,'') as phone,
+				coalesce(nullif(m.contact_email,''),u.email,'') as email,bp.amount_thb,bp.status,bp.note,bp.reviewed_by,
+				to_char(bp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,
+				coalesce(to_char(bp.reviewed_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'') as reviewed_at,
+				bp.created_at as sort_at
+			from booking_payments bp
+			join bookings b on b.id=bp.booking_id
+			left join members m on m.id=bp.member_id and m.admin_id=b.admin_id
+			left join public_users u on u.id=m.public_user_id
+			where b.admin_id=$1
+			union all
+			select 'match',e.session_id,e.member_id,coalesce(m.name,p.name),coalesce(m.phone,''),
+				coalesce(nullif(m.contact_email,''),u.email,''),e.amount_thb,
+				case when e.paid then 'paid' else 'unpaid' end,'',e.actor_id,
+				to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'',
+				e.created_at
+			from player_payment_events e
+			join sessions s on s.id=e.session_id
+			left join players p on p.session_id=e.session_id and p.id=e.player_id
+			left join members m on m.id=e.member_id and m.admin_id=s.admin_id
+			left join public_users u on u.id=m.public_user_id
+			where s.admin_id=$1
+		) events
+		order by sort_at desc`, adminID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for rows.Next() {
+		var kind, referenceID, memberID, name, phone, email, status, note, reviewedBy, createdAt, reviewedAt string
+		var amount int
+		if err = rows.Scan(&kind, &referenceID, &memberID, &name, &phone, &email, &amount, &status, &note, &reviewedBy, &createdAt, &reviewedAt); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		payments = append(payments, map[string]any{
+			"kind": kind, "referenceId": referenceID, "memberId": memberID, "memberName": name,
+			"phone": displayPhone(phone), "email": email, "amountThb": amount, "status": status,
+			"note": note, "reviewedBy": reviewedBy, "createdAt": createdAt, "reviewedAt": reviewedAt,
+		})
+	}
+	rows.Close()
+
+	matches := make([]map[string]any, 0)
+	rows, err = a.db.QueryContext(r.Context(), `
+		select p.name,coalesce(p.member_id,''),coalesce(mem.name,p.name),coalesce(mem.phone,''),
+			s.id,s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.games,p.wins,p.draws,p.losses,p.paid
+		from players p
+		join sessions s on s.id=p.session_id
+		join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2)
+		left join members mem on mem.id=p.member_id and mem.admin_id=s.admin_id
+		where s.admin_id=$1 and mt.phase='history'
+		order by s.updated_at desc,mt.id desc,p.id`, adminID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for rows.Next() {
+		var playerName, memberID, memberName, phone, sessionID, sessionName, court, startedAt, endedAt, status, winner string
+		var matchID, games, wins, draws, losses int
+		var paid bool
+		if err = rows.Scan(&playerName, &memberID, &memberName, &phone, &sessionID, &sessionName, &matchID, &court, &startedAt, &endedAt, &status, &winner, &games, &wins, &draws, &losses, &paid); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		matches = append(matches, map[string]any{
+			"memberId": memberID, "memberName": memberName, "phone": displayPhone(phone),
+			"playerName": playerName, "sessionId": sessionID, "sessionName": sessionName,
+			"matchId": matchID, "court": court, "startedAt": startedAt, "endedAt": endedAt,
+			"status": status, "winner": winner, "games": games, "wins": wins,
+			"draws": draws, "losses": losses, "paid": paid,
+		})
+	}
+	rows.Close()
+
+	a.insertActivityLog(r.Context(), "admin", adminID, "export_members", "member", "", map[string]any{"memberCount": len(members)})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generatedAt": time.Now().In(bangkokLocation).Format(time.RFC3339),
+		"members":     members, "bookings": bookings, "payments": payments, "matches": matches,
+	})
 }
 
 func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adminID, memberID string) {
@@ -640,6 +808,8 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 		a.writeBookingOverview(w, r, user.ID, true)
 	case r.Method == http.MethodGet && path == "/history":
 		a.writeBookingHistory(w, r, user.ID)
+	case r.Method == http.MethodGet && path == "/export":
+		a.writeBookingExport(w, r, user.ID)
 	case r.Method == http.MethodPut && path == "/settings":
 		a.saveBookingSettings(w, r, user)
 	case r.Method == http.MethodPost && path == "/courts":
@@ -740,6 +910,128 @@ func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminI
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "startDate": startText, "endDate": endText,
 		"page": page, "pageSize": pageSize, "total": total,
+	})
+}
+
+func bookingExportDateRange(r *http.Request) (time.Time, time.Time, string, string, error) {
+	today := time.Now().In(bangkokLocation).Format("2006-01-02")
+	startText := strings.TrimSpace(r.URL.Query().Get("startDate"))
+	endText := strings.TrimSpace(r.URL.Query().Get("endDate"))
+	if startText == "" {
+		startText = today
+	}
+	if endText == "" {
+		endText = today
+	}
+	start, err := time.ParseInLocation("2006-01-02", startText, bangkokLocation)
+	if err != nil {
+		return time.Time{}, time.Time{}, "", "", errors.New("invalid start date")
+	}
+	end, err := time.ParseInLocation("2006-01-02", endText, bangkokLocation)
+	if err != nil || end.Before(start) || end.Sub(start) > 366*24*time.Hour {
+		return time.Time{}, time.Time{}, "", "", errors.New("invalid date range")
+	}
+	return start, end.AddDate(0, 0, 1), startText, endText, nil
+}
+
+func validBookingExportStatus(status string) bool {
+	switch status {
+	case "", "all", "hold", "pending_review", "confirmed", "rejected", "cancelled", "expired":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *app) writeBookingExport(w http.ResponseWriter, r *http.Request, adminID string) {
+	start, endExclusive, startText, endText, err := bookingExportDateRange(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	if status == "" {
+		status = "all"
+	}
+	if !validBookingExportStatus(status) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid booking status"})
+		return
+	}
+
+	// Deliberately do not select booking_payments.slip_data. Export responses must
+	// contain payment metadata only, never the uploaded receipt image.
+	rows, err := a.db.QueryContext(r.Context(), `
+		select b.id,coalesce(b.booking_batch_id,''),coalesce(b.member_id,''),
+			coalesce(m.name,b.booker_name),coalesce(m.phone,''),
+			coalesce(nullif(m.contact_email,''),u.email,''),b.booked_by,c.id,c.name,
+			to_char(b.start_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			to_char(b.end_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.note,
+			to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			to_char(b.updated_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			coalesce(pay.id,''),coalesce(pay.amount_thb,0),coalesce(pay.status,''),
+			coalesce(pay.note,''),coalesce(pay.reviewed_by,''),
+			coalesce(to_char(pay.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),''),
+			coalesce(to_char(pay.reviewed_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'')
+		from bookings b
+		join booking_courts c on c.id=b.court_id and c.admin_id=b.admin_id
+		left join members m on m.id=b.member_id and m.admin_id=b.admin_id
+		left join public_users u on u.id=m.public_user_id
+		left join lateral (
+			select bp.id,bp.amount_thb,bp.status,bp.note,bp.reviewed_by,bp.created_at,bp.reviewed_at
+			from booking_payments bp
+			join bookings paid_booking on paid_booking.id=bp.booking_id and paid_booking.admin_id=b.admin_id
+			where bp.booking_id=b.id
+				or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id)
+			order by bp.created_at desc
+			limit 1
+		) pay on true
+		where b.admin_id=$1 and b.start_at >= $2 and b.start_at < $3
+			and ($4='all' or b.status=$4)
+		order by b.start_at,c.sort_order,b.created_at`, adminID, start, endExclusive, status)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	items := make([]map[string]any, 0)
+	for rows.Next() {
+		var id, batchID, memberID, name, phone, email, bookedBy, courtID, courtName string
+		var startAt, endAt, bookingStatus, paymentStatus, note, createdAt, updatedAt string
+		var paymentID, paymentReviewStatus, paymentNote, reviewedBy, transferredAt, approvedAt string
+		var interval, unitPrice, totalPrice, paymentAmount int
+		if err = rows.Scan(
+			&id, &batchID, &memberID, &name, &phone, &email, &bookedBy, &courtID, &courtName,
+			&startAt, &endAt, &interval, &unitPrice, &totalPrice, &bookingStatus, &paymentStatus,
+			&note, &createdAt, &updatedAt, &paymentID, &paymentAmount, &paymentReviewStatus,
+			&paymentNote, &reviewedBy, &transferredAt, &approvedAt,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		items = append(items, map[string]any{
+			"bookingId": id, "batchId": batchID, "memberId": memberID, "bookerName": name,
+			"phone": displayPhone(phone), "email": email, "bookedBy": bookedBy,
+			"courtId": courtID, "courtName": courtName, "startAt": startAt, "endAt": endAt,
+			"intervalMinutes": interval, "unitPriceThb": unitPrice, "totalPriceThb": totalPrice,
+			"bookingStatus": bookingStatus, "paymentStatus": paymentStatus, "bookingNote": note,
+			"bookingCreatedAt": createdAt, "bookingUpdatedAt": updatedAt,
+			"paymentId": paymentID, "paymentAmountThb": paymentAmount,
+			"paymentReviewStatus": paymentReviewStatus, "paymentNote": paymentNote,
+			"reviewedBy": reviewedBy, "transferredAt": transferredAt, "approvedAt": approvedAt,
+		})
+	}
+	if err = rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	a.insertActivityLog(r.Context(), "admin", adminID, "export_bookings", "booking", "", map[string]any{
+		"startDate": startText, "endDate": endText, "status": status, "count": len(items),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"generatedAt": time.Now().In(bangkokLocation).Format(time.RFC3339),
+		"startDate":   startText, "endDate": endText, "status": status, "items": items,
 	})
 }
 

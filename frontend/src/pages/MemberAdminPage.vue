@@ -1,7 +1,8 @@
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, CalendarDays, CreditCard, Eye, History, Pencil, Plus, RefreshCw, Search, Trash2, Users, X } from '@lucide/vue'
+import { ArrowLeft, CalendarDays, CreditCard, Download, Eye, History, Pencil, Plus, RefreshCw, Search, Trash2, Users, X } from '@lucide/vue'
 import { statusText } from '../statusDefinitions'
+import { exportMembersAdminExcel } from '../adminExcelExport'
 
 const props = defineProps(['apiRequest', 'auth'])
 const state = reactive({ items: [], total: 0, page: 1, pageSize: 20, search: '', loading: false, error: '' })
@@ -9,8 +10,13 @@ const modal = ref(null)
 const detail = ref(null)
 const detailPages = reactive({ bookings: 1, payments: 1, matches: 1, pageSize: 6 })
 const confirmDelete = ref(null)
+const exportLoading = ref(false)
+const reportModal = ref(false)
+const reportData = ref(null)
+const reportForm = reactive({ reportType: 'members', memberId: '' })
 let searchTimer
 const totalPages = computed(() => Math.max(1, Math.ceil(state.total / state.pageSize)))
+const reportNeedsMember = computed(() => reportForm.reportType !== 'members')
 
 async function load(page = state.page) {
   state.loading = true; state.error = ''
@@ -60,6 +66,31 @@ async function remove() {
   try { await props.apiRequest(`/api/admin/members/${confirmDelete.value.id}`, { method: 'DELETE' }); confirmDelete.value = null; await load(1) }
   catch (error) { state.error = error.message }
 }
+async function openReportModal() {
+  exportLoading.value = true
+  state.error = ''
+  try {
+    reportData.value = await props.apiRequest('/api/admin/members/export')
+    Object.assign(reportForm, { reportType: 'members', memberId: '' })
+    reportModal.value = true
+  }
+  catch (error) { state.error = error.message }
+  finally { exportLoading.value = false }
+}
+async function downloadMemberReport() {
+  if (reportNeedsMember.value && !reportForm.memberId) {
+    state.error = 'กรุณาเลือกสมาชิก'
+    return
+  }
+  exportLoading.value = true
+  state.error = ''
+  try {
+    await exportMembersAdminExcel(props.apiRequest, { ...reportForm }, reportData.value)
+    reportModal.value = false
+  }
+  catch (error) { state.error = error.message }
+  finally { exportLoading.value = false }
+}
 watch(() => state.search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(1), 300) })
 onMounted(() => load(1))
 </script>
@@ -74,7 +105,8 @@ onMounted(() => load(1))
         </div>
         <div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
           <button class="inline-flex h-11 items-center gap-2 rounded-lg border border-stone-200 px-4 font-bold dark:border-stone-700" @click="load()"><RefreshCw class="h-4 w-4" />รีเฟรช</button>
-          <button class="inline-flex h-11 items-center gap-2 rounded-lg bg-court-500 px-4 font-black text-white" @click="openCreate"><Plus class="h-4 w-4" />ลงทะเบียนสมาชิก</button>
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-stone-200 px-4 font-bold dark:border-stone-700" :disabled="exportLoading" @click="openReportModal"><Download class="h-4 w-4" />{{ exportLoading ? 'กำลังโหลด...' : 'รายงาน' }}</button>
+          <button class="col-span-2 inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-court-500 px-4 font-black text-white sm:col-span-1" @click="openCreate"><Plus class="h-4 w-4" />ลงทะเบียนสมาชิก</button>
         </div>
       </div>
     </header>
@@ -108,6 +140,50 @@ onMounted(() => load(1))
         </div>
         <div class="mt-4 grid grid-cols-2 gap-2"><button class="h-11 rounded-lg border font-bold" @click="detail=null">ปิด</button><button class="h-11 rounded-lg bg-court-500 font-black text-white" @click="editFromDetail">แก้ไขข้อมูล</button></div>
       </div>
+    </div>
+    <div
+      v-if="reportModal"
+      class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="member-report-title"
+      @click.self="reportModal=false"
+      @keydown.esc="reportModal=false"
+    >
+      <form class="w-full max-w-md rounded-xl bg-white p-4 dark:bg-stone-900" @submit.prevent="downloadMemberReport">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-black text-court-700 dark:text-court-300">ระบบสมาชิก</p>
+            <h2 id="member-report-title" class="text-xl font-black">สร้างรายงาน</h2>
+          </div>
+          <button type="button" class="grid h-9 w-9 place-items-center rounded-lg border dark:border-stone-700" aria-label="ปิดหน้ารายงาน" @click="reportModal=false"><X class="h-5 w-5" /></button>
+        </div>
+        <div class="mt-4 grid gap-3">
+          <label class="grid gap-1 text-sm font-bold">
+            ประเภทรายงาน
+            <select v-model="reportForm.reportType" class="h-11 rounded-lg border bg-transparent px-3" @change="reportForm.memberId=''">
+              <option value="members">รายชื่อสมาชิกทั้งหมด</option>
+              <option value="bookings">รายละเอียดการจอง</option>
+              <option value="payments">การชำระเงิน</option>
+              <option value="matches">ประวัติ Match</option>
+            </select>
+          </label>
+          <label v-if="reportNeedsMember" class="grid gap-1 text-sm font-bold">
+            ชื่อสมาชิก
+            <select v-model="reportForm.memberId" required class="h-11 rounded-lg border bg-transparent px-3">
+              <option value="" disabled>เลือกสมาชิก</option>
+              <option v-for="member in reportData?.members || []" :key="member.id" :value="member.id">
+                {{ member.name }} · {{ member.phone }}
+              </option>
+            </select>
+          </label>
+          <p v-if="reportNeedsMember" class="text-sm text-stone-500">รายงานจะแสดงเฉพาะข้อมูลของสมาชิกที่เลือก</p>
+          <p v-if="state.error" class="rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700 dark:bg-red-950/40 dark:text-red-200">{{ state.error }}</p>
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-court-500 font-black text-white" :disabled="exportLoading">
+            <Download class="h-4 w-4" />{{ exportLoading ? 'กำลังสร้างไฟล์...' : 'ดาวน์โหลดรายงาน' }}
+          </button>
+        </div>
+      </form>
     </div>
     <div v-if="modal" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" @click.self="modal=null"><form class="w-full max-w-md rounded-xl bg-white p-4 dark:bg-stone-900" @submit.prevent="save"><div class="flex justify-between"><h2 class="text-xl font-black">{{ modal.id ? 'แก้ไขสมาชิก' : 'ลงทะเบียนสมาชิก' }}</h2><button type="button" @click="modal=null"><X class="h-5 w-5" /></button></div><div class="mt-4 grid gap-3"><label class="grid gap-1 text-sm font-bold">ชื่อ<input v-model="modal.name" required class="h-11 rounded-lg border bg-transparent px-3" /></label><label class="grid gap-1 text-sm font-bold">เบอร์โทร<input v-model="modal.phone" required inputmode="tel" class="h-11 rounded-lg border bg-transparent px-3" /></label><label class="grid gap-1 text-sm font-bold">ประเภท<select v-model="modal.memberType" class="h-11 rounded-lg border bg-transparent px-3"><option value="general">สมาชิกทั่วไป</option><option value="club">สมาชิกชมรม</option></select></label><label v-if="modal.id" class="flex items-center gap-2 font-bold"><input v-model="modal.active" type="checkbox" />เปิดใช้งาน</label><button class="h-11 rounded-lg bg-court-500 font-black text-white">บันทึก</button></div></form></div>
     <div v-if="confirmDelete" class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-3"><div class="w-full max-w-sm rounded-xl bg-white p-4 dark:bg-stone-900"><h2 class="text-xl font-black">ยืนยันการลบ</h2><p class="mt-2">ลบ {{ confirmDelete.name }}? หากมีประวัติ ระบบจะปิดใช้งานแทน</p><div class="mt-4 grid grid-cols-2 gap-2"><button class="h-11 rounded-lg border" @click="confirmDelete=null">ยกเลิก</button><button class="h-11 rounded-lg bg-red-600 font-black text-white" @click="remove">ยืนยัน</button></div></div></div>
