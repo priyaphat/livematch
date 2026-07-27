@@ -304,6 +304,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table sessions add column if not exists admin_id text;
 		alter table sessions add column if not exists created_at timestamptz not null default now();
 		alter table sessions add column if not exists updated_at timestamptz not null default now();
+		alter table sessions add column if not exists usage_started_at timestamptz;
 		alter table sessions alter column name drop not null;
 		alter table sessions alter column admin_passcode drop not null;
 		alter table sessions alter column state drop not null;
@@ -537,6 +538,8 @@ func (a *app) migrate(ctx context.Context) error {
 			subscription_id text references admin_subscriptions(id) on delete set null,
 			created_at timestamptz not null default now()
 		);
+		alter table session_billing add column if not exists create_request_id text not null default '';
+		create unique index if not exists idx_session_billing_create_request on session_billing(admin_id, create_request_id) where create_request_id <> '';
 		create table if not exists coin_packages (
 			id text primary key,
 			name text not null,
@@ -759,6 +762,11 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
 		create index if not exists idx_admin_subscriptions_admin_dates on admin_subscriptions(admin_id, start_date, end_date);
 		create index if not exists idx_session_billing_admin on session_billing(admin_id, created_at desc);
+		update sessions s set usage_started_at = coalesce(s.usage_started_at, s.updated_at)
+		where s.usage_started_at is null and (
+			exists (select 1 from matches m where m.session_id = s.id and m.phase in ('live', 'history'))
+			or exists (select 1 from live_share_hours h where h.session_id = s.id)
+		);
 		create index if not exists idx_coin_purchase_orders_admin on coin_purchase_orders(admin_id);
 		create index if not exists idx_coin_purchase_orders_status on coin_purchase_orders(status);
 		create unique index if not exists idx_coin_purchase_orders_trans_ref on coin_purchase_orders(trans_ref) where trans_ref <> '';
@@ -1724,6 +1732,7 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 func (a *app) saveState(ctx context.Context, state SessionState) error {
 	normalizeLiveShareState(&state)
 	state.UpdatedAt = time.Now().UTC()
+	usageStarted := sessionUsageStarted(state)
 	courtNames, err := json.Marshal(state.Settings.CourtNames)
 	if err != nil {
 		return err
@@ -1744,14 +1753,15 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	defer tx.Rollback()
 
 	if _, err = tx.ExecContext(ctx, `
-		insert into sessions (id, name, session_type, admin_passcode, updated_at)
-		values ($1, $2, $3, $4, now())
+		insert into sessions (id, name, session_type, admin_passcode, updated_at, usage_started_at)
+		values ($1, $2, $3, $4, now(), case when $5 then now() else null end)
 		on conflict (id) do update set
 			name = excluded.name,
 			session_type = excluded.session_type,
 			admin_passcode = excluded.admin_passcode,
-			updated_at = now()
-	`, state.Session.ID, state.Session.Name, sessionType(state), state.Session.AdminPasscode); err != nil {
+			updated_at = now(),
+			usage_started_at = case when $5 then coalesce(sessions.usage_started_at, now()) else sessions.usage_started_at end
+	`, state.Session.ID, state.Session.Name, sessionType(state), state.Session.AdminPasscode, usageStarted); err != nil {
 		return err
 	}
 
@@ -1880,6 +1890,16 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	}
 
 	return tx.Commit()
+}
+
+func sessionUsageStarted(state SessionState) bool {
+	if len(state.Live) > 0 || len(state.History) > 0 {
+		return true
+	}
+	if !isLiveShare(state) {
+		return false
+	}
+	return liveShareCourtHours(state) > 0 || liveSharePlayerHours(state) > 0 || liveShareShuttleCount(state) > 0
 }
 
 func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {

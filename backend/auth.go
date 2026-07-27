@@ -41,19 +41,25 @@ type adminUser struct {
 }
 
 type adminSessionItem struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Type           string `json:"type"`
-	Players        int    `json:"players"`
-	PaidPlayers    int    `json:"paidPlayers"`
-	UnpaidPlayers  int    `json:"unpaidPlayers"`
-	Matches        int    `json:"matches"`
-	QueueMatches   int    `json:"queueMatches"`
-	LiveMatches    int    `json:"liveMatches"`
-	HistoryMatches int    `json:"historyMatches"`
-	Shuttles       int    `json:"shuttles"`
-	Revenue        int    `json:"revenue"`
-	UpdatedAt      string `json:"updatedAt"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	Type              string `json:"type"`
+	Players           int    `json:"players"`
+	PaidPlayers       int    `json:"paidPlayers"`
+	UnpaidPlayers     int    `json:"unpaidPlayers"`
+	Matches           int    `json:"matches"`
+	QueueMatches      int    `json:"queueMatches"`
+	LiveMatches       int    `json:"liveMatches"`
+	HistoryMatches    int    `json:"historyMatches"`
+	Shuttles          int    `json:"shuttles"`
+	Revenue           int    `json:"revenue"`
+	UpdatedAt         string `json:"updatedAt"`
+	Deletable         bool   `json:"deletable"`
+	DeleteBlocked     string `json:"deleteBlockedReason,omitempty"`
+	BillingMethod     string `json:"billingMethod,omitempty"`
+	ChargedCoin       int    `json:"chargedCoinCost"`
+	RefundAvailable   bool   `json:"refundAvailable"`
+	RefundDescription string `json:"refundDescription,omitempty"`
 }
 
 type coinLedgerItem struct {
@@ -528,10 +534,16 @@ func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request,
 
 func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, user adminUser) {
 	var body struct {
-		Name string `json:"name"`
-		Type string `json:"type"`
+		Name      string `json:"name"`
+		Type      string `json:"type"`
+		RequestID string `json:"requestId"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
+	requestID := strings.TrimSpace(body.RequestID)
+	if len(requestID) > 128 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request id"})
+		return
+	}
 	sessionType := strings.TrimSpace(body.Type)
 	if sessionType == "" {
 		sessionType = "liveMatch"
@@ -576,6 +588,29 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	defer tx.Rollback()
+	if requestID != "" {
+		if _, err = tx.ExecContext(r.Context(), `select pg_advisory_xact_lock(hashtextextended($1, 0))`, user.ID+":"+requestID); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		var existingSessionID string
+		err = tx.QueryRowContext(r.Context(), `select session_id from session_billing where admin_id = $1 and create_request_id = $2`, user.ID, requestID).Scan(&existingSessionID)
+		if err == nil {
+			_ = tx.Rollback()
+			existingState, loadErr := a.loadState(r.Context(), existingSessionID)
+			if loadErr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": loadErr.Error()})
+				return
+			}
+			existingState.Session.Unlocked = true
+			writeJSON(w, http.StatusOK, SessionRecord{ID: existingSessionID, Name: existingState.Session.Name, State: existingState})
+			return
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 	billing, err := consumeSessionBillingTx(r.Context(), tx, user.ID, sessionType)
 	if errors.Is(err, errSessionPriceUnset) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "ยังไม่ได้ตั้งราคา coin"})
@@ -605,9 +640,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `
-		insert into session_billing (session_id, admin_id, session_type, billing_method, base_coin_cost, discount_percent, charged_coin_cost, subscription_id)
-		values ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''))
-	`, id, user.ID, sessionType, billing.Method, billing.BaseCost, billing.DiscountPercent, billing.ChargedCost, billing.SubscriptionID); err != nil {
+		insert into session_billing (session_id, admin_id, session_type, billing_method, base_coin_cost, discount_percent, charged_coin_cost, subscription_id, create_request_id)
+		values ($1, $2, $3, $4, $5, $6, $7, nullif($8, ''), $9)
+	`, id, user.ID, sessionType, billing.Method, billing.BaseCost, billing.DiscountPercent, billing.ChargedCost, billing.SubscriptionID, requestID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -627,7 +662,7 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, activityAction, "session", id, map[string]any{
 		"billingMethod": billing.Method, "baseCost": billing.BaseCost, "discountPercent": billing.DiscountPercent,
 		"chargedCost": billing.ChargedCost, "balance": billing.NewCoinBalance, "subscriptionId": billing.SubscriptionID,
-		"subscriptionRemaining": billing.Remaining, "name": name, "type": sessionType,
+		"subscriptionRemaining": billing.Remaining, "name": name, "type": sessionType, "requestId": requestID,
 	}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -954,6 +989,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeAdminSubscriptionUpdate(w, r, backofficeUser)
 	case r.Method == http.MethodPost && strings.Contains(action, "/subscriptions/") && strings.HasSuffix(action, "/cancel"):
 		a.handleBackofficeAdminSubscriptionCancel(w, r, backofficeUser)
+	case r.Method == http.MethodDelete && strings.HasPrefix(action, "admins/") && strings.Contains(action, "/sessions/"):
+		a.handleBackofficeSessionDelete(w, r, backofficeUser)
 	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/"):
 		a.handleBackofficeAdminDetail(w, r)
 	case r.Method == http.MethodPatch && strings.HasPrefix(action, "admins/") && strings.HasSuffix(action, "/features"):
@@ -977,6 +1014,122 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) handleBackofficeSessionDelete(w http.ResponseWriter, r *http.Request, actor string) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/backoffice/"), "/"), "/")
+	if len(parts) != 4 || parts[0] != "admins" || parts[2] != "sessions" || parts[1] == "" || parts[3] == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid session target"})
+		return
+	}
+	adminID, sessionID := parts[1], parts[3]
+	refund, _ := strconv.ParseBool(r.URL.Query().Get("refund"))
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+
+	var sessionName, sessionType string
+	var usageStarted bool
+	err = tx.QueryRowContext(r.Context(), `
+		select coalesce(name, id), coalesce(session_type, 'liveMatch'), usage_started_at is not null
+		from sessions where id = $1 and admin_id = $2 for update
+	`, sessionID, adminID).Scan(&sessionName, &sessionType, &usageStarted)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if usageStarted {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Session เริ่มใช้งานแล้ว ไม่สามารถลบได้"})
+		return
+	}
+
+	var billingMethod, subscriptionID string
+	var baseCost, discountPercent, chargedCost int
+	billingErr := tx.QueryRowContext(r.Context(), `
+		select billing_method, base_coin_cost, discount_percent, charged_coin_cost, coalesce(subscription_id, '')
+		from session_billing where session_id = $1 and admin_id = $2 for update
+	`, sessionID, adminID).Scan(&billingMethod, &baseCost, &discountPercent, &chargedCost, &subscriptionID)
+	if billingErr != nil && !errors.Is(billingErr, sql.ErrNoRows) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": billingErr.Error()})
+		return
+	}
+
+	refundedCoins, refundedSessions := 0, 0
+	if refund {
+		if errors.Is(billingErr, sql.ErrNoRows) {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Session นี้ไม่มีข้อมูลค่าบริการที่คืนได้"})
+			return
+		}
+		switch billingMethod {
+		case "coin":
+			if chargedCost <= 0 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "Session นี้ไม่มี Coin ที่ต้องคืน"})
+				return
+			}
+			var currentCoins int
+			if err = tx.QueryRowContext(r.Context(), `select coins from admin_users where id = $1 for update`, adminID).Scan(&currentCoins); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			nextCoins := currentCoins + chargedCost
+			if _, err = tx.ExecContext(r.Context(), `update admin_users set coins = $2, updated_at = now() where id = $1`, adminID, nextCoins); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if _, err = tx.ExecContext(r.Context(), `insert into coin_ledger (admin_id, delta, balance, reason, note) values ($1,$2,$3,'session_refund',$4)`, adminID, chargedCost, nextCoins, "refund "+sessionType+" "+sessionID); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			refundedCoins = chargedCost
+		case "subscription":
+			if subscriptionID == "" {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ไม่พบแพ็กเกจเดิมของ Session นี้"})
+				return
+			}
+			var usedSessions int
+			if err = tx.QueryRowContext(r.Context(), `select used_sessions from admin_subscriptions where id = $1 and admin_id = $2 for update`, subscriptionID, adminID).Scan(&usedSessions); errors.Is(err, sql.ErrNoRows) || usedSessions <= 0 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ไม่สามารถคืนสิทธิ์แพ็กเกจรายการนี้ได้"})
+				return
+			} else if err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if _, err = tx.ExecContext(r.Context(), `update admin_subscriptions set used_sessions = used_sessions - 1, updated_at = now() where id = $1`, subscriptionID); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			refundedSessions = 1
+		default:
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "Session นี้ไม่มีค่าบริการที่คืนได้"})
+			return
+		}
+	}
+
+	if err = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "delete_admin_session", "session", sessionID, map[string]any{
+		"adminId": adminID, "name": sessionName, "type": sessionType, "refund": refund,
+		"billingMethod": billingMethod, "baseCost": baseCost, "discountPercent": discountPercent,
+		"chargedCoinCost": chargedCost, "subscriptionId": subscriptionID,
+		"refundedCoins": refundedCoins, "refundedSessions": refundedSessions,
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `delete from sessions where id = $1 and admin_id = $2`, sessionID, adminID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	a.writeBackofficeAdminDetail(w, r, adminID)
 }
 
 func (a *app) handleBackofficeCoinOrderTelegram(w http.ResponseWriter, r *http.Request, actor string) {
@@ -1664,8 +1817,16 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 				join session_settings ss on ss.session_id = p.session_id
 				where p.session_id = s.id and p.active
 			) end as revenue,
-			to_char(s.updated_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') as updated_at
+			to_char(s.updated_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI') as updated_at,
+			s.usage_started_at is null as deletable,
+			coalesce(sb.billing_method, ''), coalesce(sb.charged_coin_cost, 0), coalesce(sb.subscription_id, ''),
+			case when sb.billing_method = 'coin' then sb.charged_coin_cost > 0
+				when sb.billing_method = 'subscription' then sb.subscription_id is not null and exists (
+					select 1 from admin_subscriptions sub
+					where sub.id = sb.subscription_id and sub.admin_id = s.admin_id and sub.used_sessions > 0
+				) else false end as refund_available
 		from sessions s
+		left join session_billing sb on sb.session_id = s.id
 		where s.admin_id = $1
 		order by s.updated_at desc
 	`, adminID)
@@ -1675,8 +1836,17 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 	defer rows.Close()
 	for rows.Next() {
 		var item adminSessionItem
-		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.Players, &item.PaidPlayers, &item.UnpaidPlayers, &item.Matches, &item.QueueMatches, &item.LiveMatches, &item.HistoryMatches, &item.Shuttles, &item.Revenue, &item.UpdatedAt); err != nil {
+		var subscriptionID string
+		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.Players, &item.PaidPlayers, &item.UnpaidPlayers, &item.Matches, &item.QueueMatches, &item.LiveMatches, &item.HistoryMatches, &item.Shuttles, &item.Revenue, &item.UpdatedAt, &item.Deletable, &item.BillingMethod, &item.ChargedCoin, &subscriptionID, &item.RefundAvailable); err != nil {
 			return items, err
+		}
+		if !item.Deletable {
+			item.DeleteBlocked = "Session เริ่มใช้งานแล้ว ไม่สามารถลบได้"
+		}
+		if item.RefundAvailable && item.BillingMethod == "coin" {
+			item.RefundDescription = fmt.Sprintf("คืน %d Coin", item.ChargedCoin)
+		} else if item.RefundAvailable && item.BillingMethod == "subscription" {
+			item.RefundDescription = "คืน 1 สิทธิ์ Session"
 		}
 		items = append(items, item)
 	}

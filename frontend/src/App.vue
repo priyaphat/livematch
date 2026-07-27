@@ -236,6 +236,10 @@ const forms = reactive({
   resetToken: '',
   sessionCreateName: '',
   sessionCreateType: 'liveMatch',
+  sessionCreateSubmitting: false,
+  sessionCreateStatus: '',
+  sessionCreateRequestId: '',
+  sessionCreateFingerprint: '',
   backofficeUsername: '',
   backofficePassword: '',
   backofficeError: '',
@@ -905,6 +909,23 @@ async function openBackofficeAdminDetail(adminId) {
   }
 }
 
+async function deleteBackofficeAdminSession(session, refund = false) {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  if (!adminId || !session?.id) throw new Error('ไม่พบ Session ที่ต้องการลบ')
+  try {
+    const payload = await api(`/api/backoffice/admins/${adminId}/sessions/${session.id}?refund=${refund ? 'true' : 'false'}`, {
+      method: 'DELETE',
+      headers: backofficeAuthHeaders()
+    })
+    applyBackofficeAdminDetail(payload)
+    showToast(refund ? 'ลบ Session และคืนค่าบริการแล้ว' : 'ลบ Session แล้ว', 'success')
+    return payload
+  } catch (error) {
+    showToast(error.message || 'ลบ Session ไม่สำเร็จ')
+    throw error
+  }
+}
+
 function dateInputValue(date = new Date()) {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000)
   return local.toISOString().slice(0, 10)
@@ -939,6 +960,8 @@ function applyBackofficeAdminDetail(payload) {
   const userId = payload?.user?.id
   const summaryUser = forms.backofficeSummary?.users?.find((item) => item.id === userId)
   if (summaryUser) {
+    summaryUser.coins = Number(payload?.user?.coins || 0)
+    summaryUser.sessions = Array.isArray(payload?.sessions) ? payload.sessions.length : summaryUser.sessions
     summaryUser.discountPercent = Number(payload?.benefits?.discountPercent || 0)
     summaryUser.subscription = payload?.benefits?.subscription || null
   }
@@ -1559,6 +1582,7 @@ function money(value) {
 
 function coinReasonText(item) {
   if (item.reason === 'create_session') return 'ใช้สร้าง session'
+  if (item.reason === 'session_refund') return 'คืน Coin จากการลบ Session'
   if (item.reason === 'coin_purchase') return 'ซื้อ coin'
   if (item.reason === 'manual_adjustment' && item.delta > 0) return 'เติม coin โดยแอดมิน'
   if (item.reason === 'manual_adjustment' && item.delta < 0) return 'หัก coin โดยแอดมิน'
@@ -2716,21 +2740,38 @@ async function loadSharedView({ silent = false } = {}) {
 }
 
 async function createSessionApi() {
+  if (forms.sessionCreateSubmitting) return
+  const name = String(forms.sessionCreateName || forms.newSessionName || '').trim()
+  const type = forms.sessionCreateType || 'liveMatch'
+  const fingerprint = `${type}\u0000${name}`
+  if (!forms.sessionCreateRequestId || forms.sessionCreateFingerprint !== fingerprint) {
+    forms.sessionCreateRequestId = crypto.randomUUID()
+    forms.sessionCreateFingerprint = fingerprint
+  }
+  forms.sessionCreateSubmitting = true
+  forms.sessionCreateStatus = 'กำลังสร้าง Session กรุณารอสักครู่...'
   try {
     const record = await api('/api/admin/sessions', {
       method: 'POST',
-      body: JSON.stringify({ name: forms.sessionCreateName || forms.newSessionName, type: forms.sessionCreateType || 'liveMatch' })
+      body: JSON.stringify({ name, type, requestId: forms.sessionCreateRequestId })
     })
     applyServerState(record.state)
     applyAdminPayload(await api('/api/admin/supervisor'))
     ui.showCreateSessionModal = false
     forms.sessionCreateName = ''
     forms.sessionCreateType = 'liveMatch'
+    forms.sessionCreateRequestId = ''
+    forms.sessionCreateFingerprint = ''
+    forms.sessionCreateStatus = ''
     forms.loginError = ''
     state.session.unlocked = true
     state.tab = 'dashboard'
+    showToast('สร้าง Session สำเร็จ', 'success')
   } catch (error) {
-    showToast(error.message || 'สร้าง session ไม่สำเร็จ')
+    forms.sessionCreateStatus = error.message || 'สร้าง Session ไม่สำเร็จ'
+    showToast(forms.sessionCreateStatus)
+  } finally {
+    forms.sessionCreateSubmitting = false
   }
 }
 
@@ -3176,6 +3217,7 @@ const pageProps = computed(() => ({
   applyBackofficeActivityFilters,
   changeBackofficeActivityUser,
   openBackofficeAdminDetail,
+  deleteBackofficeAdminSession,
   saveBackofficeAdminDiscount,
   saveBackofficeAdminFeatures,
   saveBackofficeAdminSubscription,

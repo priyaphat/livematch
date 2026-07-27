@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { reactive } from 'vue'
 import App from './App.vue'
 import AdminSupervisorPage from './pages/AdminSupervisorPage.vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
@@ -1856,5 +1857,69 @@ describe('LiveMatch app', () => {
     expect(wrapper.findAll('.shared-waiting-card')).toHaveLength(18)
     expect(wrapper.get('.shared-match-grid').attributes('style')).toContain('--tv-grid-columns: 5')
     expect(wrapper.get('.shared-match-grid').attributes('style')).toContain('--tv-grid-rows: 4')
+  })
+
+  it('locks the create session modal while a request is pending', async () => {
+    const forms = reactive({
+      sessionCreateType: 'liveMatch', sessionCreateName: 'Slow network',
+      sessionCreateSubmitting: false, sessionCreateStatus: ''
+    })
+    let resolveCreate
+    const createRequest = vi.fn()
+    const createSession = () => {
+      if (forms.sessionCreateSubmitting) return
+      forms.sessionCreateSubmitting = true
+      forms.sessionCreateStatus = 'กำลังสร้าง Session กรุณารอสักครู่...'
+      createRequest()
+      return new Promise((resolve) => { resolveCreate = resolve })
+    }
+    const wrapper = mount(AdminSupervisorPage, {
+      props: {
+        auth: { user: { coins: 10 }, sessions: [], liveMatchSessionCost: 1, liveShareSessionCost: 1, defaultSettings: {} },
+        forms,
+        ui: { showCreateSessionModal: true, showAdminDefaultSettingsModal: false },
+        money: (value) => `${value}`,
+        createSession,
+        openOwnedSession: vi.fn(), refreshAdminSupervisor: vi.fn(), navigateAdminFeature: vi.fn(), saveAdminDefaultSettings: vi.fn(),
+        addAdminDefaultShuttleBrand: vi.fn(), removeAdminDefaultShuttleBrand: vi.fn(), addAdminDefaultCourt: vi.fn(), removeAdminDefaultCourt: vi.fn(), addAdminDefaultLevel: vi.fn(), removeAdminDefaultLevel: vi.fn()
+      }
+    })
+    const createButton = wrapper.findAll('button').find((button) => button.text().trim() === 'สร้าง')
+    await createButton.trigger('click')
+    await wrapper.vm.$nextTick()
+    await createButton.trigger('click')
+    expect(createRequest).toHaveBeenCalledOnce()
+    expect(createButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('กำลังสร้าง Session...')
+    expect(wrapper.get('input[placeholder="ชื่อ session"]').attributes('disabled')).toBeDefined()
+    resolveCreate()
+  })
+
+  it('confirms deleting a session with the exact refund shown', async () => {
+    const deleteSession = vi.fn().mockResolvedValue({})
+    const session = {
+      id: 'session-1', name: 'Unused session', type: 'liveMatch', players: 2, matches: 0, revenue: 0,
+      deletable: true, refundAvailable: true, refundDescription: 'คืน 49 Coin'
+    }
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'members', backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeAdminDetail: { user: { id: 'admin-1', name: 'Admin', coins: 10 }, sessions: [session], coinLedger: [], orders: [], benefits: {}, features: {} },
+          backofficeBenefitStatus: ''
+        },
+        ui: { showBackofficeAdminModal: true }, backoffice: { unlocked: true },
+        deleteBackofficeAdminSession: deleteSession,
+        loadBackoffice: vi.fn(), openBackofficeAdminDetail: vi.fn(), saveBackofficeAdminDiscount: vi.fn(), saveBackofficeAdminFeatures: vi.fn(), saveBackofficeAdminSubscription: vi.fn(), cancelBackofficeAdminSubscription: vi.fn(),
+        coinOrderStatusText: () => '', coinOrderStatusClass: () => ''
+      }
+    })
+    const refundButton = wrapper.findAll('button').find((button) => button.text().includes('ลบและคืนเงิน'))
+    await refundButton.trigger('click')
+    expect(wrapper.text()).toContain('คืน 49 Coin')
+    const confirmButton = wrapper.findAll('button').filter((button) => button.text().trim() === 'ลบและคืนเงิน').at(-1)
+    await confirmButton.trigger('click')
+    await flushPromises()
+    expect(deleteSession).toHaveBeenCalledWith(session, true)
   })
 })

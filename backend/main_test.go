@@ -694,6 +694,25 @@ func TestLiveSharePaymentSummaryMatchesPlayerCost(t *testing.T) {
 	}
 }
 
+func TestSessionUsageStartedAllowsSetupButLocksRealUsage(t *testing.T) {
+	setup := SessionState{Session: SessionInfo{Type: "liveMatch"}, Players: []Player{{ID: 1, Active: true}}, Queue: []Match{{ID: 1}}}
+	if sessionUsageStarted(setup) {
+		t.Fatal("players and queued matches must remain deletable before a match starts")
+	}
+	setup.Live = []Match{{ID: 1}}
+	if !sessionUsageStarted(setup) {
+		t.Fatal("a live match must mark the session as used")
+	}
+	liveShare := SessionState{
+		Session:   SessionInfo{Type: "liveShare"},
+		Players:   []Player{{ID: 1, Active: true}},
+		LiveShare: LiveShareHours{CourtHours: map[string][]int{"Court 1": {18}}, PlayerHours: map[string][]int{}, ShuttleHours: map[string]int{}},
+	}
+	if !sessionUsageStarted(liveShare) {
+		t.Fatal("recorded live share hours must mark the session as used")
+	}
+}
+
 func TestStartMatchUsesNoInitialShuttleWhenSettingDisabled(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, StartMatchWithShuttle: false},

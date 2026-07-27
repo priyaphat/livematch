@@ -137,6 +137,196 @@ func TestSessionBillingIntegration(t *testing.T) {
 	}
 }
 
+func TestIdempotentSessionCreateAndCoinRefundDeleteIntegration(t *testing.T) {
+	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL billing integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if err = db.Ping(); err != nil {
+		t.Fatal(err)
+	}
+	a := &app{db: db}
+	adminID := "session-delete-test-" + randHex(8)
+	email := adminID + "@example.invalid"
+	if _, err = db.Exec(`insert into admin_users (id,email,name,password_hash,verified_at,coins) values ($1,$2,'Session delete test','not-used',now(),1000)`, adminID, email); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from activity_logs where actor_id = $1 or (target_type = 'session' and details->>'adminId' = $1)`, adminID)
+		_, _ = db.Exec(`delete from sessions where admin_id = $1`, adminID)
+		_, _ = db.Exec(`delete from admin_users where id = $1`, adminID)
+	}()
+
+	baseCost, hasCost, err := a.sessionCoinCost(t.Context(), "liveMatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasCost || baseCost <= 0 {
+		t.Skip("positive liveMatch session price is required")
+	}
+	requestID := "request-" + randHex(8)
+	start := make(chan struct{})
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			req := httptest.NewRequest(http.MethodPost, "/api/admin/sessions", bytes.NewReader([]byte(fmt.Sprintf(`{"name":"Idempotent session","type":"liveMatch","requestId":"%s"}`, requestID))))
+			recorder := httptest.NewRecorder()
+			a.handleCreateOwnedSession(recorder, req, adminUser{ID: adminID, Email: email, Coins: 1000, Verified: true})
+			responses <- recorder
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(responses)
+	for response := range responses {
+		if response.Code != http.StatusCreated && response.Code != http.StatusOK {
+			t.Fatalf("idempotent create status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+
+	var sessionID string
+	var sessionCount, chargedCost, coins int
+	if err = db.QueryRow(`select count(*), min(session_id), max(charged_coin_cost) from session_billing where admin_id=$1 and create_request_id=$2`, adminID, requestID).Scan(&sessionCount, &sessionID, &chargedCost); err != nil {
+		t.Fatal(err)
+	}
+	if sessionCount != 1 {
+		t.Fatalf("created %d sessions for one request id", sessionCount)
+	}
+	if err = db.QueryRow(`select coins from admin_users where id=$1`, adminID).Scan(&coins); err != nil {
+		t.Fatal(err)
+	}
+	if coins != 1000-chargedCost {
+		t.Fatalf("coins=%d want %d after one charge", coins, 1000-chargedCost)
+	}
+	if _, err = db.Exec(`insert into players (session_id,id,name,active,level) values ($1,1,'Setup player',true,'middle')`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into matches (session_id,id,phase,level,a1,a2,b1,b2) values ($1,1,'queue','middle',1,2,3,4)`, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	deleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/backoffice/admins/%s/sessions/%s?refund=true", adminID, sessionID), nil)
+	deleteRecorder := httptest.NewRecorder()
+	a.handleBackofficeSessionDelete(deleteRecorder, deleteReq, "integration-test")
+	if deleteRecorder.Code != http.StatusOK {
+		t.Fatalf("delete with refund status=%d body=%s", deleteRecorder.Code, deleteRecorder.Body.String())
+	}
+	if err = db.QueryRow(`select coins from admin_users where id=$1`, adminID).Scan(&coins); err != nil {
+		t.Fatal(err)
+	}
+	if coins != 1000 {
+		t.Fatalf("coins=%d want 1000 after refund", coins)
+	}
+	var remaining int
+	if err = db.QueryRow(`select count(*) from sessions where id=$1`, sessionID).Scan(&remaining); err != nil || remaining != 0 {
+		t.Fatalf("session remaining=%d err=%v", remaining, err)
+	}
+	var refunds int
+	if err = db.QueryRow(`select count(*) from coin_ledger where admin_id=$1 and reason='session_refund'`, adminID).Scan(&refunds); err != nil || refunds != 1 {
+		t.Fatalf("refund ledger count=%d err=%v", refunds, err)
+	}
+
+	normalDeleteID := "normal-delete-session-" + randHex(6)
+	if _, err = db.Exec(`insert into sessions (id,name,session_type,admin_id) values ($1,'Normal delete','liveMatch',$2)`, normalDeleteID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into session_billing (session_id,admin_id,session_type,billing_method,charged_coin_cost) values ($1,$2,'liveMatch','coin',25)`, normalDeleteID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	var coinsBeforeNormalDelete int
+	if err = db.QueryRow(`select coins from admin_users where id=$1`, adminID).Scan(&coinsBeforeNormalDelete); err != nil {
+		t.Fatal(err)
+	}
+	normalDeleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/backoffice/admins/%s/sessions/%s?refund=false", adminID, normalDeleteID), nil)
+	normalDeleteRecorder := httptest.NewRecorder()
+	a.handleBackofficeSessionDelete(normalDeleteRecorder, normalDeleteReq, "integration-test")
+	if normalDeleteRecorder.Code != http.StatusOK {
+		t.Fatalf("normal delete status=%d body=%s", normalDeleteRecorder.Code, normalDeleteRecorder.Body.String())
+	}
+	if err = db.QueryRow(`select coins from admin_users where id=$1`, adminID).Scan(&coins); err != nil || coins != coinsBeforeNormalDelete {
+		t.Fatalf("normal delete coins=%d want %d err=%v", coins, coinsBeforeNormalDelete, err)
+	}
+
+	concurrentDeleteID := "concurrent-delete-session-" + randHex(6)
+	if _, err = db.Exec(`insert into sessions (id,name,session_type,admin_id) values ($1,'Concurrent delete','liveMatch',$2)`, concurrentDeleteID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into session_billing (session_id,admin_id,session_type,billing_method,charged_coin_cost) values ($1,$2,'liveMatch','coin',25)`, concurrentDeleteID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	deleteResponses := make(chan *httptest.ResponseRecorder, 2)
+	deleteStart := make(chan struct{})
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-deleteStart
+			req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/backoffice/admins/%s/sessions/%s?refund=true", adminID, concurrentDeleteID), nil)
+			recorder := httptest.NewRecorder()
+			a.handleBackofficeSessionDelete(recorder, req, "integration-test")
+			deleteResponses <- recorder
+		}()
+	}
+	close(deleteStart)
+	wg.Wait()
+	close(deleteResponses)
+	deleteSuccesses := 0
+	for response := range deleteResponses {
+		if response.Code == http.StatusOK {
+			deleteSuccesses++
+		} else if response.Code != http.StatusNotFound {
+			t.Fatalf("concurrent delete unexpected status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	if deleteSuccesses != 1 {
+		t.Fatalf("concurrent delete succeeded %d times, want once", deleteSuccesses)
+	}
+	if err = db.QueryRow(`select count(*) from coin_ledger where admin_id=$1 and reason='session_refund'`, adminID).Scan(&refunds); err != nil || refunds != 2 {
+		t.Fatalf("refund ledger after concurrent delete count=%d err=%v", refunds, err)
+	}
+
+	subscriptionID := "refund-sub-" + randHex(6)
+	subscriptionSessionID := "refund-sub-session-" + randHex(6)
+	if _, err = db.Exec(`insert into admin_subscriptions (id,admin_id,start_date,end_date,total_sessions,used_sessions,created_by) values ($1,$2,current_date,current_date,2,1,'integration-test')`, subscriptionID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into sessions (id,name,session_type,admin_id) values ($1,'Subscription session','liveMatch',$2)`, subscriptionSessionID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into session_billing (session_id,admin_id,session_type,billing_method,subscription_id) values ($1,$2,'liveMatch','subscription',$3)`, subscriptionSessionID, adminID, subscriptionID); err != nil {
+		t.Fatal(err)
+	}
+	subDeleteReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/backoffice/admins/%s/sessions/%s?refund=true", adminID, subscriptionSessionID), nil)
+	subDeleteRecorder := httptest.NewRecorder()
+	a.handleBackofficeSessionDelete(subDeleteRecorder, subDeleteReq, "integration-test")
+	if subDeleteRecorder.Code != http.StatusOK {
+		t.Fatalf("subscription refund status=%d body=%s", subDeleteRecorder.Code, subDeleteRecorder.Body.String())
+	}
+	var usedSessions int
+	if err = db.QueryRow(`select used_sessions from admin_subscriptions where id=$1`, subscriptionID).Scan(&usedSessions); err != nil || usedSessions != 0 {
+		t.Fatalf("used sessions=%d err=%v", usedSessions, err)
+	}
+
+	usedSessionID := "used-session-" + randHex(6)
+	if _, err = db.Exec(`insert into sessions (id,name,session_type,admin_id,usage_started_at) values ($1,'Used session','liveMatch',$2,now())`, usedSessionID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	blockedReq := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/api/backoffice/admins/%s/sessions/%s?refund=false", adminID, usedSessionID), nil)
+	blockedRecorder := httptest.NewRecorder()
+	a.handleBackofficeSessionDelete(blockedRecorder, blockedReq, "integration-test")
+	if blockedRecorder.Code != http.StatusConflict {
+		t.Fatalf("used session delete status=%d body=%s", blockedRecorder.Code, blockedRecorder.Body.String())
+	}
+}
+
 func TestSubscriptionPurchaseApprovalIntegration(t *testing.T) {
 	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
 	if dsn == "" {

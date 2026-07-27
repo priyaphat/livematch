@@ -1,6 +1,6 @@
 <script setup>
-import { computed } from 'vue'
-import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, MessageCircleWarning, ReceiptText, RefreshCw, Save, Search, Send, Settings, Upload, Users, X, XCircle } from '@lucide/vue'
+import { computed, ref } from 'vue'
+import { Activity, CheckCircle2, Coins, Eye, ImagePlus, Link, Lock, MessageCircleWarning, ReceiptText, RefreshCw, RotateCcw, Save, Search, Send, Settings, Trash2, Upload, Users, X, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'forms',
@@ -17,6 +17,7 @@ const props = defineProps([
   'openBackofficeSupportIssue',
   'saveBackofficeSupportIssue',
   'openBackofficeAdminDetail',
+  'deleteBackofficeAdminSession',
   'saveBackofficeAdminDiscount',
   'saveBackofficeAdminFeatures',
   'saveBackofficeAdminSubscription',
@@ -57,6 +58,37 @@ const adminBenefits = computed(() => adminDetail.value.benefits || { discountPer
 const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false }))
 const adminSubscription = computed(() => adminBenefits.value.subscription || null)
 const adminSubscriptionHistory = computed(() => adminBenefits.value.subscriptionHistory || [])
+const sessionDeleteTarget = ref(null)
+const sessionDeleteRefund = ref(false)
+const sessionDeleteSaving = ref(false)
+const sessionDeleteError = ref('')
+
+function openSessionDelete(session, refund) {
+  if (!session?.deletable || (refund && !session?.refundAvailable)) return
+  sessionDeleteTarget.value = session
+  sessionDeleteRefund.value = Boolean(refund)
+  sessionDeleteError.value = ''
+}
+
+function closeSessionDelete() {
+  if (sessionDeleteSaving.value) return
+  sessionDeleteTarget.value = null
+  sessionDeleteError.value = ''
+}
+
+async function confirmSessionDelete() {
+  if (!sessionDeleteTarget.value || sessionDeleteSaving.value) return
+  sessionDeleteSaving.value = true
+  sessionDeleteError.value = ''
+  try {
+    await props.deleteBackofficeAdminSession(sessionDeleteTarget.value, sessionDeleteRefund.value)
+    sessionDeleteTarget.value = null
+  } catch (error) {
+    sessionDeleteError.value = error.message || 'ลบ Session ไม่สำเร็จ'
+  } finally {
+    sessionDeleteSaving.value = false
+  }
+}
 const slipOKQuota = computed(() => props.forms.backofficeSlipOKQuota || {})
 const slipOKUsagePercent = computed(() => {
   const limit = Number(slipOKQuota.value.limit || props.forms.backofficeSlipOKMonthlyCap || 0)
@@ -1040,7 +1072,7 @@ function closeSlipPreview() {
               <span class="rounded-md bg-paper-100 px-2 py-1 text-xs font-black text-stone-500 dark:bg-stone-800 dark:text-stone-300">{{ adminDetailSessions.length }} รายการ</span>
             </div>
             <div class="mt-3 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
-              <div v-for="session in adminDetailSessions" :key="session.id" class="grid gap-2 border-t border-stone-200 p-3 first:border-t-0 dark:border-stone-800 md:grid-cols-[1fr_0.7fr_0.7fr_0.7fr] md:items-center">
+              <div v-for="session in adminDetailSessions" :key="session.id" class="grid gap-2 border-t border-stone-200 p-3 first:border-t-0 dark:border-stone-800 md:grid-cols-[minmax(0,1fr)_0.55fr_0.55fr_0.55fr_auto] md:items-center">
                 <div class="min-w-0">
                   <p class="truncate font-black">{{ session.name }}</p>
                   <p class="mt-1 truncate text-xs font-semibold text-stone-500">{{ session.type || 'liveMatch' }} · {{ session.updatedAt || '-' }}</p>
@@ -1048,6 +1080,19 @@ function closeSlipPreview() {
                 <p class="text-sm font-black">{{ Number(session.players || 0).toLocaleString('th-TH') }} สมาชิก</p>
                 <p class="text-sm font-black">{{ Number(session.matches || 0).toLocaleString('th-TH') }} เกม</p>
                 <p class="text-sm font-black">{{ Number(session.revenue || 0).toLocaleString('th-TH') }} บาท</p>
+                <div class="grid min-w-44 gap-1.5">
+                  <div class="grid grid-cols-2 gap-1.5">
+                    <button type="button" class="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-rose-200 px-2 text-xs font-black text-rose-700 disabled:cursor-not-allowed disabled:opacity-35 dark:border-rose-900/60 dark:text-rose-300" :disabled="!session.deletable" @click="openSessionDelete(session, false)">
+                      <Trash2 class="h-3.5 w-3.5" />ลบ Session
+                    </button>
+                    <button type="button" class="inline-flex h-9 items-center justify-center gap-1 rounded-md border border-amber-300 px-2 text-xs font-black text-amber-700 disabled:cursor-not-allowed disabled:opacity-35 dark:border-amber-900/60 dark:text-amber-300" :disabled="!session.deletable || !session.refundAvailable" @click="openSessionDelete(session, true)">
+                      <RotateCcw class="h-3.5 w-3.5" />ลบและคืนเงิน
+                    </button>
+                  </div>
+                  <p v-if="session.deleteBlockedReason" class="text-xs font-bold text-rose-700 dark:text-rose-300">{{ session.deleteBlockedReason }}</p>
+                  <p v-else-if="session.refundAvailable" class="text-xs font-bold text-court-700 dark:text-court-300">{{ session.refundDescription }}</p>
+                  <p v-else class="text-xs font-semibold text-stone-500">ไม่มีค่าบริการที่คืนได้</p>
+                </div>
               </div>
               <p v-if="!adminDetailSessions.length" class="p-4 text-sm font-semibold text-stone-500">ยังไม่มี session</p>
             </div>
@@ -1082,6 +1127,31 @@ function closeSlipPreview() {
               </div>
             </section>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="sessionDeleteTarget" class="fixed inset-0 z-[70] grid place-items-end bg-black/60 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="delete-session-title" @click.self="closeSessionDelete">
+      <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-xs font-black uppercase tracking-wider" :class="sessionDeleteRefund ? 'text-amber-700 dark:text-amber-300' : 'text-rose-700 dark:text-rose-300'">{{ sessionDeleteRefund ? 'ลบและคืนค่าบริการ' : 'ลบถาวร' }}</p>
+            <h2 id="delete-session-title" class="mt-1 text-xl font-black">{{ sessionDeleteTarget.name }}</h2>
+          </div>
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 disabled:opacity-40 dark:border-stone-700" aria-label="ปิด modal" :disabled="sessionDeleteSaving" @click="closeSessionDelete"><X class="h-4 w-4" /></button>
+        </div>
+        <div class="mt-4 rounded-lg p-4 text-sm font-bold" :class="sessionDeleteRefund ? 'bg-amber-50 text-amber-900 dark:bg-amber-950/25 dark:text-amber-200' : 'bg-rose-50 text-rose-800 dark:bg-rose-950/25 dark:text-rose-200'">
+          <p v-if="sessionDeleteRefund">Session และข้อมูลทั้งหมดจะถูกลบถาวร พร้อม {{ sessionDeleteTarget.refundDescription }}</p>
+          <p v-else>Session และข้อมูลทั้งหมดจะถูกลบถาวร โดยไม่คืน Coin หรือสิทธิ์แพ็กเกจ</p>
+        </div>
+        <p class="mt-3 text-xs font-semibold text-stone-500">การดำเนินการนี้ย้อนกลับไม่ได้ และจะถูกบันทึกใน Activity log</p>
+        <p v-if="sessionDeleteError" class="mt-3 rounded-md bg-rose-50 p-3 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-200">{{ sessionDeleteError }}</p>
+        <div class="mt-4 grid grid-cols-2 gap-2">
+          <button class="h-11 rounded-md border border-stone-200 font-bold disabled:opacity-40 dark:border-stone-700" :disabled="sessionDeleteSaving" @click="closeSessionDelete">ยกเลิก</button>
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md font-black text-white disabled:opacity-40" :class="sessionDeleteRefund ? 'bg-amber-600' : 'bg-rose-600'" :disabled="sessionDeleteSaving" @click="confirmSessionDelete">
+            <RefreshCw v-if="sessionDeleteSaving" class="h-4 w-4 animate-spin" />
+            {{ sessionDeleteSaving ? 'กำลังดำเนินการ...' : sessionDeleteRefund ? 'ลบและคืนเงิน' : 'ยืนยันลบ' }}
+          </button>
         </div>
       </div>
     </div>

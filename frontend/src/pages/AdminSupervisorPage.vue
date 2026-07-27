@@ -73,7 +73,7 @@ const createBlockedText = computed(() => {
   if (!canCreateLiveMatch.value) return 'coin ไม่พอ'
   return ''
 })
-const canCreateSelectedSession = computed(() => props.forms.sessionCreateType === 'liveShare' ? canCreateLiveShare.value : canCreateLiveMatch.value)
+const canCreateSelectedSession = computed(() => !props.forms.sessionCreateSubmitting && (props.forms.sessionCreateType === 'liveShare' ? canCreateLiveShare.value : canCreateLiveMatch.value))
 
 const sessionPages = computed(() => Math.max(1, Math.ceil(sessions.value.length / sessionPageSize)))
 const pagedSessions = computed(() => {
@@ -461,19 +461,19 @@ const closeAdminDefaultSettingsModal = () => {
       </section>
     </div>
 
-    <div v-if="ui.showCreateSessionModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
+    <div v-if="ui.showCreateSessionModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="create-session-title">
       <div class="w-full max-w-lg rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
         <div class="flex items-start justify-between gap-3">
           <div>
-            <h2 class="text-lg font-black">สร้าง session</h2>
+            <h2 id="create-session-title" class="text-lg font-black">สร้าง session</h2>
             <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เลือกประเภท session ที่ต้องการสร้าง</p>
           </div>
-          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showCreateSessionModal = false">
+          <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 disabled:opacity-40 dark:border-stone-700" aria-label="ปิด modal" :disabled="forms.sessionCreateSubmitting" @click="ui.showCreateSessionModal = false">
             <X class="h-4 w-4" />
           </button>
         </div>
 
-        <input v-model="forms.sessionCreateName" class="mt-4 h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 font-semibold outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800" placeholder="ชื่อ session" />
+        <input v-model="forms.sessionCreateName" class="mt-4 h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 font-semibold outline-none focus:border-court-500 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" placeholder="ชื่อ session" :disabled="forms.sessionCreateSubmitting" />
 
         <div v-if="subscription" class="mt-3 rounded-md border px-3 py-2 text-sm" :class="canUseSubscription ? 'border-court-500 bg-court-500/10 text-court-700 dark:text-court-300' : 'border-stone-200 bg-paper-100 text-stone-600 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-300'">
           <p class="font-black">
@@ -483,7 +483,7 @@ const closeAdminDefaultSettingsModal = () => {
         </div>
 
         <div class="mt-4 grid gap-3 sm:grid-cols-2">
-          <button type="button" class="rounded-md border p-4 text-left transition" :class="forms.sessionCreateType === 'liveMatch' ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveMatch'">
+          <button type="button" class="rounded-md border p-4 text-left transition disabled:opacity-60" :disabled="forms.sessionCreateSubmitting" :class="forms.sessionCreateType === 'liveMatch' ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveMatch'">
             <Radio class="h-6 w-6 text-court-600 dark:text-court-300" />
             <p class="mt-3 text-lg font-black">liveMatch</p>
             <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">ใช้งานได้ 3 วันนับจากเวลาสร้าง session</p>
@@ -499,7 +499,7 @@ const closeAdminDefaultSettingsModal = () => {
             <p v-if="forms.sessionCreateType === 'liveMatch' && createBlockedText" class="mt-2 text-xs font-black text-red-700 dark:text-red-300">{{ createBlockedText }}</p>
           </button>
 
-          <button type="button" class="rounded-md border p-4 text-left transition" :class="forms.sessionCreateType === 'liveShare' ? 'border-shuttle-500 bg-shuttle-400/15 ring-2 ring-shuttle-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveShare'">
+          <button type="button" class="rounded-md border p-4 text-left transition disabled:opacity-60" :disabled="forms.sessionCreateSubmitting" :class="forms.sessionCreateType === 'liveShare' ? 'border-shuttle-500 bg-shuttle-400/15 ring-2 ring-shuttle-500/20' : 'border-stone-200 bg-paper-100 hover:bg-paper-50 dark:border-stone-700 dark:bg-stone-800 dark:hover:bg-stone-700'" @click="forms.sessionCreateType = 'liveShare'">
             <Share2 class="h-6 w-6 text-stone-500" />
             <p class="mt-3 text-lg font-black">liveShare</p>
             <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">คิดค่าสนามและลูกแบดตามชั่วโมงเล่น</p>
@@ -516,12 +516,14 @@ const closeAdminDefaultSettingsModal = () => {
         </div>
 
         <div class="mt-4 grid grid-cols-[1fr_auto] gap-2">
-          <button type="button" class="h-11 rounded-md border border-stone-200 px-4 font-bold dark:border-stone-700" @click="ui.showCreateSessionModal = false">ยกเลิก</button>
+          <button type="button" class="h-11 rounded-md border border-stone-200 px-4 font-bold disabled:opacity-40 dark:border-stone-700" :disabled="forms.sessionCreateSubmitting" @click="ui.showCreateSessionModal = false">ยกเลิก</button>
           <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-5 font-black text-white transition hover:bg-court-600 disabled:opacity-50" :disabled="!canCreateSelectedSession" @click="createSession">
-            <Plus class="h-4 w-4" />
-            สร้าง
+            <RefreshCw v-if="forms.sessionCreateSubmitting" class="h-4 w-4 animate-spin" />
+            <Plus v-else class="h-4 w-4" />
+            {{ forms.sessionCreateSubmitting ? 'กำลังสร้าง Session...' : 'สร้าง' }}
           </button>
         </div>
+        <p v-if="forms.sessionCreateStatus" class="mt-2 rounded-md bg-paper-100 px-3 py-2 text-sm font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.sessionCreateStatus }}</p>
         <p v-if="createBlockedText" class="mt-2 rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">{{ createBlockedText }}</p>
       </div>
     </div>
