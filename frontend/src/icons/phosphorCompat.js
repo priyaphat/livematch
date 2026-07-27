@@ -3,8 +3,10 @@ import {
   PhArrowClockwise,
   PhArrowCounterClockwise,
   PhCalendar,
+  PhCaretDown,
   PhCaretLeft,
   PhCaretRight,
+  PhCaretUp,
   PhChartBar,
   PhCheck,
   PhCheckCircle,
@@ -61,7 +63,9 @@ import {
 } from '@phosphor-icons/vue'
 
 export const Activity = PhPulse
+export const ArrowDown = PhCaretDown
 export const ArrowLeft = PhCaretLeft
+export const ArrowUp = PhCaretUp
 export const Archive = PhArchive
 export const BarChart3 = PhChartBar
 export const CalendarDays = PhCalendar

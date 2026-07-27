@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,26 @@ func TestPhoneSearchDigits(t *testing.T) {
 	for input, want := range tests {
 		if got := phoneSearchDigits(input); got != want {
 			t.Fatalf("phoneSearchDigits(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestMemberSearchQuerySupportsNameAndKeepsPhoneThreshold(t *testing.T) {
+	tests := []struct {
+		values url.Values
+		query  string
+		ok     bool
+	}{
+		{url.Values{"q": {"ป"}}, "ป", false},
+		{url.Values{"q": {"ปรี"}}, "ปรี", true},
+		{url.Values{"phone": {"08822"}}, "08822", false},
+		{url.Values{"phone": {"088225"}}, "088225", true},
+		{url.Values{"q": {"สมชาย"}, "phone": {"088225"}}, "สมชาย", true},
+	}
+	for _, test := range tests {
+		query, ok := memberSearchQuery(test.values)
+		if query != test.query || ok != test.ok {
+			t.Fatalf("memberSearchQuery(%v) = %q, %v; want %q, %v", test.values, query, ok, test.query, test.ok)
 		}
 	}
 }

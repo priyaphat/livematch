@@ -2,7 +2,7 @@ import { mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import PlayersPage from './PlayersPage.vue'
 
-function mountPlayers(apiRequest) {
+function mountPlayers(apiRequest, overrides = {}) {
   const forms = {
     playerSearch: '',
     playerPaymentFilter: 'all',
@@ -16,14 +16,14 @@ function mountPlayers(apiRequest) {
   }
   const wrapper = mount(PlayersPage, {
     props: {
-      state: { players: [], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
+      state: overrides.state || { players: [], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
       forms,
       money: (value) => String(value),
-      playerCost: () => 0,
+      playerCost: overrides.playerCost || (() => 0),
       playerLiveShareHours: () => 0,
       levelLabel: (value) => value,
       playerDeleteBlockReasons: () => [],
-      addPlayer: vi.fn(),
+      addPlayer: overrides.addPlayer || vi.fn(),
       renamePlayer: vi.fn(),
       deletePlayer: vi.fn(),
       sharePlayers: vi.fn(),
@@ -45,7 +45,7 @@ describe('PlayersPage member combobox', () => {
     const member = { id: 'member-1', phone: '0882250419', name: 'สมาชิกทดสอบ' }
     const apiRequest = vi.fn().mockResolvedValue({ items: [member] })
     const { wrapper, forms } = mountPlayers(apiRequest)
-    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"]')
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     expect(wrapper.find('[data-testid="member-combobox-row"]').findAll('input')).toHaveLength(1)
 
@@ -60,38 +60,158 @@ describe('PlayersPage member combobox', () => {
     expect(wrapper.text()).toContain('0882250419')
     expect(wrapper.text()).toContain('สมาชิกทดสอบ')
 
-    const option = wrapper.find('[role="option"]')
-    await option.trigger('click')
+    await wrapper.find('[role="option"]').trigger('click')
     expect(forms.newPlayerMemberId).toBe('member-1')
     expect(forms.newPlayerPhone).toBe('0882250419')
     expect(forms.newPlayerName).toBe('สมาชิกทดสอบ')
   })
 
-  it('adds a typed name as a session-only guest without creating a member', async () => {
+  it('searches by a two-character name and requires selecting the result to link the member', async () => {
+    vi.useFakeTimers()
     const addPlayer = vi.fn()
-    const { wrapper, forms } = mountPlayers(vi.fn())
-    await wrapper.setProps({ addPlayer })
-    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"]')
+    const member = { id: 'member-name', phone: '0864407370', name: 'ปรียาภัฒน์' }
+    const apiRequest = vi.fn().mockResolvedValue({ items: [member] })
+    const { wrapper, forms } = mountPlayers(apiRequest, { addPlayer })
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
-    await input.setValue('ขาจร วันนี้')
-    await wrapper.find('[data-testid="member-combobox-row"] button').trigger('click')
+    await input.setValue('ป')
+    await vi.advanceTimersByTimeAsync(400)
+    expect(apiRequest).not.toHaveBeenCalled()
 
-    expect(forms.newPlayerName).toBe('ขาจร วันนี้')
+    await input.setValue('ปรี')
+    await vi.advanceTimersByTimeAsync(300)
+    await Promise.resolve()
+    expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?q=%E0%B8%9B%E0%B8%A3%E0%B8%B5')
+    expect(wrapper.find('[role="option"]').text()).toContain('ปรียาภัฒน์')
+    expect(wrapper.find('[role="option"]').text()).toContain('0864407370')
+
+    await wrapper.find('[role="option"]').trigger('click')
+    await wrapper.find('[data-testid="member-combobox-row"] > button').trigger('click')
+    expect(forms.newPlayerMemberId).toBe('member-name')
+    expect(forms.newPlayerName).toBe('ปรียาภัฒน์')
+    expect(addPlayer).toHaveBeenCalledOnce()
+  })
+
+  it('adds a typed matching name as a session-only guest when no result was selected', async () => {
+    vi.useFakeTimers()
+    const addPlayer = vi.fn()
+    const apiRequest = vi.fn().mockResolvedValue({ items: [{ id: 'member-1', phone: '0811111111', name: 'สมชาย' }] })
+    const { wrapper, forms } = mountPlayers(apiRequest, { addPlayer })
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
+
+    await input.setValue('สมชาย')
+    await vi.advanceTimersByTimeAsync(300)
+    await wrapper.find('[data-testid="member-combobox-row"] > button').trigger('click')
+
+    expect(forms.newPlayerName).toBe('สมชาย')
     expect(forms.newPlayerMemberId).toBe('')
     expect(addPlayer).toHaveBeenCalledOnce()
+  })
+
+  it('clears a selected member when the entry text changes', async () => {
+    vi.useFakeTimers()
+    const member = { id: 'member-1', phone: '0882250419', name: 'สมาชิกทดสอบ' }
+    const { wrapper, forms } = mountPlayers(vi.fn().mockResolvedValue({ items: [member] }))
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
+
+    await input.setValue('สมาชิก')
+    await vi.advanceTimersByTimeAsync(300)
+    await wrapper.find('[role="option"]').trigger('click')
+    expect(forms.newPlayerMemberId).toBe('member-1')
+
+    await input.setValue('ชื่อใหม่')
+    expect(forms.newPlayerMemberId).toBe('')
+  })
+
+  it('ignores a stale member-search response', async () => {
+    vi.useFakeTimers()
+    let resolveFirst
+    let resolveSecond
+    const apiRequest = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve }))
+    const { wrapper } = mountPlayers(apiRequest)
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
+
+    await input.setValue('สม')
+    await vi.advanceTimersByTimeAsync(300)
+    await input.setValue('สมศรี')
+    await vi.advanceTimersByTimeAsync(300)
+    resolveSecond({ items: [{ id: 'new', name: 'สมศรี', phone: '0822222222' }] })
+    await Promise.resolve()
+    resolveFirst({ items: [{ id: 'old', name: 'สมชาย', phone: '0811111111' }] })
+    await Promise.resolve()
+
+    expect(wrapper.text()).toContain('สมศรี')
+    expect(wrapper.text()).not.toContain('สมชาย')
   })
 
   it('does not add an unmatched phone number as a guest name', async () => {
     vi.useFakeTimers()
     const addPlayer = vi.fn()
-    const { wrapper } = mountPlayers(vi.fn().mockResolvedValue({ items: [] }))
-    await wrapper.setProps({ addPlayer })
-    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"]')
+    const { wrapper } = mountPlayers(vi.fn().mockResolvedValue({ items: [] }), { addPlayer })
+    const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('0882250419')
     await vi.advanceTimersByTimeAsync(300)
 
     expect(wrapper.find('[data-testid="member-combobox-row"] > button').attributes('disabled')).toBeDefined()
     expect(addPlayer).not.toHaveBeenCalled()
+  })
+})
+
+describe('PlayersPage player sorting', () => {
+  const players = [
+    { id: 1, name: 'Beta', games: 2, shuttles: 3, paid: false, active: true },
+    { id: 2, name: 'Alpha', games: 1, shuttles: 4, paid: false, active: true },
+    { id: 3, name: 'Charlie', games: 3, shuttles: 1, paid: false, active: true },
+  ]
+  const costs = { 1: 300, 2: 100, 3: 200 }
+
+  function rowNames(wrapper) {
+    return wrapper.findAll('[data-testid="player-row"]').map((row) => row.find('span.truncate').text())
+  }
+
+  it.each([
+    ['เรียงตามชื่อ', ['Alpha', 'Beta', 'Charlie']],
+    ['เรียงตามจำนวนเกม', ['Alpha', 'Beta', 'Charlie']],
+    ['เรียงตามจำนวนลูก', ['Charlie', 'Beta', 'Alpha']],
+    ['เรียงตามค่าใช้จ่าย', ['Alpha', 'Charlie', 'Beta']],
+  ])('sorts descending and ascending with the %s header', async (label, ascending) => {
+    const { wrapper, forms } = mountPlayers(vi.fn(), {
+      state: { players, settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
+      playerCost: (player) => costs[player.id],
+    })
+    forms.playerPage = 2
+    const header = wrapper.find(`button[aria-label="${label}"]`)
+
+    await header.trigger('click')
+    expect(forms.playerPage).toBe(1)
+    expect(rowNames(wrapper)).toEqual([...ascending].reverse())
+    expect(header.element.parentElement.getAttribute('aria-sort')).toBe('descending')
+
+    await header.trigger('click')
+    expect(rowNames(wrapper)).toEqual(ascending)
+    expect(header.element.parentElement.getAttribute('aria-sort')).toBe('ascending')
+  })
+
+  it('switches from shuttle sorting to cost sorting immediately', async () => {
+    const { wrapper, forms } = mountPlayers(vi.fn(), {
+      state: { players, settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
+      playerCost: (player) => costs[player.id],
+    })
+    forms.playerPage = 2
+    const shuttleHeader = wrapper.find('button[aria-label="เรียงตามจำนวนลูก"]')
+    const costHeader = wrapper.find('button[aria-label="เรียงตามค่าใช้จ่าย"]')
+
+    await shuttleHeader.trigger('click')
+    expect(rowNames(wrapper)).toEqual(['Alpha', 'Beta', 'Charlie'])
+    expect(shuttleHeader.element.parentElement.getAttribute('aria-sort')).toBe('descending')
+
+    await costHeader.trigger('click')
+    expect(forms.playerPage).toBe(1)
+    expect(rowNames(wrapper)).toEqual(['Beta', 'Charlie', 'Alpha'])
+    expect(shuttleHeader.element.parentElement.getAttribute('aria-sort')).toBe('none')
+    expect(costHeader.element.parentElement.getAttribute('aria-sort')).toBe('descending')
   })
 })

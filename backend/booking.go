@@ -23,6 +23,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
@@ -305,6 +306,15 @@ func phoneSearchDigits(raw string) string {
 	return digits.String()
 }
 
+func memberSearchQuery(values url.Values) (string, bool) {
+	nameQuery := strings.TrimSpace(values.Get("q"))
+	if nameQuery != "" {
+		return nameQuery, utf8.RuneCountInString(nameQuery) >= 2
+	}
+	phoneQuery := strings.TrimSpace(values.Get("phone"))
+	return phoneQuery, len(phoneSearchDigits(phoneQuery)) > 5
+}
+
 func (a *app) listMembers(ctx context.Context, adminID, search string, page, pageSize int, activeOnly bool) ([]memberRecord, int, error) {
 	if page < 1 {
 		page = 1
@@ -387,15 +397,15 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 	case r.Method == http.MethodGet && path == "/export":
 		a.writeAdminMembersExport(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "/search":
-		q := strings.TrimSpace(r.URL.Query().Get("phone"))
-		if len(phoneSearchDigits(q)) <= 5 {
+		query, searchable := memberSearchQuery(r.URL.Query())
+		if !searchable {
 			writeJSON(w, 200, map[string]any{"items": []memberRecord{}})
 			return
 		}
 		if !a.requireRequestRate(w, r, "member-phone-search:"+user.ID, 60, 10*time.Minute) {
 			return
 		}
-		items, _, err := a.listMembers(r.Context(), user.ID, q, 1, 12, true)
+		items, _, err := a.listMembers(r.Context(), user.ID, query, 1, 12, true)
 		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return

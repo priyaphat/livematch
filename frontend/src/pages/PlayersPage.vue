@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
+import { ArrowDown, ArrowUp, Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
 import { exportMembersExcel } from '../excelExport'
 
 const props = defineProps([
@@ -34,10 +34,33 @@ const filteredPlayers = computed(() => {
   ))
 })
 
+const playerSortKey = ref('')
+const playerSortDirection = ref('desc')
+const sortedPlayers = computed(() => {
+  const sortKey = playerSortKey.value
+  if (!sortKey) return filteredPlayers.value
+  const direction = playerSortDirection.value === 'desc' ? -1 : 1
+  return [...filteredPlayers.value].sort((left, right) => {
+    let compared = 0
+    if (sortKey === 'name') {
+      compared = left.name.localeCompare(right.name, 'th', { numeric: true, sensitivity: 'base' })
+    } else if (sortKey === 'games') {
+      compared = Number(left.games || 0) - Number(right.games || 0)
+    } else if (sortKey === 'shuttles') {
+      compared = Number(left.shuttles || 0) - Number(right.shuttles || 0)
+    } else if (sortKey === 'cost') {
+      compared = Number(props.playerCost(left) || 0) - Number(props.playerCost(right) || 0)
+    }
+    if (compared !== 0) return compared * direction
+    const byName = left.name.localeCompare(right.name, 'th', { numeric: true, sensitivity: 'base' })
+    return byName || Number(left.id || 0) - Number(right.id || 0)
+  })
+})
+
 const totalPages = computed(() => Math.max(1, Math.ceil(filteredPlayers.value.length / props.forms.playerPageSize)))
 const pagedPlayers = computed(() => {
   const start = (props.forms.playerPage - 1) * props.forms.playerPageSize
-  return filteredPlayers.value.slice(start, start + props.forms.playerPageSize)
+  return sortedPlayers.value.slice(start, start + props.forms.playerPageSize)
 })
 const editingPlayer = ref(null)
 const editingName = ref('')
@@ -63,8 +86,14 @@ const deleteBlockReasons = computed(() => (
 ))
 const newPlayerPhoneDigits = computed(() => String(props.forms.newPlayerPhone || '').replace(/\D/g, ''))
 const newPlayerEntry = computed(() => String(props.forms.newPlayerPhone || '').trim())
+const isPhoneEntry = computed(() => /^[\d\s()+-]+$/.test(newPlayerEntry.value))
 const isPhoneLookup = computed(() => (
-  /^[\d\s()+-]+$/.test(newPlayerEntry.value) && newPlayerPhoneDigits.value.length > 5
+  isPhoneEntry.value && newPlayerPhoneDigits.value.length > 5
+))
+const isNameLookup = computed(() => !isPhoneEntry.value && [...newPlayerEntry.value].length >= 2)
+const isMemberLookup = computed(() => isPhoneLookup.value || isNameLookup.value)
+const memberSearchKey = computed(() => (
+  isPhoneLookup.value ? newPlayerPhoneDigits.value : newPlayerEntry.value.toLocaleLowerCase('th-TH')
 ))
 const canAddPlayer = computed(() => (
   !props.isSessionReadOnly &&
@@ -73,9 +102,21 @@ const canAddPlayer = computed(() => (
 const canCreateMissingMember = computed(() => (
   newPlayerPhoneDigits.value.length >= 9 &&
   !memberLoading.value &&
-  memberSearchCompleted.value === newPlayerPhoneDigits.value &&
+  memberSearchCompleted.value === memberSearchKey.value &&
   !memberOptions.value.length
 ))
+
+function changePlayerSort(key) {
+  const sameColumn = playerSortKey.value === key
+  playerSortDirection.value = sameColumn && playerSortDirection.value === 'desc' ? 'asc' : 'desc'
+  playerSortKey.value = key
+  props.forms.playerPage = 1
+}
+
+function playerSortAria(key) {
+  if (playerSortKey.value !== key) return 'none'
+  return playerSortDirection.value === 'asc' ? 'ascending' : 'descending'
+}
 
 function openEditPlayer(player) {
   if (props.isSessionReadOnly) return
@@ -151,7 +192,7 @@ watch(() => props.forms.newPlayerPhone, (phone) => {
   memberSearchError.value = ''
   memberLoading.value = false
   memberSearchSequence += 1
-  if (!isPhoneLookup.value) {
+  if (!isMemberLookup.value) {
     memberDropdownOpen.value = false
     return
   }
@@ -160,10 +201,13 @@ watch(() => props.forms.newPlayerPhone, (phone) => {
   const searchSequence = memberSearchSequence
   memberSearchTimer = setTimeout(async () => {
     try {
-      const payload = await props.apiRequest(`/api/admin/members/search?phone=${encodeURIComponent(phone)}`)
+      const parameter = isPhoneLookup.value
+        ? `phone=${encodeURIComponent(phone)}`
+        : `q=${encodeURIComponent(newPlayerEntry.value)}`
+      const payload = await props.apiRequest(`/api/admin/members/search?${parameter}`)
       if (searchSequence !== memberSearchSequence) return
       memberOptions.value = payload.items || []
-      memberSearchCompleted.value = digits
+      memberSearchCompleted.value = memberSearchKey.value
     } catch (error) {
       if (searchSequence === memberSearchSequence) memberSearchError.value = error.message || 'ค้นหาสมาชิกไม่สำเร็จ'
     } finally {
@@ -229,13 +273,13 @@ async function exportExcel() {
             inputmode="text"
             autocomplete="off"
             role="combobox"
-            aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยเบอร์โทร"
+            aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"
             :aria-expanded="memberDropdownOpen"
             aria-controls="new-player-member-options"
             class="h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 pr-10 outline-none transition focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
-            placeholder="พิมพ์ชื่อขาจร หรือเบอร์สมาชิก (เกิน 5 หลัก)"
+            placeholder="พิมพ์ชื่อเพื่อค้นหาหรือเพิ่มขาจร / เบอร์สมาชิกเกิน 5 หลัก"
             :disabled="isSessionReadOnly"
-            @focus="memberDropdownOpen = isPhoneLookup"
+            @focus="memberDropdownOpen = isMemberLookup"
             @blur="closeMemberDropdownLater"
             @keydown.esc="memberDropdownOpen = false"
             @keydown.enter.prevent="addPlayerFromEntry"
@@ -260,16 +304,15 @@ async function exportExcel() {
               @mousedown.prevent
               @click="selectMember(member)"
             >
-              <span><b class="block">{{ member.phone }}</b><small class="text-stone-500">{{ member.name }}</small></span>
+              <span><b class="block">{{ member.name }}</b><small class="text-stone-500">{{ member.phone }}</small></span>
               <Check v-if="forms.newPlayerMemberId === member.id" class="h-4 w-4 shrink-0 text-court-600" />
             </button>
           </template>
           <p v-if="!memberLoading && memberSearchError" class="px-3 py-3 text-sm font-bold text-red-600">{{ memberSearchError }}</p>
-          <div v-else-if="!memberLoading && memberSearchCompleted === newPlayerPhoneDigits && !memberOptions.length" class="p-2">
-            <p class="px-1 pb-2 text-sm font-semibold text-stone-500">ไม่พบสมาชิกจากเบอร์นี้</p>
+          <div v-else-if="!memberLoading && memberSearchCompleted === memberSearchKey && !memberOptions.length" class="p-2">
+            <p class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : 'ไม่พบสมาชิกจากชื่อนี้ สามารถกดเพิ่มเป็นขาจรได้' }}</p>
             <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="showCreateMember=true; memberDropdownOpen=false"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
           </div>
-          <p v-else-if="!memberLoading && newPlayerPhoneDigits.length <= 5" class="px-3 py-3 text-sm font-semibold text-stone-500">กรอกเบอร์ให้เกิน 5 หลักเพื่อค้นหา</p>
         </div>
       </div>
       <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="!canAddPlayer" @click="addPlayerFromEntry">
@@ -277,7 +320,7 @@ async function exportExcel() {
         เพิ่ม
       </button>
       <p class="text-xs font-medium text-stone-500 md:col-span-2">
-        พิมพ์ชื่อเพื่อเพิ่มเป็นขาจรเฉพาะ Match นี้ หรือพิมพ์เบอร์เกิน 5 หลักเพื่อค้นหาและผูกสมาชิก
+        พิมพ์ชื่ออย่างน้อย 2 ตัวอักษรเพื่อค้นสมาชิก หรือกดเพิ่มเป็นขาจรได้ทันที · เบอร์โทรยังค้นเมื่อเกิน 5 หลัก
       </p>
     </div>
 
@@ -339,11 +382,27 @@ async function exportExcel() {
         </select>
       </div>
 
-      <div class="grid grid-cols-[1fr_4rem_4rem_6rem] gap-2 border-b border-stone-200 bg-paper-100 p-3 text-sm font-black text-stone-600 dark:border-stone-800 dark:bg-stone-800 dark:text-stone-200">
-        <span>ชื่อ</span>
-        <span class="text-right">เกม</span>
-        <span class="text-right">ลูก</span>
-        <span class="text-right">ค่าใช้จ่าย</span>
+      <div class="grid grid-cols-[1fr_4rem_4rem_6rem] gap-2 border-b border-stone-200 bg-paper-100 p-3 text-sm font-black text-stone-600 dark:border-stone-800 dark:bg-stone-800 dark:text-stone-200" role="row">
+        <span role="columnheader" :aria-sort="playerSortAria('name')">
+          <button class="flex w-full items-center gap-1 text-left" type="button" aria-label="เรียงตามชื่อ" @click="changePlayerSort('name')">
+            ชื่อ<ArrowDown v-if="playerSortKey === 'name' && playerSortDirection === 'asc'" class="h-3.5 w-3.5" /><ArrowUp v-else-if="playerSortKey === 'name'" class="h-3.5 w-3.5" />
+          </button>
+        </span>
+        <span role="columnheader" :aria-sort="playerSortAria('games')" class="text-right">
+          <button class="flex w-full items-center justify-end gap-1" type="button" aria-label="เรียงตามจำนวนเกม" @click="changePlayerSort('games')">
+            เกม<ArrowDown v-if="playerSortKey === 'games' && playerSortDirection === 'asc'" class="h-3.5 w-3.5" /><ArrowUp v-else-if="playerSortKey === 'games'" class="h-3.5 w-3.5" />
+          </button>
+        </span>
+        <span role="columnheader" :aria-sort="playerSortAria('shuttles')" class="text-right">
+          <button class="flex w-full items-center justify-end gap-1" type="button" aria-label="เรียงตามจำนวนลูก" @click="changePlayerSort('shuttles')">
+            ลูก<ArrowDown v-if="playerSortKey === 'shuttles' && playerSortDirection === 'asc'" class="h-3.5 w-3.5" /><ArrowUp v-else-if="playerSortKey === 'shuttles'" class="h-3.5 w-3.5" />
+          </button>
+        </span>
+        <span role="columnheader" :aria-sort="playerSortAria('cost')" class="text-right">
+          <button class="flex w-full items-center justify-end gap-1" type="button" aria-label="เรียงตามค่าใช้จ่าย" @click="changePlayerSort('cost')">
+            ค่าใช้จ่าย<ArrowDown v-if="playerSortKey === 'cost' && playerSortDirection === 'asc'" class="h-3.5 w-3.5" /><ArrowUp v-else-if="playerSortKey === 'cost'" class="h-3.5 w-3.5" />
+          </button>
+        </span>
       </div>
 
       <div v-if="!pagedPlayers.length" class="p-4 text-sm text-stone-500">
@@ -353,6 +412,7 @@ async function exportExcel() {
       <article
         v-for="player in pagedPlayers"
         :key="player.id"
+        data-testid="player-row"
         class="block w-full border-b border-stone-100 p-3 text-left last:border-b-0 dark:border-stone-800"
         @click="forms.selectedPlayerId = player.id"
       >
