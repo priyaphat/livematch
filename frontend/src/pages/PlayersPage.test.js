@@ -1,4 +1,4 @@
-import { mount } from '@vue/test-utils'
+import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import PlayersPage from './PlayersPage.vue'
 
@@ -29,7 +29,7 @@ function mountPlayers(apiRequest, overrides = {}) {
       sharePlayers: vi.fn(),
       openPlayersQr: vi.fn(),
       saveSettings: vi.fn(),
-      togglePayment: vi.fn(),
+      togglePayment: overrides.togglePayment || vi.fn(),
       isSessionReadOnly: false,
       apiRequest
     }
@@ -213,5 +213,57 @@ describe('PlayersPage player sorting', () => {
     expect(rowNames(wrapper)).toEqual(['Beta', 'Charlie', 'Alpha'])
     expect(shuttleHeader.element.parentElement.getAttribute('aria-sort')).toBe('none')
     expect(costHeader.element.parentElement.getAttribute('aria-sort')).toBe('descending')
+  })
+})
+
+describe('PlayersPage payment modal', () => {
+  const player = { id: 7, name: 'Member', games: 1, shuttles: 2, paid: false, active: true }
+  const state = { players: [player], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { id: 'session-1', type: 'liveMatch' } }
+
+  it('loads a fresh itemized summary before confirming payment', async () => {
+    const summary = {
+      playerId: 7,
+      playerName: 'Member',
+      paid: false,
+      items: [
+        { key: 'entry', label: 'ค่าเข้าสนาม', quantity: 1, unitAmountThb: 100, amountThb: 100 },
+        { key: 'shuttle-rsl', label: 'ค่าลูกแบด RSL', quantity: 2, unitAmountThb: 85, amountThb: 170 },
+      ],
+      totalThb: 270,
+    }
+    const apiRequest = vi.fn().mockResolvedValue(summary)
+    const togglePayment = vi.fn().mockResolvedValue()
+    const { wrapper } = mountPlayers(apiRequest, { state, togglePayment })
+
+    const paymentButton = wrapper.findAll('button').find((button) => button.text() === 'ชำระเงิน')
+    await paymentButton.trigger('click')
+    await flushPromises()
+
+    expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/players/7/payment-summary')
+    expect(wrapper.text()).toContain('ค่าเข้าสนาม')
+    expect(wrapper.text()).toContain('ค่าลูกแบด RSL')
+    expect(wrapper.text()).toContain('270')
+
+    const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ชำระ')
+    await confirmButton.trigger('click')
+    await flushPromises()
+    expect(togglePayment).toHaveBeenCalledWith(player)
+  })
+
+  it('asks for confirmation before cancelling a payment', async () => {
+    const paidPlayer = { ...player, paid: true }
+    const apiRequest = vi.fn()
+    const togglePayment = vi.fn().mockResolvedValue()
+    const { wrapper } = mountPlayers(apiRequest, { state: { ...state, players: [paidPlayer] }, togglePayment })
+
+    const cancelPaymentButton = wrapper.findAll('button').find((button) => button.text() === 'ยกเลิกการชำระ')
+    await cancelPaymentButton.trigger('click')
+    expect(apiRequest).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('ยกเลิกการชำระเงิน')
+
+    const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ตกลง')
+    await confirmButton.trigger('click')
+    await flushPromises()
+    expect(togglePayment).toHaveBeenCalledWith(paidPlayer)
   })
 })

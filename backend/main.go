@@ -108,6 +108,25 @@ type Player struct {
 	MemberID   string `json:"memberId,omitempty"`
 }
 
+type PlayerPaymentItem struct {
+	Key         string `json:"key"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+	Quantity    int    `json:"quantity"`
+	UnitAmount  int    `json:"unitAmountThb"`
+	Amount      int    `json:"amountThb"`
+}
+
+type PlayerPaymentSummary struct {
+	PlayerID    int                 `json:"playerId"`
+	PlayerName  string              `json:"playerName"`
+	SessionType string              `json:"sessionType"`
+	Paid        bool                `json:"paid"`
+	Items       []PlayerPaymentItem `json:"items"`
+	Total       int                 `json:"totalThb"`
+	Calculated  time.Time           `json:"calculatedAt"`
+}
+
 type ShuttleBrand struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
@@ -1295,6 +1314,19 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodGet && action == "dashboard":
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
+	case r.Method == http.MethodGet && action == "players" && len(parts) >= 4 && parts[3] == "payment-summary":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		for _, player := range state.Players {
+			if player.ID == playerID && player.Active {
+				writeJSON(w, http.StatusOK, playerPaymentSummary(state, player))
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
 	case r.Method == http.MethodGet && action == "players":
 		items := state.Players
 		search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
@@ -3008,6 +3040,106 @@ func playerShuttleCost(state SessionState, playerID int) int {
 		}
 	}
 	return total
+}
+
+func shuttleBrandNameForPayment(state SessionState, brandID string) string {
+	brandID = normalizedBrandID(brandID)
+	for _, brand := range state.Settings.ShuttleBrands {
+		if normalizedBrandID(brand.ID) == brandID && strings.TrimSpace(brand.Name) != "" {
+			return strings.TrimSpace(brand.Name)
+		}
+	}
+	return defaultShuttleBrandName
+}
+
+func playerPaymentSummary(state SessionState, player Player) PlayerPaymentSummary {
+	summary := PlayerPaymentSummary{
+		PlayerID: player.ID, PlayerName: player.Name, SessionType: state.Session.Type,
+		Paid: player.Paid, Items: []PlayerPaymentItem{}, Calculated: time.Now().UTC(),
+	}
+	if isLiveShare(state) {
+		activeHours := liveShareActiveHours(state)
+		playerHours := normalizedHourSet(state.LiveShare.PlayerHours[strconv.Itoa(player.ID)])
+		for _, hour := range playerHours {
+			playerCount := liveSharePlayerCountForHour(state, hour)
+			if playerCount == 0 || len(activeHours) == 0 {
+				continue
+			}
+			courtCost := liveShareCourtCountForHour(state, hour) * state.Settings.CourtFeePerHour
+			shuttleCost := state.LiveShare.ShuttleHours[strconv.Itoa(hour)] * state.Settings.ShuttleFee
+			numerator := (courtCost+shuttleCost)*len(activeHours) + liveShareSessionCost(state)
+			denominator := len(activeHours) * playerCount
+			amount := (numerator + denominator - 1) / denominator
+			description := fmt.Sprintf("ค่าสนาม %d บาท · ค่าลูกแบด %d บาท · ค่าบริการ Session %d บาท · หาร %d คน", courtCost, shuttleCost, liveShareSessionCost(state), playerCount)
+			summary.Items = append(summary.Items, PlayerPaymentItem{
+				Key: fmt.Sprintf("hour-%d", hour), Label: fmt.Sprintf("ค่าใช้จ่ายช่วง %02d:00 น.", hour),
+				Description: description, Quantity: 1, UnitAmount: amount, Amount: amount,
+			})
+			summary.Total += amount
+		}
+		return summary
+	}
+
+	entryFee := playerEntryFee(state, player)
+	summary.Items = append(summary.Items, PlayerPaymentItem{
+		Key: "entry", Label: "ค่าเข้าสนาม", Quantity: 1, UnitAmount: entryFee, Amount: entryFee,
+	})
+	summary.Total += entryFee
+
+	type shuttleLine struct {
+		brandID string
+		count   int
+	}
+	lines := []shuttleLine{}
+	lineIndex := map[string]int{}
+	addShuttles := func(brandID string, count int) {
+		if count <= 0 {
+			return
+		}
+		brandID = normalizedBrandID(brandID)
+		if index, ok := lineIndex[brandID]; ok {
+			lines[index].count += count
+			return
+		}
+		lineIndex[brandID] = len(lines)
+		lines = append(lines, shuttleLine{brandID: brandID, count: count})
+	}
+	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
+		if !slices.Contains(matchPlayers(match), player.ID) || (isCancelledMatch(match) && match.ShuttleReturned) {
+			continue
+		}
+		items := normalizedShuttleSeqItems(match, state)
+		if len(items) == 0 {
+			addShuttles(defaultShuttleBrandID, match.Shuttles)
+			continue
+		}
+		for _, item := range items {
+			addShuttles(item.BrandID, 1)
+		}
+	}
+	for _, line := range lines {
+		unitAmount := shuttleBrandPrice(state, line.brandID)
+		amount := line.count * unitAmount
+		summary.Items = append(summary.Items, PlayerPaymentItem{
+			Key: "shuttle-" + line.brandID, Label: "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID),
+			Quantity: line.count, UnitAmount: unitAmount, Amount: amount,
+		})
+		summary.Total += amount
+	}
+	if sessionShare := sessionFeeShare(state); sessionShare > 0 {
+		activeCount := 0
+		for _, item := range state.Players {
+			if item.Active {
+				activeCount++
+			}
+		}
+		summary.Items = append(summary.Items, PlayerPaymentItem{
+			Key: "session", Label: "ค่าบริการ Session", Description: fmt.Sprintf("เฉลี่ย %d คน", activeCount),
+			Quantity: 1, UnitAmount: sessionShare, Amount: sessionShare,
+		})
+		summary.Total += sessionShare
+	}
+	return summary
 }
 
 func liveShareCourtHours(state SessionState) int {

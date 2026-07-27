@@ -641,6 +641,59 @@ func TestPlayerShuttleCostSumsMixedBrandPrices(t *testing.T) {
 	}
 }
 
+func TestPlayerPaymentSummaryUsesLatestMixedBrandCosts(t *testing.T) {
+	state := SessionState{
+		Session: SessionInfo{Type: "liveMatch"},
+		Settings: Settings{
+			EntryFee: 100, ClubEntryFee: 80, SessionFee: 40, ShuttleFee: 85,
+			ShuttleBrands: []ShuttleBrand{
+				{ID: "yonex", Name: "Yonex", Price: 90, Active: true},
+				{ID: "rsl", Name: "RSL", Price: 85, Active: true},
+			},
+		},
+		Players: []Player{{ID: 1, Name: "Member", Active: true, ClubMember: true}, {ID: 2, Active: true}},
+		History: []Match{{
+			ID: 1, A1: 1, A2: 2, Status: "finished", Shuttles: 3,
+			ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "yonex", Number: 1}, {BrandID: "rsl", Number: 1}, {BrandID: "yonex", Number: 2}},
+		}},
+	}
+
+	summary := playerPaymentSummary(state, state.Players[0])
+	if summary.Total != 365 {
+		t.Fatalf("expected total 365, got %d", summary.Total)
+	}
+	if len(summary.Items) != 4 {
+		t.Fatalf("expected entry, two shuttle brands, and session fee, got %#v", summary.Items)
+	}
+	if summary.Items[1].Label != "ค่าลูกแบด Yonex" || summary.Items[1].Quantity != 2 || summary.Items[1].Amount != 180 {
+		t.Fatalf("unexpected Yonex line: %#v", summary.Items[1])
+	}
+	if summary.Items[2].Label != "ค่าลูกแบด RSL" || summary.Items[2].Quantity != 1 || summary.Items[2].Amount != 85 {
+		t.Fatalf("unexpected RSL line: %#v", summary.Items[2])
+	}
+}
+
+func TestLiveSharePaymentSummaryMatchesPlayerCost(t *testing.T) {
+	state := SessionState{
+		Session:  SessionInfo{Type: "liveShare"},
+		Settings: Settings{CourtFeePerHour: 200, ShuttleFee: 80, SessionFee: 50},
+		Players:  []Player{{ID: 1, Name: "A", Active: true}, {ID: 2, Name: "B", Active: true}},
+		LiveShare: LiveShareHours{
+			CourtHours:   map[string][]int{"Court 1": {18, 19}},
+			PlayerHours:  map[string][]int{"1": {18, 19}, "2": {18}},
+			ShuttleHours: map[string]int{"18": 1, "19": 2},
+		},
+	}
+
+	summary := playerPaymentSummary(state, state.Players[0])
+	if summary.Total != liveSharePlayerCost(state, state.Players[0]) {
+		t.Fatalf("summary total %d does not match live share cost %d", summary.Total, liveSharePlayerCost(state, state.Players[0]))
+	}
+	if len(summary.Items) != 2 {
+		t.Fatalf("expected one line per occupied hour, got %#v", summary.Items)
+	}
+}
+
 func TestStartMatchUsesNoInitialShuttleWhenSettingDisabled(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, StartMatchWithShuttle: false},

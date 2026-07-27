@@ -307,6 +307,7 @@ const forms = reactive({
   coinPaymentQrDataUrl: '',
   coinSlipImage: '',
   coinOrderStatus: '',
+  coinOrderSubmitting: false,
   shareLink: '',
   shareStatus: '',
   finishNote: '',
@@ -1234,7 +1235,9 @@ async function loadCoinShop() {
 }
 
 async function submitCoinOrder() {
-  forms.coinOrderStatus = ''
+  if (forms.coinOrderSubmitting || !canSubmitShopOrder.value) return
+  forms.coinOrderSubmitting = true
+  forms.coinOrderStatus = 'กำลังส่งสลิปและตรวจสอบ กรุณารอสักครู่...'
   try {
     const payload = await api('/api/admin/coin-orders', {
       method: 'POST',
@@ -1252,9 +1255,13 @@ async function submitCoinOrder() {
         ? 'SlipOK ตรวจสอบผ่าน เปิดสิทธิ์แพ็กเกจสำเร็จ'
         : 'SlipOK ตรวจสอบผ่าน เติม coin สำเร็จ'
       : 'ส่งรายการแล้ว รอ backoffice ตรวจสอบ'
+    showToast(forms.coinOrderStatus)
     await restoreAdminAccount()
   } catch (error) {
     forms.coinOrderStatus = error.message || 'ส่งรายการชำระเงินไม่สำเร็จ'
+    showToast(forms.coinOrderStatus)
+  } finally {
+    forms.coinOrderSubmitting = false
   }
 }
 
@@ -1587,6 +1594,7 @@ function selectedShopPackage() {
 }
 
 const canSubmitShopOrder = computed(() => {
+  if (forms.coinOrderSubmitting) return false
   if (forms.coinShopTab === 'subscription' && !auth.subscriptionEligibility?.canPurchase) return false
   return Boolean(selectedShopPackage()?.id && forms.coinSlipImage && coinPaymentQrReady.value)
 })
@@ -2788,13 +2796,16 @@ async function deletePlayerApi(player) {
 
 async function togglePaymentApi(player) {
   if (!ensureSessionActive()) return
+  const targetPaid = !player.paid
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ paid: !player.paid })
+      body: JSON.stringify({ paid: targetPaid })
     }))
-  } catch {
-    togglePayment(player)
+    showToast(targetPaid ? 'บันทึกการชำระเงินแล้ว' : 'ยกเลิกการชำระเงินแล้ว')
+  } catch (error) {
+    showToast(error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ')
+    throw error
   }
 }
 
@@ -3419,7 +3430,7 @@ const pageProps = computed(() => ({
                 <p class="text-[10px] font-black uppercase tracking-wide text-stone-400">Coin คงเหลือ</p>
                 <p class="text-lg font-black tabular-nums">{{ Number(auth.user?.coins || 0).toLocaleString('th-TH') }}</p>
               </div>
-              <button class="grid h-10 w-10 place-items-center rounded-lg border border-stone-200 text-stone-500 transition hover:bg-paper-100 dark:border-stone-700 dark:hover:bg-stone-800" aria-label="ปิด modal" @click="ui.showCoinModal = false"><X class="h-4 w-4" /></button>
+              <button class="grid h-10 w-10 place-items-center rounded-lg border border-stone-200 text-stone-500 transition hover:bg-paper-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800" aria-label="ปิด modal" :disabled="forms.coinOrderSubmitting" @click="ui.showCoinModal = false"><X class="h-4 w-4" /></button>
             </div>
           </div>
 
@@ -3498,10 +3509,13 @@ const pageProps = computed(() => ({
               <label class="mt-4 flex min-h-20 cursor-pointer items-center justify-center gap-3 rounded-xl border border-dashed border-stone-300 px-3 text-center text-sm font-black transition hover:border-court-500 hover:bg-court-500/5 dark:border-stone-700">
                 <Upload class="h-5 w-5 text-court-600" />
                 <span>{{ forms.coinSlipImage ? 'เปลี่ยนรูปสลิป' : 'เลือกรูปสลิป' }}</span>
-                <input type="file" accept="image/*" class="hidden" @change="handleCoinSlipFile" />
+                <input type="file" accept="image/*" class="hidden" :disabled="forms.coinOrderSubmitting" @change="handleCoinSlipFile" />
               </label>
               <img v-if="forms.coinSlipImage" :src="forms.coinSlipImage" alt="สลิปที่เลือก" class="mt-3 h-28 w-full rounded-lg border border-stone-200 bg-paper-100 object-contain dark:border-stone-700 dark:bg-stone-800" />
-              <button class="mt-4 h-12 w-full rounded-lg bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!canSubmitShopOrder" @click="submitCoinOrder">ส่งสลิปตรวจสอบ</button>
+              <button class="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-court-500 px-4 font-black text-white transition hover:bg-court-600 disabled:cursor-not-allowed disabled:opacity-40" :disabled="!canSubmitShopOrder" @click="submitCoinOrder">
+                <RefreshCw v-if="forms.coinOrderSubmitting" class="h-4 w-4 animate-spin" />
+                {{ forms.coinOrderSubmitting ? 'กำลังส่งและตรวจสอบ...' : 'ส่งสลิปตรวจสอบ' }}
+              </button>
               <p v-if="forms.coinOrderStatus" class="mt-3 rounded-lg bg-paper-100 px-3 py-2 text-sm font-bold text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.coinOrderStatus }}</p>
             </aside>
           </section>

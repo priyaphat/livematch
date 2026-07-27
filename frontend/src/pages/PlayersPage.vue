@@ -81,6 +81,11 @@ let memberBlurTimer
 let editingMemberSearchTimer
 const exportLoading = ref(false)
 const exportError = ref('')
+const paymentPlayer = ref(null)
+const paymentSummary = ref(null)
+const paymentLoading = ref(false)
+const paymentSaving = ref(false)
+const paymentError = ref('')
 const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
 ))
@@ -116,6 +121,45 @@ function changePlayerSort(key) {
 function playerSortAria(key) {
   if (playerSortKey.value !== key) return 'none'
   return playerSortDirection.value === 'asc' ? 'ascending' : 'descending'
+}
+
+async function openPaymentModal(player) {
+  if (props.isSessionReadOnly || paymentSaving.value) return
+  paymentPlayer.value = player
+  paymentSummary.value = null
+  paymentError.value = ''
+  if (player.paid) return
+  paymentLoading.value = true
+  try {
+    paymentSummary.value = await props.apiRequest(`/api/sessions/${props.state.session.id}/players/${player.id}/payment-summary`)
+  } catch (error) {
+    paymentError.value = error.message || 'โหลดรายละเอียดค่าใช้จ่ายไม่สำเร็จ'
+  } finally {
+    paymentLoading.value = false
+  }
+}
+
+function closePaymentModal() {
+  if (paymentSaving.value) return
+  paymentPlayer.value = null
+  paymentSummary.value = null
+  paymentError.value = ''
+}
+
+async function confirmPaymentChange() {
+  if (!paymentPlayer.value || paymentSaving.value || (!paymentPlayer.value.paid && !paymentSummary.value)) return
+  paymentSaving.value = true
+  paymentError.value = ''
+  let saved = false
+  try {
+    await props.togglePayment(paymentPlayer.value)
+    saved = true
+  } catch (error) {
+    paymentError.value = error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ'
+  } finally {
+    paymentSaving.value = false
+  }
+  if (saved) closePaymentModal()
 }
 
 function openEditPlayer(player) {
@@ -436,12 +480,12 @@ async function exportExcel() {
           </button>
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
-            :class="player.paid ? 'bg-court-500 text-white' : 'bg-shuttle-400 text-stone-900'"
+            :class="player.paid ? 'border border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300' : 'bg-shuttle-400 text-stone-900'"
             :disabled="isSessionReadOnly"
-            @click.stop="togglePayment(player)"
+            @click.stop="openPaymentModal(player)"
           >
             <Check class="h-3.5 w-3.5" />
-            {{ player.paid ? 'จ่ายแล้ว' : 'ยังไม่ได้จ่าย' }}
+            {{ player.paid ? 'ยกเลิกการชำระ' : 'ชำระเงิน' }}
           </button>
         </div>
       </article>
@@ -454,6 +498,64 @@ async function exportExcel() {
         <button class="h-9 rounded-md border border-stone-200 px-3 font-bold disabled:opacity-40 dark:border-stone-700" :disabled="forms.playerPage >= totalPages" @click="forms.playerPage++">
           ถัดไป
         </button>
+      </div>
+    </div>
+
+    <div
+      v-if="paymentPlayer"
+      class="fixed inset-0 z-[60] grid place-items-end bg-stone-950/50 p-3 sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="player-payment-title"
+      @click.self="closePaymentModal"
+    >
+      <div class="w-full max-w-md overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3 border-b border-stone-100 p-4 dark:border-stone-800">
+          <div>
+            <p class="text-xs font-black uppercase tracking-wider text-court-600 dark:text-court-300">{{ paymentPlayer.name }}</p>
+            <h2 id="player-payment-title" class="mt-1 text-xl font-black">{{ paymentPlayer.paid ? 'ยกเลิกการชำระเงิน' : 'รายละเอียดการชำระเงิน' }}</h2>
+          </div>
+          <button class="grid h-9 w-9 place-items-center rounded-md hover:bg-stone-100 disabled:opacity-40 dark:hover:bg-stone-800" aria-label="ปิด" :disabled="paymentSaving" @click="closePaymentModal">
+            <X class="h-4 w-4" />
+          </button>
+        </div>
+
+        <div class="max-h-[60vh] overflow-y-auto p-4">
+          <template v-if="paymentPlayer.paid">
+            <p class="rounded-lg bg-rose-50 p-4 text-sm font-bold text-rose-800 dark:bg-rose-950/25 dark:text-rose-200">ต้องการยกเลิกสถานะชำระเงินของ {{ paymentPlayer.name }} ใช่หรือไม่</p>
+          </template>
+          <template v-else>
+            <div v-if="paymentLoading" class="rounded-lg bg-paper-100 p-5 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">กำลังคำนวณค่าใช้จ่ายล่าสุด...</div>
+            <div v-else-if="paymentSummary" class="grid gap-2">
+              <div v-for="item in paymentSummary.items" :key="item.key" class="flex items-start justify-between gap-3 rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
+                <div class="min-w-0">
+                  <p class="font-black">{{ item.label }}</p>
+                  <p v-if="item.description" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.description }}</p>
+                  <p v-if="item.quantity > 1" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.quantity }} × {{ money(item.unitAmountThb) }}</p>
+                </div>
+                <p class="shrink-0 font-black tabular-nums">{{ money(item.amountThb) }}</p>
+              </div>
+              <div class="mt-2 flex items-center justify-between border-t border-stone-200 pt-4 text-lg font-black dark:border-stone-700">
+                <span>ยอดรวม</span>
+                <span class="text-court-700 dark:text-court-300">{{ money(paymentSummary.totalThb) }}</span>
+              </div>
+              <p class="text-xs font-semibold text-stone-500">คำนวณใหม่จากข้อมูลล่าสุดของระบบก่อนแสดงรายการนี้</p>
+            </div>
+          </template>
+          <p v-if="paymentError" class="mt-3 rounded-lg bg-rose-50 p-3 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-200">{{ paymentError }}</p>
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 border-t border-stone-100 p-4 dark:border-stone-800">
+          <button class="h-11 rounded-md border border-stone-200 font-bold disabled:opacity-40 dark:border-stone-700" :disabled="paymentSaving" @click="closePaymentModal">{{ paymentPlayer.paid ? 'ยกเลิก' : 'ปิด' }}</button>
+          <button
+            class="h-11 rounded-md font-black text-white disabled:cursor-not-allowed disabled:opacity-40"
+            :class="paymentPlayer.paid ? 'bg-rose-600' : 'bg-court-500'"
+            :disabled="paymentSaving || paymentLoading || (!paymentPlayer.paid && !paymentSummary)"
+            @click="confirmPaymentChange"
+          >
+            {{ paymentSaving ? 'กำลังบันทึก...' : paymentPlayer.paid ? 'ตกลง' : 'ชำระ' }}
+          </button>
+        </div>
       </div>
     </div>
 
