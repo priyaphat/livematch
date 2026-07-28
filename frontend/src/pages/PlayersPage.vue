@@ -461,7 +461,7 @@ async function exportExcel() {
         @click="forms.selectedPlayerId = player.id"
       >
         <div class="grid grid-cols-[1fr_4rem_4rem_6rem] items-baseline gap-2">
-          <span class="truncate text-base font-black">{{ player.name }} <span v-if="player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">ชมรม</span></span>
+          <span class="truncate text-base font-black"><span class="tabular-nums text-stone-500 dark:text-stone-400">#{{ player.id }}</span> {{ player.name }} <span v-if="player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">ชมรม</span></span>
           <span class="text-right font-bold">{{ player.games }}</span>
           <span class="text-right font-bold">{{ player.shuttles }}</span>
           <span class="text-right font-black tabular-nums text-court-700 dark:text-court-300">{{ money(playerCost(player)) }}</span>
@@ -484,7 +484,7 @@ async function exportExcel() {
             :disabled="isSessionReadOnly"
             @click.stop="openPaymentModal(player)"
           >
-            <Check class="h-3.5 w-3.5" />
+            <Check v-if="player.paid" class="h-3.5 w-3.5" />
             {{ player.paid ? 'ยกเลิกการชำระ' : 'ชำระเงิน' }}
           </button>
         </div>

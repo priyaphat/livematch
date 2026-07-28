@@ -169,7 +169,7 @@ describe('PlayersPage player sorting', () => {
   const costs = { 1: 300, 2: 100, 3: 200 }
 
   function rowNames(wrapper) {
-    return wrapper.findAll('[data-testid="player-row"]').map((row) => row.find('span.truncate').text())
+    return wrapper.findAll('[data-testid="player-row"]').map((row) => row.find('span.truncate').text().replace(/^#\d+\s*/, ''))
   }
 
   it.each([

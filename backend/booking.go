@@ -635,14 +635,14 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 
 	payments := []map[string]any{}
 	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
-	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at from (select 'booking' as kind,p.booking_id as id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.session_id,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
+	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if paymentRows != nil {
 		defer paymentRows.Close()
 		for paymentRows.Next() {
-			var kind, id, status, created string
+			var kind, id, status, created, sessionName string
 			var amount int
-			if paymentRows.Scan(&kind, &id, &amount, &status, &created) == nil {
-				payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": amount, "status": status, "createdAt": created})
+			if paymentRows.Scan(&kind, &id, &amount, &status, &created, &sessionName) == nil {
+				payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": amount, "status": status, "createdAt": created, "sessionName": sessionName})
 			}
 		}
 	}
@@ -2367,14 +2367,14 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	payments := []map[string]any{}
 	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, m.ID, adminID).Scan(&paymentTotal)
-	pr, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at from (select 'booking' as kind,p.booking_id as id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.session_id,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc limit $3 offset $4`, m.ID, adminID, pageSize, (paymentPage-1)*pageSize)
+	pr, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, m.ID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if pr != nil {
 		defer pr.Close()
 		for pr.Next() {
-			var kind, id, status, created string
+			var kind, id, status, created, sessionName string
 			var amount int
-			_ = pr.Scan(&kind, &id, &amount, &status, &created)
-			payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": amount, "status": status, "createdAt": created})
+			_ = pr.Scan(&kind, &id, &amount, &status, &created, &sessionName)
+			payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": amount, "status": status, "createdAt": created, "sessionName": sessionName})
 		}
 	}
 	matches := []map[string]any{}

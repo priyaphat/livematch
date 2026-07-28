@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, defineAsyncComponent, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { createAnnouncementAudioCache } from './utils/announcementAudioCache.js'
 import { arrangeTeamsByTeammateHistory } from './utils/teamRotation.js'
 import {
@@ -21,6 +21,7 @@ import {
   Archive,
   SlidersHorizontal,
   Medal,
+  Volume2,
   History,
   Home,
   ImagePlus,
@@ -113,7 +114,8 @@ function defaultSessionSettingsTemplate() {
     courtCount: 4,
     courtNames: ['สนาม 1', 'สนาม 2', 'สนาม 3', 'สนาม 4'],
     levels: ['เบา', 'กลาง', 'หนัก'],
-    announcementTemplate: defaultAnnouncementTemplate
+    announcementTemplate: defaultAnnouncementTemplate,
+    dashboardAnnouncements: []
   }
 }
 
@@ -333,6 +335,8 @@ const forms = reactive({
   adminDefaultNewCourtName: '',
   adminDefaultNewLevelName: '',
   adminDefaultSettingsStatus: '',
+  dashboardAnnouncementPlayingIndex: -1,
+  dashboardAnnouncementStatus: '',
   newCourtName: '',
   newLevelName: ''
 })
@@ -351,6 +355,7 @@ const ui = reactive({
   showQrModal: false,
   showCreateSessionModal: false,
   showAdminDefaultSettingsModal: false,
+  showDashboardAnnouncementsModal: false,
   showCoinModal: false,
   showBackofficeAdminModal: false,
   showBackofficeSlipModal: false,
@@ -366,6 +371,8 @@ const share = reactive({
   showPayment: false,
   showTotal: true
 })
+const dashboardAnnouncementModal = ref(null)
+let dashboardAnnouncementTrigger = null
 const auth = reactive({
   loading: false,
   ready: false,
@@ -404,6 +411,7 @@ const verifyEmail = reactive({
 const selectedLiveId = ref(null)
 let toastTimer = null
 let sharedRefreshTimer = null
+let sharedRefreshInterval = 0
 
 function showToast(message, type = 'error') {
   if (!message) return
@@ -592,6 +600,7 @@ async function selectAdminTab(tabId) {
 }
 
 onMounted(() => {
+  window.addEventListener('keydown', handleDashboardAnnouncementKeydown)
   state.theme = persistTheme(readStoredTheme())
   installDomTranslator(() => document.body)
   const params = new URLSearchParams(window.location.search)
@@ -634,10 +643,32 @@ async function confirmVerifyEmail(token) {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('keydown', handleDashboardAnnouncementKeydown)
   stopSharedRefresh()
   stopAnnouncementAudio()
   announcementAudioCache.dispose()
+  dashboardAnnouncementAudioCache.dispose()
 })
+
+function handleDashboardAnnouncementKeydown(event) {
+  if (!ui.showDashboardAnnouncementsModal) return
+  if (event.key === 'Escape') {
+    closeDashboardAnnouncements()
+    return
+  }
+  if (event.key !== 'Tab' || !dashboardAnnouncementModal.value) return
+  const focusable = [...dashboardAnnouncementModal.value.querySelectorAll('button:not([disabled])')]
+  if (!focusable.length) return
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
 
 async function saveSettings() {
   if (!ensureSessionActive()) return
@@ -1768,7 +1799,10 @@ function normalizeSessionDefaults(input = {}) {
       name: String(brand.name || '').trim(),
       price: Math.max(0, Number(brand.price || 0)),
       active: Boolean(brand.active)
-    })).filter((brand) => brand.name) : base.shuttleBrands
+    })).filter((brand) => brand.name) : base.shuttleBrands,
+    dashboardAnnouncements: Array.isArray(input.dashboardAnnouncements)
+      ? input.dashboardAnnouncements.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5)
+      : []
   }
   next.entryFee = Math.max(0, Number(next.entryFee || 0))
   next.clubEntryFee = Math.max(0, Number(next.clubEntryFee || next.entryFee || 0))
@@ -1888,7 +1922,6 @@ function pickFourGroupsFrom(groups, index, selected) {
 
 function startMatch(match, court = '', brandId = defaultShuttleBrand().id) {
   if (!court) return
-  if (!matchLevelsAllowed(match)) return
   state.queue = state.queue.filter((item) => item.id !== match.id)
   const started = { ...match, court, shuttles: 0, shuttleSequence: '', shuttleSequenceItems: [], status: 'กำลังเล่น', startedAt: currentTime() }
   if (state.settings.startMatchWithShuttle) {
@@ -1899,14 +1932,6 @@ function startMatch(match, court = '', brandId = defaultShuttleBrand().id) {
   }
   state.live.push(started)
   state.tab = 'liveboard'
-}
-
-function matchLevelsAllowed(match) {
-  const indexes = matchPlayers(match).map((id) => state.settings.levels.indexOf(playerById(id)?.level || ''))
-  if (indexes.some((index) => index < 0)) return false
-  const min = Math.min(...indexes)
-  const max = Math.max(...indexes)
-  return min === max || (state.settings.allowCrossLevel && max - min <= 1)
 }
 
 function confirmPendingMatch(match) {
@@ -2074,6 +2099,7 @@ let activeAnnouncementAudio = null
 let announcementRunId = 0
 let lastCloudTTSNoticeCode = ''
 const announcementAudioCache = createAnnouncementAudioCache(fetchCloudAnnouncementBlob)
+const dashboardAnnouncementAudioCache = createAnnouncementAudioCache(fetchDashboardAnnouncementBlob)
 
 function waitForSpeechVoices(timeoutMs = 2500) {
   if (!('speechSynthesis' in window)) return Promise.resolve([])
@@ -2184,8 +2210,16 @@ async function requestCloudAnnouncementAudio(parts) {
 }
 
 async function fetchCloudAnnouncementBlob(text) {
+	return fetchAnnouncementBlob(`/api/sessions/${state.session.id}/announcement-audio`, text)
+}
+
+async function fetchDashboardAnnouncementBlob(text) {
+	return fetchAnnouncementBlob('/api/admin/announcement-audio', text)
+}
+
+async function fetchAnnouncementBlob(path, text) {
 	const csrfToken = document.cookie.split('; ').find((item) => item.startsWith('livematch_csrf='))?.split('=').slice(1).join('=') || ''
-  const response = await fetch(`${apiUrl}/api/sessions/${state.session.id}/announcement-audio`, {
+  const response = await fetch(`${apiUrl}${path}`, {
     method: 'POST',
     credentials: 'include',
     headers: {
@@ -2204,6 +2238,27 @@ async function fetchCloudAnnouncementBlob(text) {
   const blob = await response.blob()
   if (!blob.size) throw new Error('ไฟล์เสียง Google ว่างเปล่า')
   return blob
+}
+
+function dashboardAnnouncements() {
+  return Array.isArray(auth.defaultSettings?.dashboardAnnouncements) ? auth.defaultSettings.dashboardAnnouncements : []
+}
+
+function openDashboardAnnouncements() {
+  dashboardAnnouncementTrigger = document.activeElement
+  forms.dashboardAnnouncementStatus = ''
+  ui.showDashboardAnnouncementsModal = true
+  nextTick(() => dashboardAnnouncementModal.value?.querySelector('button')?.focus())
+}
+
+function closeDashboardAnnouncements() {
+  announcementRunId++
+  stopAnnouncementAudio()
+  window.speechSynthesis?.cancel?.()
+  forms.dashboardAnnouncementPlayingIndex = -1
+  forms.dashboardAnnouncementStatus = ''
+  ui.showDashboardAnnouncementsModal = false
+  nextTick(() => dashboardAnnouncementTrigger?.focus?.())
 }
 
 function stopAnnouncementAudio() {
@@ -2329,6 +2384,51 @@ async function announceQueuedMatch(match, court = '') {
     return
   }
   speakAnnouncement(parts, thaiVoice)
+}
+
+async function announceDashboardAnnouncement(text, index) {
+  const announcement = String(text || '').trim()
+  if (!announcement || forms.dashboardAnnouncementPlayingIndex === index) return
+  const hasDeviceSpeech = 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance === 'function'
+  const runId = ++announcementRunId
+  const parts = [announcement]
+  forms.dashboardAnnouncementPlayingIndex = index
+  forms.dashboardAnnouncementStatus = ''
+  const cloudResultPromise = dashboardAnnouncementAudioCache.get(announcement)
+    .then((url) => ({ url, error: null }))
+    .catch((error) => ({ url: '', error }))
+  stopAnnouncementAudio()
+  if (hasDeviceSpeech) {
+    window.speechSynthesis.cancel()
+    primeSpeechForIOS()
+  }
+  try {
+    await playAnnouncementChime()
+    const cloudResult = await cloudResultPromise
+    if (runId !== announcementRunId) return
+    if (cloudResult.url) {
+      try {
+        await playCloudAnnouncementAudio(cloudResult.url)
+        return
+      } catch {
+        // Continue with device speech fallback.
+      }
+    } else if (cloudResult.error?.code && cloudResult.error.code !== 'tts_disabled') {
+      forms.dashboardAnnouncementStatus = cloudResult.error.message
+    }
+    if (!hasDeviceSpeech) {
+      forms.dashboardAnnouncementStatus = 'ไม่สามารถอ่านประกาศบนอุปกรณ์นี้ได้'
+      return
+    }
+    const voices = currentThaiSpeechVoice() ? [] : await waitForSpeechVoices(900)
+    const thaiVoice = currentThaiSpeechVoice()
+      || voices.find((voice) => voice.lang?.toLowerCase() === 'th-th')
+      || voices.find((voice) => voice.lang?.toLowerCase().startsWith('th'))
+      || null
+    speakAnnouncement(parts, thaiVoice)
+  } finally {
+    if (runId === announcementRunId) forms.dashboardAnnouncementPlayingIndex = -1
+  }
 }
 
 function latestShuttleNumber(match) {
@@ -2704,17 +2804,21 @@ async function copyQrLink() {
   }
 }
 
-function startSharedRefresh() {
-  if (sharedRefreshTimer) return
+function startSharedRefresh(view) {
+  const interval = view === 'queue' ? 9000 : 30000
+  if (sharedRefreshTimer && sharedRefreshInterval === interval) return
+  stopSharedRefresh()
+  sharedRefreshInterval = interval
   sharedRefreshTimer = window.setInterval(() => {
     loadSharedView({ silent: true })
-  }, 30000)
+  }, interval)
 }
 
 function stopSharedRefresh() {
   if (!sharedRefreshTimer) return
   window.clearInterval(sharedRefreshTimer)
   sharedRefreshTimer = null
+  sharedRefreshInterval = 0
 }
 
 async function loadSharedView({ silent = false } = {}) {
@@ -2731,7 +2835,7 @@ async function loadSharedView({ silent = false } = {}) {
     share.showPayment = state.settings.showPaymentOnShare
     share.showTotal = state.settings.showTotalOnShare !== false
     state.session.unlocked = false
-    startSharedRefresh()
+    startSharedRefresh(view)
   } catch {
     share.error = t('ไม่พบข้อมูล session นี้', 'Session not found')
   } finally {
@@ -3147,6 +3251,9 @@ const pageProps = computed(() => ({
   cancelPendingMatch: cancelPendingMatchApi,
   startMatch: startMatchApi,
   announceQueuedMatch,
+  openDashboardAnnouncements,
+  announceDashboardAnnouncement,
+  closeDashboardAnnouncements,
   cancelQueuedMatch: cancelQueuedMatchApi,
   playerName,
   requestAddShuttle,
@@ -3275,7 +3382,7 @@ const pageProps = computed(() => ({
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
-    <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :player-name="playerName" :match-level-label="matchLevelLabel" />
+    <SharedQueuePage v-else-if="share.isPublic && share.view === 'queue'" :state="state" :share="share" :share-link="queueShareLink()" :player-name="playerName" :match-level-label="matchLevelLabel" />
 
     <template v-else>
     <header v-if="showAppHeader" class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/80 shadow-[0_10px_30px_rgba(34,41,37,0.06)] backdrop-blur-xl dark:border-stone-700 dark:bg-paper-900/80">
@@ -3320,6 +3427,17 @@ const pageProps = computed(() => ({
           <span v-if="isAdmin" class="hidden rounded-md border border-stone-200 bg-white px-3 py-1 text-xs text-stone-500 dark:border-stone-700 dark:bg-stone-900 md:inline">
             {{ state.session.name }}
           </span>
+          <button
+            v-if="isAdmin && auth.user"
+            class="relative grid h-10 w-10 place-items-center rounded-md border border-amber-200 bg-amber-50 text-amber-800 transition hover:bg-amber-100 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300 sm:inline-flex sm:w-auto sm:gap-2 sm:px-3 sm:text-xs sm:font-black"
+            title="ประกาศ"
+            aria-label="เปิดรายการประกาศ"
+            @click="openDashboardAnnouncements"
+          >
+            <Volume2 class="h-4 w-4" />
+            <span class="hidden sm:inline">ประกาศ</span>
+            <span v-if="dashboardAnnouncements().length" class="absolute -right-1 -top-1 grid h-4 min-w-4 place-items-center rounded-full bg-amber-600 px-1 text-[9px] font-black text-white sm:static sm:h-auto sm:min-w-0 sm:px-1.5 sm:py-0.5 sm:text-[10px]">{{ dashboardAnnouncements().length }}</span>
+          </button>
           <button
             v-if="isAdmin && auth.user"
             class="hidden h-10 items-center gap-2 rounded-md border border-stone-200 bg-white px-3 text-xs font-black text-stone-700 transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100 dark:hover:bg-stone-700 sm:inline-flex"
@@ -3592,6 +3710,39 @@ const pageProps = computed(() => ({
           </section>
         </main>
       </div>
+    </div>
+
+    <div v-if="ui.showDashboardAnnouncementsModal" class="fixed inset-0 z-50 grid place-items-end bg-black/55 p-3 backdrop-blur-sm sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="dashboard-announcement-title" @click.self="closeDashboardAnnouncements">
+      <section ref="dashboardAnnouncementModal" class="flex max-h-[88vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+        <header class="flex shrink-0 items-start justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700">
+          <div>
+            <p class="text-xs font-black uppercase tracking-[0.16em] text-amber-700 dark:text-amber-300">Announcement</p>
+            <h2 id="dashboard-announcement-title" class="mt-1 text-xl font-black">ประกาศส่วนกลาง</h2>
+            <p class="mt-1 text-sm font-semibold text-stone-500">เลือกข้อความที่ต้องการอ่านออกเสียง</p>
+          </div>
+          <button class="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิดประกาศ" @click="closeDashboardAnnouncements"><X class="h-4 w-4" /></button>
+        </header>
+        <div class="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          <article v-for="(announcement, index) in dashboardAnnouncements()" :key="`${index}-${announcement}`" class="grid gap-3 rounded-lg border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[auto_1fr_auto] sm:items-center">
+            <span class="grid h-10 w-10 place-items-center rounded-md bg-amber-100 text-sm font-black text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">{{ index + 1 }}</span>
+            <p class="min-w-0 whitespace-pre-wrap text-sm font-semibold leading-relaxed">{{ announcement }}</p>
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white disabled:cursor-not-allowed disabled:opacity-50" :disabled="forms.dashboardAnnouncementPlayingIndex === index" @click="announceDashboardAnnouncement(announcement, index)">
+              <RefreshCw v-if="forms.dashboardAnnouncementPlayingIndex === index" class="h-4 w-4 animate-spin" />
+              <Volume2 v-else class="h-4 w-4" />
+              {{ forms.dashboardAnnouncementPlayingIndex === index ? 'กำลังอ่าน...' : 'อ่านประกาศ' }}
+            </button>
+          </article>
+          <div v-if="!dashboardAnnouncements().length" class="grid min-h-48 place-content-center text-center">
+            <Volume2 class="mx-auto h-10 w-10 text-stone-300 dark:text-stone-600" />
+            <p class="mt-3 font-black">ยังไม่มีประกาศ</p>
+            <p class="mt-1 text-sm font-semibold text-stone-500">เพิ่มประกาศได้จากเมนูค่าเริ่มต้น → ประกาศ</p>
+          </div>
+          <p v-if="forms.dashboardAnnouncementStatus" class="rounded-md bg-amber-50 p-3 text-sm font-bold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">{{ forms.dashboardAnnouncementStatus }}</p>
+        </div>
+        <footer class="shrink-0 border-t border-stone-200 p-3 dark:border-stone-700">
+          <button class="h-11 w-full rounded-md border border-stone-200 font-black dark:border-stone-700" @click="closeDashboardAnnouncements">ปิด</button>
+        </footer>
+      </section>
     </div>
 
     <div v-if="ui.showQrModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">

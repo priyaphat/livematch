@@ -11,12 +11,14 @@ function mountDashboard(features) {
         features,
         memberCount: 7,
         bookingCount: 12,
+        defaultSettings: { dashboardAnnouncements: ['กรุณาเตรียมตัวลงสนาม'] },
         liveMatchSessionCost: 1,
         liveShareSessionCost: 1
       },
       forms: { sessionCreateType: 'liveMatch' },
       ui: { showAdminDefaultSettingsModal: false, showCreateSessionModal: false },
       navigateAdminFeature: vi.fn(),
+      openDashboardAnnouncements: vi.fn(),
       createSession: vi.fn(),
       openOwnedSession: vi.fn(),
       refreshAdminSupervisor: vi.fn(),
@@ -45,5 +47,13 @@ describe('AdminSupervisorPage feature cards', () => {
     expect(wrapper.text()).not.toContain('ระบบจองสนาม')
     await wrapper.findAll('button').find((button) => button.text().includes('ระบบสมาชิก')).trigger('click')
     expect(wrapper.props('navigateAdminFeature')).toHaveBeenCalledWith('members')
+  })
+
+  it('opens the shared announcement modal from the dashboard header', async () => {
+    const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false })
+    const button = wrapper.findAll('button').find((item) => item.text().includes('ประกาศ'))
+    expect(button.text()).toContain('1')
+    await button.trigger('click')
+    expect(wrapper.props('openDashboardAnnouncements')).toHaveBeenCalledOnce()
   })
 })

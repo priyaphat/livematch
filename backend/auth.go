@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -331,6 +332,16 @@ func normalizeAdminDefaultSettings(settings *Settings) {
 	if strings.TrimSpace(settings.AnnouncementTemplate) == "" {
 		settings.AnnouncementTemplate = defaultAnnouncementTemplate
 	}
+	announcements := make([]string, 0, min(5, len(settings.DashboardAnnouncements)))
+	for _, item := range settings.DashboardAnnouncements {
+		if text := strings.TrimSpace(item); text != "" {
+			announcements = append(announcements, text)
+			if len(announcements) == 5 {
+				break
+			}
+		}
+	}
+	settings.DashboardAnnouncements = announcements
 }
 
 func (a *app) adminDefaultSettings(ctx context.Context, adminID string) (Settings, error) {
@@ -481,6 +492,8 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.writeAdminMe(w, r, user)
 	case r.Method == http.MethodPut && action == "default-settings":
 		a.handleAdminDefaultSettings(w, r, user)
+	case r.Method == http.MethodPost && action == "announcement-audio":
+		a.handleAdminAnnouncementAudio(w, r)
 	case r.Method == http.MethodPost && action == "sessions":
 		a.handleCreateOwnedSession(w, r, user)
 	case r.Method == http.MethodGet && action == "coin-shop":
@@ -500,7 +513,14 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 
 func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
 	var settings Settings
-	_ = json.NewDecoder(r.Body).Decode(&settings)
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&settings); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid default settings"})
+		return
+	}
+	if err := validateDashboardAnnouncements(settings.DashboardAnnouncements); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 	normalizeAdminDefaultSettings(&settings)
 	raw, err := json.Marshal(settings)
 	if err != nil {
@@ -530,6 +550,18 @@ func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	a.writeAdminMe(w, r, user)
+}
+
+func validateDashboardAnnouncements(items []string) error {
+	if len(items) > 5 {
+		return errors.New("ประกาศเพิ่มได้สูงสุด 5 รายการ")
+	}
+	for _, item := range items {
+		if utf8.RuneCountInString(strings.TrimSpace(item)) > 200 {
+			return errors.New("ประกาศแต่ละรายการต้องไม่เกิน 200 ตัวอักษร")
+		}
+	}
+	return nil
 }
 
 func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, user adminUser) {

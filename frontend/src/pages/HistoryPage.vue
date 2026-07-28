@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Download } from '@lucide/vue'
-import { exportHistoryExcel } from '../excelExport'
+import { CreditCard, Download, Trophy } from '@lucide/vue'
+import { exportHistoryExcel, exportPaymentHistoryExcel } from '../excelExport'
 
 const props = defineProps([
   'state',
@@ -11,10 +11,16 @@ const props = defineProps([
   'matchShuttleSummary',
   'matchShuttleSequenceText',
   'updateHistoryWinner',
-  'isSessionReadOnly'
+  'isSessionReadOnly',
+  'apiRequest'
 ])
 
 const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
+const activeTab = ref('matches')
+const paymentEvents = ref([])
+const paymentLoading = ref(false)
+const paymentLoaded = ref(false)
+const paymentError = ref('')
 const exportLoading = ref(false)
 const exportError = ref('')
 const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.settings?.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
@@ -41,12 +47,38 @@ function isCancelled(match) {
   return match.status === 'cancelled'
 }
 
+async function loadPaymentEvents(force = false) {
+  if (paymentLoading.value || (paymentLoaded.value && !force)) return
+  paymentLoading.value = true
+  paymentError.value = ''
+  try {
+    const payload = await props.apiRequest(`/api/sessions/${props.state.session.id}/payment-events?all=1`)
+    paymentEvents.value = payload?.items || []
+    paymentLoaded.value = true
+  } catch (error) {
+    paymentError.value = error?.message || 'โหลดประวัติการชำระเงินไม่สำเร็จ'
+  } finally {
+    paymentLoading.value = false
+  }
+}
+
+function selectTab(tab) {
+  activeTab.value = tab
+  if (tab === 'payments') void loadPaymentEvents()
+}
+
 async function exportExcel() {
   if (exportLoading.value) return
   exportLoading.value = true
   exportError.value = ''
   try {
-    await exportHistoryExcel(props)
+    if (activeTab.value === 'payments') {
+      await loadPaymentEvents(true)
+      if (paymentError.value) throw new Error(paymentError.value)
+      await exportPaymentHistoryExcel(props, paymentEvents.value)
+    } else {
+      await exportHistoryExcel(props)
+    }
   } catch (error) {
     exportError.value = error?.message || 'สร้างไฟล์ Excel ไม่สำเร็จ'
   } finally {
@@ -59,8 +91,8 @@ async function exportExcel() {
   <section class="grid gap-3">
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
       <div>
-        <h1 class="font-black">ประวัติการแข่งขัน</h1>
-        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ sortedHistory.length }} รายการ</p>
+        <h1 class="font-black">ประวัติ</h1>
+        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? sortedHistory.length : paymentEvents.length }} รายการ</p>
       </div>
       <button
         class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-bold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300"
@@ -73,8 +105,48 @@ async function exportExcel() {
       </button>
       <p v-if="exportError" class="w-full text-right text-xs font-bold text-rose-700 dark:text-rose-300">{{ exportError }}</p>
     </div>
+
+    <nav class="grid grid-cols-2 gap-1 rounded-lg border border-stone-200 bg-white p-1 dark:border-stone-700 dark:bg-stone-900" aria-label="ประเภทประวัติ">
+      <button
+        type="button"
+        class="inline-flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-black transition"
+        :class="activeTab === 'matches' ? 'bg-court-500 text-white' : 'text-stone-500 hover:bg-paper-100 dark:text-stone-300 dark:hover:bg-stone-800'"
+        @click="selectTab('matches')"
+      >
+        <Trophy class="h-4 w-4" />
+        ประวัติการแข่งขัน
+      </button>
+      <button
+        type="button"
+        class="inline-flex h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-black transition"
+        :class="activeTab === 'payments' ? 'bg-court-500 text-white' : 'text-stone-500 hover:bg-paper-100 dark:text-stone-300 dark:hover:bg-stone-800'"
+        @click="selectTab('payments')"
+      >
+        <CreditCard class="h-4 w-4" />
+        ประวัติการชำระเงิน
+      </button>
+    </nav>
+
+    <div v-if="activeTab === 'payments'" class="overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">
+      <p v-if="paymentLoading" class="p-5 text-center text-sm font-bold text-stone-500">กำลังโหลดประวัติการชำระเงิน...</p>
+      <p v-else-if="paymentError" class="p-5 text-center text-sm font-bold text-rose-700 dark:text-rose-300">{{ paymentError }}</p>
+      <p v-else-if="!paymentEvents.length" class="p-5 text-center text-sm font-bold text-stone-500">ยังไม่มีประวัติการชำระเงิน</p>
+      <div v-else class="divide-y divide-stone-100 dark:divide-stone-800">
+        <article v-for="event in paymentEvents" :key="event.id" class="grid gap-2 p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5">
+          <div class="min-w-0">
+            <p class="truncate font-black">{{ event.playerName }}</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ event.createdAt }}</p>
+          </div>
+          <span class="w-fit rounded-md px-2 py-1 text-xs font-black" :class="event.paid ? 'bg-court-500/10 text-court-700 dark:text-court-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'">
+            {{ event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน' }}
+          </span>
+          <p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ Number(event.amount || 0).toLocaleString('th-TH') }}</p>
+        </article>
+      </div>
+    </div>
     <article
       v-for="match in sortedHistory"
+      v-show="activeTab === 'matches'"
       :key="match.id"
       class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900"
     >

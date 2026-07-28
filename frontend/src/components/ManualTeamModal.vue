@@ -22,11 +22,14 @@ const canSubmit = computed(() => selectedIds.value.length === 4 && new Set(selec
 function optionsFor(slot) {
   const current = Number(selected[slot])
   const usedElsewhere = new Set(slots.filter((item) => item !== slot).map((item) => Number(selected[item])).filter(Boolean))
-  return props.players.filter((player) => player.id === current || !usedElsewhere.has(player.id))
+  return props.players
+    .filter((player) => player.id === current || !usedElsewhere.has(player.id))
+    .sort((a, b) => a.id - b.id)
 }
 
 function optionLabel(player) {
-  return `#${player.id} ${player.name} · ${player.level || '-'} · ${player.games || 0} เกม`
+  const couponLabel = player.coupon ? ` · ${player.level || '-'}` : ''
+  return `#${player.id} ${player.name}${couponLabel} · ${player.games || 0} เกม`
 }
 
 async function submit() {

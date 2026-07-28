@@ -114,6 +114,18 @@ func TestTTSCountsThaiCharactersCachesAndStopsAtSafetyLimit(t *testing.T) {
 	}
 }
 
+func TestValidateDashboardAnnouncements(t *testing.T) {
+	if err := validateDashboardAnnouncements([]string{"ประกาศหนึ่ง", strings.Repeat("ก", 200)}); err != nil {
+		t.Fatalf("valid announcements rejected: %v", err)
+	}
+	if err := validateDashboardAnnouncements([]string{"1", "2", "3", "4", "5", "6"}); err == nil {
+		t.Fatal("more than five announcements must be rejected")
+	}
+	if err := validateDashboardAnnouncements([]string{strings.Repeat("ก", 201)}); err == nil {
+		t.Fatal("announcement over 200 Unicode characters must be rejected")
+	}
+}
+
 func TestEffectiveSessionCostRoundsNearestHalfUp(t *testing.T) {
 	tests := []struct {
 		base, discount, want int
@@ -762,7 +774,7 @@ func TestConfirmPendingMatchCreatesStableSequentialQueueIDs(t *testing.T) {
 	}
 }
 
-func TestStartMatchRejectsNonAdjacentLevels(t *testing.T) {
+func TestStartManualMatchAllowsNonAdjacentLevels(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, AllowCrossLevel: true},
 		Players: []Player{
@@ -774,11 +786,11 @@ func TestStartMatchRejectsNonAdjacentLevels(t *testing.T) {
 		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
 	}
 
-	if startMatch(&state, 1, "court 1") {
-		t.Fatal("expected non-adjacent level match to be rejected")
+	if !startMatch(&state, 1, "court 1") {
+		t.Fatal("expected an admin-confirmed manual match to start regardless of level spread")
 	}
-	if len(state.Queue) != 1 || len(state.Live) != 0 {
-		t.Fatalf("expected invalid match to stay queued and not start, queue=%#v live=%#v", state.Queue, state.Live)
+	if len(state.Queue) != 0 || len(state.Live) != 1 {
+		t.Fatalf("expected the match to move from queue to live, queue=%#v live=%#v", state.Queue, state.Live)
 	}
 }
 

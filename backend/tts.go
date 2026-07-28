@@ -327,11 +327,24 @@ func (s *ttsService) Synthesize(ctx context.Context, rawText string) (ttsResult,
 }
 
 func (a *app) handleAnnouncementAudio(w http.ResponseWriter, r *http.Request) {
+	a.handleAnnouncementAudioWithLimit(w, r, googleTTSMaxTextCharacters)
+}
+
+func (a *app) handleAdminAnnouncementAudio(w http.ResponseWriter, r *http.Request) {
+	a.handleAnnouncementAudioWithLimit(w, r, 200)
+}
+
+func (a *app) handleAnnouncementAudioWithLimit(w http.ResponseWriter, r *http.Request, maxCharacters int) {
 	var body struct {
 		Text string `json:"text"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid announcement text", "fallback": true})
+		return
+	}
+	body.Text = strings.TrimSpace(body.Text)
+	if body.Text == "" || utf8.RuneCountInString(body.Text) > maxCharacters {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid announcement text", "code": "tts_invalid_text", "fallback": true})
 		return
 	}
 	result, err := a.tts.Synthesize(r.Context(), body.Text)

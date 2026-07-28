@@ -2,11 +2,21 @@ import { describe, expect, it } from 'vitest'
 import {
   buildHistoryExportData,
   buildMembersExportData,
+  buildPaymentHistoryExportData,
   exportFilename,
   sanitizeFilenamePart
 } from './excelExport'
 
 describe('Excel export data', () => {
+  it('builds payment history without exposing internal ids', () => {
+    const data = buildPaymentHistoryExportData([
+      { id: 99, playerId: 7, playerName: 'Player A', paid: true, amount: 125, createdAt: '28/07/2026 12:00' }
+    ])
+    expect(data.headers).toEqual(['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ยอดเงิน (บาท)'])
+    expect(data.rows).toEqual([['28/07/2026 12:00', 'Player A', 'ชำระเงิน', 125]])
+    expect(JSON.stringify(data)).not.toContain('99')
+  })
+
   it('keeps ExcelJS workbook generation compatible with dependency overrides', async () => {
     const ExcelJS = (await import('exceljs')).default
     const workbook = new ExcelJS.Workbook()

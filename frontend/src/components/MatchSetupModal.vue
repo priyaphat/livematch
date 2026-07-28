@@ -22,9 +22,11 @@ const openCoupleSelect = ref('')
 const activePlayers = computed(() => props.state.players.filter((player) => player.active))
 const couponFiltered = computed(() => {
   const keyword = (props.forms.couponSearch || '').trim().toLocaleLowerCase('th-TH')
-  return props.couponGroups.filter((group) => (
-    !keyword || group.name.toLocaleLowerCase('th-TH').includes(keyword) || group.ids.join('/').includes(keyword)
-  ))
+  return props.couponGroups
+    .filter((group) => (
+      !keyword || group.name.toLocaleLowerCase('th-TH').includes(keyword) || group.ids.join('/').includes(keyword)
+    ))
+    .sort((a, b) => Math.min(...a.ids) - Math.min(...b.ids))
 })
 const couponPages = computed(() => Math.max(1, Math.ceil(couponFiltered.value.length / props.forms.couponPageSize)))
 const pagedCouponGroups = computed(() => {
@@ -37,6 +39,14 @@ const pagedCouponGroups = computed(() => {
 watch(() => props.forms.couponSearch, () => {
   props.forms.couponPage = 1
 })
+
+watch(
+  () => props.ui.showCouponModal,
+  (showCoupon, oldShowCoupon) => {
+    if (showCoupon && !oldShowCoupon) props.forms.couponPage = 1
+  },
+  { immediate: true }
+)
 
 function optionLabel(player) {
   return player ? `${player.id}. ${player.name}` : ''

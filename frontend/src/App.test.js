@@ -22,6 +22,10 @@ import SharedPlayersPage from './pages/SharedPlayersPage.vue'
 import SharedQueuePage from './pages/SharedQueuePage.vue'
 import { applyStoredTheme } from './theme'
 
+vi.mock('qrcode', () => ({
+  default: { toDataURL: vi.fn((value) => Promise.resolve(`data:image/png;base64,${btoa(value)}`)) }
+}))
+
 beforeEach(() => {
   sessionStorage.removeItem('livematch_admin_navigation')
   window.history.replaceState({}, '', '/')
@@ -756,6 +760,29 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('ยังไม่พร้อม')
   })
 
+  it('resets the coupon list to page one whenever the modal reopens', async () => {
+    const forms = reactive({ couponPage: 2, couponPageSize: 8, couponSearch: '' })
+    const ui = reactive({ showCouponModal: false, showCoupleModal: false })
+    mount(MatchSetupModal, {
+      props: {
+        state: { settings: { levels: [] }, players: [], couples: [] },
+        forms,
+        ui,
+        couponGroups: [],
+        levelLabel: (level) => level,
+        playerName: () => '',
+        addCouple: () => {},
+        removeCouple: () => {},
+        updatePlayerRandomStatus: () => {}
+      }
+    })
+
+    ui.showCouponModal = true
+    await flushPromises()
+
+    expect(forms.couponPage).toBe(1)
+  })
+
   it('opens couple modal with empty player inputs', async () => {
     const forms = { coupleAId: 1, coupleBId: 2 }
     const wrapper = mount(MatchSetupModal, {
@@ -1058,6 +1085,27 @@ describe('LiveMatch app', () => {
     expect(filteredOptions).toHaveLength(4)
     await filteredOptions.at(0).trigger('mousedown')
     expect(forms.coupleAId).toBe(1)
+  })
+
+  it('does not show a stale coupon level in the manual team modal', () => {
+    const wrapper = mount(ManualTeamModal, {
+      props: {
+        state: { settings: { levels: ['light', 'heavy'] } },
+        players: [
+          { id: 2, name: 'Current coupon', level: 'light', coupon: true, games: 1 },
+          { id: 1, name: 'Old coupon', level: 'heavy', coupon: false, games: 2 }
+        ],
+        createManualMatch: () => {}
+      }
+    })
+
+    const optionText = wrapper.findAll('option').map((option) => option.text())
+    expect(optionText).toContain('#1 Old coupon · 2 เกม')
+    expect(optionText).toContain('#2 Current coupon · light · 1 เกม')
+    expect(wrapper.find('select').findAll('option').slice(1).map((option) => option.text())).toEqual([
+      '#1 Old coupon · 2 เกม',
+      '#2 Current coupon · light · 1 เกม'
+    ])
   })
 
   it('confirms shuttle add without rendering a decrement button', async () => {
@@ -1750,7 +1798,31 @@ describe('LiveMatch app', () => {
     expect(historyWrapper.get('[data-testid="export-history"]').element.disabled).toBe(false)
   })
 
-  it('refreshes shared views every 30 seconds', async () => {
+  it('defaults history to matches and loads payment events from its tab', async () => {
+    const apiRequest = vi.fn().mockResolvedValue({
+      items: [{ id: 1, playerName: 'Player A', paid: true, amount: 125, createdAt: '28/07/2026 12:00' }]
+    })
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: { session: { id: 'session-1', type: 'liveMatch' }, settings: {}, history: [] },
+        playerName: (id) => `p${id}`,
+        matchLevelLabel: (level) => level,
+        updateHistoryWinner: () => {},
+        apiRequest
+      }
+    })
+
+    expect(wrapper.text()).toContain('ประวัติการแข่งขัน')
+    expect(apiRequest).not.toHaveBeenCalled()
+    const paymentTab = wrapper.findAll('button').find((button) => button.text().includes('ประวัติการชำระเงิน'))
+    await paymentTab.trigger('click')
+    await flushPromises()
+    expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/payment-events?all=1')
+    expect(wrapper.text()).toContain('Player A')
+    expect(wrapper.text()).toContain('฿125')
+  })
+
+  it('refreshes the shared queue every 9 seconds', async () => {
     vi.useFakeTimers()
     const originalUrl = window.location.href
     window.history.pushState({}, '', '/?view=queue&session=test-session')
@@ -1791,12 +1863,14 @@ describe('LiveMatch app', () => {
     await Promise.resolve()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
-    await vi.advanceTimersByTimeAsync(30000)
+    await vi.advanceTimersByTimeAsync(8999)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
     await Promise.resolve()
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
     wrapper.unmount()
-    await vi.advanceTimersByTimeAsync(30000)
+    await vi.advanceTimersByTimeAsync(9000)
     expect(fetchMock).toHaveBeenCalledTimes(2)
 
     globalThis.fetch = originalFetch
@@ -1828,6 +1902,59 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('เริ่ม 10:00')
     wrapper.unmount()
     vi.useRealTimers()
+  })
+
+  it('keeps the shared players refresh interval at 30 seconds', async () => {
+    vi.useFakeTimers()
+    const originalUrl = window.location.href
+    window.history.pushState({}, '', '/?view=players&session=test-session')
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(sessionStatePayload())
+    }))
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fetchMock
+
+    const wrapper = mount(App)
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(29999)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+    window.history.pushState({}, '', originalUrl)
+    vi.useRealTimers()
+  })
+
+  it('renders the desktop flight board and mobile QR overlay without level or shuttle metadata', async () => {
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: {
+          session: { id: 'queue-session', name: 'Flight Board' },
+          settings: { courtNames: ['สนาม 1', 'สนาม 2'] },
+          queue: [{ id: 8, court: '-', level: 'heavy', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 9 }],
+          live: [{ id: 7, court: 'สนาม 2', level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 4, startedAt: '10:00' }]
+        },
+        share: { loading: false, error: '' },
+        shareLink: 'http://localhost:5173/?view=queue&session=queue-session',
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'ระดับห้ามแสดง'
+      }
+    })
+    await flushPromises()
+
+    const board = wrapper.get('.shared-flight-board')
+    expect(board.classes()).toContain('md:flex')
+    expect(wrapper.get('.shared-queue-shell').classes()).toContain('md:hidden')
+    expect(board.findAll('.shared-flight-row')).toHaveLength(2)
+    expect(board.text()).toContain('รอเลือกสนาม')
+    expect(board.text()).not.toContain('ระดับห้ามแสดง')
+    expect(board.text()).not.toContain('ลูกแบด')
+    expect(wrapper.get('[data-testid="shared-queue-qr"] img').attributes('src')).toContain('data:image/png;base64,')
   })
 
   it('packs a long shared queue into the dense TV grid', () => {

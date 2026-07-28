@@ -90,6 +90,7 @@ type Settings struct {
 	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
 	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
 	AnnouncementTemplate    string         `json:"announcementTemplate"`
+	DashboardAnnouncements  []string       `json:"dashboardAnnouncements,omitempty"`
 }
 
 type Player struct {
@@ -1322,6 +1323,41 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodGet && action == "dashboard":
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
+	case r.Method == http.MethodGet && action == "payment-events":
+		rows, err := a.db.QueryContext(r.Context(), `
+			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb,
+			       to_char(e.created_at at time zone 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI')
+			from player_payment_events e
+			left join players p on p.session_id=e.session_id and p.id=e.player_id
+			where e.session_id=$1
+			order by e.created_at desc, e.id desc
+		`, state.Session.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		defer rows.Close()
+		items := []map[string]any{}
+		for rows.Next() {
+			var eventID int64
+			var playerID, amount int
+			var playerName, createdAt string
+			var paid bool
+			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &createdAt); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+				return
+			}
+			if playerName == "" {
+				playerName = fmt.Sprintf("ผู้เล่น #%d", playerID)
+			}
+			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": amount, "createdAt": createdAt})
+		}
+		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
+			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
+			return
+		}
+		paged, page, pageSize := paginate(items, r)
+		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodGet && action == "players" && len(parts) >= 4 && parts[3] == "payment-summary":
 		playerID, err := strconv.Atoi(parts[2])
 		if err != nil {
@@ -1714,14 +1750,18 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 		if action == "toggle_player_paid" {
 			playerID, _ := strconv.Atoi(targetID)
 			for _, player := range state.Players {
-				if player.ID != playerID || player.MemberID == "" {
+				if player.ID != playerID {
 					continue
 				}
 				amount := playerEntryFee(state, player) + playerShuttleCost(state, player.ID) + sessionFeeShare(state)
 				if isLiveShare(state) {
 					amount = liveSharePlayerCost(state, player)
 				}
-				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,actor_id) values ($1,$2,$3,$4,$5,$6)`, state.Session.ID, player.ID, player.MemberID, player.Paid, amount, user.ID)
+				var memberID any
+				if player.MemberID != "" {
+					memberID = player.MemberID
+				}
+				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,actor_id) values ($1,$2,$3,$4,$5,$6)`, state.Session.ID, player.ID, memberID, player.Paid, amount, user.ID)
 				break
 			}
 		}
@@ -2558,9 +2598,6 @@ func startMatch(state *SessionState, matchID int, court string, brandIDs ...stri
 	}
 	for i, match := range state.Queue {
 		if match.ID == matchID {
-			if !matchLevelsAllowed(*state, match) {
-				return false
-			}
 			state.Queue = append(state.Queue[:i], state.Queue[i+1:]...)
 			match.Court = court
 			match.Shuttles = 0
@@ -2603,35 +2640,6 @@ func cancelPendingMatch(state *SessionState, matchID int) bool {
 		}
 	}
 	return false
-}
-
-func matchLevelsAllowed(state SessionState, match Match) bool {
-	levelIndex := map[string]int{}
-	for i, level := range state.Settings.Levels {
-		levelIndex[level] = i
-	}
-	minIndex := 1 << 30
-	maxIndex := -1
-	for _, id := range matchPlayers(match) {
-		player := playerByID(state.Players, id)
-		if player == nil {
-			return false
-		}
-		index, ok := levelIndex[player.Level]
-		if !ok {
-			return false
-		}
-		if index < minIndex {
-			minIndex = index
-		}
-		if index > maxIndex {
-			maxIndex = index
-		}
-	}
-	if minIndex == maxIndex {
-		return true
-	}
-	return state.Settings.AllowCrossLevel && maxIndex-minIndex <= 1
 }
 
 func deletePlayer(state *SessionState, playerID int) error {

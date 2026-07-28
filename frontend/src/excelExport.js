@@ -152,6 +152,19 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
   return { headers, rows, emptyMessage: 'ไม่มีข้อมูลประวัติ' }
 }
 
+export function buildPaymentHistoryExportData(events = []) {
+  return {
+    headers: ['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ยอดเงิน (บาท)'],
+    rows: events.map((event) => [
+      event.createdAt || '-',
+      event.playerName || '-',
+      event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน',
+      numeric(event.amount)
+    ]),
+    emptyMessage: 'ไม่มีข้อมูลประวัติการชำระเงิน'
+  }
+}
+
 export function buildDashboardExportData({
   state,
   activePlayerCount,
@@ -341,6 +354,23 @@ export async function exportHistoryExcel(options) {
   }
   finishWorksheet(worksheet)
   await saveWorkbook(workbook, exportFilename(options.state, 'history'))
+}
+
+export async function exportPaymentHistoryExcel(options, events) {
+  const data = buildPaymentHistoryExportData(events)
+  const workbook = await createWorkbook()
+  const worksheet = workbook.addWorksheet('ประวัติการชำระเงิน')
+  styleTitle(worksheet, 'รายงานประวัติการชำระเงิน', data.headers.length)
+  addSessionMeta(worksheet, options.state, data.headers.length)
+  addTable(worksheet, data.headers, data.rows, { currencyColumns: [4] })
+  if (!data.rows.length) {
+    const row = worksheet.addRow([data.emptyMessage])
+    worksheet.mergeCells(row.number, 1, row.number, data.headers.length)
+    row.getCell(1).alignment = { horizontal: 'center' }
+    row.getCell(1).font = { italic: true, color: { argb: COLORS.stone } }
+  }
+  finishWorksheet(worksheet)
+  await saveWorkbook(workbook, exportFilename(options.state, 'payment-history'))
 }
 
 export async function exportDashboardExcel(options) {

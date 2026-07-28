@@ -1,10 +1,12 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 import { Activity, Clock3, ListOrdered, Medal, UsersRound } from '@lucide/vue'
 
 const props = defineProps([
   'state',
   'share',
+  'shareLink',
   'playerName',
   'matchLevelLabel'
 ])
@@ -19,7 +21,27 @@ const tvDensityClass = computed(() => {
   return 'shared-queue-page--comfortable'
 })
 const now = ref(new Date())
+const queueQrDataUrl = ref('')
 let elapsedTimer = null
+let qrRequestSequence = 0
+
+watch(() => props.shareLink, async (link) => {
+  const sequence = ++qrRequestSequence
+  if (!link) {
+    queueQrDataUrl.value = ''
+    return
+  }
+  try {
+    const dataUrl = await QRCode.toDataURL(link, {
+      width: 360,
+      margin: 2,
+      color: { dark: '#191b18', light: '#fbfaf4' }
+    })
+    if (sequence === qrRequestSequence) queueQrDataUrl.value = dataUrl
+  } catch {
+    if (sequence === qrRequestSequence) queueQrDataUrl.value = ''
+  }
+}, { immediate: true })
 
 onMounted(() => {
   elapsedTimer = window.setInterval(() => {
@@ -35,6 +57,10 @@ function teamText(match, side) {
   return side === 'A'
     ? `${props.playerName(match.a1)} + ${props.playerName(match.a2)}`
     : `${props.playerName(match.b1)} + ${props.playerName(match.b2)}`
+}
+
+function matchCourt(match) {
+  return match.court && match.court !== '-' ? match.court : 'รอเลือกสนาม'
 }
 
 function elapsedTime(match) {
@@ -87,7 +113,73 @@ function tvContentStyle() {
 
 <template>
   <section :class="['shared-queue-page min-h-screen bg-paper-50 px-3 py-4 dark:bg-paper-900 sm:px-4', tvDensityClass]">
-    <div class="shared-queue-shell mx-auto grid max-w-3xl gap-4">
+    <div class="shared-flight-board mx-auto hidden min-h-[calc(100dvh-2rem)] w-full max-w-[1600px] flex-col overflow-hidden rounded-xl border border-stone-700 bg-[#171a18] text-white shadow-2xl md:flex">
+      <header class="shared-flight-header flex shrink-0 items-center justify-between gap-5 border-b border-white/10 bg-[#222725] px-4 py-2.5">
+        <div class="min-w-0">
+          <h1 class="truncate text-xl font-black lg:text-2xl">{{ state.session.name }}</h1>
+          <p class="mt-1 text-xs font-semibold text-white/55 lg:text-sm">ลำดับคิวลงสนามและเกมที่กำลังแข่งขัน</p>
+        </div>
+        <div class="grid shrink-0 grid-cols-3 divide-x divide-white/10 overflow-hidden rounded-lg border border-white/10 bg-black/15 text-center">
+          <div class="px-4 py-1.5">
+            <p class="text-[11px] font-bold text-white/50">รอแข่งขัน</p>
+            <p class="mt-0.5 text-xl font-black text-amber-300">{{ waitingMatches.length }}</p>
+          </div>
+          <div class="px-4 py-1.5">
+            <p class="text-[11px] font-bold text-white/50">กำลังแข่งขัน</p>
+            <p class="mt-0.5 text-xl font-black text-court-300">{{ liveMatches.length }}</p>
+          </div>
+          <div class="px-4 py-1.5">
+            <p class="text-[11px] font-bold text-white/50">สนาม</p>
+            <p class="mt-0.5 text-xl font-black">{{ state.settings.courtNames.length }}</p>
+          </div>
+        </div>
+      </header>
+
+      <div v-if="share.loading" class="grid flex-1 place-items-center p-8 text-lg font-bold text-white/60">กำลังโหลดข้อมูล</div>
+      <div v-else-if="share.error" class="m-5 rounded-lg border border-red-400/40 bg-red-500/10 p-4 font-bold text-red-200">{{ share.error }}</div>
+      <div v-else class="shared-flight-scroll min-h-0 flex-1 overflow-y-auto pb-44">
+        <div class="shared-flight-columns sticky top-0 z-10 grid border-b border-white/15 bg-[#101312] px-4 py-3 text-xs font-black uppercase tracking-[0.1em] text-white/55">
+          <span>สถานะ</span><span>คิว</span><span>ทีม A</span><span>ทีม B</span><span>สนาม</span><span>เวลา</span>
+        </div>
+
+        <section v-if="liveMatches.length" class="shared-flight-section">
+          <div class="shared-flight-section-label border-b border-court-300/20 bg-court-500/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-court-200">กำลังแข่งขัน</div>
+          <article v-for="match in liveMatches" :key="`live-${match.id}`" class="shared-flight-row shared-flight-row--live grid items-center border-b border-white/10 px-4 py-1.5">
+            <span class="shared-flight-status bg-court-400/15 text-court-200"><span class="h-2 w-2 rounded-full bg-court-300"></span>เริ่ม {{ match.startedAt || '-' }}</span>
+            <span class="text-center text-sm font-black text-white/30">–</span>
+            <p class="shared-flight-team">{{ teamText(match, 'A') }}</p>
+            <p class="shared-flight-team">{{ teamText(match, 'B') }}</p>
+            <p class="font-black text-court-200">{{ matchCourt(match) }}</p>
+            <p class="text-xs font-bold text-white/50">เล่นมาแล้ว {{ elapsedTime(match) }}</p>
+          </article>
+        </section>
+
+        <section v-if="waitingMatches.length" class="shared-flight-section">
+          <div class="shared-flight-section-label border-b border-amber-300/20 bg-amber-400/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-amber-200">รอคิวลงสนาม</div>
+          <article v-for="(match, index) in waitingMatches" :key="`waiting-${match.id}`" class="shared-flight-row shared-flight-row--waiting grid items-center border-b border-white/10 px-4 py-1.5">
+            <span class="shared-flight-status bg-amber-300/15 text-amber-200"><span class="h-2 w-2 rounded-full bg-amber-300"></span>รอคิว</span>
+            <p class="text-center text-base font-black text-amber-200">#{{ index + 1 }}</p>
+            <p class="shared-flight-team">{{ teamText(match, 'A') }}</p>
+            <p class="shared-flight-team">{{ teamText(match, 'B') }}</p>
+            <p class="font-black" :class="match.court && match.court !== '-' ? 'text-white' : 'text-white/45'">{{ matchCourt(match) }}</p>
+            <p class="text-sm font-bold text-white/45">รอเรียกลงสนาม</p>
+          </article>
+        </section>
+
+        <div v-if="!liveMatches.length && !waitingMatches.length" class="grid min-h-72 place-content-center text-center">
+          <Medal class="mx-auto h-12 w-12 text-white/20" />
+          <p class="mt-3 text-xl font-black">ยังไม่มีคิวรอลงสนาม</p>
+          <p class="mt-1 font-semibold text-white/45">รายการจะแสดงอัตโนมัติเมื่อผู้ดูแลจัดคู่</p>
+        </div>
+      </div>
+
+      <aside v-if="queueQrDataUrl" class="shared-queue-qr fixed bottom-4 right-4 z-30 hidden rounded-xl border border-stone-200 bg-white p-2.5 text-center text-stone-900 shadow-2xl md:block" data-testid="shared-queue-qr">
+        <img :src="queueQrDataUrl" class="mx-auto aspect-square w-[120px]" alt="QR สำหรับเปิดคิวบนมือถือ" />
+        <p class="mt-1 max-w-[120px] text-[11px] font-black leading-tight">สแกนดูคิวบนมือถือ</p>
+      </aside>
+    </div>
+
+    <div class="shared-queue-shell mx-auto grid max-w-3xl gap-4 md:hidden">
       <div class="shared-queue-summary overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
         <div class="shared-queue-hero bg-[linear-gradient(135deg,#1f8a70_0%,#2f7f8f_58%,#20251f_100%)] p-4 text-white">
           <p class="text-xs font-black uppercase tracking-[0.16em] text-white/75">LiveMatch Queue</p>
@@ -209,6 +301,70 @@ function tvContentStyle() {
 </template>
 
 <style scoped>
+.shared-flight-columns,
+.shared-flight-row {
+  grid-template-columns: minmax(5.8rem, 0.7fr) minmax(4.2rem, 0.5fr) minmax(0, 1.5fr) minmax(0, 1.5fr) minmax(5.5rem, 0.8fr) minmax(6rem, 0.9fr);
+  column-gap: clamp(0.65rem, 1.4vw, 1.5rem);
+}
+
+.shared-flight-row {
+  position: relative;
+  min-height: 3.4rem;
+  background: rgb(255 255 255 / 2%);
+}
+
+.shared-flight-row > div > p:last-child,
+.shared-flight-row > p:not(.shared-flight-team) {
+  font-size: 0.82rem;
+}
+
+.shared-flight-row:nth-of-type(even) {
+  background: rgb(255 255 255 / 5%);
+}
+
+.shared-flight-row::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  content: '';
+}
+
+.shared-flight-row--live::before {
+  background: rgb(94 234 212);
+}
+
+.shared-flight-row--waiting::before {
+  background: rgb(252 211 77);
+}
+
+.shared-flight-status {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.45rem;
+  border-radius: 0.5rem;
+  padding: 0.32rem 0.5rem;
+  font-size: 0.68rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.shared-flight-team {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  font-size: clamp(0.75rem, 1vw, 0.92rem);
+  font-weight: 500;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.shared-flight-scroll {
+  scrollbar-color: rgb(120 113 108 / 65%) transparent;
+}
+
 .shared-queue-content,
 .shared-queue-column,
 .shared-match-grid {
@@ -231,6 +387,50 @@ function tvContentStyle() {
     min-height: 0;
     grid-template-rows: auto minmax(0, 1fr);
     gap: clamp(0.65rem, 1vw, 1rem);
+  }
+
+  .shared-flight-board {
+    width: 100%;
+    max-width: none;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .shared-flight-header {
+    padding: clamp(0.45rem, 0.7vw, 0.75rem) clamp(0.85rem, 1.2vw, 1.4rem);
+  }
+
+  .shared-flight-row {
+    min-height: clamp(3.15rem, 5.3vh, 4.2rem);
+    padding-block: clamp(0.3rem, 0.5vh, 0.45rem);
+  }
+
+  .shared-flight-row > div > p:last-child,
+  .shared-flight-row > p:not(.shared-flight-team) {
+    font-size: clamp(0.74rem, 0.85vw, 0.92rem);
+  }
+
+  .shared-flight-team {
+    font-size: clamp(0.82rem, 1vw, 1.08rem);
+  }
+
+  .shared-flight-status {
+    font-size: clamp(0.65rem, 0.7vw, 0.78rem);
+  }
+
+  .shared-queue-qr {
+    right: clamp(1rem, 1.5vw, 1.75rem);
+    bottom: clamp(1rem, 1.5vw, 1.75rem);
+    padding: 0.75rem;
+  }
+
+  .shared-queue-qr img {
+    width: clamp(9.25rem, 9vw, 11rem);
+  }
+
+  .shared-queue-qr p {
+    max-width: 11rem;
+    font-size: clamp(0.7rem, 0.75vw, 0.85rem);
   }
 
   .shared-queue-summary {

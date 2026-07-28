@@ -12,6 +12,7 @@ import {
   CreditCard,
   Database,
   Eye,
+  Volume2,
   Plus,
   Radio,
   ReceiptText,
@@ -33,6 +34,7 @@ const props = defineProps([
   'openOwnedSession',
   'refreshAdminSupervisor',
   'navigateAdminFeature',
+  'openDashboardAnnouncements',
   'saveAdminDefaultSettings',
   'addAdminDefaultShuttleBrand',
   'removeAdminDefaultShuttleBrand',
@@ -48,7 +50,8 @@ const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
   { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาเริ่มต้น', icon: CreditCard },
   { id: 'courts', label: 'สนาม', hint: 'รายชื่อสนาม', icon: Database },
-  { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal }
+  { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal },
+  { id: 'announcements', label: 'ประกาศ', hint: 'ข้อความอ่านออกเสียง', icon: Volume2 }
 ]
 const benefits = computed(() => props.auth.benefits || { discountPercent: 0, pricing: {}, subscription: null })
 const subscription = computed(() => benefits.value.subscription || null)
@@ -141,6 +144,23 @@ const openAdminDefaultSettingsModal = () => {
 const closeAdminDefaultSettingsModal = () => {
   props.ui.showAdminDefaultSettingsModal = false
 }
+
+function announcementLength(value) {
+  return Array.from(String(value || '')).length
+}
+
+function addDashboardAnnouncement() {
+  const items = props.auth.defaultSettings.dashboardAnnouncements || (props.auth.defaultSettings.dashboardAnnouncements = [])
+  if (items.length < 5) items.push('')
+}
+
+function removeDashboardAnnouncement(index) {
+  props.auth.defaultSettings.dashboardAnnouncements.splice(index, 1)
+}
+
+function updateDashboardAnnouncement(index, value) {
+  props.auth.defaultSettings.dashboardAnnouncements[index] = Array.from(String(value || '')).slice(0, 200).join('')
+}
 </script>
 
 <template>
@@ -159,6 +179,11 @@ const closeAdminDefaultSettingsModal = () => {
         <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-4 text-sm font-bold transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 sm:flex-none" @click="refreshAdminSupervisor">
           <RefreshCw class="h-4 w-4" />
           รีเฟรช
+        </button>
+        <button class="relative inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-4 text-sm font-black text-amber-800 transition hover:bg-amber-100 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-300 sm:flex-none" @click="openDashboardAnnouncements">
+          <Volume2 class="h-4 w-4" />
+          ประกาศ
+          <span v-if="auth.defaultSettings?.dashboardAnnouncements?.length" class="rounded-full bg-amber-600 px-1.5 py-0.5 text-[10px] text-white">{{ auth.defaultSettings.dashboardAnnouncements.length }}</span>
         </button>
         <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-black text-court-700 transition hover:bg-court-500/15 dark:border-court-900/60 dark:text-court-300 sm:flex-none" @click="openAdminDefaultSettingsModal">
           <Database class="h-4 w-4" />
@@ -221,6 +246,31 @@ const closeAdminDefaultSettingsModal = () => {
       </nav>
 
       <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+
+      <div v-show="adminDefaultSettingsTab === 'announcements'" class="grid gap-3">
+        <div class="flex items-start justify-between gap-3 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <div>
+            <p class="font-black">รายการประกาศส่วนกลาง</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ใช้ร่วมกันใน Admin dashboard และทุก Session ของบัญชีนี้</p>
+          </div>
+          <button type="button" class="inline-flex h-10 shrink-0 items-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white disabled:opacity-40" :disabled="(auth.defaultSettings.dashboardAnnouncements || []).length >= 5" @click="addDashboardAnnouncement">
+            <Plus class="h-4 w-4" /> เพิ่มประกาศ
+          </button>
+        </div>
+        <div v-for="(announcement, index) in (auth.defaultSettings.dashboardAnnouncements || [])" :key="index" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[auto_1fr_auto] sm:items-start">
+          <span class="grid h-10 w-10 place-items-center rounded-md bg-amber-100 text-sm font-black text-amber-800 dark:bg-amber-950/40 dark:text-amber-300">{{ index + 1 }}</span>
+          <div class="min-w-0">
+            <input :value="auth.defaultSettings.dashboardAnnouncements[index]" class="h-10 w-full rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-semibold dark:border-stone-700 dark:bg-stone-800" :placeholder="`ข้อความประกาศที่ ${index + 1}`" @input="updateDashboardAnnouncement(index, $event.target.value)" />
+            <p class="mt-1 text-right text-[11px] font-bold" :class="announcementLength(announcement) >= 200 ? 'text-amber-700 dark:text-amber-300' : 'text-stone-400'">{{ announcementLength(announcement) }}/200</p>
+          </div>
+          <button type="button" class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 dark:border-rose-900/60 dark:text-rose-300" @click="removeDashboardAnnouncement(index)">ลบ</button>
+        </div>
+        <div v-if="!(auth.defaultSettings.dashboardAnnouncements || []).length" class="rounded-lg border border-dashed border-stone-300 p-8 text-center dark:border-stone-700">
+          <Volume2 class="mx-auto h-8 w-8 text-stone-300 dark:text-stone-600" />
+          <p class="mt-2 font-black">ยังไม่มีประกาศ</p>
+          <p class="mt-1 text-sm font-semibold text-stone-500">เพิ่มได้สูงสุด 5 รายการ รายการละไม่เกิน 200 ตัวอักษร</p>
+        </div>
+      </div>
 
       <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-3 md:grid-cols-3">
         <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
