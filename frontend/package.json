@@ -22,13 +22,12 @@
     "@vue/test-utils": "^2.4.6",
     "autoprefixer": "^10.4.22",
     "jsdom": "^27.4.0",
-    "postcss": "^8.5.6",
+    "postcss": "^8.5.23",
     "tailwindcss": "^3.4.19",
     "vitest": "^4.1.9"
   },
   "overrides": {
     "uuid": "11.1.1",
-    "brace-expansion@1": "1.1.16",
-    "brace-expansion@2": "2.1.2"
+    "brace-expansion": "5.0.8"
   }
 }

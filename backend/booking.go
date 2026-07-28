@@ -1613,7 +1613,7 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 func (a *app) writePublicBookingQueues(w http.ResponseWriter, r *http.Request, adminID string) {
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "login required"})
+		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
 	a.expireHolds(r.Context(), adminID)
@@ -1892,7 +1892,7 @@ func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, 
 	}
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
-		writeJSON(w, 401, map[string]string{"error": "google login required"})
+		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
 	var memberID, name string
@@ -2013,7 +2013,7 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	}
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
-		writeJSON(w, 401, map[string]string{"error": "login required"})
+		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
 	var b struct {
@@ -2093,17 +2093,16 @@ func bookingSlipConflictMessage(status string) string {
 type publicUser struct{ ID, Email, Name string }
 
 func (a *app) currentPublicUser(ctx context.Context, r *http.Request) (publicUser, bool) {
-	c, err := r.Cookie(publicCookieName)
-	if err != nil || c.Value == "" {
+	token, ok := readSessionCookie(r, publicSessionKind)
+	if !ok {
 		return publicUser{}, false
 	}
 	var u publicUser
-	err = a.db.QueryRowContext(ctx, `select u.id,u.email,u.google_name from public_user_sessions s join public_users u on u.id=s.public_user_id where s.token_hash=$1 and s.expires_at>now()`, tokenDigest(c.Value)).Scan(&u.ID, &u.Email, &u.Name)
+	err := a.db.QueryRowContext(ctx, `select u.id,u.email,u.google_name from public_user_sessions s join public_users u on u.id=s.public_user_id where (s.token_hash=$1 or (s.previous_token_hash=$1 and s.previous_valid_until>now())) and s.revoked_at is null and s.idle_expires_at>now() and s.absolute_expires_at>now()`, tokenDigest(token)).Scan(&u.ID, &u.Email, &u.Name)
 	return u, err == nil
 }
 func setPublicCookie(w http.ResponseWriter, r *http.Request, token string) {
-	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-	http.SetCookie(w, &http.Cookie{Name: publicCookieName, Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int((7 * 24 * time.Hour).Seconds())})
+	setSessionCookie(w, r, publicSessionKind, token)
 }
 
 func googleOAuthConfig() *oauth2.Config {
@@ -2121,11 +2120,10 @@ func (a *app) handlePublicAuth(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "claim":
 		a.claimMember(w, r)
 	case r.Method == http.MethodPost && action == "logout":
-		if c, err := r.Cookie(publicCookieName); err == nil {
-			_, _ = a.db.ExecContext(r.Context(), `delete from public_user_sessions where token_hash=$1`, tokenDigest(c.Value))
+		if token, ok := readSessionCookie(r, publicSessionKind); ok {
+			_, _ = a.db.ExecContext(r.Context(), `update public_user_sessions set revoked_at=coalesce(revoked_at,now()) where token_hash=$1 or previous_token_hash=$1`, tokenDigest(token))
 		}
-		secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-		http.SetCookie(w, &http.Cookie{Name: publicCookieName, Path: "/", MaxAge: -1, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
+		clearSessionCookies(w, r, publicSessionKind)
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
@@ -2196,7 +2194,7 @@ func (a *app) finishGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionToken := randHex(24)
-	_, err = tx.ExecContext(r.Context(), `insert into public_user_sessions (token_hash,public_user_id,expires_at) values ($1,$2,now()+interval '7 days')`, tokenDigest(sessionToken), uid)
+	err = insertAuthSession(r.Context(), tx, publicSessionKind, uid, sessionToken)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -2213,7 +2211,7 @@ func (a *app) finishGoogleLogin(w http.ResponseWriter, r *http.Request) {
 func (a *app) publicMe(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
-		writeJSON(w, 401, map[string]string{"error": "not logged in"})
+		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
 	tenant := r.URL.Query().Get("tenant")
@@ -2249,7 +2247,7 @@ func (a *app) claimMember(w http.ResponseWriter, r *http.Request) {
 	}
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
-		writeJSON(w, 401, map[string]string{"error": "not logged in"})
+		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
 	var b struct{ Tenant, Name, Phone string }
@@ -2314,7 +2312,7 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 	token := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/profile/"), "/")
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
-		writeJSON(w, 401, map[string]string{"error": "login required"})
+		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
 	var m memberRecord

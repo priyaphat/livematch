@@ -265,7 +265,7 @@ func main() {
 	}
 
 	log.Printf("LiveMatch backend listening on :%s", port)
-	if err := http.ListenAndServe(":"+port, withCORS(mux)); err != nil {
+	if err := http.ListenAndServe(":"+port, a.withCORS(mux)); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -631,6 +631,45 @@ func (a *app) migrate(ctx context.Context) error {
 			expires_at timestamptz not null,
 			created_at timestamptz not null default now()
 		);
+		alter table admin_sessions add column if not exists session_id text not null default '';
+		alter table admin_sessions add column if not exists previous_token_hash text not null default '';
+		alter table admin_sessions add column if not exists previous_valid_until timestamptz;
+		alter table admin_sessions add column if not exists last_seen_at timestamptz not null default now();
+		alter table admin_sessions add column if not exists idle_expires_at timestamptz;
+		alter table admin_sessions add column if not exists absolute_expires_at timestamptz;
+		alter table admin_sessions add column if not exists rotate_after timestamptz;
+		alter table admin_sessions add column if not exists revoked_at timestamptz;
+		alter table admin_sessions add column if not exists reuse_detected_at timestamptz;
+		update admin_sessions set session_id='auth-'||substr(md5(token_hash||created_at::text),1,24) where session_id='';
+		update admin_sessions set idle_expires_at=least(expires_at,now()+interval '2 hours'),absolute_expires_at=least(expires_at,now()+interval '24 hours'),rotate_after=least(now()+interval '30 minutes',expires_at) where idle_expires_at is null or absolute_expires_at is null or rotate_after is null;
+		create unique index if not exists idx_admin_sessions_session_id on admin_sessions(session_id);
+		create unique index if not exists idx_admin_sessions_previous_token on admin_sessions(previous_token_hash) where previous_token_hash<>'';
+		alter table backoffice_sessions add column if not exists session_id text not null default '';
+		alter table backoffice_sessions add column if not exists previous_token_hash text not null default '';
+		alter table backoffice_sessions add column if not exists previous_valid_until timestamptz;
+		alter table backoffice_sessions add column if not exists last_seen_at timestamptz not null default now();
+		alter table backoffice_sessions add column if not exists idle_expires_at timestamptz;
+		alter table backoffice_sessions add column if not exists absolute_expires_at timestamptz;
+		alter table backoffice_sessions add column if not exists rotate_after timestamptz;
+		alter table backoffice_sessions add column if not exists revoked_at timestamptz;
+		alter table backoffice_sessions add column if not exists reuse_detected_at timestamptz;
+		update backoffice_sessions set session_id='auth-'||substr(md5(token_hash||created_at::text),1,24) where session_id='';
+		update backoffice_sessions set idle_expires_at=least(expires_at,now()+interval '30 minutes'),absolute_expires_at=least(expires_at,now()+interval '12 hours'),rotate_after=least(now()+interval '30 minutes',expires_at) where idle_expires_at is null or absolute_expires_at is null or rotate_after is null;
+		create unique index if not exists idx_backoffice_sessions_session_id on backoffice_sessions(session_id);
+		create unique index if not exists idx_backoffice_sessions_previous_token on backoffice_sessions(previous_token_hash) where previous_token_hash<>'';
+		alter table public_user_sessions add column if not exists session_id text not null default '';
+		alter table public_user_sessions add column if not exists previous_token_hash text not null default '';
+		alter table public_user_sessions add column if not exists previous_valid_until timestamptz;
+		alter table public_user_sessions add column if not exists last_seen_at timestamptz not null default now();
+		alter table public_user_sessions add column if not exists idle_expires_at timestamptz;
+		alter table public_user_sessions add column if not exists absolute_expires_at timestamptz;
+		alter table public_user_sessions add column if not exists rotate_after timestamptz;
+		alter table public_user_sessions add column if not exists revoked_at timestamptz;
+		alter table public_user_sessions add column if not exists reuse_detected_at timestamptz;
+		update public_user_sessions set session_id='auth-'||substr(md5(token_hash||created_at::text),1,24) where session_id='';
+		update public_user_sessions set idle_expires_at=least(expires_at,now()+interval '3 days'),absolute_expires_at=least(expires_at,now()+interval '7 days'),rotate_after=least(now()+interval '30 minutes',expires_at) where idle_expires_at is null or absolute_expires_at is null or rotate_after is null;
+		create unique index if not exists idx_public_sessions_session_id on public_user_sessions(session_id);
+		create unique index if not exists idx_public_sessions_previous_token on public_user_sessions(previous_token_hash) where previous_token_hash<>'';
 		create table if not exists oauth_login_states (
 			state_hash text primary key,
 			nonce text not null,
@@ -1292,7 +1331,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	if action != "state" {
 		user, ok := a.currentAdmin(r.Context(), r)
 		if !ok {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not logged in"})
+			writeAuthFailure(w, r, adminSessionKind)
 			return
 		}
 		owned, err := a.sessionOwnedBy(r.Context(), id, user.ID)
@@ -3838,7 +3877,7 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
-func withCORS(next http.Handler) http.Handler {
+func (a *app) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := randHex(12)
 		requestIP := clientIP(r)
@@ -3887,12 +3926,14 @@ func withCORS(next http.Handler) http.Handler {
 			return
 		}
 		unsafe := r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete
-		_, hasAdminSession := r.Cookie(adminCookieName)
-		_, hasPublicSession := r.Cookie(publicCookieName)
-		if unsafe && (hasAdminSession == nil || hasPublicSession == nil) && r.Header.Get("X-CSRF-Token") != csrfToken {
+		_, hasAdminSession := readSessionCookie(r, adminSessionKind)
+		_, hasBackofficeSession := readSessionCookie(r, backofficeSessionKind)
+		_, hasPublicSession := readSessionCookie(r, publicSessionKind)
+		if unsafe && (hasAdminSession || hasBackofficeSession || hasPublicSession) && r.Header.Get("X-CSRF-Token") != csrfToken {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid csrf token"})
 			return
 		}
+		r = a.refreshRequestSessions(w, r)
 		next.ServeHTTP(w, r)
 	})
 }

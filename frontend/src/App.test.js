@@ -63,6 +63,26 @@ function sessionStatePayload(type = 'liveMatch', extraSession = {}) {
   }
 }
 
+describe('rotating auth session errors', () => {
+  it('clears restored navigation and explains token reuse without retrying', async () => {
+    sessionStorage.setItem('livematch_admin_navigation', JSON.stringify({ sessionId: 'stale-session', tab: 'players' }))
+    const originalFetch = globalThis.fetch
+    const fetchMock = vi.fn(() => Promise.resolve({
+      ok: false,
+      status: 401,
+      json: () => Promise.resolve({ error: 'session_reuse_detected', code: 'session_reuse_detected' })
+    }))
+    globalThis.fetch = fetchMock
+    const wrapper = mount(App)
+    await flushPromises()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(sessionStorage.getItem('livematch_admin_navigation')).toBeNull()
+    expect(wrapper.text()).toContain('ตรวจพบการใช้ Session ที่ผิดปกติ')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
+})
+
 async function openMockedOwnedSession(type = 'liveMatch', extraSession = {}) {
   const statePayload = sessionStatePayload(type, extraSession)
   const originalFetch = globalThis.fetch

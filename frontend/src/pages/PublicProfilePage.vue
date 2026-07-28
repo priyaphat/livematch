@@ -42,6 +42,17 @@ let toastTimer;
 let refreshingExpired = false;
 const upcomingCount = computed(() => Number(state.upcomingCount || 0));
 
+function handleSessionEnded(event) {
+  state.member = null;
+  state.bookings = [];
+  state.payments = [];
+  state.matches = [];
+  state.error = event?.detail?.code === "session_reuse_detected"
+    ? "ตรวจพบการใช้ Session ที่ผิดปกติ กรุณาเข้าสู่ระบบใหม่"
+    : "Session หมดอายุ กรุณาเข้าสู่ระบบใหม่";
+  showProfileToast(state.error);
+}
+
 function historyTotal(section) {
   return Number(state.pagination?.[section]?.total || 0);
 }
@@ -156,6 +167,7 @@ function uploadSlip(event, booking) {
   reader.readAsDataURL(file);
 }
 onMounted(async () => {
+  window.addEventListener("livematch:session-ended", handleSessionEnded);
   await load();
   clock = window.setInterval(async () => {
     state.now = Date.now() + state.clockOffsetMs;
@@ -173,6 +185,7 @@ onMounted(async () => {
   }, 1000);
 });
 onUnmounted(() => {
+  window.removeEventListener("livematch:session-ended", handleSessionEnded);
   window.clearInterval(clock);
   window.clearTimeout(toastTimer);
 });

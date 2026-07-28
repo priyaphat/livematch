@@ -412,6 +412,41 @@ const selectedLiveId = ref(null)
 let toastTimer = null
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
+const terminalSessionCodes = new Set([
+  'session_idle_expired',
+  'session_absolute_expired',
+  'session_revoked',
+  'session_reuse_detected'
+])
+
+function sessionEndedMessage(code) {
+  const messages = language.value === 'en'
+    ? {
+        session_idle_expired: 'Your session expired due to inactivity. Please sign in again.',
+        session_absolute_expired: 'Your session reached its maximum lifetime. Please sign in again.',
+        session_revoked: 'This session has been revoked. Please sign in again.',
+        session_reuse_detected: 'Suspicious session reuse was detected. Please sign in again.'
+      }
+    : {
+        session_idle_expired: 'หมดเวลาใช้งานเนื่องจากไม่มีการใช้งาน กรุณาเข้าสู่ระบบใหม่',
+        session_absolute_expired: 'Session ครบอายุสูงสุดแล้ว กรุณาเข้าสู่ระบบใหม่',
+        session_revoked: 'Session นี้ถูกยกเลิกแล้ว กรุณาเข้าสู่ระบบใหม่',
+        session_reuse_detected: 'ตรวจพบการใช้ Session ที่ผิดปกติ ระบบออกจากระบบเพื่อความปลอดภัย'
+      }
+  return messages[code] || (language.value === 'en' ? 'Please sign in again.' : 'กรุณาเข้าสู่ระบบใหม่')
+}
+
+function handleSessionEnded(event) {
+  const code = event?.detail?.code || 'session_revoked'
+  auth.user = null
+  auth.sessions = []
+  auth.coinLedger = []
+  backoffice.unlocked = false
+  state.session.unlocked = false
+  state.tab = 'home'
+  clearAdminNavigation()
+  showToast(sessionEndedMessage(code))
+}
 
 function showToast(message, type = 'error') {
   if (!message) return
@@ -448,6 +483,10 @@ async function api(path, options = {}) {
     const error = await response.json().catch(() => ({ error: 'request failed' }))
     const requestError = new Error(error.error || 'request failed')
     requestError.status = response.status
+    requestError.code = error.code || error.error || ''
+    if (terminalSessionCodes.has(requestError.code)) {
+      window.dispatchEvent(new CustomEvent('livematch:session-ended', { detail: { code: requestError.code } }))
+    }
     throw requestError
   }
   return response.json()
@@ -601,6 +640,7 @@ async function selectAdminTab(tabId) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleDashboardAnnouncementKeydown)
+  window.addEventListener('livematch:session-ended', handleSessionEnded)
   state.theme = persistTheme(readStoredTheme())
   installDomTranslator(() => document.body)
   const params = new URLSearchParams(window.location.search)
@@ -644,6 +684,7 @@ async function confirmVerifyEmail(token) {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleDashboardAnnouncementKeydown)
+  window.removeEventListener('livematch:session-ended', handleSessionEnded)
   stopSharedRefresh()
   stopAnnouncementAudio()
   announcementAudioCache.dispose()

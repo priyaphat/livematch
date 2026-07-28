@@ -247,10 +247,7 @@ func (a *app) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := randHex(24)
-	if _, err = a.db.ExecContext(r.Context(), `
-		insert into admin_sessions (token_hash, admin_id, expires_at)
-		values ($1, $2, now() + interval '30 days')
-	`, tokenDigest(token), user.ID); err != nil {
+	if err = insertAuthSession(r.Context(), a.db, adminSessionKind, user.ID, token); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -260,7 +257,7 @@ func (a *app) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 	if token, ok := readAdminCookie(r); ok {
-		_, _ = a.db.ExecContext(r.Context(), `delete from admin_sessions where token_hash = $1`, tokenDigest(token))
+		_, _ = a.db.ExecContext(r.Context(), `update admin_sessions set revoked_at=coalesce(revoked_at,now()) where token_hash=$1 or previous_token_hash=$1`, tokenDigest(token))
 	}
 	clearAdminCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -269,7 +266,7 @@ func (a *app) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
 func (a *app) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 	user, ok := a.currentAdmin(r.Context(), r)
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not logged in"})
+		writeAuthFailure(w, r, adminSessionKind)
 		return
 	}
 	a.writeAdminMe(w, r, user)
@@ -469,6 +466,10 @@ func (a *app) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if _, err = tx.ExecContext(r.Context(), `update admin_sessions set revoked_at=coalesce(revoked_at,now()) where admin_id=$1`, adminID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	if err = tx.Commit(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -483,7 +484,7 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 	}
 	user, ok := a.currentAdmin(r.Context(), r)
 	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not logged in"})
+		writeAuthFailure(w, r, adminSessionKind)
 		return
 	}
 	action := strings.TrimPrefix(r.URL.Path, "/api/admin/")
@@ -995,6 +996,10 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !ok {
+		if authFailure(r, backofficeSessionKind) != "" {
+			writeAuthFailure(w, r, backofficeSessionKind)
+			return
+		}
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid backoffice login"})
 		return
 	}
@@ -1802,7 +1807,8 @@ func (a *app) currentAdmin(ctx context.Context, r *http.Request) (adminUser, boo
 			to_char(u.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')
 		from admin_sessions s
 		join admin_users u on u.id = s.admin_id
-		where s.token_hash = $1 and s.expires_at > now()
+		where (s.token_hash=$1 or (s.previous_token_hash=$1 and s.previous_valid_until>now()))
+			and s.revoked_at is null and s.idle_expires_at>now() and s.absolute_expires_at>now()
 	`, tokenDigest(token)).Scan(&user.ID, &user.Email, &user.Name, &user.Verified, &user.Coins, &user.CreatedAt)
 	return user, err == nil
 }
@@ -2232,37 +2238,35 @@ func (a *app) authenticateBackoffice(r *http.Request) (string, bool) {
 }
 
 func (a *app) authenticateBackofficeSession(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie(backofficeCookieName)
-	if err != nil || strings.TrimSpace(cookie.Value) == "" {
+	token, ok := readSessionCookie(r, backofficeSessionKind)
+	if !ok {
 		return "", false
 	}
 	var username string
-	err = a.db.QueryRowContext(r.Context(), `
+	err := a.db.QueryRowContext(r.Context(), `
 		select s.username
 		from backoffice_sessions s
 		join backoffice_users u on u.username=s.username
-		where s.token_hash=$1 and s.expires_at>now() and u.active
-	`, tokenDigest(cookie.Value)).Scan(&username)
+		where (s.token_hash=$1 or (s.previous_token_hash=$1 and s.previous_valid_until>now()))
+			and s.revoked_at is null and s.idle_expires_at>now() and s.absolute_expires_at>now() and u.active
+	`, tokenDigest(token)).Scan(&username)
 	return username, err == nil
 }
 
 func (a *app) issueBackofficeSession(w http.ResponseWriter, r *http.Request, username string) {
 	token := randHex(24)
-	expiresAt := time.Now().Add(30 * 24 * time.Hour)
-	if _, err := a.db.ExecContext(r.Context(), `insert into backoffice_sessions (token_hash,username,expires_at) values ($1,$2,$3)`, tokenDigest(token), username, expiresAt); err != nil {
+	if err := insertAuthSession(r.Context(), a.db, backofficeSessionKind, username, token); err != nil {
 		return
 	}
-	_, _ = a.db.ExecContext(r.Context(), `delete from backoffice_sessions where expires_at<=now()`)
-	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-	http.SetCookie(w, &http.Cookie{Name: backofficeCookieName, Value: token, Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: int((30 * 24 * time.Hour).Seconds())})
+	_, _ = a.db.ExecContext(r.Context(), `delete from backoffice_sessions where absolute_expires_at<=now()-interval '1 day' or revoked_at<=now()-interval '1 day'`)
+	setSessionCookie(w, r, backofficeSessionKind, token)
 }
 
 func (a *app) clearBackofficeSession(w http.ResponseWriter, r *http.Request) {
-	if cookie, err := r.Cookie(backofficeCookieName); err == nil && strings.TrimSpace(cookie.Value) != "" {
-		_, _ = a.db.ExecContext(r.Context(), `delete from backoffice_sessions where token_hash=$1`, tokenDigest(cookie.Value))
+	if token, ok := readSessionCookie(r, backofficeSessionKind); ok {
+		_, _ = a.db.ExecContext(r.Context(), `update backoffice_sessions set revoked_at=coalesce(revoked_at,now()) where token_hash=$1 or previous_token_hash=$1`, tokenDigest(token))
 	}
-	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-	http.SetCookie(w, &http.Cookie{Name: backofficeCookieName, Value: "", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: secure, MaxAge: -1})
+	clearSessionCookies(w, r, backofficeSessionKind)
 }
 
 func normalizeEmail(email string) string {
@@ -2282,37 +2286,15 @@ func nullableCost(cost int, ok bool) any {
 }
 
 func readAdminCookie(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie(adminCookieName)
-	if err != nil || strings.TrimSpace(cookie.Value) == "" {
-		return "", false
-	}
-	return cookie.Value, true
+	return readSessionCookie(r, adminSessionKind)
 }
 
 func setAdminCookie(w http.ResponseWriter, r *http.Request, token string) {
-	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-	http.SetCookie(w, &http.Cookie{
-		Name:     adminCookieName,
-		Value:    token,
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   secure,
-		MaxAge:   int((30 * 24 * time.Hour).Seconds()),
-	})
+	setSessionCookie(w, r, adminSessionKind, token)
 }
 
 func clearAdminCookie(w http.ResponseWriter, r *http.Request) {
-	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-	http.SetCookie(w, &http.Cookie{
-		Name:     adminCookieName,
-		Value:    "",
-		Path:     "/",
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   secure,
-		MaxAge:   -1,
-	})
+	clearSessionCookies(w, r, adminSessionKind)
 }
 
 func sendAppEmail(to, subject, textBody, htmlBody string) error {

@@ -46,6 +46,18 @@ let loadRequest = 0;
 let loadInFlight = false;
 let loadQueued = false;
 
+function handleSessionEnded(event) {
+  state.user = null;
+  state.member = null;
+  state.queues = [];
+  selections.value = [];
+  payment.value = null;
+  qr.value = "";
+  showToast(event?.detail?.code === "session_reuse_detected"
+    ? "ตรวจพบการใช้ Session ที่ผิดปกติ กรุณาเข้าสู่ระบบใหม่"
+    : "Session หมดอายุ กรุณาเข้าสู่ระบบใหม่");
+}
+
 const slots = computed(() => {
   const [openHour, openMinute] = String(state.settings.openTime || "16:00")
     .split(":")
@@ -508,6 +520,7 @@ function upload(event) {
 }
 
 onMounted(async () => {
+  window.addEventListener("livematch:session-ended", handleSessionEnded);
   await load();
   timer = setInterval(load, 30000);
   clock = setInterval(() => {
@@ -545,6 +558,7 @@ onMounted(async () => {
   }, 1000);
 });
 onUnmounted(() => {
+  window.removeEventListener("livematch:session-ended", handleSessionEnded);
   clearInterval(timer);
   clearInterval(clock);
   clearTimeout(toastTimer);
