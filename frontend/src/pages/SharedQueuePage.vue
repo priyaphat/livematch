@@ -54,9 +54,10 @@ onUnmounted(() => {
 })
 
 function teamText(match, side) {
-  return side === 'A'
-    ? `${props.playerName(match.a1)} + ${props.playerName(match.a2)}`
-    : `${props.playerName(match.b1)} + ${props.playerName(match.b2)}`
+  return (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2])
+    .filter((id) => Number(id) > 0)
+    .map((id) => props.playerName(id))
+    .join(' + ')
 }
 
 function matchCourt(match) {

@@ -24,8 +24,8 @@ function mountPlayers(apiRequest, overrides = {}) {
       levelLabel: (value) => value,
       playerDeleteBlockReasons: () => [],
       addPlayer: overrides.addPlayer || vi.fn(),
-      renamePlayer: vi.fn(),
-      deletePlayer: vi.fn(),
+      renamePlayer: overrides.renamePlayer || vi.fn(),
+      deletePlayer: overrides.deletePlayer || vi.fn(),
       sharePlayers: vi.fn(),
       openPlayersQr: vi.fn(),
       saveSettings: vi.fn(),
@@ -40,7 +40,7 @@ function mountPlayers(apiRequest, overrides = {}) {
 afterEach(() => vi.useRealTimers())
 
 describe('PlayersPage member combobox', () => {
-  it('searches only after more than five phone digits and selects a member', async () => {
+  it('searches a phone from the first digit and selects a member', async () => {
     vi.useFakeTimers()
     const member = { id: 'member-1', phone: '0882250419', name: 'สมาชิกทดสอบ' }
     const apiRequest = vi.fn().mockResolvedValue({ items: [member] })
@@ -49,14 +49,10 @@ describe('PlayersPage member combobox', () => {
 
     expect(wrapper.find('[data-testid="member-combobox-row"]').findAll('input')).toHaveLength(1)
 
-    await input.setValue('08822')
-    await vi.advanceTimersByTimeAsync(400)
-    expect(apiRequest).not.toHaveBeenCalled()
-
-    await input.setValue('088225')
+    await input.setValue('0')
     await vi.advanceTimersByTimeAsync(300)
     await Promise.resolve()
-    expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?phone=088225')
+    expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?phone=0')
     expect(wrapper.text()).toContain('0882250419')
     expect(wrapper.text()).toContain('สมาชิกทดสอบ')
 
@@ -66,7 +62,7 @@ describe('PlayersPage member combobox', () => {
     expect(forms.newPlayerName).toBe('สมาชิกทดสอบ')
   })
 
-  it('searches by a two-character name and requires selecting the result to link the member', async () => {
+  it('searches a name from the first character and requires selecting the result to link the member', async () => {
     vi.useFakeTimers()
     const addPlayer = vi.fn()
     const member = { id: 'member-name', phone: '0864407370', name: 'ปรียาภัฒน์' }
@@ -75,13 +71,9 @@ describe('PlayersPage member combobox', () => {
     const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('ป')
-    await vi.advanceTimersByTimeAsync(400)
-    expect(apiRequest).not.toHaveBeenCalled()
-
-    await input.setValue('ปรี')
     await vi.advanceTimersByTimeAsync(300)
     await Promise.resolve()
-    expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?q=%E0%B8%9B%E0%B8%A3%E0%B8%B5')
+    expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?q=%E0%B8%9B')
     expect(wrapper.find('[role="option"]').text()).toContain('ปรียาภัฒน์')
     expect(wrapper.find('[role="option"]').text()).toContain('0864407370')
 
@@ -213,6 +205,32 @@ describe('PlayersPage player sorting', () => {
     expect(rowNames(wrapper)).toEqual(['Beta', 'Charlie', 'Alpha'])
     expect(shuttleHeader.element.parentElement.getAttribute('aria-sort')).toBe('none')
     expect(costHeader.element.parentElement.getAttribute('aria-sort')).toBe('descending')
+  })
+})
+
+describe('PlayersPage linked member protection', () => {
+  it('disables name and phone changes and leaves only removal for a linked member', async () => {
+    const renamePlayer = vi.fn()
+    const deletePlayer = vi.fn().mockResolvedValue()
+    const linkedPlayer = { id: 9, name: 'Linked Member', memberId: 'member-9', games: 0, shuttles: 0, paid: false, active: true }
+    const { wrapper } = mountPlayers(vi.fn(), {
+      state: { players: [linkedPlayer], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
+      renamePlayer,
+      deletePlayer,
+    })
+
+    const removeFromMatchButton = wrapper.get('button[aria-label="ลบสมาชิกออกจาก Match"]')
+    expect(removeFromMatchButton.text()).toContain('ลบออก')
+    await removeFromMatchButton.trigger('click')
+
+    expect(wrapper.get('input[aria-label="แก้ชื่อสมาชิก"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('input[inputmode="tel"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('ชื่อและเบอร์โทรต้องแก้ไขจากระบบสมาชิกเท่านั้น')
+    expect(wrapper.findAll('button').some((button) => button.text() === 'บันทึกชื่อ')).toBe(false)
+
+    await wrapper.findAll('button').find((button) => button.text() === 'ลบชื่อ').trigger('click')
+    expect(deletePlayer).toHaveBeenCalledWith(linkedPlayer)
+    expect(renamePlayer).not.toHaveBeenCalled()
   })
 })
 

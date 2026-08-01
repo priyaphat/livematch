@@ -44,15 +44,16 @@ func TestPhoneSearchDigits(t *testing.T) {
 	}
 }
 
-func TestMemberSearchQuerySupportsNameAndKeepsPhoneThreshold(t *testing.T) {
+func TestMemberSearchQuerySearchesFromFirstCharacter(t *testing.T) {
 	tests := []struct {
 		values url.Values
 		query  string
 		ok     bool
 	}{
-		{url.Values{"q": {"ป"}}, "ป", false},
+		{url.Values{"q": {"ป"}}, "ป", true},
 		{url.Values{"q": {"ปรี"}}, "ปรี", true},
-		{url.Values{"phone": {"08822"}}, "08822", false},
+		{url.Values{"phone": {"0"}}, "0", true},
+		{url.Values{"phone": {"08822"}}, "08822", true},
 		{url.Values{"phone": {"088225"}}, "088225", true},
 		{url.Values{"q": {"สมชาย"}, "phone": {"088225"}}, "สมชาย", true},
 	}

@@ -119,7 +119,7 @@ watch(settingsTabs, (tabs) => {
         <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 lg:col-span-2">
           <div>
             <h2 class="font-black">ยี่ห้อลูกแบด</h2>
-            <p class="text-sm text-stone-500 dark:text-stone-400">ตั้งราคาแต่ละยี่ห้อ และปิดใช้งานยี่ห้อที่ไม่อยากให้เลือกต่อได้</p>
+            <p class="text-sm font-bold text-amber-700 dark:text-amber-300">กรุณาใส่ราคาเต็มต่อลูก</p>
           </div>
           <div class="grid gap-2">
             <div v-for="brand in state.settings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[1fr_7rem_auto]">

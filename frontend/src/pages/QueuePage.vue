@@ -20,6 +20,7 @@ const props = defineProps([
 ])
 
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
 if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
 
 const startMatchSelection = ref(null)
@@ -86,7 +87,7 @@ function confirmStartMatch() {
         <div class="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-start">
           <div>
             <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · ระดับ {{ matchLevelLabel(match) }}</p>
-            <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
+            <h2 class="mt-1 text-xl font-black">{{ teamName(match, 'A') }} vs {{ teamName(match, 'B') }}</h2>
           </div>
           <div class="grid gap-2 sm:min-w-96 sm:grid-cols-[1fr_auto_auto_auto]">
             <select v-model="forms.matchCourts[match.id]" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :disabled="isSessionReadOnly">

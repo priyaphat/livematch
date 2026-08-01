@@ -1,7 +1,7 @@
 <script setup>
 import { Check, ClipboardList, Plus, Shuffle, Users, X } from '@lucide/vue'
 
-defineProps([
+const props = defineProps([
   'state',
   'ui',
   'matchLevelLabel',
@@ -11,6 +11,7 @@ defineProps([
   'playerName',
   'isSessionReadOnly'
 ])
+const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
 </script>
 
 <template>
@@ -44,17 +45,17 @@ defineProps([
         <div class="grid gap-4">
           <div>
             <p class="text-sm font-bold text-stone-500">ระดับ {{ matchLevelLabel(match) }}</p>
-            <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
+            <h2 class="mt-1 text-xl font-black">{{ teamName(match, 'A') }} vs {{ teamName(match, 'B') }}</h2>
           </div>
 
           <div class="grid gap-2 sm:grid-cols-2">
             <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <p class="text-xs font-black text-stone-500 dark:text-stone-400">ทีม A</p>
-              <p class="mt-1 font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }}</p>
+              <p class="mt-1 font-black">{{ teamName(match, 'A') }}</p>
             </div>
             <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <p class="text-xs font-black text-stone-500 dark:text-stone-400">ทีม B</p>
-              <p class="mt-1 font-black">{{ playerName(match.b1) }} + {{ playerName(match.b2) }}</p>
+              <p class="mt-1 font-black">{{ teamName(match, 'B') }}</p>
             </div>
           </div>
 

@@ -29,6 +29,7 @@ const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.
 const shuttleSummary = (match) => props.matchShuttleSummary?.(match) || ''
 const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) || match?.shuttleSequence || '-'
 const latestBrandId = (match) => props.latestShuttleBrandId?.(match) || match?.shuttleSequenceItems?.at?.(-1)?.brandId || 'default'
+const teamName = (match = {}, side) => (side === 'A' ? [match?.a1, match?.a2] : [match?.b1, match?.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
 if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId = ''
 </script>
 
@@ -43,7 +44,7 @@ if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId =
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p class="text-sm text-stone-500">เกมที่ {{ match.id }} · {{ match.court }} · {{ match.status }}</p>
-          <h2 class="mt-1 text-xl font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }} vs {{ playerName(match.b1) }} + {{ playerName(match.b2) }}</h2>
+          <h2 class="mt-1 text-xl font-black">{{ teamName(match, 'A') }} vs {{ teamName(match, 'B') }}</h2>
         </div>
         <span class="rounded-md bg-shuttle-400 px-3 py-1 text-sm font-bold text-stone-900">ลูกแบด {{ match.shuttles }}<span v-if="shuttleSummary(match)"> · {{ shuttleSummary(match) }}</span></span>
       </div>
@@ -142,11 +143,11 @@ if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId =
           </label>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
             <input v-model="forms.finishWinner" type="radio" value="A" :disabled="isSessionReadOnly" />
-            <span class="font-bold">{{ playerName(ui.finishMatch?.a1) }} + {{ playerName(ui.finishMatch?.a2) }}</span>
+            <span class="font-bold">{{ teamName(ui.finishMatch, 'A') }}</span>
           </label>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
             <input v-model="forms.finishWinner" type="radio" value="B" :disabled="isSessionReadOnly" />
-            <span class="font-bold">{{ playerName(ui.finishMatch?.b1) }} + {{ playerName(ui.finishMatch?.b2) }}</span>
+            <span class="font-bold">{{ teamName(ui.finishMatch, 'B') }}</span>
           </label>
         </div>
 

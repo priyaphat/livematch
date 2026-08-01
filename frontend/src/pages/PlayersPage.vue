@@ -93,9 +93,9 @@ const newPlayerPhoneDigits = computed(() => String(props.forms.newPlayerPhone ||
 const newPlayerEntry = computed(() => String(props.forms.newPlayerPhone || '').trim())
 const isPhoneEntry = computed(() => /^[\d\s()+-]+$/.test(newPlayerEntry.value))
 const isPhoneLookup = computed(() => (
-  isPhoneEntry.value && newPlayerPhoneDigits.value.length > 5
+  isPhoneEntry.value && newPlayerPhoneDigits.value.length >= 1
 ))
-const isNameLookup = computed(() => !isPhoneEntry.value && [...newPlayerEntry.value].length >= 2)
+const isNameLookup = computed(() => !isPhoneEntry.value && [...newPlayerEntry.value].length >= 1)
 const isMemberLookup = computed(() => isPhoneLookup.value || isNameLookup.value)
 const memberSearchKey = computed(() => (
   isPhoneLookup.value ? newPlayerPhoneDigits.value : newPlayerEntry.value.toLocaleLowerCase('th-TH')
@@ -182,14 +182,14 @@ function closeEditPlayer() {
 }
 
 async function saveEditPlayer() {
-  if (!editingPlayer.value || !editingName.value.trim()) return
+  if (!editingPlayer.value || editingPlayer.value.memberId || !editingName.value.trim()) return
   await props.renamePlayer(editingPlayer.value, editingName.value, editingClubMember.value, editingMemberId.value)
   closeEditPlayer()
 }
 
 function searchEditingMember() {
   clearTimeout(editingMemberSearchTimer)
-  if (String(editingPhone.value || '').replace(/\D/g, '').length <= 5) {
+  if (editingPlayer.value?.memberId || String(editingPhone.value || '').replace(/\D/g, '').length < 1) {
     editingMemberOptions.value = []
     return
   }
@@ -321,7 +321,7 @@ async function exportExcel() {
             :aria-expanded="memberDropdownOpen"
             aria-controls="new-player-member-options"
             class="h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 pr-10 outline-none transition focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
-            placeholder="พิมพ์ชื่อเพื่อค้นหาหรือเพิ่มขาจร / เบอร์สมาชิกเกิน 5 หลัก"
+            placeholder="พิมพ์ชื่อหรือเบอร์สมาชิกเพื่อค้นหาตั้งแต่ตัวแรก"
             :disabled="isSessionReadOnly"
             @focus="memberDropdownOpen = isMemberLookup"
             @blur="closeMemberDropdownLater"
@@ -364,7 +364,7 @@ async function exportExcel() {
         เพิ่ม
       </button>
       <p class="text-xs font-medium text-stone-500 md:col-span-2">
-        พิมพ์ชื่ออย่างน้อย 2 ตัวอักษรเพื่อค้นสมาชิก หรือกดเพิ่มเป็นขาจรได้ทันที · เบอร์โทรยังค้นเมื่อเกิน 5 หลัก
+        ระบบค้นหาสมาชิกทันทีตั้งแต่พิมพ์ตัวแรก · หากไม่เลือกสมาชิกจากผลค้นหา ชื่อที่พิมพ์จะถูกเพิ่มเป็นขาจรใน Match นี้
       </p>
     </div>
 
@@ -472,11 +472,12 @@ async function exportExcel() {
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md border border-court-200 bg-court-500/10 px-2 text-xs font-bold text-court-700 dark:border-court-900/60 dark:text-court-300"
             :disabled="isSessionReadOnly"
-            aria-label="แก้ไขสมาชิก"
+            :aria-label="player.memberId ? 'ลบสมาชิกออกจาก Match' : 'แก้ไขสมาชิก'"
             @click.stop="openEditPlayer(player)"
           >
-            <Pencil class="h-3.5 w-3.5" />
-            แก้ไข
+            <Trash2 v-if="player.memberId" class="h-3.5 w-3.5" />
+            <Pencil v-else class="h-3.5 w-3.5" />
+            {{ player.memberId ? 'ลบออก' : 'แก้ไข' }}
           </button>
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
@@ -583,29 +584,30 @@ async function exportExcel() {
           <input
             v-model="editingName"
             class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 text-base font-black outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800"
-            :disabled="isSessionReadOnly"
+            :disabled="isSessionReadOnly || Boolean(editingPlayer.memberId)"
             aria-label="แก้ชื่อสมาชิก"
             @keyup.enter="saveEditPlayer"
           />
         </label>
 
-        <label class="mt-3 grid gap-2 text-sm font-bold">
+        <label class="mt-3 grid gap-2 text-sm font-bold" :class="editingPlayer.memberId ? 'opacity-60' : ''">
           ผูกสมาชิกด้วยเบอร์โทร
-          <input v-model="editingPhone" inputmode="tel" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="กรอกมากกว่า 5 หลัก" @input="searchEditingMember" />
+          <input v-model="editingPhone" inputmode="tel" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :disabled="isSessionReadOnly || Boolean(editingPlayer.memberId)" :placeholder="editingPlayer.memberId ? 'จัดการข้อมูลที่ระบบสมาชิก' : 'พิมพ์เบอร์เพื่อค้นหาตั้งแต่ตัวแรก'" @input="searchEditingMember" />
         </label>
-        <select v-if="editingMemberOptions.length" v-model="editingMemberId" class="mt-2 h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="selectEditingMember">
+        <select v-if="editingMemberOptions.length && !editingPlayer.memberId" v-model="editingMemberId" class="mt-2 h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="selectEditingMember">
           <option value="">ไม่ผูกสมาชิก</option>
           <option v-for="member in editingMemberOptions" :key="member.id" :value="member.id">{{ member.phone }} · {{ member.name }}</option>
         </select>
-        <p v-else-if="editingMemberId" class="mt-2 text-xs font-bold text-court-700">เชื่อมกับสมาชิกแล้ว</p>
+        <p v-else-if="editingMemberId" class="mt-2 rounded-md bg-court-500/10 p-3 text-xs font-bold text-court-700 dark:text-court-300">เชื่อมกับระบบสมาชิกแล้ว ชื่อและเบอร์โทรต้องแก้ไขจากระบบสมาชิกเท่านั้น</p>
 
         <div class="mt-4 grid gap-2 sm:grid-cols-2">
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="saveEditPlayer">
+          <button v-if="!editingPlayer.memberId" class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="saveEditPlayer">
             <Save class="h-4 w-4" />
             บันทึกชื่อ
           </button>
           <button
             class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-rose-200 bg-rose-50 px-4 text-sm font-bold text-rose-700 disabled:cursor-not-allowed disabled:opacity-45 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300"
+            :class="editingPlayer.memberId ? 'sm:col-span-2' : ''"
             :disabled="isSessionReadOnly || deleteBlockReasons.length > 0"
             @click="deleteEditPlayer"
           >

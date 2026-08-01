@@ -412,6 +412,20 @@ func TestCreateManualPendingMatchKeepsSelectedPositionsWithoutCoupon(t *testing.
 	}
 }
 
+func TestCreateManualPendingMatchSupportsOneOrTwoPlayersPerTeam(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players:  []Player{{ID: 1, Active: true}, {ID: 2, Active: true}, {ID: 3, Active: true}},
+	}
+	created, err := createManualPendingMatch(&state, Match{A1: 1, B1: 2, B2: 3, Level: "middle"})
+	if err != nil {
+		t.Fatalf("expected 1v2 match to be accepted: %v", err)
+	}
+	if created.A2 != 0 || created.B2 != 3 || created.ShuttlePricingMode != shuttlePricingSplit {
+		t.Fatalf("unexpected flexible team match: %#v", created)
+	}
+}
+
 func TestCreateManualPendingMatchRejectsUnavailablePlayer(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"middle"}},
@@ -650,6 +664,42 @@ func TestPlayerShuttleCostSumsMixedBrandPrices(t *testing.T) {
 		if got := playerShuttleCost(state, player.ID); got != 265 {
 			t.Fatalf("expected mixed brand shuttle cost 265 for player %d, got %d", player.ID, got)
 		}
+	}
+}
+
+func TestSplitMatchShuttleCostUsesActualPlayerCountAndStableRemainder(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{ShuttleFee: 85, ShuttleBrands: []ShuttleBrand{{ID: "default", Price: 85, Active: true}}},
+		History: []Match{{
+			ID: 1, A1: 1, A2: 2, B1: 3, Status: "finished", ShuttlePricingMode: shuttlePricingSplit,
+			Shuttles: 1, ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "default", Number: 1}},
+		}},
+	}
+	want := map[int]int64{1: 2834, 2: 2833, 3: 2833}
+	for playerID, expected := range want {
+		if got := playerShuttleCostSatang(state, playerID); got != expected {
+			t.Fatalf("player %d: expected %d satang, got %d", playerID, expected, got)
+		}
+	}
+	state.Session.Type = "liveMatch"
+	state.Players = []Player{{ID: 1, Name: "A1", Active: true}}
+	summary := playerPaymentSummary(state, state.Players[0])
+	if summary.TotalSatang != 2834 || summary.TotalTHB != 28.34 {
+		t.Fatalf("expected exact payment total 28.34 / 2834 satang, got %#v", summary)
+	}
+}
+
+func TestLegacyMatchUsesSnapshottedShuttlePrice(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{ShuttleFee: 120, ShuttleBrands: []ShuttleBrand{{ID: "default", Price: 120, Active: true}}},
+		History: []Match{{
+			ID: 1, A1: 1, B1: 2, Status: "finished", ShuttlePricingMode: shuttlePricingLegacy,
+			LegacyShuttleFee: 85, ShuttlePriceSnapshot: []ShuttleBrand{{ID: "default", Price: 85}},
+			Shuttles: 1, ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "default", Number: 1}},
+		}},
+	}
+	if got := playerShuttleCostSatang(state, 1); got != 8500 {
+		t.Fatalf("expected legacy snapshot 8500 satang after setting changed, got %d", got)
 	}
 }
 
