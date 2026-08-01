@@ -26,13 +26,17 @@ const exportError = ref('')
 const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.settings?.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
 const shuttleSummary = (match) => props.matchShuttleSummary?.(match) || ''
 const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) || match?.shuttleSequence || '-'
+const teamText = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
+const formatAmount = (value) => {
+  const amount = Number(value || 0)
+  const hasSatang = Math.round(amount * 100) % 100 !== 0
+  return amount.toLocaleString('th-TH', { minimumFractionDigits: hasSatang ? 2 : 0, maximumFractionDigits: 2 })
+}
 
 function winnerText(match) {
   if (!match.winner) return '-'
   if (match.winner === 'draw') return 'เสมอ'
-  return match.winner === 'A'
-    ? `${props.playerName(match.a1)} + ${props.playerName(match.a2)}`
-    : `${props.playerName(match.b1)} + ${props.playerName(match.b2)}`
+  return teamText(match, match.winner)
 }
 
 function resultScoreText(match) {
@@ -140,7 +144,7 @@ async function exportExcel() {
           <span class="w-fit rounded-md px-2 py-1 text-xs font-black" :class="event.paid ? 'bg-court-500/10 text-court-700 dark:text-court-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'">
             {{ event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน' }}
           </span>
-          <p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ Number(event.amount || 0).toLocaleString('th-TH') }}</p>
+          <p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ formatAmount(event.amount) }}</p>
         </article>
       </div>
     </div>
@@ -181,7 +185,7 @@ async function exportExcel() {
             <span v-if="match.winner === 'A'" class="rounded-md bg-court-500/10 px-2 py-1 text-xs font-black text-court-700 dark:text-court-300">ชนะ</span>
             <span v-else-if="match.winner === 'draw'" class="rounded-md bg-shuttle-400/20 px-2 py-1 text-xs font-black text-amber-800 dark:text-shuttle-400">เสมอ</span>
           </div>
-          <p class="text-lg font-black">{{ playerName(match.a1) }} + {{ playerName(match.a2) }}</p>
+          <p class="text-lg font-black">{{ teamText(match, 'A') }}</p>
         </div>
 
         <div class="grid gap-2 rounded-md border border-stone-100 p-3 dark:border-stone-800">
@@ -190,7 +194,7 @@ async function exportExcel() {
             <span v-if="match.winner === 'B'" class="rounded-md bg-court-500/10 px-2 py-1 text-xs font-black text-court-700 dark:text-court-300">ชนะ</span>
             <span v-else-if="match.winner === 'draw'" class="rounded-md bg-shuttle-400/20 px-2 py-1 text-xs font-black text-amber-800 dark:text-shuttle-400">เสมอ</span>
           </div>
-          <p class="text-lg font-black">{{ playerName(match.b1) }} + {{ playerName(match.b2) }}</p>
+          <p class="text-lg font-black">{{ teamText(match, 'B') }}</p>
         </div>
 
         <div class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">

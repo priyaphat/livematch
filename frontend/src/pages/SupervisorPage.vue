@@ -73,7 +73,7 @@ const rankClass = (index) => {
   return 'bg-paper-100 text-stone-700 dark:bg-stone-800 dark:text-stone-200'
 }
 const winnerText = (match) => ({ A: 'ทีม A ชนะ', B: 'ทีม B ชนะ', draw: 'เสมอ' }[match.winner] || 'ไม่ระบุผู้ชนะ')
-const teamText = (match, side) => side === 'A' ? `${match.a1Name} + ${match.a2Name}` : `${match.b1Name} + ${match.b2Name}`
+const teamText = (match, side) => (side === 'A' ? [match.a1Name, match.a2Name] : [match.b1Name, match.b2Name]).filter(Boolean).join(' + ')
 const playerScore = (player) => (player.wins || 0) + (player.draws || 0) * 0.5
 const paidPlayers = computed(() => detail.data?.players?.filter((player) => player.paid).length || 0)
 const unpaidPlayers = computed(() => detail.data?.players?.filter((player) => !player.paid).length || 0)

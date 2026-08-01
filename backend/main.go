@@ -110,12 +110,16 @@ type Player struct {
 }
 
 type PlayerPaymentItem struct {
-	Key         string `json:"key"`
-	Label       string `json:"label"`
-	Description string `json:"description,omitempty"`
-	Quantity    int    `json:"quantity"`
-	UnitAmount  int    `json:"unitAmountThb"`
-	Amount      int    `json:"amountThb"`
+	Key              string  `json:"key"`
+	Label            string  `json:"label"`
+	Description      string  `json:"description,omitempty"`
+	Quantity         int     `json:"quantity"`
+	UnitAmount       int     `json:"-"`
+	Amount           int     `json:"-"`
+	UnitAmountTHB    float64 `json:"unitAmountThb"`
+	AmountTHB        float64 `json:"amountThb"`
+	UnitAmountSatang int64   `json:"unitAmountSatang"`
+	AmountSatang     int64   `json:"amountSatang"`
 }
 
 type PlayerPaymentSummary struct {
@@ -124,7 +128,9 @@ type PlayerPaymentSummary struct {
 	SessionType string              `json:"sessionType"`
 	Paid        bool                `json:"paid"`
 	Items       []PlayerPaymentItem `json:"items"`
-	Total       int                 `json:"totalThb"`
+	Total       int                 `json:"-"`
+	TotalTHB    float64             `json:"totalThb"`
+	TotalSatang int64               `json:"totalSatang"`
 	Calculated  time.Time           `json:"calculatedAt"`
 }
 
@@ -170,7 +176,15 @@ type Match struct {
 	StartedAt              string           `json:"startedAt"`
 	EndedAt                string           `json:"endedAt"`
 	Note                   string           `json:"note"`
+	ShuttlePricingMode     string           `json:"shuttlePricingMode"`
+	ShuttlePriceSnapshot   []ShuttleBrand   `json:"shuttlePriceSnapshot,omitempty"`
+	LegacyShuttleFee       int              `json:"legacyShuttleFee,omitempty"`
 }
+
+const (
+	shuttlePricingLegacy = "legacy_per_player"
+	shuttlePricingSplit  = "split_per_match"
+)
 
 type LiveShareHours struct {
 	CourtHours   map[string][]int `json:"courtHours"`
@@ -402,6 +416,9 @@ func (a *app) migrate(ctx context.Context) error {
 			started_at text not null default '',
 			ended_at text not null default '',
 			note text not null default '',
+			shuttle_pricing_mode text not null default 'legacy_per_player',
+			shuttle_price_snapshot jsonb not null default '[]'::jsonb,
+			legacy_shuttle_fee integer not null default 0,
 			primary key (session_id, id)
 		);
 		alter table matches drop constraint if exists matches_phase_check;
@@ -412,6 +429,21 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add column if not exists shuttle_returned boolean not null default false;
 		alter table matches add column if not exists returned_shuttle_brand_id text not null default '';
 		alter table matches add column if not exists returned_shuttle_number integer not null default 0;
+		alter table matches add column if not exists shuttle_pricing_mode text not null default 'legacy_per_player';
+		alter table matches add column if not exists shuttle_price_snapshot jsonb not null default '[]'::jsonb;
+		alter table matches add column if not exists legacy_shuttle_fee integer not null default 0;
+		alter table matches drop constraint if exists matches_shuttle_pricing_mode_check;
+		alter table matches add constraint matches_shuttle_pricing_mode_check check (shuttle_pricing_mode in ('legacy_per_player','split_per_match'));
+		update matches m
+		set shuttle_price_snapshot = case
+		      when jsonb_array_length(s.shuttle_brands) = 0 then jsonb_build_array(jsonb_build_object('id', 'default', 'name', 'ลูกแบดทั่วไป', 'price', s.shuttle_fee, 'active', true))
+		      else s.shuttle_brands
+		    end,
+		    legacy_shuttle_fee = s.shuttle_fee
+		from session_settings s
+		where m.session_id = s.session_id
+		  and m.shuttle_pricing_mode = 'legacy_per_player'
+		  and m.shuttle_price_snapshot = '[]'::jsonb;
 		create table if not exists returned_shuttles (
 			session_id text not null references sessions(id) on delete cascade,
 			brand_id text not null default 'default',
@@ -707,9 +739,12 @@ func (a *app) migrate(ctx context.Context) error {
 			member_id text references members(id) on delete set null,
 			paid boolean not null,
 			amount_thb integer not null default 0,
+			amount_satang bigint not null default 0,
 			actor_id text not null default '',
 			created_at timestamptz not null default now()
 		);
+		alter table player_payment_events add column if not exists amount_satang bigint not null default 0;
+		update player_payment_events set amount_satang = amount_thb::bigint * 100 where amount_satang = 0 and amount_thb <> 0;
 		create table if not exists booking_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
 			public_token_hash text not null unique,
@@ -1180,16 +1215,16 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	}
 
 	type paymentPlayer struct {
-		ID       int    `json:"id"`
-		Name     string `json:"name"`
-		Games    int    `json:"games"`
-		Wins     int    `json:"wins"`
-		Draws    int    `json:"draws"`
-		Losses   int    `json:"losses"`
-		Shuttles int    `json:"shuttles"`
-		Paid     bool   `json:"paid"`
-		Active   bool   `json:"active"`
-		Cost     int    `json:"cost"`
+		ID       int     `json:"id"`
+		Name     string  `json:"name"`
+		Games    int     `json:"games"`
+		Wins     int     `json:"wins"`
+		Draws    int     `json:"draws"`
+		Losses   int     `json:"losses"`
+		Shuttles int     `json:"shuttles"`
+		Paid     bool    `json:"paid"`
+		Active   bool    `json:"active"`
+		Cost     float64 `json:"cost"`
 	}
 	type historyMatch struct {
 		ID         int    `json:"id"`
@@ -1219,9 +1254,9 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 		SessionFee    int             `json:"sessionFee"`
 		Players       []paymentPlayer `json:"players"`
 		History       []historyMatch  `json:"history"`
-		TotalRevenue  int             `json:"totalRevenue"`
-		PaidRevenue   int             `json:"paidRevenue"`
-		UnpaidRevenue int             `json:"unpaidRevenue"`
+		TotalRevenue  float64         `json:"totalRevenue"`
+		PaidRevenue   float64         `json:"paidRevenue"`
+		UnpaidRevenue float64         `json:"unpaidRevenue"`
 	}{Players: []paymentPlayer{}, History: []historyMatch{}}
 
 	if err := a.db.QueryRowContext(r.Context(), `
@@ -1238,13 +1273,17 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	state, err := a.loadState(r.Context(), detail.SessionID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	rows, err := a.db.QueryContext(r.Context(), `
-		select id, name, games, wins, draws, losses, shuttles, paid, active,
-			$2 + shuttles * $3 + ceiling($4::numeric / nullif((select count(*) from players ap where ap.session_id = $1 and ap.active), 0))::int as cost
+		select id, name, games, wins, draws, losses, shuttles, paid, active
 		from players
 		where session_id = $1
 		order by active desc, paid asc, id asc
-	`, detail.SessionID, detail.EntryFee, detail.ShuttleFee, detail.SessionFee)
+	`, detail.SessionID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1252,9 +1291,15 @@ func (a *app) handleSupervisorSessionDetail(w http.ResponseWriter, r *http.Reque
 	defer rows.Close()
 	for rows.Next() {
 		var player paymentPlayer
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Cost); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
+		}
+		for _, statePlayer := range state.Players {
+			if statePlayer.ID == player.ID {
+				player.Cost = playerPaymentSummary(state, statePlayer).TotalTHB
+				break
+			}
 		}
 		detail.Players = append(detail.Players, player)
 		detail.TotalRevenue += player.Cost
@@ -1364,7 +1409,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
 		rows, err := a.db.QueryContext(r.Context(), `
-			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb,
+			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb, e.amount_satang,
 			       to_char(e.created_at at time zone 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI')
 			from player_payment_events e
 			left join players p on p.session_id=e.session_id and p.id=e.player_id
@@ -1378,18 +1423,18 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		defer rows.Close()
 		items := []map[string]any{}
 		for rows.Next() {
-			var eventID int64
+			var eventID, amountSatang int64
 			var playerID, amount int
 			var playerName, createdAt string
 			var paid bool
-			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &createdAt); err != nil {
+			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &amountSatang, &createdAt); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
 			if playerName == "" {
 				playerName = fmt.Sprintf("ผู้เล่น #%d", playerID)
 			}
-			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": amount, "createdAt": createdAt})
+			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": thbFromSatang(amountSatang), "amountThb": thbFromSatang(amountSatang), "amountSatang": amountSatang, "createdAt": createdAt})
 		}
 		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
 			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
@@ -1792,15 +1837,18 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 				if player.ID != playerID {
 					continue
 				}
-				amount := playerEntryFee(state, player) + playerShuttleCost(state, player.ID) + sessionFeeShare(state)
+				summary := playerPaymentSummary(state, player)
+				amount := summary.Total
+				amountSatang := summary.TotalSatang
 				if isLiveShare(state) {
 					amount = liveSharePlayerCost(state, player)
+					amountSatang = int64(amount) * 100
 				}
 				var memberID any
 				if player.MemberID != "" {
 					memberID = player.MemberID
 				}
-				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,actor_id) values ($1,$2,$3,$4,$5,$6)`, state.Session.ID, player.ID, memberID, player.Paid, amount, user.ID)
+				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,actor_id) values ($1,$2,$3,$4,$5,$6,$7)`, state.Session.ID, player.ID, memberID, player.Paid, amount, amountSatang, user.ID)
 				break
 			}
 		}
@@ -1908,12 +1956,20 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		if err != nil {
 			return err
 		}
+		priceSnapshot, err := json.Marshal(match.ShuttlePriceSnapshot)
+		if err != nil {
+			return err
+		}
+		pricingMode := match.ShuttlePricingMode
+		if pricingMode == "" {
+			pricingMode = shuttlePricingLegacy
+		}
 		_, err = tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -2084,7 +2140,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
 		from matches
 		where session_id = $1
 		order by id
@@ -2096,12 +2152,15 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var phase string
 		var match Match
-		var seqItemsRaw []byte
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note); err != nil {
+		var seqItemsRaw, priceSnapshotRaw []byte
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
 			return SessionState{}, err
 		}
 		if len(seqItemsRaw) > 0 {
 			_ = json.Unmarshal(seqItemsRaw, &match.ShuttleSeqItems)
+		}
+		if len(priceSnapshotRaw) > 0 {
+			_ = json.Unmarshal(priceSnapshotRaw, &match.ShuttlePriceSnapshot)
 		}
 		match.ShuttleSeqItems = normalizedShuttleSeqItems(match, state)
 		switch phase {
@@ -2253,13 +2312,14 @@ func randomMatch(state *SessionState) error {
 		teams := arrangeTeamsByTeammateHistory(selected, state.Couples, state.History)
 		state.NextIDs.Pending++
 		state.Pending = append(state.Pending, Match{
-			ID:    -state.NextIDs.Pending,
-			Court: "-",
-			Level: level,
-			A1:    teams[0],
-			A2:    teams[1],
-			B1:    teams[2],
-			B2:    teams[3],
+			ID:                 -state.NextIDs.Pending,
+			Court:              "-",
+			Level:              level,
+			A1:                 teams[0],
+			A2:                 teams[1],
+			B1:                 teams[2],
+			B2:                 teams[3],
+			ShuttlePricingMode: shuttlePricingSplit,
 		})
 		for _, id := range selected {
 			busy[id] = true
@@ -2274,10 +2334,16 @@ func randomMatch(state *SessionState) error {
 
 func createManualPendingMatch(state *SessionState, requested Match) (Match, error) {
 	ids := []int{requested.A1, requested.A2, requested.B1, requested.B2}
+	if requested.A1 <= 0 || requested.B1 <= 0 {
+		return Match{}, errors.New("กรุณาเลือกผู้เล่น A1 และ B1")
+	}
 	selected := map[int]bool{}
 	for _, id := range ids {
-		if id <= 0 || selected[id] {
-			return Match{}, errors.New("กรุณาเลือกผู้เล่นให้ครบ 4 คนโดยไม่ซ้ำกัน")
+		if id <= 0 {
+			continue
+		}
+		if selected[id] {
+			return Match{}, errors.New("ผู้เล่นในทีมต้องไม่ซ้ำกัน")
 		}
 		selected[id] = true
 	}
@@ -2289,6 +2355,9 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 		}
 	}
 	for _, id := range ids {
+		if id <= 0 {
+			continue
+		}
 		player := playerByID(state.Players, id)
 		if player == nil || !player.Active || player.Paid || busy[id] {
 			return Match{}, errors.New("มีผู้เล่นที่ไม่ว่างหรือไม่สามารถจัดทีมได้")
@@ -2322,13 +2391,14 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 
 	state.NextIDs.Pending++
 	created := Match{
-		ID:    -state.NextIDs.Pending,
-		Court: "-",
-		Level: level,
-		A1:    requested.A1,
-		A2:    requested.A2,
-		B1:    requested.B1,
-		B2:    requested.B2,
+		ID:                 -state.NextIDs.Pending,
+		Court:              "-",
+		Level:              level,
+		A1:                 requested.A1,
+		A2:                 requested.A2,
+		B1:                 requested.B1,
+		B2:                 requested.B2,
+		ShuttlePricingMode: shuttlePricingSplit,
 	}
 	state.Pending = append(state.Pending, created)
 	return created, nil
@@ -2936,9 +3006,9 @@ func dashboardPayload(state SessionState) map[string]any {
 			"averageGames":          averageGames(state),
 			"minGames":              minGames(state),
 			"maxGames":              maxGames(state),
-			"totalRevenue":          totalRevenue(state),
-			"paidRevenue":           paidRevenue(state),
-			"unpaidRevenue":         totalRevenue(state) - paidRevenue(state),
+			"totalRevenue":          totalRevenueExact(state),
+			"paidRevenue":           paidRevenueExact(state),
+			"unpaidRevenue":         totalRevenueExact(state) - paidRevenueExact(state),
 			"paymentPercent":        paymentPercent(state),
 			"liveShareCourtHours":   liveShareCourtHours(state),
 			"liveSharePlayerHours":  liveSharePlayerHours(state),
@@ -3053,6 +3123,19 @@ func totalRevenue(state SessionState) int {
 	return total
 }
 
+func totalRevenueExact(state SessionState) float64 {
+	if isLiveShare(state) {
+		return float64(liveShareTotalCost(state))
+	}
+	var totalSatang int64
+	for _, player := range state.Players {
+		if player.Active {
+			totalSatang += playerPaymentSummary(state, player).TotalSatang
+		}
+	}
+	return thbFromSatang(totalSatang)
+}
+
 func paidRevenue(state SessionState) int {
 	if isLiveShare(state) {
 		total := 0
@@ -3073,6 +3156,19 @@ func paidRevenue(state SessionState) int {
 	return total
 }
 
+func paidRevenueExact(state SessionState) float64 {
+	if isLiveShare(state) {
+		return float64(paidRevenue(state))
+	}
+	var totalSatang int64
+	for _, player := range state.Players {
+		if player.Active && player.Paid {
+			totalSatang += playerPaymentSummary(state, player).TotalSatang
+		}
+	}
+	return thbFromSatang(totalSatang)
+}
+
 func playerEntryFee(state SessionState, player Player) int {
 	if player.ClubMember {
 		return state.Settings.ClubEntryFee
@@ -3090,23 +3186,87 @@ func shuttleBrandPrice(state SessionState, brandID string) int {
 	return state.Settings.ShuttleFee
 }
 
-func playerShuttleCost(state SessionState, playerID int) int {
-	total := 0
-	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
-		if !slices.Contains(matchPlayers(match), playerID) {
-			continue
-		}
-		if isCancelledMatch(match) && match.ShuttleReturned {
-			continue
-		}
-		for _, item := range normalizedShuttleSeqItems(match, state) {
-			total += shuttleBrandPrice(state, item.BrandID)
-		}
-		if len(normalizedShuttleSeqItems(match, state)) == 0 {
-			total += match.Shuttles * state.Settings.ShuttleFee
+func shuttleBrandPriceFromSnapshot(match Match, brandID string) int {
+	brandID = normalizedBrandID(brandID)
+	for _, brand := range match.ShuttlePriceSnapshot {
+		if normalizedBrandID(brand.ID) == brandID {
+			return brand.Price
 		}
 	}
+	return match.LegacyShuttleFee
+}
+
+func matchShuttleTotalSatang(state SessionState, match Match) int64 {
+	if isCancelledMatch(match) && match.ShuttleReturned {
+		return 0
+	}
+	items := normalizedShuttleSeqItems(match, state)
+	var total int64
+	for _, item := range items {
+		price := shuttleBrandPrice(state, item.BrandID)
+		if match.ShuttlePricingMode != shuttlePricingSplit {
+			price = shuttleBrandPriceFromSnapshot(match, item.BrandID)
+			if price == 0 {
+				price = shuttleBrandPrice(state, item.BrandID)
+			}
+		}
+		total += int64(price) * 100
+	}
+	if len(items) == 0 && match.Shuttles > 0 {
+		price := state.Settings.ShuttleFee
+		if match.ShuttlePricingMode != shuttlePricingSplit && match.LegacyShuttleFee > 0 {
+			price = match.LegacyShuttleFee
+		}
+		total = int64(match.Shuttles*price) * 100
+	}
 	return total
+}
+
+func playerMatchShuttleCostSatang(state SessionState, match Match, playerID int) int64 {
+	players := matchPlayers(match)
+	position := slices.Index(players, playerID)
+	if position < 0 {
+		return 0
+	}
+	total := matchShuttleTotalSatang(state, match)
+	if match.ShuttlePricingMode != shuttlePricingSplit || len(players) == 0 {
+		return total
+	}
+	share := total / int64(len(players))
+	if int64(position) < total%int64(len(players)) {
+		share++
+	}
+	return share
+}
+
+func playerShuttleCostSatang(state SessionState, playerID int) int64 {
+	var total int64
+	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
+		total += playerMatchShuttleCostSatang(state, match, playerID)
+	}
+	return total
+}
+
+func playerShuttleCost(state SessionState, playerID int) int {
+	return int((playerShuttleCostSatang(state, playerID) + 99) / 100)
+}
+
+func thbFromSatang(amount int64) float64 { return float64(amount) / 100 }
+
+func paymentItem(key, label, description string, quantity int, unitSatang, amountSatang int64) PlayerPaymentItem {
+	return PlayerPaymentItem{
+		Key: key, Label: label, Description: description, Quantity: quantity,
+		UnitAmount: int((unitSatang + 99) / 100), Amount: int((amountSatang + 99) / 100),
+		UnitAmountTHB: thbFromSatang(unitSatang), AmountTHB: thbFromSatang(amountSatang),
+		UnitAmountSatang: unitSatang, AmountSatang: amountSatang,
+	}
+}
+
+func addPaymentItem(summary *PlayerPaymentSummary, item PlayerPaymentItem) {
+	summary.Items = append(summary.Items, item)
+	summary.TotalSatang += item.AmountSatang
+	summary.TotalTHB = thbFromSatang(summary.TotalSatang)
+	summary.Total = int((summary.TotalSatang + 99) / 100)
 }
 
 func shuttleBrandNameForPayment(state SessionState, brandID string) string {
@@ -3119,11 +3279,12 @@ func shuttleBrandNameForPayment(state SessionState, brandID string) string {
 	return defaultShuttleBrandName
 }
 
-func playerPaymentSummary(state SessionState, player Player) PlayerPaymentSummary {
-	summary := PlayerPaymentSummary{
+func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaymentSummary) {
+	summary = PlayerPaymentSummary{
 		PlayerID: player.ID, PlayerName: player.Name, SessionType: state.Session.Type,
 		Paid: player.Paid, Items: []PlayerPaymentItem{}, Calculated: time.Now().UTC(),
 	}
+	defer finalizePaymentSummary(&summary)
 	if isLiveShare(state) {
 		activeHours := liveShareActiveHours(state)
 		playerHours := normalizedHourSet(state.LiveShare.PlayerHours[strconv.Itoa(player.ID)])
@@ -3159,6 +3320,7 @@ func playerPaymentSummary(state SessionState, player Player) PlayerPaymentSummar
 	}
 	lines := []shuttleLine{}
 	lineIndex := map[string]int{}
+	hasSplitPricing := false
 	addShuttles := func(brandID string, count int) {
 		if count <= 0 {
 			return
@@ -3175,6 +3337,9 @@ func playerPaymentSummary(state SessionState, player Player) PlayerPaymentSummar
 		if !slices.Contains(matchPlayers(match), player.ID) || (isCancelledMatch(match) && match.ShuttleReturned) {
 			continue
 		}
+		if match.ShuttlePricingMode == shuttlePricingSplit {
+			hasSplitPricing = true
+		}
 		items := normalizedShuttleSeqItems(match, state)
 		if len(items) == 0 {
 			addShuttles(defaultShuttleBrandID, match.Shuttles)
@@ -3184,12 +3349,30 @@ func playerPaymentSummary(state SessionState, player Player) PlayerPaymentSummar
 			addShuttles(item.BrandID, 1)
 		}
 	}
-	for _, line := range lines {
+	allocatedShuttleSatang := playerShuttleCostSatang(state, player.ID)
+	for lineNumber, line := range lines {
 		unitAmount := shuttleBrandPrice(state, line.brandID)
 		amount := line.count * unitAmount
+		unitAmountSatang := int64(unitAmount) * 100
+		amountSatang := int64(amount) * 100
+		label := "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID)
+		quantity := line.count
+		if hasSplitPricing {
+			if lineNumber > 0 {
+				continue
+			}
+			if lineNumber == 0 {
+				amountSatang = allocatedShuttleSatang
+				amount = int((amountSatang + 99) / 100)
+			}
+			unitAmount = amount
+			unitAmountSatang = amountSatang
+			quantity = 1
+			label = "ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)"
+		}
 		summary.Items = append(summary.Items, PlayerPaymentItem{
-			Key: "shuttle-" + line.brandID, Label: "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID),
-			Quantity: line.count, UnitAmount: unitAmount, Amount: amount,
+			Key: "shuttle-" + line.brandID, Label: label,
+			Quantity: quantity, UnitAmount: unitAmount, Amount: amount, UnitAmountSatang: unitAmountSatang, AmountSatang: amountSatang,
 		})
 		summary.Total += amount
 	}
@@ -3207,6 +3390,24 @@ func playerPaymentSummary(state SessionState, player Player) PlayerPaymentSummar
 		summary.Total += sessionShare
 	}
 	return summary
+}
+
+func finalizePaymentSummary(summary *PlayerPaymentSummary) {
+	summary.TotalSatang = 0
+	for index := range summary.Items {
+		item := &summary.Items[index]
+		if item.UnitAmountSatang == 0 && item.UnitAmount != 0 {
+			item.UnitAmountSatang = int64(item.UnitAmount) * 100
+		}
+		if item.AmountSatang == 0 && item.Amount != 0 {
+			item.AmountSatang = int64(item.Amount) * 100
+		}
+		item.UnitAmountTHB = thbFromSatang(item.UnitAmountSatang)
+		item.AmountTHB = thbFromSatang(item.AmountSatang)
+		summary.TotalSatang += item.AmountSatang
+	}
+	summary.TotalTHB = thbFromSatang(summary.TotalSatang)
+	summary.Total = int((summary.TotalSatang + 99) / 100)
 }
 
 func liveShareCourtHours(state SessionState) int {
@@ -3587,7 +3788,15 @@ func maxShuttleSequenceNumber(sequence string) int {
 }
 
 func matchPlayers(match Match) []int {
-	return []int{match.A1, match.A2, match.B1, match.B2}
+	players := make([]int, 0, 4)
+	seen := map[int]bool{}
+	for _, id := range []int{match.A1, match.A2, match.B1, match.B2} {
+		if id > 0 && !seen[id] {
+			players = append(players, id)
+			seen[id] = true
+		}
+	}
+	return players
 }
 
 func coupleForPlayer(couples []Couple, id int) (Couple, bool) {

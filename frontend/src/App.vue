@@ -1527,7 +1527,7 @@ const dashboardCards = computed(() => [
 ])
 
 function matchPlayers(match) {
-  return [match.a1, match.a2, match.b1, match.b2]
+  return [...new Set([match.a1, match.a2, match.b1, match.b2].map(Number).filter((id) => id > 0))]
 }
 
 function normalizedHours(hours = []) {
@@ -1629,18 +1629,33 @@ function matchShuttleSequenceText(match) {
 }
 
 function playerShuttleCost(playerId) {
-  let total = 0
+  let totalSatang = 0
   for (const match of [...state.live, ...state.history]) {
-    if (!matchPlayers(match).includes(playerId)) continue
+    const players = matchPlayers(match)
+    const position = players.indexOf(Number(playerId))
+    if (position < 0) continue
     if (isCancelledMatch(match) && match.shuttleReturned) continue
     const items = matchShuttleItems(match)
+    const legacy = match.shuttlePricingMode !== 'split_per_match'
+    const priceFor = (brandId) => {
+      if (!legacy) return Number(shuttleBrandById(brandId).price || 0)
+      const snapshot = (match.shuttlePriceSnapshot || []).find((brand) => brand.id === brandId)
+      return Number(snapshot?.price ?? match.legacyShuttleFee ?? shuttleBrandById(brandId).price ?? 0)
+    }
+    let matchSatang = 0
     if (items.length) {
-      total += items.reduce((sum, item) => sum + Number(shuttleBrandById(item.brandId).price || 0), 0)
+      matchSatang = items.reduce((sum, item) => sum + priceFor(item.brandId) * 100, 0)
     } else {
-      total += Number(match.shuttles || 0) * Number(state.settings.shuttleFee || 0)
+      const fallbackPrice = legacy ? Number(match.legacyShuttleFee ?? state.settings.shuttleFee ?? 0) : Number(state.settings.shuttleFee || 0)
+      matchSatang = Number(match.shuttles || 0) * fallbackPrice * 100
+    }
+    if (legacy || players.length === 0) {
+      totalSatang += matchSatang
+    } else {
+      totalSatang += Math.floor(matchSatang / players.length) + (position < (matchSatang % players.length) ? 1 : 0)
     }
   }
-  return total
+  return totalSatang / 100
 }
 
 const sessionFeeShare = computed(() => {
@@ -1649,7 +1664,8 @@ const sessionFeeShare = computed(() => {
 })
 
 function money(value) {
-  return new Intl.NumberFormat(language.value === 'en' ? 'en-US' : 'th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 }).format(value)
+  const hasSatang = Math.round(Number(value || 0) * 100) % 100 !== 0
+  return new Intl.NumberFormat(language.value === 'en' ? 'en-US' : 'th-TH', { style: 'currency', currency: 'THB', minimumFractionDigits: hasSatang ? 2 : 0, maximumFractionDigits: 2 }).format(value)
 }
 
 function coinReasonText(item) {
@@ -1872,7 +1888,8 @@ function randomMatch() {
       a1: teams[0],
       a2: teams[1],
       b1: teams[2],
-      b2: teams[3]
+      b2: teams[3],
+      shuttlePricingMode: 'split_per_match'
     })
   }
 }
@@ -2000,20 +2017,19 @@ function adjustShuttle(match, delta, brandId = defaultShuttleBrand().id) {
 }
 
 function createManualMatch(match) {
-  const ids = [match.a1, match.a2, match.b1, match.b2].map(Number)
-  if (ids.some((id) => !id) || new Set(ids).size !== 4) {
-    throw new Error('กรุณาเลือกผู้เล่นให้ครบ 4 คนโดยไม่ซ้ำกัน')
+  const slots = [match.a1, match.a2, match.b1, match.b2].map(Number)
+  const ids = slots.filter((id) => id > 0)
+  if (!slots[0] || !slots[2]) throw new Error('กรุณาเลือกผู้เล่น A1 และ B1')
+  if (new Set(ids).size !== ids.length) {
+    throw new Error('ผู้เล่นในทีมต้องไม่ซ้ำกัน')
   }
   const availableIds = new Set(availablePlayers.value.map((player) => player.id))
   if (ids.some((id) => !availableIds.has(id))) {
     throw new Error('มีผู้เล่นที่ไม่ว่างหรือไม่สามารถจัดทีมได้')
   }
   const teamByPlayer = new Map([
-    [ids[0], 0],
-    [ids[1], 0],
-    [ids[2], 1],
-    [ids[3], 1]
-  ])
+    [slots[0], 0], [slots[1], 0], [slots[2], 1], [slots[3], 1]
+  ].filter(([id]) => id > 0))
   for (const couple of state.couples) {
     const hasA = teamByPlayer.has(couple.a)
     const hasB = teamByPlayer.has(couple.b)
@@ -2028,10 +2044,11 @@ function createManualMatch(match) {
     id: nextPendingId(),
     court: '-',
     level,
-    a1: ids[0],
-    a2: ids[1],
-    b1: ids[2],
-    b2: ids[3]
+    a1: slots[0],
+    a2: slots[1] || 0,
+    b1: slots[2],
+    b2: slots[3] || 0,
+    shuttlePricingMode: 'split_per_match'
   })
 }
 
@@ -2161,14 +2178,14 @@ function waitForSpeechVoices(timeoutMs = 2500) {
 }
 
 function announcementParts(match, court = '') {
-  const players = matchPlayers(match).map((id) => playerName(id))
+  const nameForSlot = (id) => Number(id) > 0 ? playerName(id) : ''
   const values = {
     court,
     สนาม: court,
-    a: players[0] || '',
-    b: players[1] || '',
-    c: players[2] || '',
-    d: players[3] || ''
+    a: nameForSlot(match.a1),
+    b: nameForSlot(match.a2),
+    c: nameForSlot(match.b1),
+    d: nameForSlot(match.b2)
   }
   const pauseToken = '__LIVEMATCH_SPEECH_PAUSE__'
   let text = String(state.settings.announcementTemplate || defaultAnnouncementTemplate)

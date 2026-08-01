@@ -106,8 +106,9 @@ export function buildMembersExportData({ state, playerCost, playerLiveShareHours
 function historyWinnerText(match, playerName) {
   if (match.status === 'cancelled') return 'ยกเลิก'
   if (match.winner === 'draw') return 'เสมอ'
-  if (match.winner === 'A') return `${playerName(match.a1)} + ${playerName(match.a2)}`
-  if (match.winner === 'B') return `${playerName(match.b1)} + ${playerName(match.b2)}`
+  const teamText = (ids) => ids.filter((id) => Number(id) > 0).map(playerName).join(' + ')
+  if (match.winner === 'A') return teamText([match.a1, match.a2])
+  if (match.winner === 'B') return teamText([match.b1, match.b2])
   return '-'
 }
 
@@ -134,10 +135,10 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
     .map((match) => [
       match.id,
       match.court || '-',
-      playerName(match.a1),
-      playerName(match.a2),
-      playerName(match.b1),
-      playerName(match.b2),
+      match.a1 ? playerName(match.a1) : '',
+      match.a2 ? playerName(match.a2) : '',
+      match.b1 ? playerName(match.b1) : '',
+      match.b2 ? playerName(match.b2) : '',
       matchLevelLabel(match.level),
       match.startedAt || '-',
       match.endedAt || '-',

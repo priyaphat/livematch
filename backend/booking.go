@@ -121,6 +121,9 @@ func (a *app) runRateLimitCleanup(ctx context.Context) {
 type adminFeatures struct {
 	MemberEnabled  bool `json:"memberEnabled"`
 	BookingEnabled bool `json:"bookingEnabled"`
+	// Kept for compatibility with the standalone POS module. The current feature
+	// query leaves it false when the POS migration is not installed.
+	POSEnabled bool `json:"posEnabled"`
 }
 
 func randUUID() string {
@@ -221,6 +224,8 @@ func (a *app) requireFeature(w http.ResponseWriter, r *http.Request, adminID, fe
 	enabled := f.MemberEnabled
 	if feature == "booking" {
 		enabled = f.BookingEnabled
+	} else if feature == "pos" {
+		enabled = f.POSEnabled
 	}
 	if !enabled {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature is not enabled"})
@@ -309,10 +314,10 @@ func phoneSearchDigits(raw string) string {
 func memberSearchQuery(values url.Values) (string, bool) {
 	nameQuery := strings.TrimSpace(values.Get("q"))
 	if nameQuery != "" {
-		return nameQuery, utf8.RuneCountInString(nameQuery) >= 2
+		return nameQuery, utf8.RuneCountInString(nameQuery) >= 1
 	}
 	phoneQuery := strings.TrimSpace(values.Get("phone"))
-	return phoneQuery, len(phoneSearchDigits(phoneQuery)) > 5
+	return phoneQuery, len(phoneSearchDigits(phoneQuery)) >= 1
 }
 
 func (a *app) listMembers(ctx context.Context, adminID, search string, page, pageSize int, activeOnly bool) ([]memberRecord, int, error) {
