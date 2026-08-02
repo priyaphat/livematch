@@ -1962,6 +1962,39 @@ describe('LiveMatch app', () => {
     vi.useRealTimers()
   })
 
+  it('fades to available players after ten seconds when enabled', async () => {
+    vi.useFakeTimers()
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: {
+          session: { name: 'Fade Session' },
+          settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true },
+          players: [
+            { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle' },
+            { id: 2, name: 'ไม่มีคูปอง', active: true, paid: false, coupon: false, games: 0, level: 'light' },
+            { id: 3, name: 'เข้าแถวรอคิวแล้ว', active: true, paid: false, coupon: true, games: 0, level: 'heavy' }
+          ],
+          pending: [{ id: 10, a1: 1, a2: 0, b1: 0, b2: 0 }],
+          queue: [{ id: 11, a1: 3, a2: 0, b1: 0, b2: 0 }],
+          live: []
+        },
+        share: { loading: false, error: '' },
+        playerName: (id) => `p${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    expect(wrapper.find('.shared-waiting-people').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(wrapper.find('.shared-flight-waiting-summary').text()).toContain('รายชื่อคนมีคูปองที่ยังรอจับคู่ 1 คน')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('คนรอจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('กำลังจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).not.toContain('ไม่มีคูปอง')
+    expect(wrapper.find('.shared-waiting-people').text()).not.toContain('เข้าแถวรอคิวแล้ว')
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
   it('keeps the shared players refresh interval at 30 seconds', async () => {
     vi.useFakeTimers()
     const originalUrl = window.location.href

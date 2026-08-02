@@ -160,8 +160,7 @@ async function confirmPaymentChange() {
   paymentError.value = ''
   let saved = false
   try {
-    if (paymentSummary.value?.posEnabled) await props.togglePayment(paymentPlayer.value, paymentSummary.value, paymentMethod.value)
-    else await props.togglePayment(paymentPlayer.value)
+    await props.togglePayment(paymentPlayer.value, paymentSummary.value, paymentMethod.value)
     saved = true
   } catch (error) {
     paymentError.value = error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ'
@@ -553,8 +552,14 @@ async function exportExcel() {
                 <div class="flex justify-between"><span>ยอด Match ทั้งหมด</span><b>{{ money(paymentSummary.matchTotalThb) }}</b></div>
                 <div class="flex justify-between"><span>ยอดสินค้า POS</span><b>{{ money(paymentSummary.posTotalThb) }}</b></div>
               </div>
-              <label v-if="paymentSummary.posEnabled" class="mt-2 grid gap-1 text-sm font-black">ช่องทางชำระ<select v-model="paymentMethod" class="h-10 rounded-lg border bg-transparent px-3 dark:border-stone-700"><option value="cash">เงินสด</option><option value="promptpay">PromptPay QR</option></select></label>
-              <div v-if="paymentSummary.posEnabled && paymentMethod==='promptpay'" class="mt-2 grid place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><img v-if="paymentQr" :src="paymentQr" alt="Match PromptPay QR" class="h-44 w-44 rounded bg-white p-1" /><p v-else class="text-center text-sm font-bold text-stone-500">ยังไม่ได้ตั้งค่า PromptPay ในระบบ POS</p></div>
+              <fieldset class="mt-2 grid gap-2 text-sm font-black">
+                <legend class="mb-1">ช่องทางชำระ</legend>
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="flex h-11 items-center gap-2 rounded-lg border px-3" :class="paymentMethod === 'cash' ? 'border-court-500 bg-court-500/10' : 'border-stone-200 dark:border-stone-700'"><input v-model="paymentMethod" type="radio" value="cash" /> เงินสด</label>
+                  <label class="flex h-11 items-center gap-2 rounded-lg border px-3" :class="paymentMethod === 'promptpay' ? 'border-court-500 bg-court-500/10' : 'border-stone-200 dark:border-stone-700'"><input v-model="paymentMethod" type="radio" value="promptpay" /> สแกน</label>
+                </div>
+              </fieldset>
+              <div v-if="paymentMethod==='promptpay'" class="mt-2 grid place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><img v-if="paymentQr" :src="paymentQr" alt="Match PromptPay QR" class="h-44 w-44 rounded bg-white p-1" /><p v-else class="text-center text-sm font-bold text-stone-500">บันทึกเป็นการชำระแบบสแกน · ยังไม่ได้ตั้งค่า PromptPay QR</p></div>
               <p class="text-xs font-semibold text-stone-500">คำนวณใหม่จากข้อมูลล่าสุดของระบบก่อนแสดงรายการนี้</p>
             </div>
           </template>

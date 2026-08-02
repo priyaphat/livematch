@@ -87,6 +87,7 @@ type Settings struct {
 	RandomPriority          string         `json:"randomPriority"`
 	ShowPaymentOnShare      bool           `json:"showPaymentOnShare"`
 	ShowTotalOnShare        bool           `json:"showTotalOnShare"`
+	ShowWaitingOnQueueShare bool           `json:"showWaitingOnQueueShare"`
 	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
 	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
 	AnnouncementTemplate    string         `json:"announcementTemplate"`
@@ -349,6 +350,7 @@ func (a *app) migrate(ctx context.Context) error {
 			random_priority text not null default 'level',
 			show_payment_on_share boolean not null default true,
 			show_total_on_share boolean not null default true,
+			show_waiting_on_queue_share boolean not null default false,
 			reset_players_after_finish boolean not null default true,
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
@@ -361,6 +363,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists shuttle_brands jsonb not null default '[]'::jsonb;
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
 		alter table session_settings add column if not exists show_total_on_share boolean not null default true;
+		alter table session_settings add column if not exists show_waiting_on_queue_share boolean not null default false;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
 		alter table session_settings add column if not exists session_fee integer not null default 0;
@@ -743,10 +746,12 @@ func (a *app) migrate(ctx context.Context) error {
 			paid boolean not null,
 			amount_thb integer not null default 0,
 			amount_satang bigint not null default 0,
+			payment_method text not null default 'cash',
 			actor_id text not null default '',
 			created_at timestamptz not null default now()
 		);
 		alter table player_payment_events add column if not exists amount_satang bigint not null default 0;
+		alter table player_payment_events add column if not exists payment_method text not null default 'cash';
 		update player_payment_events set amount_satang = amount_thb::bigint * 100 where amount_satang = 0 and amount_thb <> 0;
 		create table if not exists booking_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
@@ -1567,7 +1572,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
 		rows, err := a.db.QueryContext(r.Context(), `
-			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb, e.amount_satang,
+			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb, e.amount_satang, e.payment_method,
 			       to_char(e.created_at at time zone 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI')
 			from player_payment_events e
 			left join players p on p.session_id=e.session_id and p.id=e.player_id
@@ -1583,16 +1588,16 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var eventID, amountSatang int64
 			var playerID, amount int
-			var playerName, createdAt string
+			var playerName, createdAt, paymentMethod string
 			var paid bool
-			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &amountSatang, &createdAt); err != nil {
+			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &amountSatang, &paymentMethod, &createdAt); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
 			if playerName == "" {
 				playerName = fmt.Sprintf("ผู้เล่น #%d", playerID)
 			}
-			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": thbFromSatang(amountSatang), "amountThb": thbFromSatang(amountSatang), "amountSatang": amountSatang, "createdAt": createdAt})
+			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": thbFromSatang(amountSatang), "amountThb": thbFromSatang(amountSatang), "amountSatang": amountSatang, "paymentMethod": paymentMethod, "createdAt": createdAt})
 		}
 		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
 			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
@@ -1683,6 +1688,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Active     *bool   `json:"active"`
 			ClubMember *bool   `json:"clubMember"`
 			MemberID   *string `json:"memberId"`
+			Method     string  `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		logDetails := map[string]any{}
@@ -1701,7 +1707,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					state.Players[i].Name = name
 				}
 				if body.Paid != nil {
+					method := strings.ToLower(strings.TrimSpace(body.Method))
+					if method != "cash" && method != "promptpay" {
+						method = "cash"
+					}
 					logDetails["paid"] = *body.Paid
+					logDetails["paymentMethod"] = method
 					actionName = "toggle_player_paid"
 					state.Players[i].Paid = *body.Paid
 					if *body.Paid {
@@ -2003,6 +2014,10 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 		details["sessionName"] = state.Session.Name
 		a.insertActivityLog(r.Context(), "admin", user.ID, action, targetType, targetID, details)
 		if action == "toggle_player_paid" {
+			paymentMethod, _ := details["paymentMethod"].(string)
+			if paymentMethod != "promptpay" {
+				paymentMethod = "cash"
+			}
 			playerID, _ := strconv.Atoi(targetID)
 			for _, player := range state.Players {
 				if player.ID != playerID {
@@ -2019,7 +2034,7 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 				if player.MemberID != "" {
 					memberID = player.MemberID
 				}
-				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,actor_id) values ($1,$2,$3,$4,$5,$6,$7)`, state.Session.ID, player.ID, memberID, player.Paid, amount, amountSatang, user.ID)
+				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,payment_method,actor_id) values ($1,$2,$3,$4,$5,$6,$7,$8)`, state.Session.ID, player.ID, memberID, player.Paid, amount, amountSatang, paymentMethod, user.ID)
 				break
 			}
 		}
@@ -2065,9 +2080,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			club_entry_fee = excluded.club_entry_fee,
@@ -2083,10 +2098,11 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			random_priority = excluded.random_priority,
 			show_payment_on_share = excluded.show_payment_on_share,
 			show_total_on_share = excluded.show_total_on_share,
+			show_waiting_on_queue_share = excluded.show_waiting_on_queue_share,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		return err
 	}
 
@@ -2248,7 +2264,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw, shuttleBrandsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -2266,6 +2282,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.RandomPriority,
 		&state.Settings.ShowPaymentOnShare,
 		&state.Settings.ShowTotalOnShare,
+		&state.Settings.ShowWaitingOnQueueShare,
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
@@ -2461,6 +2478,7 @@ func defaultState(id, name, passcode string) SessionState {
 			RandomPriority:          "level",
 			ShowPaymentOnShare:      true,
 			ShowTotalOnShare:        true,
+			ShowWaitingOnQueueShare: false,
 			ResetPlayersAfterFinish: true,
 			StartMatchWithShuttle:   true,
 			AnnouncementTemplate:    defaultAnnouncementTemplate,
@@ -3361,6 +3379,44 @@ func paidRevenueExact(state SessionState) float64 {
 		}
 	}
 	return thbFromSatang(totalSatang)
+}
+
+func (a *app) sessionRevenueExact(ctx context.Context, sessionID string) (float64, float64, error) {
+	state, err := a.loadState(ctx, sessionID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return totalRevenueExact(state), paidRevenueExact(state), nil
+}
+
+func (a *app) revenueTotalsExact(ctx context.Context, adminID string) (float64, float64) {
+	query := `select id from sessions`
+	args := []any{}
+	if adminID != "" {
+		query += ` where admin_id=$1`
+		args = append(args, adminID)
+	}
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, 0
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	var total, paid float64
+	for _, id := range ids {
+		sessionTotal, sessionPaid, loadErr := a.sessionRevenueExact(ctx, id)
+		if loadErr == nil {
+			total += sessionTotal
+			paid += sessionPaid
+		}
+	}
+	return total, paid
 }
 
 func playerEntryFee(state SessionState, player Player) int {

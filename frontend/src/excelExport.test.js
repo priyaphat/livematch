@@ -12,8 +12,8 @@ describe('Excel export data', () => {
     const data = buildPaymentHistoryExportData([
       { id: 99, playerId: 7, playerName: 'Player A', paid: true, amount: 125, createdAt: '28/07/2026 12:00' }
     ])
-    expect(data.headers).toEqual(['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ยอดเงิน (บาท)'])
-    expect(data.rows).toEqual([['28/07/2026 12:00', 'Player A', 'ชำระเงิน', 125]])
+    expect(data.headers).toEqual(['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ช่องทางชำระ', 'ยอดเงิน (บาท)'])
+    expect(data.rows).toEqual([['28/07/2026 12:00', 'Player A', 'ชำระเงิน', 'เงินสด', 125]])
     expect(JSON.stringify(data)).not.toContain('99')
   })
 

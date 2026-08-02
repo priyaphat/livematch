@@ -167,6 +167,7 @@ const state = reactive({
     randomPriority: 'level',
     showPaymentOnShare: true,
     showTotalOnShare: true,
+    showWaitingOnQueueShare: false,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
     announcementTemplate: defaultAnnouncementTemplate
@@ -560,6 +561,9 @@ function normalizeClientSettings() {
   }
   if (state.settings.showTotalOnShare === undefined) {
     state.settings.showTotalOnShare = true
+  }
+  if (state.settings.showWaitingOnQueueShare === undefined) {
+    state.settings.showWaitingOnQueueShare = false
   }
   if (!String(state.settings.announcementTemplate || '').trim()) {
     state.settings.announcementTemplate = defaultAnnouncementTemplate
@@ -3013,7 +3017,7 @@ async function togglePaymentApi(player, paymentSummary = null, paymentMethod = '
     } else {
       applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ paid: targetPaid })
+        body: JSON.stringify({ paid: targetPaid, method: paymentMethod })
       }))
     }
     showToast(targetPaid ? 'บันทึกการชำระเงินแล้ว' : 'ยกเลิกการชำระเงินแล้ว')
@@ -3600,6 +3604,7 @@ const pageProps = computed(() => ({
         :player-name="playerName"
         :available-court-names="availableCourtNames"
         :active-shuttle-brands="activeShuttleBrands"
+        :save-settings="saveSettingsApi"
         :is-session-read-only="isSessionReadOnly"
       />
 

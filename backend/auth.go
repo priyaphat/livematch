@@ -42,25 +42,25 @@ type adminUser struct {
 }
 
 type adminSessionItem struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Type              string `json:"type"`
-	Players           int    `json:"players"`
-	PaidPlayers       int    `json:"paidPlayers"`
-	UnpaidPlayers     int    `json:"unpaidPlayers"`
-	Matches           int    `json:"matches"`
-	QueueMatches      int    `json:"queueMatches"`
-	LiveMatches       int    `json:"liveMatches"`
-	HistoryMatches    int    `json:"historyMatches"`
-	Shuttles          int    `json:"shuttles"`
-	Revenue           int    `json:"revenue"`
-	UpdatedAt         string `json:"updatedAt"`
-	Deletable         bool   `json:"deletable"`
-	DeleteBlocked     string `json:"deleteBlockedReason,omitempty"`
-	BillingMethod     string `json:"billingMethod,omitempty"`
-	ChargedCoin       int    `json:"chargedCoinCost"`
-	RefundAvailable   bool   `json:"refundAvailable"`
-	RefundDescription string `json:"refundDescription,omitempty"`
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	Type              string  `json:"type"`
+	Players           int     `json:"players"`
+	PaidPlayers       int     `json:"paidPlayers"`
+	UnpaidPlayers     int     `json:"unpaidPlayers"`
+	Matches           int     `json:"matches"`
+	QueueMatches      int     `json:"queueMatches"`
+	LiveMatches       int     `json:"liveMatches"`
+	HistoryMatches    int     `json:"historyMatches"`
+	Shuttles          int     `json:"shuttles"`
+	Revenue           float64 `json:"revenue"`
+	UpdatedAt         string  `json:"updatedAt"`
+	Deletable         bool    `json:"deletable"`
+	DeleteBlocked     string  `json:"deleteBlockedReason,omitempty"`
+	BillingMethod     string  `json:"billingMethod,omitempty"`
+	ChargedCoin       int     `json:"chargedCoinCost"`
+	RefundAvailable   bool    `json:"refundAvailable"`
+	RefundDescription string  `json:"refundDescription,omitempty"`
 }
 
 type coinLedgerItem struct {
@@ -670,9 +670,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1894,7 +1894,16 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return items, err
+	}
+	rows.Close()
+	for index := range items {
+		if revenue, _, loadErr := a.sessionRevenueExact(ctx, items[index].ID); loadErr == nil {
+			items[index].Revenue = revenue
+		}
+	}
+	return items, nil
 }
 
 func (a *app) coinLedger(ctx context.Context, adminID string, limit int) ([]coinLedgerItem, error) {

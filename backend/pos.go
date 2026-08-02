@@ -1201,7 +1201,7 @@ func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountI
 				_, err = tx.ExecContext(ctx, `delete from couples where session_id=$1 and (player_a=$2 or player_b=$2)`, parts[0], playerID)
 			}
 			if err == nil {
-				_, err = tx.ExecContext(ctx, `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,actor_id) select $1,$2,p.member_id,true,$3,$3::bigint*100,$4 from players p where p.session_id=$1 and p.id=$2`, parts[0], playerID, line.AmountTHB, user.ID)
+				_, err = tx.ExecContext(ctx, `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,payment_method,actor_id) select $1,$2,p.member_id,true,$3,$3::bigint*100,$4,$5 from players p where p.session_id=$1 and p.id=$2`, parts[0], playerID, line.AmountTHB, method, user.ID)
 			}
 		}
 		if err != nil {

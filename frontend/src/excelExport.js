@@ -155,11 +155,12 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
 
 export function buildPaymentHistoryExportData(events = []) {
   return {
-    headers: ['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ยอดเงิน (บาท)'],
+    headers: ['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ช่องทางชำระ', 'ยอดเงิน (บาท)'],
     rows: events.map((event) => [
       event.createdAt || '-',
       event.playerName || '-',
       event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน',
+      event.paid ? (event.paymentMethod === 'promptpay' ? 'สแกน' : 'เงินสด') : '-',
       numeric(event.amount)
     ]),
     emptyMessage: 'ไม่มีข้อมูลประวัติการชำระเงิน'

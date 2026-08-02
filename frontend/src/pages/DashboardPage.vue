@@ -105,7 +105,6 @@ async function exportExcel() {
             <Users class="h-5 w-5 text-court-500" />
           </div>
           <p class="mt-2 text-3xl font-black">{{ activePlayerCount }}</p>
-          <p class="text-xs text-stone-500 dark:text-stone-400">คนที่เปิดใช้งานใน session</p>
         </div>
         <div class="rounded-md bg-paper-100 p-4 dark:bg-stone-800">
           <div class="flex items-center justify-between gap-3">
@@ -151,12 +150,32 @@ async function exportExcel() {
         </div>
       </div>
 
-      <div v-if="shuttleBrandSummary.length" class="mt-4 rounded-md border border-shuttle-400/50 bg-shuttle-400/10 p-4">
-        <p class="text-sm font-black text-amber-800 dark:text-shuttle-400">ลูกแบดตามยี่ห้อ</p>
-        <div class="mt-2 flex flex-wrap gap-2">
-          <span v-for="item in shuttleBrandSummary" :key="item.brandId" class="rounded-md bg-white px-2.5 py-1 text-xs font-black text-stone-700 dark:bg-stone-900 dark:text-stone-200">
-            {{ item.name }} {{ item.count }} ลูก
-          </span>
+      <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div v-if="shuttleBrandSummary.length" class="rounded-md border border-shuttle-400/50 bg-shuttle-400/10 p-4">
+          <p class="text-sm font-black text-amber-800 dark:text-shuttle-400">ลูกแบดตามยี่ห้อ</p>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <span v-for="item in shuttleBrandSummary" :key="item.brandId" class="rounded-md bg-white px-2.5 py-1 text-xs font-black text-stone-700 dark:bg-stone-900 dark:text-stone-200">
+              {{ item.name }} {{ item.count }} ลูก
+            </span>
+          </div>
+        </div>
+
+        <div class="rounded-md border border-court-200 bg-court-500/10 p-4 dark:border-court-900/60">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-black text-court-700 dark:text-court-300">ชำระแล้ว</p>
+            <CreditCard class="h-5 w-5 text-court-500" />
+          </div>
+          <p class="mt-1 text-3xl font-black text-court-700 dark:text-court-300">{{ activePlayerCount - unpaidPlayers.length }}</p>
+          <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">จากสมาชิก {{ activePlayerCount }} คน</p>
+        </div>
+
+        <div class="rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900/60 dark:bg-amber-950/20">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-black text-amber-800 dark:text-amber-300">ยังไม่ชำระ</p>
+            <CreditCard class="h-5 w-5 text-amber-600 dark:text-amber-300" />
+          </div>
+          <p class="mt-1 text-3xl font-black text-amber-800 dark:text-amber-300">{{ unpaidPlayers.length }}</p>
+          <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">จากสมาชิก {{ activePlayerCount }} คน</p>
         </div>
       </div>
     </div>

@@ -140,6 +140,7 @@ async function exportExcel() {
           <div class="min-w-0">
             <p class="truncate font-black">{{ event.playerName }}</p>
             <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ event.createdAt }}</p>
+            <p class="mt-1 text-xs font-black text-stone-600 dark:text-stone-300">{{ event.paid ? (event.paymentMethod === 'promptpay' ? 'สแกน' : 'เงินสด') : '—' }}</p>
           </div>
           <span class="w-fit rounded-md px-2 py-1 text-xs font-black" :class="event.paid ? 'bg-court-500/10 text-court-700 dark:text-court-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'">
             {{ event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน' }}

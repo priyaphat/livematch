@@ -265,7 +265,7 @@ describe('PlayersPage payment modal', () => {
     const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ชำระ')
     await confirmButton.trigger('click')
     await flushPromises()
-    expect(togglePayment).toHaveBeenCalledWith(player)
+    expect(togglePayment).toHaveBeenCalledWith(player, expect.objectContaining({ totalThb: 270 }), 'cash')
   })
 
   it('asks for confirmation before cancelling a payment', async () => {
@@ -282,6 +282,6 @@ describe('PlayersPage payment modal', () => {
     const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ตกลง')
     await confirmButton.trigger('click')
     await flushPromises()
-    expect(togglePayment).toHaveBeenCalledWith(paidPlayer)
+    expect(togglePayment).toHaveBeenCalledWith(paidPlayer, null, 'cash')
   })
 })
