@@ -280,9 +280,10 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	benefits, _ := a.adminBenefits(r.Context(), user.ID, false)
 	features := a.features(r.Context(), user.ID)
-	memberCount, bookingCount := 0, 0
+	memberCount, bookingCount, posSaleCount := 0, 0, 0
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, user.ID).Scan(&memberCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, user.ID).Scan(&bookingCount)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, user.ID).Scan(&posSaleCount)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
@@ -294,6 +295,7 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 		"features":             features,
 		"memberCount":          memberCount,
 		"bookingCount":         bookingCount,
+		"posSaleCount":         posSaleCount,
 	})
 }
 
@@ -507,6 +509,8 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.handleAdminMembers(w, r, user, action)
 	case strings.HasPrefix(action, "booking"):
 		a.handleAdminBooking(w, r, user, action)
+	case strings.HasPrefix(action, "pos"):
+		a.handleAdminPOS(w, r, user, action)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -1349,9 +1353,10 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 	orders, _ := a.coinPurchaseOrders(r.Context(), adminID, true, 20)
 	benefits, _ := a.adminBenefits(r.Context(), adminID, true)
 	features := a.features(r.Context(), adminID)
-	memberCount, bookingCount := 0, 0
+	memberCount, bookingCount, posSaleCount := 0, 0, 0
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, adminID).Scan(&memberCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, adminID).Scan(&bookingCount)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, adminID).Scan(&posSaleCount)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":         user,
 		"sessions":     sessions,
@@ -1361,6 +1366,7 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 		"features":     features,
 		"memberCount":  memberCount,
 		"bookingCount": bookingCount,
+		"posSaleCount": posSaleCount,
 	})
 }
 

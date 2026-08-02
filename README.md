@@ -22,6 +22,12 @@ Services:
 
 Backend connects to PostgreSQL through the Docker network with host `postgres`.
 
+## POS module
+
+Backoffice can enable `posEnabled` per admin alongside the member and booking features. The admin POS is available at `/admin/pos` and includes product/stock management, parked bills, cash or PromptPay settlement, stock movement history, and daily reporting.
+
+When POS is enabled, a member or explicitly linked guest can settle all outstanding Match and POS items in one payment from either surface. When it is disabled, POS mutations and operational billing endpoints return `403`; existing sales, stock history, and reports remain available read-only, while Match returns to its original Match-only payment flow.
+
 ## ระบบสมาชิกและระบบจองสนาม
 
 ฟีเจอร์ใหม่ปิดเป็นค่าเริ่มต้นสำหรับ admin เดิม เปิดได้ที่ `/backoffice` → สมาชิก → Admin DB Preview โดยแยกสวิตช์ “ระบบสมาชิก” และ “ระบบจองสนาม” ต่อ admin การปิดสิทธิ์มีผลทั้งการ์ดใน dashboard และ API โดยตรง

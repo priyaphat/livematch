@@ -121,9 +121,7 @@ func (a *app) runRateLimitCleanup(ctx context.Context) {
 type adminFeatures struct {
 	MemberEnabled  bool `json:"memberEnabled"`
 	BookingEnabled bool `json:"bookingEnabled"`
-	// Kept for compatibility with the standalone POS module. The current feature
-	// query leaves it false when the POS migration is not installed.
-	POSEnabled bool `json:"posEnabled"`
+	POSEnabled     bool `json:"posEnabled"`
 }
 
 func randUUID() string {
@@ -215,7 +213,7 @@ type publicBookingQueue struct {
 
 func (a *app) features(ctx context.Context, adminID string) adminFeatures {
 	var f adminFeatures
-	_ = a.db.QueryRowContext(ctx, `select member_enabled, booking_enabled from admin_features where admin_id = $1`, adminID).Scan(&f.MemberEnabled, &f.BookingEnabled)
+	_ = a.db.QueryRowContext(ctx, `select member_enabled, booking_enabled, pos_enabled from admin_features where admin_id = $1`, adminID).Scan(&f.MemberEnabled, &f.BookingEnabled, &f.POSEnabled)
 	return f
 }
 
@@ -247,11 +245,11 @@ func (a *app) handleBackofficeAdminFeatures(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, updated_by) values ($1,$2,$3,$4) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, actor); err != nil {
+	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, pos_enabled, updated_by) values ($1,$2,$3,$4,$5) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, pos_enabled=excluded.pos_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, body.POSEnabled, actor); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled})
+	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled, "posEnabled": body.POSEnabled})
 	if err = tx.Commit(); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -639,8 +637,8 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	payments := []map[string]any{}
-	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
-	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
+	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)+(select count(*) from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
+	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2 union all select 'pos',ps.id,ps.total_thb,ps.status,to_char(ps.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if paymentRows != nil {
 		defer paymentRows.Close()
 		for paymentRows.Next() {

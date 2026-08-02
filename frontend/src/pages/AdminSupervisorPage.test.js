@@ -49,6 +49,17 @@ describe('AdminSupervisorPage feature cards', () => {
     expect(wrapper.props('navigateAdminFeature')).toHaveBeenCalledWith('members')
   })
 
+  it.each([
+    [{ memberEnabled: true, bookingEnabled: false, posEnabled: false }, ['grid-cols-1'], ['sm:grid-cols-2', 'lg:grid-cols-3']],
+    [{ memberEnabled: true, bookingEnabled: true, posEnabled: false }, ['sm:grid-cols-2'], ['lg:grid-cols-3']],
+    [{ memberEnabled: true, bookingEnabled: true, posEnabled: true }, ['sm:grid-cols-2', 'lg:grid-cols-3'], []]
+  ])('fills the feature grid for every visible-card count', (features, includedClasses, excludedClasses) => {
+    const wrapper = mountDashboard(features)
+    const gridClasses = wrapper.get('[data-testid="admin-feature-grid"]').classes()
+    includedClasses.forEach((className) => expect(gridClasses).toContain(className))
+    excludedClasses.forEach((className) => expect(gridClasses).not.toContain(className))
+  })
+
   it('opens the shared announcement modal from the dashboard header', async () => {
     const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false })
     const button = wrapper.findAll('button').find((item) => item.text().includes('ประกาศ'))

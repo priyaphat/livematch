@@ -61,12 +61,13 @@ const SharedQueuePage = defineAsyncComponent(() => import('./pages/SharedQueuePa
 const VerifyEmailPage = defineAsyncComponent(() => import('./pages/VerifyEmailPage.vue'))
 const MemberAdminPage = defineAsyncComponent(() => import('./pages/MemberAdminPage.vue'))
 const BookingAdminPage = defineAsyncComponent(() => import('./pages/BookingAdminPage.vue'))
+const POSPage = defineAsyncComponent(() => import('./pages/POSPage.vue'))
 const PublicBookingPage = defineAsyncComponent(() => import('./pages/PublicBookingPage.vue'))
 const PublicProfilePage = defineAsyncComponent(() => import('./pages/PublicProfilePage.vue'))
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const routePath = window.location.pathname
-const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : ''
+const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : routePath === '/admin/pos' ? 'pos' : ''
 const publicBookingToken = routePath.startsWith('/booking/') ? routePath.slice('/booking/'.length).split('/')[0] : ''
 const publicProfileToken = routePath.startsWith('/p/') ? routePath.slice('/p/'.length).split('/')[0] : ''
 const isPublicBookingSurface = Boolean(publicBookingToken || publicProfileToken)
@@ -394,9 +395,10 @@ const auth = reactive({
   promptPayAvailable: false,
   subscriptionEligibility: { canPurchase: true, reason: '', renewal: false, estimatedStartDate: '' },
   coinOrders: [],
-  features: { memberEnabled: false, bookingEnabled: false },
+  features: { memberEnabled: false, bookingEnabled: false, posEnabled: false },
   memberCount: 0,
-  bookingCount: 0
+  bookingCount: 0,
+  posSaleCount: 0
 })
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
@@ -1273,13 +1275,14 @@ function applyAdminPayload(payload) {
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
   auth.benefits = payload.benefits || { discountPercent: 0, pricing: {}, subscription: null }
-  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false }
+  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false, posEnabled: false }
   auth.memberCount = Number(payload.memberCount || 0)
   auth.bookingCount = Number(payload.bookingCount || 0)
+  auth.posSaleCount = Number(payload.posSaleCount || 0)
 }
 
 function navigateAdminFeature(feature) {
-  window.location.href = feature === 'members' ? '/admin/members' : '/admin/booking'
+  window.location.href = feature === 'members' ? '/admin/members' : feature === 'booking' ? '/admin/booking' : '/admin/pos'
 }
 
 async function saveBackofficeAdminFeatures(features) {
@@ -2997,14 +3000,22 @@ async function deletePlayerApi(player) {
   }
 }
 
-async function togglePaymentApi(player) {
+async function togglePaymentApi(player, paymentSummary = null, paymentMethod = 'cash') {
   if (!ensureSessionActive()) return
   const targetPaid = !player.paid
   try {
-    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ paid: targetPaid })
-    }))
+    if (targetPaid && paymentSummary?.posEnabled && paymentSummary?.billingAccountId) {
+      const result = await api(`/api/sessions/${state.session.id}/players/${player.id}/settle`, {
+        method: 'POST',
+        body: JSON.stringify({ method: paymentMethod, expectedTotalThb: paymentSummary.totalThb })
+      })
+      applyServerState(result.state)
+    } else {
+      applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ paid: targetPaid })
+      }))
+    }
     showToast(targetPaid ? 'บันทึกการชำระเงินแล้ว' : 'ยกเลิกการชำระเงินแล้ว')
   } catch (error) {
     showToast(error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ')
@@ -3437,6 +3448,7 @@ const pageProps = computed(() => ({
     </div>
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" />
+    <POSPage v-else-if="adminFeaturePage === 'pos' && auth.user" :api-request="api" :auth="auth" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />

@@ -94,19 +94,20 @@ type Settings struct {
 }
 
 type Player struct {
-	ID         int    `json:"id"`
-	Name       string `json:"name"`
-	Games      int    `json:"games"`
-	Wins       int    `json:"wins"`
-	Draws      int    `json:"draws"`
-	Losses     int    `json:"losses"`
-	Shuttles   int    `json:"shuttles"`
-	Paid       bool   `json:"paid"`
-	Active     bool   `json:"active"`
-	Level      string `json:"level"`
-	Coupon     bool   `json:"coupon"`
-	ClubMember bool   `json:"clubMember"`
-	MemberID   string `json:"memberId,omitempty"`
+	ID               int    `json:"id"`
+	Name             string `json:"name"`
+	Games            int    `json:"games"`
+	Wins             int    `json:"wins"`
+	Draws            int    `json:"draws"`
+	Losses           int    `json:"losses"`
+	Shuttles         int    `json:"shuttles"`
+	Paid             bool   `json:"paid"`
+	Active           bool   `json:"active"`
+	Level            string `json:"level"`
+	Coupon           bool   `json:"coupon"`
+	ClubMember       bool   `json:"clubMember"`
+	MemberID         string `json:"memberId,omitempty"`
+	BillingAccountID string `json:"billingAccountId,omitempty"`
 }
 
 type PlayerPaymentItem struct {
@@ -646,9 +647,11 @@ func (a *app) migrate(ctx context.Context) error {
 			admin_id text primary key references admin_users(id) on delete cascade,
 			member_enabled boolean not null default false,
 			booking_enabled boolean not null default false,
+			pos_enabled boolean not null default false,
 			updated_by text not null default '',
 			updated_at timestamptz not null default now()
 		);
+		alter table admin_features add column if not exists pos_enabled boolean not null default false;
 		create table if not exists public_users (
 			id text primary key,
 			google_sub text not null unique,
@@ -832,6 +835,161 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);
 		create index if not exists idx_booking_payments_booking on booking_payments(booking_id, created_at desc);
 		create index if not exists idx_player_payment_member on player_payment_events(member_id, created_at desc);
+		create table if not exists billing_accounts (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			kind text not null check (kind in ('member','guest')),
+			member_id text references members(id) on delete set null,
+			display_name text not null,
+			phone text not null default '',
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_billing_accounts_member on billing_accounts(admin_id, member_id) where member_id is not null;
+		create index if not exists idx_billing_accounts_admin on billing_accounts(admin_id, active, display_name);
+		alter table players add column if not exists billing_account_id text references billing_accounts(id) on delete set null;
+		create index if not exists idx_players_billing_account on players(billing_account_id) where billing_account_id is not null;
+		create table if not exists pos_settings (
+			admin_id text primary key references admin_users(id) on delete cascade,
+			promptpay_type text not null default 'mobile',
+			promptpay_id text not null default '',
+			promptpay_receiver_name text not null default '',
+			receipt_header text not null default '',
+			receipt_footer text not null default '',
+			logo_data text not null default '',
+			default_low_stock integer not null default 5 check (default_low_stock >= 0),
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		alter table pos_settings add column if not exists theme text not null default 'light';
+		alter table pos_settings add column if not exists language text not null default 'th';
+		alter table pos_settings add column if not exists tax_rate_percent integer not null default 0;
+		alter table pos_settings add column if not exists prices_include_tax boolean not null default true;
+		create table if not exists pos_categories (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			created_at timestamptz not null default now()
+		);
+		alter table pos_categories add column if not exists active boolean not null default true;
+		create unique index if not exists idx_pos_categories_name on pos_categories(admin_id, lower(name));
+		create table if not exists pos_units (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_pos_units_name on pos_units(admin_id, lower(name));
+		create table if not exists pos_products (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			sku text not null default '',
+			category text not null default '',
+			name text not null,
+			price_thb integer not null check (price_thb >= 0),
+			cost_thb integer not null default 0 check (cost_thb >= 0),
+			stock_quantity integer not null default 0 check (stock_quantity >= 0),
+			low_stock_threshold integer not null default 5 check (low_stock_threshold >= 0),
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_pos_products_sku on pos_products(admin_id, lower(sku)) where sku <> '';
+		create index if not exists idx_pos_products_admin on pos_products(admin_id, active, category, name);
+		alter table pos_products add column if not exists unit text not null default 'ชิ้น';
+		alter table pos_products add column if not exists image_data text not null default '';
+		insert into pos_categories (id,admin_id,name)
+		select 'category-'||substr(md5(admin_id||':'||lower(category)),1,16),admin_id,category
+		from pos_products where category<>''
+		on conflict do nothing;
+		insert into pos_units (id,admin_id,name)
+		select 'unit-'||substr(md5(admin_id||':'||lower(unit)),1,16),admin_id,unit
+		from pos_products where unit<>''
+		on conflict do nothing;
+		create table if not exists billing_payments (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			billing_account_id text references billing_accounts(id) on delete set null,
+			amount_thb integer not null check (amount_thb >= 0),
+			method text not null check (method in ('cash','promptpay')),
+			status text not null default 'paid' check (status in ('paid','void')),
+			received_by text not null default '',
+			created_at timestamptz not null default now(),
+			voided_at timestamptz,
+			voided_by text not null default ''
+		);
+		create index if not exists idx_billing_payments_admin on billing_payments(admin_id, created_at desc);
+		create table if not exists pos_sales (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			billing_account_id text references billing_accounts(id) on delete set null,
+			buyer_name text not null default '',
+			status text not null check (status in ('open','paid','void')),
+			total_thb integer not null check (total_thb >= 0),
+			cost_thb integer not null default 0 check (cost_thb >= 0),
+			payment_id text references billing_payments(id) on delete set null,
+			note text not null default '',
+			created_by text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			voided_at timestamptz
+		);
+		create index if not exists idx_pos_sales_admin on pos_sales(admin_id, status, created_at desc);
+		create index if not exists idx_pos_sales_account on pos_sales(billing_account_id, status, created_at desc);
+		create table if not exists pos_sale_items (
+			id bigserial primary key,
+			sale_id text not null references pos_sales(id) on delete cascade,
+			product_id text references pos_products(id) on delete set null,
+			product_name text not null,
+			sku text not null default '',
+			quantity integer not null check (quantity > 0),
+			unit_price_thb integer not null check (unit_price_thb >= 0),
+			unit_cost_thb integer not null default 0 check (unit_cost_thb >= 0),
+			line_total_thb integer not null check (line_total_thb >= 0)
+		);
+		create table if not exists pos_stock_batches (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			mode text not null check (mode in ('in','out','adjust')),
+			note text not null default '',
+			total_cost_thb integer not null default 0 check (total_cost_thb >= 0),
+			actor_id text not null default '',
+			created_at timestamptz not null default now()
+		);
+		create index if not exists idx_pos_stock_batches_admin on pos_stock_batches(admin_id, created_at desc);
+		create table if not exists pos_stock_movements (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			product_id text not null references pos_products(id) on delete cascade,
+			sale_id text references pos_sales(id) on delete set null,
+			delta integer not null,
+			balance integer not null check (balance >= 0),
+			reason text not null check (reason in ('sale','void','restock','adjustment')),
+			note text not null default '',
+			actor_id text not null default '',
+			created_at timestamptz not null default now()
+		);
+		alter table pos_stock_movements add column if not exists batch_id text references pos_stock_batches(id) on delete set null;
+		alter table pos_stock_movements add column if not exists unit_cost_thb integer not null default 0 check (unit_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists total_cost_thb integer not null default 0 check (total_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists previous_cost_thb integer not null default 0 check (previous_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists resulting_cost_thb integer not null default 0 check (resulting_cost_thb >= 0);
+		create index if not exists idx_pos_stock_product on pos_stock_movements(product_id, created_at desc);
+		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
+		create table if not exists billing_payment_allocations (
+			id bigserial primary key,
+			payment_id text not null references billing_payments(id) on delete cascade,
+			source_type text not null check (source_type in ('match','pos')),
+			source_id text not null,
+			amount_thb integer not null check (amount_thb >= 0),
+			created_at timestamptz not null default now(),
+			unique (payment_id, source_type, source_id)
+		);
+		create index if not exists idx_billing_alloc_source on billing_payment_allocations(source_type, source_id);
 		create index if not exists idx_sessions_admin on sessions(admin_id);
 		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
@@ -1450,7 +1608,20 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, player := range state.Players {
 			if player.ID == playerID && player.Active {
-				writeJSON(w, http.StatusOK, playerPaymentSummary(state, player))
+				a.writeCombinedPlayerPaymentSummary(w, r, state, player)
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "settle":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		for _, player := range state.Players {
+			if player.ID == playerID && player.Active && !player.Paid {
+				a.settlePlayerCombinedBill(w, r, state, player)
 				return
 			}
 		}
@@ -1919,6 +2090,29 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		return err
 	}
 
+	// POS may link a session-local guest to a billing account while another admin tab still
+	// holds an older session payload. Preserve that server-owned identity across state saves.
+	accountRows, accountErr := tx.QueryContext(ctx, `select id,coalesce(billing_account_id,'') from players where session_id=$1`, state.Session.ID)
+	if accountErr != nil {
+		return accountErr
+	}
+	existingAccounts := map[int]string{}
+	for accountRows.Next() {
+		var playerID int
+		var accountID string
+		if err = accountRows.Scan(&playerID, &accountID); err != nil {
+			accountRows.Close()
+			return err
+		}
+		existingAccounts[playerID] = accountID
+	}
+	accountRows.Close()
+	for index := range state.Players {
+		if state.Players[index].BillingAccountID == "" {
+			state.Players[index].BillingAccountID = existingAccounts[state.Players[index].ID]
+		}
+	}
+
 	for _, table := range []string{"players", "couples", "matches", "live_share_hours", "returned_shuttles"} {
 		if _, err = tx.ExecContext(ctx, "delete from "+table+" where session_id = $1", state.Session.ID); err != nil {
 			return err
@@ -1927,9 +2121,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''))
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, billing_account_id)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''))
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.BillingAccountID); err != nil {
 			return err
 		}
 	}
@@ -2092,7 +2286,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, '')
+		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, ''), coalesce(billing_account_id, '')
 		from players
 		where session_id = $1
 		order by id
@@ -2103,7 +2297,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.BillingAccountID); err != nil {
 			return SessionState{}, err
 		}
 		state.Players = append(state.Players, player)

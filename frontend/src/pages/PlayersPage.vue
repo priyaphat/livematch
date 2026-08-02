@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 import { ArrowDown, ArrowUp, Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
 import { exportMembersExcel } from '../excelExport'
 
@@ -86,6 +87,8 @@ const paymentSummary = ref(null)
 const paymentLoading = ref(false)
 const paymentSaving = ref(false)
 const paymentError = ref('')
+const paymentMethod = ref('cash')
+const paymentQr = ref('')
 const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
 ))
@@ -132,6 +135,10 @@ async function openPaymentModal(player) {
   paymentLoading.value = true
   try {
     paymentSummary.value = await props.apiRequest(`/api/sessions/${props.state.session.id}/players/${player.id}/payment-summary`)
+    paymentMethod.value = 'cash'
+    paymentQr.value = paymentSummary.value.promptPayPayload
+      ? await QRCode.toDataURL(paymentSummary.value.promptPayPayload, { width: 260, margin: 1 })
+      : ''
   } catch (error) {
     paymentError.value = error.message || 'โหลดรายละเอียดค่าใช้จ่ายไม่สำเร็จ'
   } finally {
@@ -144,6 +151,7 @@ function closePaymentModal() {
   paymentPlayer.value = null
   paymentSummary.value = null
   paymentError.value = ''
+  paymentQr.value = ''
 }
 
 async function confirmPaymentChange() {
@@ -152,7 +160,8 @@ async function confirmPaymentChange() {
   paymentError.value = ''
   let saved = false
   try {
-    await props.togglePayment(paymentPlayer.value)
+    if (paymentSummary.value?.posEnabled) await props.togglePayment(paymentPlayer.value, paymentSummary.value, paymentMethod.value)
+    else await props.togglePayment(paymentPlayer.value)
     saved = true
   } catch (error) {
     paymentError.value = error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ'
@@ -540,6 +549,12 @@ async function exportExcel() {
                 <span>ยอดรวม</span>
                 <span class="text-court-700 dark:text-court-300">{{ money(paymentSummary.totalThb) }}</span>
               </div>
+              <div v-if="paymentSummary.posEnabled" class="mt-2 grid gap-2 rounded-lg bg-sky-50 p-3 text-sm dark:bg-sky-950/30">
+                <div class="flex justify-between"><span>ยอด Match ทั้งหมด</span><b>{{ money(paymentSummary.matchTotalThb) }}</b></div>
+                <div class="flex justify-between"><span>ยอดสินค้า POS</span><b>{{ money(paymentSummary.posTotalThb) }}</b></div>
+              </div>
+              <label v-if="paymentSummary.posEnabled" class="mt-2 grid gap-1 text-sm font-black">ช่องทางชำระ<select v-model="paymentMethod" class="h-10 rounded-lg border bg-transparent px-3 dark:border-stone-700"><option value="cash">เงินสด</option><option value="promptpay">PromptPay QR</option></select></label>
+              <div v-if="paymentSummary.posEnabled && paymentMethod==='promptpay'" class="mt-2 grid place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><img v-if="paymentQr" :src="paymentQr" alt="Match PromptPay QR" class="h-44 w-44 rounded bg-white p-1" /><p v-else class="text-center text-sm font-bold text-stone-500">ยังไม่ได้ตั้งค่า PromptPay ในระบบ POS</p></div>
               <p class="text-xs font-semibold text-stone-500">คำนวณใหม่จากข้อมูลล่าสุดของระบบก่อนแสดงรายการนี้</p>
             </div>
           </template>
