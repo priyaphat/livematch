@@ -26,7 +26,7 @@ const pendingPlayerIds = computed(() => new Set(
     .filter((id) => id > 0)
 ))
 const waitingPlayers = computed(() => (props.state.players || [])
-  .filter((player) => player.active && player.coupon && !occupiedPlayerIds.value.has(Number(player.id)))
+  .filter((player) => player.active && (player.coupon || pendingPlayerIds.value.has(Number(player.id))) && !occupiedPlayerIds.value.has(Number(player.id)))
   .sort((a, b) => Number(a.id) - Number(b.id)))
 const waitingPlayerColumnCount = computed(() => Math.max(1, Math.ceil(waitingPlayers.value.length / 10)))
 const waitingPlayerColumns = computed(() => {
@@ -170,7 +170,7 @@ function tvContentStyle() {
         <Transition name="queue-fade" mode="out-in">
         <div v-if="showWaitingSlide" key="waiting-summary" class="shared-flight-waiting-summary flex h-12 w-full min-w-0 flex-col justify-center text-right">
           <p class="text-[10px] font-black uppercase tracking-[0.12em] text-court-700">Waiting list</p>
-          <h2 class="mt-0.5 truncate text-base font-black text-stone-900 lg:text-lg">รายชื่อคนมีคูปองที่ยังรอจับคู่ {{ waitingPlayers.length }} คน</h2>
+          <h2 class="mt-0.5 truncate text-base font-black text-stone-900 lg:text-lg">รายชื่อคนที่ยังรอจับคู่ {{ waitingPlayers.length }} คน</h2>
         </div>
         <div v-else key="match-summary" class="shared-flight-stats grid h-13 w-full shrink-0 grid-cols-3 divide-x divide-white/10 overflow-hidden rounded-lg border border-white/10 bg-black/15 text-center">
           <div class="px-4 py-1.5">
@@ -279,7 +279,7 @@ function tvContentStyle() {
 
         <Transition name="queue-fade" mode="out-in">
         <div v-if="showMobileCoupons && state.settings.showWaitingOnQueueShare" key="mobile-waiting-summary" class="mobile-waiting-summary flex min-h-[4.1rem] items-center justify-between bg-[#cfeae2] px-4 py-2.5">
-          <div><p class="text-[10px] font-black uppercase tracking-[0.12em]">Waiting list</p><h2 class="mt-0.5 text-base font-black">คนมีคูปองรอจับคู่ {{ waitingPlayers.length }} คน</h2></div>
+          <div><p class="text-[10px] font-black uppercase tracking-[0.12em]">Waiting list</p><h2 class="mt-0.5 text-base font-black">รายชื่อคนที่ยังรอจับคู่ {{ waitingPlayers.length }} คน</h2></div>
           <UsersRound class="h-6 w-6" />
         </div>
         <div v-else key="mobile-match-summary" class="shared-queue-stats grid min-h-[4.1rem] grid-cols-3 divide-x divide-stone-100 border-b border-stone-100 dark:divide-stone-800 dark:border-stone-800">

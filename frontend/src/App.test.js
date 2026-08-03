@@ -1971,10 +1971,11 @@ describe('LiveMatch app', () => {
           settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true },
           players: [
             { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle' },
-            { id: 2, name: 'ไม่มีคูปอง', active: true, paid: false, coupon: false, games: 0, level: 'light' },
-            { id: 3, name: 'เข้าแถวรอคิวแล้ว', active: true, paid: false, coupon: true, games: 0, level: 'heavy' }
+            { id: 2, name: 'คนไม่มีสิทธิ์', active: true, paid: false, coupon: false, games: 0, level: 'light' },
+            { id: 3, name: 'เข้าแถวรอคิวแล้ว', active: true, paid: false, coupon: true, games: 0, level: 'heavy' },
+            { id: 4, name: 'ทีมสร้างเอง', active: true, paid: false, coupon: false, games: 0, level: 'middle' }
           ],
-          pending: [{ id: 10, a1: 1, a2: 0, b1: 0, b2: 0 }],
+          pending: [{ id: 10, a1: 1, a2: 4, b1: 0, b2: 0 }],
           queue: [{ id: 11, a1: 3, a2: 0, b1: 0, b2: 0 }],
           live: []
         },
@@ -1986,10 +1987,11 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.find('.shared-waiting-people').exists()).toBe(false)
     await vi.advanceTimersByTimeAsync(10000)
-    expect(wrapper.find('.shared-flight-waiting-summary').text()).toContain('รายชื่อคนมีคูปองที่ยังรอจับคู่ 1 คน')
+    expect(wrapper.find('.shared-flight-waiting-summary').text()).toContain('รายชื่อคนที่ยังรอจับคู่ 2 คน')
     expect(wrapper.find('.shared-waiting-people').text()).toContain('คนรอจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('ทีมสร้างเอง')
     expect(wrapper.find('.shared-waiting-people').text()).toContain('กำลังจับคู่')
-    expect(wrapper.find('.shared-waiting-people').text()).not.toContain('ไม่มีคูปอง')
+    expect(wrapper.find('.shared-waiting-people').text()).not.toContain('คนไม่มีสิทธิ์')
     expect(wrapper.find('.shared-waiting-people').text()).not.toContain('เข้าแถวรอคิวแล้ว')
     wrapper.unmount()
     vi.useRealTimers()
