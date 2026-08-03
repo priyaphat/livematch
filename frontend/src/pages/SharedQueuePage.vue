@@ -416,7 +416,11 @@ function tvContentStyle() {
 .shared-flight-header p { color: #57534e !important; }
 .shared-flight-stats { border-color: #e7e5e4 !important; background: #f5f5f4 !important; }
 .shared-flight-waiting-summary p { color: #287565 !important; }
-.shared-flight-waiting-summary h2 { color: #1c1917 !important; }
+.shared-flight-waiting-summary h2 { color: #1c1917 !important; font-size: 1.25rem !important; }
+.shared-flight-waiting-summary,
+.shared-waiting-people,
+.mobile-waiting-summary,
+.mobile-coupon-board { font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important; }
 .shared-flight-columns { border-color: #d6d3d1 !important; background: #f0ede5 !important; color: #57534e !important; font-size: 0.82rem !important; letter-spacing: 0.13em !important; }
 .shared-flight-row { border-color: #e7e5e4 !important; background: #ffffff !important; }
 .shared-flight-row:nth-of-type(even) { background: #fafaf9 !important; }
@@ -436,10 +440,10 @@ function tvContentStyle() {
 .shared-coupon-list > article span { color: #287565 !important; }
 .shared-coupon-list > article p:first-of-type { color: #1c1917 !important; }
 .shared-coupon-list > article p:last-of-type { color: #57534e !important; }
-.coupon-flight-columns { grid-template-columns: 4rem minmax(0, 1fr) 5rem 6.5rem !important; column-gap: clamp(0.45rem, 0.7vw, 0.7rem) !important; letter-spacing: 0.08em; }
+.coupon-flight-columns { grid-template-columns: 4rem minmax(0, 1fr) 5rem 6.5rem !important; column-gap: clamp(0.45rem, 0.7vw, 0.7rem) !important; font-size: 0.88rem !important; letter-spacing: 0.06em; }
 .coupon-flight-row { position: relative; grid-template-columns: 4rem minmax(0, 1fr) 5rem 6.5rem !important; column-gap: clamp(0.45rem, 0.7vw, 0.7rem) !important; }
-.coupon-flight-row > p { font-size: 1.05rem !important; }
-.coupon-player-name { color: #1c1917 !important; font-size: clamp(1.15rem, 1.7vw, 1.55rem) !important; font-weight: 500 !important; line-height: 1.25; }
+.coupon-flight-row > p { font-size: 1.12rem !important; }
+.coupon-player-name { color: #1c1917 !important; font-size: clamp(1.2rem, 1.55vw, 1.55rem) !important; font-weight: 500 !important; line-height: 1.25; }
 .coupon-pending-badge { border-radius: 999px; background: #fff0c9 !important; padding: 0.22rem 0.5rem; color: #855b08 !important; font-size: 0.66rem; font-weight: 900; white-space: nowrap; }
 .shared-queue-shell { color: #1c1917 !important; }
 .shared-queue-shell .shared-queue-summary,
@@ -450,7 +454,7 @@ function tvContentStyle() {
 .shared-queue-shell .shared-team-name { color: #1c1917 !important; font-size: clamp(1.3rem, 4.2vw, 1.8rem); }
 .shared-flight-columns,
 .shared-flight-row {
-  grid-template-columns: minmax(5.8rem, 0.7fr) minmax(4.2rem, 0.5fr) minmax(0, 1.5fr) minmax(0, 1.5fr) minmax(5.5rem, 0.8fr) minmax(6rem, 0.9fr);
+  grid-template-columns: minmax(5.8rem, 0.7fr) minmax(3rem, 0.3fr) minmax(0, 1.6fr) minmax(0, 1.6fr) minmax(5.5rem, 0.8fr) minmax(6rem, 0.9fr);
   column-gap: clamp(0.65rem, 1.4vw, 1.5rem);
 }
 
@@ -565,16 +569,16 @@ function tvContentStyle() {
   .mobile-coupon-title svg { color: #287565 !important; }
   .mobile-waiting-summary { color: #173f36 !important; }
   .mobile-waiting-summary p { color: #287565 !important; }
-  .mobile-waiting-summary h2 { color: #173f36 !important; }
+  .mobile-waiting-summary h2 { color: #173f36 !important; font-size: 1.2rem !important; }
   .mobile-waiting-summary svg { color: #287565 !important; }
   .mobile-coupon-row { border: 0 !important; background: #fff !important; }
   .mobile-coupon-columns,
   .mobile-coupon-row { grid-template-columns: 3.2rem minmax(0, 1fr) 3.8rem 5.3rem !important; column-gap: 0.35rem; }
   .mobile-coupon-row:nth-child(even) { background: #f8f7f3 !important; }
   .mobile-coupon-row > span { color: #287565 !important; }
-  .mobile-coupon-name { color: #1c1917 !important; font-size: 1.05rem !important; }
-  .mobile-coupon-level { color: #57534e !important; }
-  .mobile-coupon-board > div:nth-child(2) { color: #44403c !important; }
+  .mobile-coupon-name { color: #1c1917 !important; font-size: 1.25rem !important; }
+  .mobile-coupon-level { color: #57534e !important; font-size: 1rem !important; }
+  .mobile-coupon-board > div:nth-child(1) { color: #44403c !important; font-size: 0.82rem !important; }
   .mobile-coupon-scroll { scrollbar-color: #a8cfc3 transparent; }
 }
 
@@ -913,5 +917,54 @@ function tvContentStyle() {
     font-size: clamp(0.78rem, 1.8vmin, 1rem);
     -webkit-line-clamp: 1;
   }
+}
+
+/* Elder-friendly typography: keep the whole public queue on one clear Thai typeface. */
+.shared-queue-page {
+  font-family: 'Sarabun', 'Noto Sans Thai', sans-serif !important;
+  font-size: 18px;
+  line-height: 1.4;
+}
+.shared-flight-header h1 { font-size: clamp(1.3rem, 1.8vw, 1.65rem) !important; font-weight: 800; }
+.shared-flight-header > div:first-child p { font-size: clamp(0.95rem, 1.15vw, 1.1rem) !important; font-weight: 600; }
+.shared-flight-stats p:first-child { font-size: 0.82rem !important; font-weight: 700; }
+.shared-flight-stats p:last-child { font-size: 1.45rem !important; font-weight: 800; }
+.shared-flight-columns { font-size: clamp(0.88rem, 1vw, 1rem) !important; font-weight: 700; }
+.shared-flight-section-label { font-size: 0.88rem !important; font-weight: 800; }
+.shared-flight-team,
+.shared-queue-page--compact .shared-flight-team,
+.shared-queue-page--dense .shared-flight-team { font-size: clamp(1.2rem, 1.55vw, 1.55rem) !important; font-weight: 500 !important; line-height: 1.25; }
+.shared-flight-row > p:not(.shared-flight-team) { font-size: clamp(0.95rem, 1.1vw, 1.08rem) !important; font-weight: 600; }
+.shared-flight-status { font-size: 0.82rem !important; font-weight: 800; }
+.coupon-player-name { font-size: clamp(1.2rem, 1.55vw, 1.55rem) !important; }
+.coupon-flight-row > p { font-size: 1.05rem !important; }
+.coupon-flight-row > .coupon-player-name { font-size: clamp(1.2rem, 1.55vw, 1.55rem) !important; font-weight: 500 !important; }
+.coupon-pending-badge { font-size: 0.76rem; }
+
+@media (max-width: 767px) {
+  .shared-queue-page { font-size: 17px; line-height: 1.45; }
+  .shared-queue-hero > p { font-size: 0.78rem !important; }
+  .shared-queue-hero h1 { font-size: 1.35rem !important; }
+  .shared-queue-hero h1 + span + p { font-size: 0.9rem !important; }
+  .shared-queue-stat p:first-child { font-size: 0.82rem !important; font-weight: 600; }
+  .shared-queue-stat p:last-child { font-size: 1.5rem !important; font-weight: 800; }
+  .shared-queue-section-title h2 { font-size: 1.35rem !important; }
+  .shared-match-header p:first-child { font-size: 1rem !important; }
+  .shared-match-meta { font-size: 0.88rem !important; }
+  .shared-live-badge { font-size: 0.82rem !important; }
+  .shared-elapsed { font-size: 1.05rem !important; }
+  .shared-team-box > p:first-child { font-size: 0.88rem !important; font-weight: 700; }
+  .shared-team-name,
+  .shared-queue-page--sparse .shared-team-name,
+  .shared-queue-page--compact .shared-team-name,
+  .shared-queue-page--dense .shared-team-name { font-size: 1.45rem !important; font-weight: 700; line-height: 1.15; }
+  .shared-empty-queue p:first-of-type { font-size: 1.15rem; }
+  .shared-empty-queue p:last-of-type { font-size: 0.95rem; }
+  .mobile-waiting-summary h2 { font-size: 1.25rem !important; }
+  .mobile-coupon-columns { font-size: 0.88rem !important; }
+  .mobile-coupon-name,
+  .mobile-coupon-row > .coupon-player-name { font-size: 1.45rem !important; font-weight: 700 !important; line-height: 1.15; }
+  .mobile-coupon-level { font-size: 1rem !important; }
+  .coupon-pending-badge { font-size: 0.72rem; }
 }
 </style>
