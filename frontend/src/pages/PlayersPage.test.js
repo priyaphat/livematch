@@ -55,6 +55,10 @@ describe('PlayersPage member combobox', () => {
     expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?phone=0')
     expect(wrapper.text()).toContain('0882250419')
     expect(wrapper.text()).toContain('สมาชิกทดสอบ')
+    await input.setValue('0882250419')
+    await vi.advanceTimersByTimeAsync(300)
+    await Promise.resolve()
+    expect(wrapper.findAll('button').some((button) => button.text().includes('เพิ่มสมาชิกใหม่'))).toBe(false)
 
     await wrapper.find('[role="option"]').trigger('click')
     expect(forms.newPlayerMemberId).toBe('member-1')
@@ -76,6 +80,7 @@ describe('PlayersPage member combobox', () => {
     expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?q=%E0%B8%9B')
     expect(wrapper.find('[role="option"]').text()).toContain('ปรียาภัฒน์')
     expect(wrapper.find('[role="option"]').text()).toContain('0864407370')
+    expect(wrapper.findAll('button').some((button) => button.text().includes('เพิ่มสมาชิกใหม่'))).toBe(true)
 
     await wrapper.find('[role="option"]').trigger('click')
     await wrapper.find('[data-testid="member-combobox-row"] > button').trigger('click')
@@ -149,6 +154,41 @@ describe('PlayersPage member combobox', () => {
 
     expect(wrapper.find('[data-testid="member-combobox-row"] > button').attributes('disabled')).toBeDefined()
     expect(addPlayer).not.toHaveBeenCalled()
+  })
+
+  it('creates a member from an unmatched name only after entering a 10-digit phone', async () => {
+    vi.useFakeTimers()
+    const created = { id: 'member-new', name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general' }
+    const apiRequest = vi.fn((url, options = {}) => {
+      if (url === '/api/admin/members' && options.method === 'POST') return Promise.resolve(created)
+      return Promise.resolve({ items: [] })
+    })
+    const { wrapper, forms } = mountPlayers(apiRequest)
+    const searchInput = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
+
+    await searchInput.setValue('สมาชิกใหม่')
+    await vi.advanceTimersByTimeAsync(300)
+    await Promise.resolve()
+    const createButton = wrapper.findAll('button').find((button) => button.text().includes('เพิ่มสมาชิกใหม่'))
+    expect(createButton).toBeTruthy()
+    await createButton.trigger('click')
+
+    expect(wrapper.find('input[aria-label="ชื่อสมาชิกใหม่"]').element.value).toBe('สมาชิกใหม่')
+    expect(wrapper.find('input[aria-label="เบอร์โทรสมาชิกใหม่"]').element.value).toBe('')
+    expect(wrapper.text()).toContain('** ชื่อซ้ำจะมีผลตอนเรียกชื่อ')
+    expect(wrapper.find('select[aria-label="ประเภทสมาชิก"] + svg').exists()).toBe(true)
+    const submit = wrapper.findAll('form button').find((button) => button.text().includes('เพิ่มสมาชิก'))
+    await wrapper.find('input[aria-label="เบอร์โทรสมาชิกใหม่"]').setValue('081234567')
+    expect(submit.attributes('disabled')).toBeDefined()
+    await wrapper.find('input[aria-label="เบอร์โทรสมาชิกใหม่"]').setValue('0812345678')
+    expect(submit.attributes('disabled')).toBeUndefined()
+    await wrapper.find('form').trigger('submit')
+
+    await vi.waitFor(() => expect(apiRequest).toHaveBeenCalledWith('/api/admin/members', expect.objectContaining({ method: 'POST' })))
+    const createCall = apiRequest.mock.calls.find(([url, options]) => url === '/api/admin/members' && options?.method === 'POST')
+    expect(JSON.parse(createCall[1].body)).toEqual({ name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general' })
+    expect(forms.newPlayerMemberId).toBe('member-new')
+    expect(forms.newPlayerPhone).toBe('0812345678')
   })
 })
 

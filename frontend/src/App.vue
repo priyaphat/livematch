@@ -3428,7 +3428,7 @@ const pageProps = computed(() => ({
     >
       <div
         v-if="ui.toast"
-        class="fixed inset-x-3 top-3 z-50 mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
+        class="fixed inset-x-3 top-3 z-[100] mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
         :class="ui.toast.type === 'error' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100' : 'border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100'"
         role="status"
         aria-live="polite"
@@ -3450,7 +3450,7 @@ const pageProps = computed(() => ({
         <p class="font-black">กำลังเตรียมข้อมูลผู้ดูแล</p>
       </div>
     </div>
-    <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" />
+    <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" />
     <POSPage v-else-if="adminFeaturePage === 'pos' && auth.user" :api-request="api" :auth="auth" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />

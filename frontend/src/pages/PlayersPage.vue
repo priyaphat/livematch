@@ -75,7 +75,11 @@ const memberDropdownOpen = ref(false)
 const memberSearchCompleted = ref('')
 const memberSearchError = ref('')
 const showCreateMember = ref(false)
+const newMemberName = ref('')
+const newMemberPhone = ref('')
 const newMemberType = ref('general')
+const createMemberError = ref('')
+const createMemberSaving = ref(false)
 let memberSearchTimer
 let memberSearchSequence = 0
 let memberBlurTimer
@@ -108,10 +112,15 @@ const canAddPlayer = computed(() => (
   Boolean(props.forms.newPlayerMemberId || (newPlayerEntry.value && !isPhoneLookup.value))
 ))
 const canCreateMissingMember = computed(() => (
-  newPlayerPhoneDigits.value.length >= 9 &&
   !memberLoading.value &&
   memberSearchCompleted.value === memberSearchKey.value &&
-  !memberOptions.value.length
+  (isNameLookup.value || (newPlayerPhoneDigits.value.length >= 10 && !memberOptions.value.length))
+))
+const newMemberPhoneDigits = computed(() => String(newMemberPhone.value || '').replace(/\D/g, ''))
+const canSubmitNewMember = computed(() => (
+  !createMemberSaving.value &&
+  Boolean(newMemberName.value.trim()) &&
+  newMemberPhoneDigits.value.length === 10
 ))
 
 function changePlayerSort(key) {
@@ -291,14 +300,36 @@ function closeMemberDropdownLater() {
   memberBlurTimer = window.setTimeout(() => { memberDropdownOpen.value = false }, 120)
 }
 
-async function createAndSelectMember() {
-  const created = await props.apiRequest('/api/admin/members', { method: 'POST', body: JSON.stringify({ name: props.forms.newPlayerName, phone: props.forms.newPlayerPhone, memberType: newMemberType.value }) })
-  memberOptions.value = [created]
-  props.forms.newPlayerMemberId = created.id
-  props.forms.newPlayerName = created.name
-  memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
+function openCreateMemberModal() {
+  newMemberName.value = isNameLookup.value ? newPlayerEntry.value : ''
+  newMemberPhone.value = isPhoneLookup.value ? newPlayerEntry.value : ''
+  newMemberType.value = 'general'
+  createMemberError.value = ''
+  showCreateMember.value = true
   memberDropdownOpen.value = false
-  showCreateMember.value = false
+}
+
+async function createAndSelectMember() {
+  if (!canSubmitNewMember.value) return
+  createMemberSaving.value = true
+  createMemberError.value = ''
+  try {
+    const created = await props.apiRequest('/api/admin/members', {
+      method: 'POST',
+      body: JSON.stringify({ name: newMemberName.value.trim(), phone: newMemberPhone.value, memberType: newMemberType.value })
+    })
+    memberOptions.value = [created]
+    props.forms.newPlayerMemberId = created.id
+    props.forms.newPlayerName = created.name
+    props.forms.newPlayerPhone = created.phone
+    memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
+    memberDropdownOpen.value = false
+    showCreateMember.value = false
+  } catch (error) {
+    createMemberError.value = error.message || 'เพิ่มสมาชิกไม่สำเร็จ'
+  } finally {
+    createMemberSaving.value = false
+  }
 }
 
 async function exportExcel() {
@@ -361,9 +392,10 @@ async function exportExcel() {
             </button>
           </template>
           <p v-if="!memberLoading && memberSearchError" class="px-3 py-3 text-sm font-bold text-red-600">{{ memberSearchError }}</p>
-          <div v-else-if="!memberLoading && memberSearchCompleted === memberSearchKey && !memberOptions.length" class="p-2">
-            <p class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : 'ไม่พบสมาชิกจากชื่อนี้ สามารถกดเพิ่มเป็นขาจรได้' }}</p>
-            <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="showCreateMember=true; memberDropdownOpen=false"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
+          <div v-else-if="!memberLoading && memberSearchCompleted === memberSearchKey" class="p-2">
+            <p v-if="!memberOptions.length" class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : 'ไม่พบสมาชิกจากชื่อนี้ สามารถเพิ่มเป็นสมาชิกใหม่หรือขาจรได้' }}</p>
+            <p v-else-if="isNameLookup" class="px-1 pb-2 text-sm font-semibold text-stone-500">หากไม่ใช่คนในรายชื่อ สามารถเพิ่มสมาชิกใหม่ด้วยชื่อซ้ำได้</p>
+            <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="openCreateMemberModal"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
           </div>
         </div>
       </div>
@@ -640,6 +672,30 @@ async function exportExcel() {
         </p>
       </div>
     </div>
-    <div v-if="showCreateMember" class="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-3"><form class="w-full max-w-md rounded-lg bg-white p-4 dark:bg-stone-900" @submit.prevent="createAndSelectMember"><h2 class="text-xl font-black">เพิ่มสมาชิกใหม่</h2><div class="mt-3 grid gap-3"><input v-model="forms.newPlayerName" required placeholder="ชื่อ" class="h-11 rounded-md border bg-transparent px-3"/><input :value="forms.newPlayerPhone" disabled class="h-11 rounded-md border bg-stone-100 px-3"/><select v-model="newMemberType" class="h-11 rounded-md border bg-transparent px-3"><option value="general">สมาชิกทั่วไป</option><option value="club">สมาชิกชมรม</option></select><div class="grid grid-cols-2 gap-2"><button type="button" class="h-11 rounded-md border" @click="showCreateMember=false">ยกเลิก</button><button class="h-11 rounded-md bg-court-500 font-black text-white">เพิ่มสมาชิก</button></div></div></form></div>
+    <div v-if="showCreateMember" class="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-3" @click.self="showCreateMember=false">
+      <form class="w-full max-w-md rounded-lg bg-white p-4 dark:bg-stone-900" @submit.prevent="createAndSelectMember">
+        <h2 class="text-xl font-black">เพิ่มสมาชิกใหม่</h2>
+        <div class="mt-3 grid gap-3">
+          <input v-model="newMemberName" required aria-label="ชื่อสมาชิกใหม่" placeholder="ชื่อ" class="h-11 rounded-md border bg-transparent px-3" />
+          <p class="rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">** ชื่อซ้ำจะมีผลตอนเรียกชื่อ</p>
+          <div class="grid gap-1">
+            <input v-model="newMemberPhone" required inputmode="tel" autocomplete="tel" aria-label="เบอร์โทรสมาชิกใหม่" placeholder="เบอร์โทร 10 หลัก" class="h-11 rounded-md border bg-transparent px-3" />
+            <p class="text-xs font-semibold" :class="newMemberPhoneDigits.length > 0 && newMemberPhoneDigits.length !== 10 ? 'text-red-600' : 'text-stone-500'">กรอกเบอร์โทรให้ครบ 10 หลัก</p>
+          </div>
+          <div class="relative">
+            <select v-model="newMemberType" aria-label="ประเภทสมาชิก" class="h-11 w-full appearance-none rounded-md border bg-transparent px-3 pr-10">
+              <option value="general">สมาชิกทั่วไป</option>
+              <option value="club">สมาชิกชมรม</option>
+            </select>
+            <ArrowDown class="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-500" aria-hidden="true" />
+          </div>
+          <p v-if="createMemberError" class="rounded-md bg-red-50 p-3 text-sm font-bold text-red-700 dark:bg-red-950/40 dark:text-red-200">{{ createMemberError }}</p>
+          <div class="grid grid-cols-2 gap-2">
+            <button type="button" class="h-11 rounded-md border" :disabled="createMemberSaving" @click="showCreateMember=false">ยกเลิก</button>
+            <button class="h-11 rounded-md bg-court-500 font-black text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="!canSubmitNewMember">{{ createMemberSaving ? 'กำลังเพิ่ม...' : 'เพิ่มสมาชิก' }}</button>
+          </div>
+        </div>
+      </form>
+    </div>
   </section>
 </template>
