@@ -225,7 +225,7 @@ function status(court, minute) {
       text: closure.note ? `ปิด · ${closure.note}` : "ปิดสนาม",
       tone: "closed",
     };
-  return { text: `ว่าง ฿${court.pricePerInterval}`, tone: "free" };
+  return { text: "ว่าง", tone: "free" };
 }
 function isSelected(court, minute) {
   return selections.value.some(
@@ -585,7 +585,7 @@ onUnmounted(() => {
           <h1 class="text-xl font-black sm:text-2xl">จองสนามแบดมินตัน</h1>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+        <div class="flex shrink-0 items-center gap-2">
         <button
           class="booking-icon-button"
           :aria-label="props.theme === 'dark' ? 'ใช้โหมดสว่าง' : 'ใช้โหมดมืด'"
@@ -598,10 +598,10 @@ onUnmounted(() => {
         <template v-if="state.member">
         <button
           v-if="state.member.profileToken"
-          class="booking-secondary-button"
+          class="booking-secondary-button public-profile-button"
           @click="goToProfile"
         >
-          <UserRound class="h-4 w-4" />โปรไฟล์
+          <UserRound class="h-4 w-4" /><span>โปรไฟล์</span>
         </button>
         <div class="hidden text-right sm:block">
           <p class="text-sm font-black">{{ state.member.name }}</p>
@@ -735,14 +735,14 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="public-date-bar">
+      <section class="public-date-bar" aria-labelledby="public-booking-date-title">
         <div>
           <p
             class="text-xs font-black uppercase tracking-[0.14em] text-court-700"
           >
             เลือกวันและช่วงเวลา
           </p>
-          <h2 class="mt-1 text-lg font-black">{{ displayDate }}</h2>
+          <h2 id="public-booking-date-title" class="mt-1 text-lg font-black">{{ displayDate }}</h2>
         </div>
         <div class="booking-date-control">
           <button
@@ -789,13 +789,13 @@ onUnmounted(() => {
           <table class="public-timeline-table border-collapse">
             <thead>
               <tr class="booking-table-head">
-                <th class="public-court-sticky">สนาม / เวลา</th>
+                <th class="public-court-sticky">สนาม</th>
                 <th
                   v-for="minute in slots"
                   :key="minute"
                   class="public-time-heading"
                 >
-                  {{ label(minute) }} น.
+                  {{ label(minute) }}
                 </th>
               </tr>
             </thead>
@@ -811,6 +811,7 @@ onUnmounted(() => {
                     :class="slotClass(court, minute)"
                     :disabled="status(court, minute).tone !== 'free'"
                     :aria-pressed="isSelected(court, minute)"
+                    :title="status(court, minute).text"
                     :data-testid="`slot-${court.id}-${minute}`"
                     @click="selectSlot(court, minute)"
                   >
@@ -879,7 +880,7 @@ onUnmounted(() => {
         >
           <X class="h-4 w-4" />
         </button>
-        <div class="min-w-0">
+        <div class="public-summary-copy min-w-0">
           <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700">
             สรุปการจอง · {{ selections.length }} ช่วง
           </p>
@@ -892,14 +893,14 @@ onUnmounted(() => {
             รวม {{ selectedDuration }} นาที · เลือกข้ามสนามและข้ามชั่วโมงได้
           </p>
         </div>
-        <div class="text-right">
+        <div class="public-summary-total text-right">
           <p class="text-xs font-bold text-stone-500">ยอดรวม</p>
           <p class="text-3xl font-black text-court-700">
             ฿{{ total.toLocaleString("th-TH") }}
           </p>
         </div>
         <button class="booking-primary-button h-12" @click="holdBatch">
-          ล็อกเวลาทั้งหมด 5 นาทีและชำระเงิน
+          ดำเนินการชำระเงิน
         </button>
       </section>
 
@@ -958,7 +959,7 @@ onUnmounted(() => {
       @click.self="payment = null"
       @keydown.esc="payment = null"
     >
-      <section class="public-payment-sheet">
+      <section class="public-payment-sheet" tabindex="-1">
         <button
           class="booking-icon-button absolute right-4 top-4"
           aria-label="ปิด"

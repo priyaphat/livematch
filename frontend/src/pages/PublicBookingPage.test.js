@@ -177,6 +177,8 @@ describe("PublicBookingPage", () => {
     expect(wrapper.find(".public-slot--hold").exists()).toBe(true);
     expect(wrapper.text()).not.toContain("NaN");
     expect(wrapper.find(".public-slot--pending").exists()).toBe(true);
+    expect(wrapper.get('[data-testid="slot-court-1-960"]').text()).toBe("ว่าง");
+    expect(wrapper.get('[data-testid="slot-court-1-960"]').text()).not.toContain("฿");
 
     const firstSlot = wrapper.get('[data-testid="slot-court-1-960"]');
     await firstSlot.trigger("click");
@@ -222,7 +224,7 @@ describe("PublicBookingPage", () => {
     await wrapper.get('[data-testid="slot-court-1-960"]').trigger("click");
     await wrapper
       .findAll("button")
-      .find((button) => button.text().includes("ล็อกเวลาทั้งหมด 5 นาที"))
+      .find((button) => button.text().includes("ดำเนินการชำระเงิน"))
       .trigger("click");
     await vi.waitFor(() =>
       expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain(
