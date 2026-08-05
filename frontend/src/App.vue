@@ -736,7 +736,20 @@ async function loginAdmin() {
     }))
     forms.authPassword = ''
   } catch (error) {
-    forms.authError = error.message || 'เข้าสู่ระบบไม่สำเร็จ'
+    const loginMessages = language.value === 'en'
+      ? {
+          'invalid_login': 'The email or password is incorrect. Please try again.',
+          'invalid login': 'The email or password is incorrect. Please try again.',
+          'email not verified': 'Please verify your email before signing in.',
+          'too many requests': 'Too many sign-in attempts. Please wait a moment and try again.'
+        }
+      : {
+          'invalid_login': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่',
+          'invalid login': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่',
+          'email not verified': 'กรุณายืนยันอีเมลก่อนเข้าสู่ระบบ',
+          'too many requests': 'ลองเข้าสู่ระบบหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่'
+        }
+    forms.authError = loginMessages[error.code] || loginMessages[error.message] || (language.value === 'en' ? 'Unable to sign in right now. Please try again.' : 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
   } finally {
     auth.loading = false
   }

@@ -596,6 +596,17 @@ textarea {
     transform: translateY(-1px);
     box-shadow: var(--lm-shadow-soft);
   }
+  .booking-slot.booking-state--selected {
+    border-color: #0f766e;
+    background: #ccfbf1;
+    color: #115e59;
+    box-shadow: 0 0 0 3px rgb(20 184 166 / 18%);
+  }
+  .dark .booking-slot.booking-state--selected {
+    border-color: #5eead4;
+    background: rgb(19 78 74 / 65%);
+    color: #ccfbf1;
+  }
   .booking-inspector {
     position: sticky;
     top: 1rem;

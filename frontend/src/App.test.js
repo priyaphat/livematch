@@ -132,6 +132,32 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('ผู้เล่นวันนี้')
     expect(wrapper.text()).not.toContain('จัดคู่')
   })
+  it('shows a user-friendly message when admin credentials are incorrect', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((url, options = {}) => {
+      const isLogin = String(url).includes('/api/auth/login') && options.method === 'POST'
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve(isLogin
+          ? { error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่', code: 'invalid_login' }
+          : { error: 'login required' })
+      })
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const email = wrapper.find('input[type="email"]')
+    const password = wrapper.find('input[type="password"]')
+    await email.setValue('admin@example.com')
+    await password.setValue('wrong-password')
+    await wrapper.findAll('button').filter((button) => button.text() === 'เข้าสู่ระบบ').at(-1).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่')
+    expect(wrapper.text()).not.toContain('invalid login')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
   it('toggles interface language', async () => {
     localStorage.setItem('livematch.language', 'th')
     const wrapper = mount(App)

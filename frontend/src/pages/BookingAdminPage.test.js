@@ -147,4 +147,117 @@ describe('BookingAdminPage', () => {
     expect(apiRequest.mock.calls.at(-1)[0]).toContain('pageSize=20')
     wrapper.unmount()
   })
+
+  it('shows pending reviews from every date, including overdue bookings', async () => {
+    const payload = overview()
+    payload.bookings = []
+    payload.pendingReviews = [
+      { id: 'overdue-1', courtId: 'court-1', courtName: 'สนาม 1', bookerName: 'รายการค้าง', startAt: '2026-01-01T17:00:00+07:00', endAt: '2026-01-01T18:00:00+07:00', status: 'pending_review', totalPriceThb: 100 },
+      { id: 'future-1', courtId: 'court-1', courtName: 'สนาม 1', bookerName: 'รายการวันอื่น', startAt: `${testTomorrow}T17:00:00+07:00`, endAt: `${testTomorrow}T18:00:00+07:00`, status: 'pending_review', totalPriceThb: 100 },
+    ]
+    const apiRequest = vi.fn(() => Promise.resolve(structuredClone(payload)))
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain('รายการค้าง'))
+    expect(wrapper.text()).toContain('รายการวันอื่น')
+    expect(wrapper.findAll('nav button').find((button) => button.text().includes('รอตรวจสอบ')).text()).toContain('2')
+    wrapper.unmount()
+  })
+
+  it('groups a booking batch into one pending row and shows every slot in the review modal', async () => {
+    const payload = overview()
+    payload.bookings = []
+    payload.pendingReviews = [16, 17, 18].map((hour, index) => ({
+      id: `batch-booking-${index + 1}`,
+      batchId: 'batch-1',
+      courtId: 'court-1',
+      courtName: 'สนาม 1',
+      bookerName: 'ผู้จองสามช่วง',
+      startAt: `${testToday}T${hour}:00:00+07:00`,
+      endAt: `${testToday}T${hour + 1}:00:00+07:00`,
+      status: 'pending_review',
+      totalPriceThb: 100,
+      slipData: 'data:image/png;base64,iVBORw0KGgo=',
+    }))
+    const apiRequest = vi.fn(() => Promise.resolve(structuredClone(payload)))
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ผู้จองสามช่วง · 3 ช่วงเวลา'))
+    expect(wrapper.findAll('section article')).toHaveLength(1)
+    expect(wrapper.text()).toContain('฿300')
+    await wrapper.find('section article button').trigger('click')
+    const modal = wrapper.get('[aria-labelledby="booking-review-title"]')
+    expect(modal.text()).toContain('ช่วงเวลาที่จอง 3 รายการ')
+    expect(modal.text()).toContain('1. สนาม 1')
+    expect(modal.text()).toContain('2. สนาม 1')
+    expect(modal.text()).toContain('3. สนาม 1')
+    expect(modal.text()).toContain('฿300')
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['จองสนาม', '/api/admin/booking/bookings'],
+    ['ปิดช่วงเวลา', '/api/admin/booking/closures'],
+  ])('submits multiple selected slots when creating %s', async (modeLabel, endpoint) => {
+    const payload = overview()
+    payload.bookings = []
+    payload.closures = []
+    const apiRequest = vi.fn((url) => Promise.resolve(url.includes('/overview') ? structuredClone(payload) : {}))
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.findAll('tbody .booking-state--free')).toHaveLength(6))
+
+    const freeSlots = wrapper.findAll('tbody .booking-state--free')
+    await freeSlots[0].trigger('click')
+    await freeSlots[2].trigger('click')
+    expect(wrapper.text()).toContain('เลือกแล้ว 2 ช่องเวลา')
+
+    if (modeLabel === 'ปิดช่วงเวลา') {
+      await wrapper.findAll('.booking-segmented button').find((button) => button.text().includes(modeLabel)).trigger('click')
+      await wrapper.find('textarea').setValue('ปิดปรับปรุง')
+    }
+    await wrapper.find('.booking-inspector form').trigger('submit')
+
+    await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url === endpoint)).toBe(true))
+    const request = apiRequest.mock.calls.find(([url]) => url === endpoint)
+    const body = JSON.parse(request[1].body)
+    expect(body.items).toEqual([
+      { courtId: 'court-1', startAt: `${testToday}T16:00`, endAt: `${testToday}T17:00` },
+      { courtId: 'court-1', startAt: `${testToday}T18:00`, endAt: `${testToday}T19:00` },
+    ])
+    expect(body.slots).toBeUndefined()
+    wrapper.unmount()
+  })
+
+  it('uses one searchable booker combobox with admin as the first option', async () => {
+    const payload = overview()
+    payload.bookings = []
+    payload.closures = []
+    const member = { id: 'member-1', name: 'สมชาย', phone: '0812345678' }
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/members/search?')) return Promise.resolve({ items: [member] })
+      if (url === '/api/admin/booking/bookings') return Promise.resolve({})
+      return Promise.resolve(structuredClone(payload))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.find('.booking-state--free').exists()).toBe(true))
+    await wrapper.find('.booking-state--free').trigger('click')
+
+    const combobox = wrapper.get('input[role="combobox"]')
+    expect(combobox.element.value).toBe('จองโดย Admin')
+    await combobox.trigger('focus')
+    expect(wrapper.findAll('[role="option"]')[0].text()).toContain('จองโดย Admin')
+    await combobox.setValue('081234')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('สมชาย'))
+    expect(apiRequest.mock.calls.some(([url]) => url.includes('/members/search?q=081234'))).toBe(true)
+
+    const memberOption = wrapper.findAll('[role="option"]').find((option) => option.text().includes('สมชาย'))
+    await memberOption.trigger('mousedown')
+    expect(combobox.element.value).toBe('0812345678 · สมชาย')
+    await wrapper.find('.booking-inspector form').trigger('submit')
+
+    await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url === '/api/admin/booking/bookings')).toBe(true))
+    const request = apiRequest.mock.calls.find(([url]) => url === '/api/admin/booking/bookings')
+    expect(JSON.parse(request[1].body).memberId).toBe('member-1')
+    wrapper.unmount()
+  })
 })

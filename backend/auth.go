@@ -239,7 +239,10 @@ func (a *app) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	user, passwordHash, err := a.adminByEmail(r.Context(), normalizeEmail(body.Email))
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(body.Password)) != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid login"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่",
+			"code":  "invalid_login",
+		})
 		return
 	}
 	if !user.Verified {
@@ -1004,7 +1007,10 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 			writeAuthFailure(w, r, backofficeSessionKind)
 			return
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid backoffice login"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่",
+			"code":  "invalid_backoffice_login",
+		})
 		return
 	}
 	action := strings.TrimPrefix(r.URL.Path, "/api/backoffice/")

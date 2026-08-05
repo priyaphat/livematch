@@ -285,8 +285,12 @@ describe('PlayersPage payment modal', () => {
       paid: false,
       items: [
         { key: 'entry', label: 'ค่าเข้าสนาม', quantity: 1, unitAmountThb: 100, amountThb: 100 },
-        { key: 'shuttle-rsl', label: 'ค่าลูกแบด RSL', quantity: 2, unitAmountThb: 85, amountThb: 170 },
+        { key: 'shuttle-split', label: 'ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)', quantity: 1, unitAmountThb: 85, amountThb: 170, details: [
+          { key: 'shuttle-detail-yonex', label: 'Yonex', quantity: 1, unitAmountThb: 90 },
+          { key: 'shuttle-detail-rsl', label: 'RSL', quantity: 1, unitAmountThb: 85 },
+        ] },
       ],
+      matchHistory: [{ matchId: 12, court: 'สนาม 1', level: 'middle', result: 'ชนะ', team: 'Member + Partner', opponent: 'Opponent A + Opponent B', startedAt: '18:00', endedAt: '18:35', shuttles: 2, note: 'เกมทดสอบ' }],
       totalThb: 270,
     }
     const apiRequest = vi.fn().mockResolvedValue(summary)
@@ -299,7 +303,12 @@ describe('PlayersPage payment modal', () => {
 
     expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/players/7/payment-summary')
     expect(wrapper.text()).toContain('ค่าเข้าสนาม')
-    expect(wrapper.text()).toContain('ค่าลูกแบด RSL')
+    expect(wrapper.text()).toContain('ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)')
+    expect(wrapper.get('[data-testid="shuttle-brand-details"]').text()).toContain('Yonex')
+    expect(wrapper.get('[data-testid="shuttle-brand-details"]').text()).toContain('RSL')
+    expect(wrapper.get('[data-testid="payment-match-history"]').text()).toContain('เกม #12 · สนาม 1')
+    expect(wrapper.get('[data-testid="payment-match-history"] [title]').attributes('title')).toContain('ทีม: Member + Partner')
+    expect(wrapper.get('[data-testid="payment-match-history"] [title]').attributes('title')).toContain('หมายเหตุ: เกมทดสอบ')
     expect(wrapper.text()).toContain('270')
 
     const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ชำระ')

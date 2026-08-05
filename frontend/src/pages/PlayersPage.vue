@@ -93,6 +93,9 @@ const paymentSaving = ref(false)
 const paymentError = ref('')
 const paymentMethod = ref('cash')
 const paymentQr = ref('')
+const combinedShuttleBreakdown = computed(() => (
+  paymentSummary.value?.matchBreakdownItems?.find((item) => item.label === 'ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)') || null
+))
 const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
 ))
@@ -307,6 +310,18 @@ function openCreateMemberModal() {
   createMemberError.value = ''
   showCreateMember.value = true
   memberDropdownOpen.value = false
+}
+
+function matchHistoryTooltip(match) {
+  return [
+    `เกม #${match.matchId} · ${match.result}`,
+    `ทีม: ${match.team || '-'}`,
+    `พบ: ${match.opponent || '-'}`,
+    `สนาม: ${match.court || '-'} · ระดับ: ${match.level || '-'}`,
+    `เวลา: ${match.startedAt || '-'}${match.endedAt ? ` ถึง ${match.endedAt}` : ''}`,
+    `ลูกแบด: ${match.shuttles || 0} ลูก`,
+    match.note ? `หมายเหตุ: ${match.note}` : '',
+  ].filter(Boolean).join('\n')
 }
 
 async function createAndSelectMember() {
@@ -568,14 +583,61 @@ async function exportExcel() {
           <template v-else>
             <div v-if="paymentLoading" class="rounded-lg bg-paper-100 p-5 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">กำลังคำนวณค่าใช้จ่ายล่าสุด...</div>
             <div v-else-if="paymentSummary" class="grid gap-2">
-              <div v-for="item in paymentSummary.items" :key="item.key" class="flex items-start justify-between gap-3 rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
-                <div class="min-w-0">
-                  <p class="font-black">{{ item.label }}</p>
-                  <p v-if="item.description" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.description }}</p>
-                  <p v-if="item.quantity > 1" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.quantity }} × {{ money(item.unitAmountThb) }}</p>
+              <div v-for="item in paymentSummary.items" :key="item.key" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <p class="font-black">{{ item.label }}</p>
+                    <p v-if="item.description" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.description }}</p>
+                    <p v-if="item.quantity > 1" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.quantity }} × {{ money(item.unitAmountThb) }}</p>
+                  </div>
+                  <p class="shrink-0 font-black tabular-nums">{{ money(item.amountThb) }}</p>
                 </div>
-                <p class="shrink-0 font-black tabular-nums">{{ money(item.amountThb) }}</p>
+                <div v-if="item.details?.length" class="mt-3 grid gap-1.5 border-t border-stone-200 pt-2 dark:border-stone-700" data-testid="shuttle-brand-details">
+                  <div v-for="detail in item.details" :key="detail.key" class="flex items-center justify-between gap-3 text-sm">
+                    <span class="font-bold">↳ {{ detail.label }}</span>
+                    <span class="shrink-0 text-xs font-semibold text-stone-500">{{ detail.quantity }} ลูก × {{ money(detail.unitAmountThb) }}</span>
+                  </div>
+                </div>
               </div>
+              <div v-if="combinedShuttleBreakdown?.details?.length" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
+                <div class="flex items-center justify-between gap-3">
+                  <p class="font-black">{{ combinedShuttleBreakdown.label }}</p>
+                  <p class="font-black tabular-nums">{{ money(combinedShuttleBreakdown.amountThb) }}</p>
+                </div>
+                <div class="mt-3 grid gap-1.5 border-t border-stone-200 pt-2 dark:border-stone-700" data-testid="shuttle-brand-details">
+                  <div v-for="detail in combinedShuttleBreakdown.details" :key="detail.key" class="flex items-center justify-between gap-3 text-sm">
+                    <span class="font-bold">↳ {{ detail.label }}</span>
+                    <span class="shrink-0 text-xs font-semibold text-stone-500">{{ detail.quantity }} ลูก × {{ money(detail.unitAmountThb) }}</span>
+                  </div>
+                </div>
+              </div>
+              <section v-if="paymentSummary.matchHistory?.length" class="mt-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700" data-testid="payment-match-history">
+                <div class="flex items-center justify-between gap-3">
+                  <h3 class="font-black">ประวัติการเล่นแบบย่อ</h3>
+                  <span class="text-xs font-semibold text-stone-500">วางเมาส์เพื่อดูรายละเอียด</span>
+                </div>
+                <div class="mt-2 grid gap-1.5">
+                  <div
+                    v-for="match in paymentSummary.matchHistory"
+                    :key="match.matchId"
+                    class="group relative flex cursor-help items-center justify-between gap-3 rounded-md bg-paper-50 px-3 py-2 text-sm outline-none ring-court-500/30 focus:ring-2 dark:bg-stone-900"
+                    tabindex="0"
+                    :title="matchHistoryTooltip(match)"
+                  >
+                    <span class="min-w-0 truncate font-bold">เกม #{{ match.matchId }} · {{ match.court || 'ไม่ระบุสนาม' }}</span>
+                    <span class="shrink-0 rounded px-2 py-0.5 text-xs font-black" :class="match.result === 'ชนะ' ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-300' : match.result === 'แพ้' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300' : 'bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-200'">{{ match.result }}</span>
+                    <div class="pointer-events-none invisible absolute bottom-full left-0 z-40 mb-2 w-72 rounded-lg bg-stone-950 p-3 text-xs font-semibold leading-5 text-white opacity-0 shadow-xl transition group-hover:visible group-hover:opacity-100 group-focus:visible group-focus:opacity-100">
+                      <p class="font-black">เกม #{{ match.matchId }} · {{ match.result }}</p>
+                      <p>ทีม: {{ match.team || '-' }}</p>
+                      <p>พบ: {{ match.opponent || '-' }}</p>
+                      <p>สนาม: {{ match.court || '-' }} · ระดับ: {{ match.level || '-' }}</p>
+                      <p>เวลา: {{ match.startedAt || '-' }}<template v-if="match.endedAt"> ถึง {{ match.endedAt }}</template></p>
+                      <p>ลูกแบด: {{ match.shuttles || 0 }} ลูก</p>
+                      <p v-if="match.note">หมายเหตุ: {{ match.note }}</p>
+                    </div>
+                  </div>
+                </div>
+              </section>
               <div class="mt-2 flex items-center justify-between border-t border-stone-200 pt-4 text-lg font-black dark:border-stone-700">
                 <span>ยอดรวม</span>
                 <span class="text-court-700 dark:text-court-300">{{ money(paymentSummary.totalThb) }}</span>

@@ -15,6 +15,7 @@ import {
 } from "@lucide/vue";
 
 const props = defineProps(["apiRequest", "token", "theme"]);
+const AUTO_REFRESH_MS = 10000;
 const emit = defineEmits(["toggle-theme"]);
 const today = new Date().toLocaleDateString("en-CA", {
   timeZone: "Asia/Bangkok",
@@ -522,7 +523,7 @@ function upload(event) {
 onMounted(async () => {
   window.addEventListener("livematch:session-ended", handleSessionEnded);
   await load();
-  timer = setInterval(load, 30000);
+  timer = setInterval(load, AUTO_REFRESH_MS);
   clock = setInterval(() => {
     state.now = Date.now() + state.clockOffsetMs;
     const expiredQueueIds = state.queues

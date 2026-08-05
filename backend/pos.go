@@ -1301,6 +1301,7 @@ func (a *app) writeCombinedPlayerPaymentSummary(w http.ResponseWriter, r *http.R
 		"paid": player.Paid, "items": items, "totalThb": summary.TotalTHB, "matchTotalThb": summary.MatchTotalTHB,
 		"posTotalThb": summary.POSTotalTHB, "billingAccountId": accountID, "posEnabled": true,
 		"promptPayPayload": summary.PromptPayPayload, "receiverName": summary.ReceiverName, "calculatedAt": summary.CalculatedAt,
+		"matchHistory": base.MatchHistory, "matchBreakdownItems": base.Items,
 	})
 }
 

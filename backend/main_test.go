@@ -689,6 +689,42 @@ func TestSplitMatchShuttleCostUsesActualPlayerCountAndStableRemainder(t *testing
 	}
 }
 
+func TestPlayerPaymentSummaryIncludesShuttleBrandDetailsAndCompactMatchHistory(t *testing.T) {
+	state := SessionState{
+		Session: SessionInfo{Type: "liveMatch"},
+		Settings: Settings{ShuttleBrands: []ShuttleBrand{
+			{ID: "yonex", Name: "Yonex", Price: 90, Active: true},
+			{ID: "rsl", Name: "RSL", Price: 85, Active: true},
+		}},
+		Players: []Player{
+			{ID: 1, Name: "Member", Active: true}, {ID: 2, Name: "Partner", Active: true},
+			{ID: 3, Name: "Opponent A", Active: true}, {ID: 4, Name: "Opponent B", Active: true},
+		},
+		History: []Match{{
+			ID: 12, Court: "สนาม 1", Level: "middle", A1: 1, A2: 2, B1: 3, B2: 4,
+			Status: "finished", Winner: "A", StartedAt: "18:00", EndedAt: "18:35", Note: "เกมทดสอบ",
+			Shuttles: 2, ShuttlePricingMode: shuttlePricingSplit,
+			ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "yonex", Number: 1}, {BrandID: "rsl", Number: 1}},
+		}},
+	}
+
+	summary := playerPaymentSummary(state, state.Players[0])
+	if len(summary.Items) < 2 || summary.Items[1].Label != "ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)" {
+		t.Fatalf("expected split shuttle parent line, got %#v", summary.Items)
+	}
+	details := summary.Items[1].Details
+	if len(details) != 2 || details[0].Label != "Yonex" || details[0].Quantity != 1 || details[1].Label != "RSL" {
+		t.Fatalf("unexpected shuttle brand details: %#v", details)
+	}
+	if len(summary.MatchHistory) != 1 {
+		t.Fatalf("expected one match history item, got %#v", summary.MatchHistory)
+	}
+	history := summary.MatchHistory[0]
+	if history.Result != "ชนะ" || history.Team != "Member + Partner" || history.Opponent != "Opponent A + Opponent B" || history.Note != "เกมทดสอบ" {
+		t.Fatalf("unexpected match history: %#v", history)
+	}
+}
+
 func TestLegacyMatchUsesSnapshottedShuttlePrice(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{ShuttleFee: 120, ShuttleBrands: []ShuttleBrand{{ID: "default", Price: 120, Active: true}}},

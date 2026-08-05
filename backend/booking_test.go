@@ -159,12 +159,29 @@ func TestValidBookingExportStatus(t *testing.T) {
 }
 
 func TestTelegramReviewTextConfirmsTheSelectedAction(t *testing.T) {
-	short, message := telegramReviewText("approve", "ผู้จอง", "สนาม 1", "23/07/2026 18:00", 2)
-	if short != "อนุมัติแล้ว" || !strings.Contains(message, "✅ อนุมัติการจองแล้ว") || !strings.Contains(message, "จำนวน 2 ช่วง") {
+	items := []telegramBookingItem{
+		{Court: "สนาม 1", Start: "23/07/2026 18:00", End: "19:00", Amount: 100},
+		{Court: "สนาม 2", Start: "23/07/2026 19:00", End: "20:00", Amount: 120},
+	}
+	short, message := telegramReviewText("approve", "ผู้จอง", items)
+	if short != "อนุมัติแล้ว" || !strings.Contains(message, "✅ อนุมัติการจองแล้ว") || !strings.Contains(message, "จำนวน: 2 ช่วง") || !strings.Contains(message, "สนาม 2") || !strings.Contains(message, "ยอดรวม: 220 บาท") {
 		t.Fatalf("unexpected approve confirmation: %q / %q", short, message)
 	}
-	short, message = telegramReviewText("reject", "ผู้จอง", "สนาม 1", "23/07/2026 18:00", 1)
+	short, message = telegramReviewText("reject", "ผู้จอง", items[:1])
 	if short != "ปฏิเสธแล้ว" || !strings.Contains(message, "❌ ปฏิเสธการจองแล้ว") {
 		t.Fatalf("unexpected reject confirmation: %q / %q", short, message)
+	}
+}
+
+func TestTelegramBookingMessageShowsEveryBookedSlot(t *testing.T) {
+	message := telegramBookingMessage("🏸 จองสนามใหม่", "สมชาย", []telegramBookingItem{
+		{Court: "สนาม 1", Start: "05/08/2026 16:00", End: "17:00", Amount: 100},
+		{Court: "สนาม 1", Start: "05/08/2026 17:00", End: "18:00", Amount: 100},
+		{Court: "สนาม 2", Start: "05/08/2026 18:00", End: "19:00", Amount: 120},
+	})
+	for _, expected := range []string{"จำนวน: 3 ช่วง", "1. สนาม 1", "2. สนาม 1", "3. สนาม 2", "ยอดรวม: 320 บาท"} {
+		if !strings.Contains(message, expected) {
+			t.Fatalf("telegram message missing %q: %s", expected, message)
+		}
 	}
 }

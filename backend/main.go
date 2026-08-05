@@ -112,28 +112,50 @@ type Player struct {
 }
 
 type PlayerPaymentItem struct {
-	Key              string  `json:"key"`
-	Label            string  `json:"label"`
-	Description      string  `json:"description,omitempty"`
-	Quantity         int     `json:"quantity"`
-	UnitAmount       int     `json:"-"`
-	Amount           int     `json:"-"`
-	UnitAmountTHB    float64 `json:"unitAmountThb"`
-	AmountTHB        float64 `json:"amountThb"`
-	UnitAmountSatang int64   `json:"unitAmountSatang"`
-	AmountSatang     int64   `json:"amountSatang"`
+	Key              string                `json:"key"`
+	Label            string                `json:"label"`
+	Description      string                `json:"description,omitempty"`
+	Quantity         int                   `json:"quantity"`
+	UnitAmount       int                   `json:"-"`
+	Amount           int                   `json:"-"`
+	UnitAmountTHB    float64               `json:"unitAmountThb"`
+	AmountTHB        float64               `json:"amountThb"`
+	UnitAmountSatang int64                 `json:"unitAmountSatang"`
+	AmountSatang     int64                 `json:"amountSatang"`
+	Details          []PlayerPaymentDetail `json:"details,omitempty"`
+}
+
+type PlayerPaymentDetail struct {
+	Key           string  `json:"key"`
+	Label         string  `json:"label"`
+	Quantity      int     `json:"quantity"`
+	UnitAmountTHB float64 `json:"unitAmountThb"`
+}
+
+type PlayerMatchHistoryItem struct {
+	MatchID   int    `json:"matchId"`
+	Court     string `json:"court"`
+	Level     string `json:"level"`
+	Result    string `json:"result"`
+	Team      string `json:"team"`
+	Opponent  string `json:"opponent"`
+	StartedAt string `json:"startedAt"`
+	EndedAt   string `json:"endedAt"`
+	Shuttles  int    `json:"shuttles"`
+	Note      string `json:"note,omitempty"`
 }
 
 type PlayerPaymentSummary struct {
-	PlayerID    int                 `json:"playerId"`
-	PlayerName  string              `json:"playerName"`
-	SessionType string              `json:"sessionType"`
-	Paid        bool                `json:"paid"`
-	Items       []PlayerPaymentItem `json:"items"`
-	Total       int                 `json:"-"`
-	TotalTHB    float64             `json:"totalThb"`
-	TotalSatang int64               `json:"totalSatang"`
-	Calculated  time.Time           `json:"calculatedAt"`
+	PlayerID     int                      `json:"playerId"`
+	PlayerName   string                   `json:"playerName"`
+	SessionType  string                   `json:"sessionType"`
+	Paid         bool                     `json:"paid"`
+	Items        []PlayerPaymentItem      `json:"items"`
+	MatchHistory []PlayerMatchHistoryItem `json:"matchHistory,omitempty"`
+	Total        int                      `json:"-"`
+	TotalTHB     float64                  `json:"totalThb"`
+	TotalSatang  int64                    `json:"totalSatang"`
+	Calculated   time.Time                `json:"calculatedAt"`
 }
 
 type ShuttleBrand struct {
@@ -256,6 +278,7 @@ func main() {
 	}
 	go a.runExpiredBookingHoldCleanup(context.Background())
 	go a.runRateLimitCleanup(context.Background())
+	go a.refreshAdminTelegramWebhooks(context.Background())
 	a.tts = newTTSService(db)
 
 	mux := http.NewServeMux()
@@ -3529,6 +3552,59 @@ func shuttleBrandNameForPayment(state SessionState, brandID string) string {
 	return defaultShuttleBrandName
 }
 
+func playerDisplayName(state SessionState, playerID int) string {
+	if playerID <= 0 {
+		return "-"
+	}
+	for _, player := range state.Players {
+		if player.ID == playerID {
+			return player.Name
+		}
+	}
+	return fmt.Sprintf("#%d", playerID)
+}
+
+func playerMatchHistory(state SessionState, playerID int) []PlayerMatchHistoryItem {
+	items := make([]PlayerMatchHistoryItem, 0)
+	for index := len(state.History) - 1; index >= 0; index-- {
+		match := state.History[index]
+		if !slices.Contains(matchPlayers(match), playerID) {
+			continue
+		}
+		onTeamA := playerID == match.A1 || playerID == match.A2
+		teamIDs, opponentIDs := []int{match.A1, match.A2}, []int{match.B1, match.B2}
+		if !onTeamA {
+			teamIDs, opponentIDs = opponentIDs, teamIDs
+		}
+		names := func(ids []int) string {
+			result := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if id > 0 {
+					result = append(result, playerDisplayName(state, id))
+				}
+			}
+			return strings.Join(result, " + ")
+		}
+		result := "ไม่ระบุผล"
+		switch {
+		case isCancelledMatch(match):
+			result = "ยกเลิก"
+		case match.Winner == "draw":
+			result = "เสมอ"
+		case (onTeamA && match.Winner == "A") || (!onTeamA && match.Winner == "B"):
+			result = "ชนะ"
+		case match.Winner == "A" || match.Winner == "B":
+			result = "แพ้"
+		}
+		items = append(items, PlayerMatchHistoryItem{
+			MatchID: match.ID, Court: match.Court, Level: match.Level, Result: result,
+			Team: names(teamIDs), Opponent: names(opponentIDs), StartedAt: match.StartedAt,
+			EndedAt: match.EndedAt, Shuttles: match.Shuttles, Note: match.Note,
+		})
+	}
+	return items
+}
+
 func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaymentSummary) {
 	summary = PlayerPaymentSummary{
 		PlayerID: player.ID, PlayerName: player.Name, SessionType: state.Session.Type,
@@ -3559,6 +3635,7 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 	}
 
 	entryFee := playerEntryFee(state, player)
+	summary.MatchHistory = playerMatchHistory(state, player.ID)
 	summary.Items = append(summary.Items, PlayerPaymentItem{
 		Key: "entry", Label: "ค่าเข้าสนาม", Quantity: 1, UnitAmount: entryFee, Amount: entryFee,
 	})
@@ -3600,26 +3677,32 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		}
 	}
 	allocatedShuttleSatang := playerShuttleCostSatang(state, player.ID)
-	for lineNumber, line := range lines {
+	if hasSplitPricing && len(lines) > 0 {
+		details := make([]PlayerPaymentDetail, 0, len(lines))
+		for _, line := range lines {
+			details = append(details, PlayerPaymentDetail{
+				Key: "shuttle-detail-" + line.brandID, Label: shuttleBrandNameForPayment(state, line.brandID),
+				Quantity: line.count, UnitAmountTHB: float64(shuttleBrandPrice(state, line.brandID)),
+			})
+		}
+		amount := int((allocatedShuttleSatang + 99) / 100)
+		summary.Items = append(summary.Items, PlayerPaymentItem{
+			Key: "shuttle-split", Label: "ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)",
+			Quantity: 1, UnitAmount: amount, Amount: amount, UnitAmountSatang: allocatedShuttleSatang,
+			AmountSatang: allocatedShuttleSatang, Details: details,
+		})
+		summary.Total += amount
+	}
+	for _, line := range lines {
+		if hasSplitPricing {
+			continue
+		}
 		unitAmount := shuttleBrandPrice(state, line.brandID)
 		amount := line.count * unitAmount
 		unitAmountSatang := int64(unitAmount) * 100
 		amountSatang := int64(amount) * 100
 		label := "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID)
 		quantity := line.count
-		if hasSplitPricing {
-			if lineNumber > 0 {
-				continue
-			}
-			if lineNumber == 0 {
-				amountSatang = allocatedShuttleSatang
-				amount = int((amountSatang + 99) / 100)
-			}
-			unitAmount = amount
-			unitAmountSatang = amountSatang
-			quantity = 1
-			label = "ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)"
-		}
 		summary.Items = append(summary.Items, PlayerPaymentItem{
 			Key: "shuttle-" + line.brandID, Label: label,
 			Quantity: quantity, UnitAmount: unitAmount, Amount: amount, UnitAmountSatang: unitAmountSatang, AmountSatang: amountSatang,
