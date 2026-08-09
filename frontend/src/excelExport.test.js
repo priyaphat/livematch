@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildDashboardExportData,
   buildHistoryExportData,
   buildMembersExportData,
   buildPaymentHistoryExportData,
@@ -8,6 +9,49 @@ import {
 } from './excelExport'
 
 describe('Excel export data', () => {
+  it('builds complete dashboard report data for players, matches, and courts', () => {
+    const state = {
+      session: { type: 'liveMatch' },
+      settings: { courtNames: ['สนาม 1', 'สนาม 2'] },
+      players: [
+        { id: 1, name: 'หนึ่ง', level: 'light', games: 2, wins: 1, draws: 0, losses: 1, paid: true, active: true },
+        { id: 2, name: 'สอง', level: 'middle', games: 1, wins: 0, draws: 1, losses: 0, paid: false, active: true }
+      ],
+      queue: [{ id: 3, court: 'สนาม 2', a1: 1, a2: 2, level: 'middle' }],
+      live: [],
+      history: [{ id: 2, court: 'สนาม 1', a1: 1, a2: 2, winner: 'A', status: 'finished', shuttles: 2 }]
+    }
+    const data = buildDashboardExportData({
+      state,
+      activePlayerCount: 2,
+      totalRecordedMatches: 1,
+      cancelledMatches: [],
+      averageGames: 1.5,
+      minGames: 1,
+      maxGames: 2,
+      totalShuttles: 2,
+      paymentPercent: 50,
+      totalRevenue: 300,
+      paidRevenue: 100,
+      unpaidRevenue: 200,
+      unpaidPlayers: [state.players[1]],
+      topPlayers: state.players,
+      quietPlayers: state.players,
+      topWinners: state.players,
+      playerCost: (player) => player.id * 100,
+      playerScore: (player) => player.wins + player.draws * 0.5,
+      levelLabel: (level) => level || '-'
+    })
+
+    expect(data.players).toHaveLength(2)
+    expect(data.matches.map((row) => row[0])).toEqual(['รอคิว', 'จบแล้ว'])
+    expect(data.matches[1][3]).toBe('หนึ่ง')
+    expect(data.courts).toEqual([
+      ['สนาม 1', 0, 0, 1, 0, 1, 2],
+      ['สนาม 2', 1, 0, 0, 0, 1, 0]
+    ])
+  })
+
   it('builds payment history without exposing internal ids', () => {
     const data = buildPaymentHistoryExportData([
       { id: 99, playerId: 7, playerName: 'Player A', paid: true, amount: 125, createdAt: '28/07/2026 12:00' }

@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import PublicBookingPage from "./PublicBookingPage.vue";
 
@@ -64,6 +64,68 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
+  it("shows a mobile-friendly availability summary before member login", async () => {
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(availability());
+      if (url.includes("/public-auth/me")) {
+        const error = new Error("unauthorized");
+        error.status = 401;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+
+    await vi.waitFor(() =>
+      expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1"),
+    );
+    const summary = wrapper.get('[data-testid="guest-availability-summary"]');
+    expect(summary.text()).toContain("ว่าง 7 ช่วง");
+    expect(summary.text()).toContain("16:00–19:00");
+    expect(summary.text()).toContain("เข้าสู่ระบบเพื่อเลือกช่วงเวลา");
+    expect(wrapper.find(".public-timeline-table").exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it("keeps the guest availability cards stable during auto-refresh", async () => {
+    vi.useFakeTimers();
+    let availabilityCalls = 0;
+    let resolveRefresh;
+    const refreshResponse = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) {
+        availabilityCalls += 1;
+        return availabilityCalls === 1 ? Promise.resolve(availability()) : refreshResponse;
+      }
+      if (url.includes("/public-auth/me")) {
+        const error = new Error("unauthorized");
+        error.status = 401;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+
+    await flushPromises();
+    expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
+    await vi.advanceTimersByTimeAsync(10000);
+    await flushPromises();
+    expect(availabilityCalls).toBe(2);
+    expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
+    expect(wrapper.text()).not.toContain("กำลังโหลดตารางสนามว่าง");
+
+    resolveRefresh(availability());
+    await flushPromises();
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
   it("lists an active booking before the schedule and reopens its payment QR", async () => {
     const apiRequest = apiMock({
       queues: [

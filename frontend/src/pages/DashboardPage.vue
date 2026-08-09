@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { Activity, BarChart3, ClipboardList, CreditCard, Download, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
+import { Activity, BarChart3, CircleDollarSign, ClipboardList, Clock3, CreditCard, Download, Medal, RefreshCw, Shuffle, Trophy, Users } from '@lucide/vue'
 import { exportDashboardExcel } from '../excelExport'
 import HeroBackground from '../components/HeroBackground.vue'
 
@@ -50,6 +50,84 @@ const shuttleBrandSummary = computed(() => {
     }
   }
   return Array.from(counts.entries()).map(([brandId, count]) => ({ brandId, name: brandName(brandId), count }))
+})
+
+const activePlayers = computed(() => (props.state.players || []).filter((player) => player.active !== false))
+const completedMatches = computed(() => (props.state.history || []).filter((match) => match.status !== 'cancelled'))
+const reportMatches = computed(() => [
+  ...(props.state.queue || []).map((match) => ({ ...match, reportPhase: 'queue' })),
+  ...(props.state.live || []).map((match) => ({ ...match, reportPhase: 'live' })),
+  ...completedMatches.value.map((match) => ({ ...match, reportPhase: 'history' }))
+])
+
+function matchDurationMinutes(match) {
+  if (!match?.startedAt || !match?.endedAt) return 0
+  const start = Date.parse(match.startedAt)
+  const end = Date.parse(match.endedAt)
+  if (Number.isFinite(start) && Number.isFinite(end) && end >= start) return Math.round((end - start) / 60000)
+  const toMinute = (value) => {
+    const part = String(value).match(/(\d{1,2}):(\d{2})/)
+    return part ? Number(part[1]) * 60 + Number(part[2]) : 0
+  }
+  const startMinute = toMinute(match.startedAt)
+  let endMinute = toMinute(match.endedAt)
+  if (endMinute < startMinute) endMinute += 1440
+  return Math.max(0, endMinute - startMinute)
+}
+
+const matchDurations = computed(() => completedMatches.value.map(matchDurationMinutes).filter((minute) => minute > 0))
+const averageMatchMinutes = computed(() => matchDurations.value.length
+  ? Math.round(matchDurations.value.reduce((sum, minute) => sum + minute, 0) / matchDurations.value.length)
+  : 0)
+const totalPlays = computed(() => activePlayers.value.reduce((sum, player) => sum + Number(player.games || 0), 0))
+const resultSummary = computed(() => {
+  const result = { A: 0, B: 0, draw: 0, noResult: 0 }
+  for (const match of completedMatches.value) {
+    if (match.winner === 'A') result.A += 1
+    else if (match.winner === 'B') result.B += 1
+    else if (match.winner === 'draw') result.draw += 1
+    else result.noResult += 1
+  }
+  return result
+})
+const courtReport = computed(() => {
+  const names = new Set(props.state.settings?.courtNames || [])
+  reportMatches.value.forEach((match) => {
+    if (match.court && match.court !== '-') names.add(match.court)
+  })
+  return [...names].map((name) => {
+    const queue = (props.state.queue || []).filter((match) => match.court === name).length
+    const live = (props.state.live || []).filter((match) => match.court === name).length
+    const finished = completedMatches.value.filter((match) => match.court === name)
+    const cancelled = (props.state.history || []).filter((match) => match.court === name && match.status === 'cancelled').length
+    return {
+      name,
+      queue,
+      live,
+      finished: finished.length,
+      cancelled,
+      total: queue + live + finished.length,
+      shuttles: finished.reduce((sum, match) => sum + Number(match.shuttles || 0), 0)
+    }
+  }).sort((a, b) => b.total - a.total || a.name.localeCompare(b.name, 'th'))
+})
+const maxCourtMatches = computed(() => Math.max(1, ...courtReport.value.map((court) => court.total)))
+const levelReport = computed(() => {
+  const groups = new Map()
+  for (const match of reportMatches.value) {
+    const key = match.level || 'unknown'
+    const current = groups.get(key) || { level: key, queue: 0, live: 0, finished: 0, total: 0 }
+    current[match.reportPhase === 'history' ? 'finished' : match.reportPhase] += 1
+    current.total += 1
+    groups.set(key, current)
+  }
+  return [...groups.values()].sort((a, b) => b.total - a.total)
+})
+const playerReport = computed(() => [...activePlayers.value]
+  .sort((a, b) => Number(b.games || 0) - Number(a.games || 0) || String(a.name).localeCompare(String(b.name), 'th')))
+const completedPercent = computed(() => {
+  const decided = completedMatches.value.length + (props.cancelledMatches || []).length
+  return decided ? Math.round((completedMatches.value.length / decided) * 100) : 0
 })
 
 async function exportExcel() {
@@ -180,6 +258,81 @@ async function exportExcel() {
       </div>
     </div>
 
+    <section class="grid gap-4" aria-labelledby="match-report-title">
+      <div class="flex flex-col gap-2 px-1 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <p class="text-sm font-semibold text-court-600 dark:text-court-400">รายงาน Match</p>
+          <h2 id="match-report-title" class="text-2xl font-black">สรุปการแข่งขันทั้งหมด</h2>
+        </div>
+        <p class="text-xs font-bold text-stone-500 dark:text-stone-400">ข้อมูลคิว · เกมสด · ประวัติ · สมาชิก · การชำระเงิน</p>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+          <div class="flex items-center justify-between gap-2"><p class="text-xs font-bold text-stone-500">รวมการลงเล่น</p><Users class="h-4 w-4 text-court-500" /></div>
+          <p class="mt-2 text-2xl font-black sm:text-3xl">{{ totalPlays }}</p>
+          <p class="mt-1 text-xs font-semibold text-stone-500">จากผู้เล่น {{ activePlayerCount }} คน</p>
+        </article>
+        <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+          <div class="flex items-center justify-between gap-2"><p class="text-xs font-bold text-stone-500">เกมจบสมบูรณ์</p><Medal class="h-4 w-4 text-court-500" /></div>
+          <p class="mt-2 text-2xl font-black sm:text-3xl">{{ completedMatches.length }}</p>
+          <p class="mt-1 text-xs font-semibold text-stone-500">สำเร็จ {{ completedPercent }}% ของเกมที่ปิดแล้ว</p>
+        </article>
+        <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+          <div class="flex items-center justify-between gap-2"><p class="text-xs font-bold text-stone-500">เวลาเฉลี่ยต่อเกม</p><Clock3 class="h-4 w-4 text-court-500" /></div>
+          <p class="mt-2 text-2xl font-black sm:text-3xl">{{ averageMatchMinutes || '-' }}<small v-if="averageMatchMinutes" class="ml-1 text-sm">นาที</small></p>
+          <p class="mt-1 text-xs font-semibold text-stone-500">จาก {{ matchDurations.length }} เกมที่มีเวลา</p>
+        </article>
+        <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+          <div class="flex items-center justify-between gap-2"><p class="text-xs font-bold text-stone-500">ยอดค้างรับ</p><CircleDollarSign class="h-4 w-4 text-amber-600" /></div>
+          <p class="mt-2 text-2xl font-black text-amber-700 dark:text-amber-300 sm:text-3xl">{{ money(unpaidRevenue) }}</p>
+          <p class="mt-1 text-xs font-semibold text-stone-500">{{ unpaidPlayers.length }} คนยังไม่ชำระ</p>
+        </article>
+      </div>
+
+      <div class="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+        <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
+          <div class="flex items-center justify-between gap-3">
+            <div><p class="text-sm font-semibold text-stone-500">การใช้งานรายสนาม</p><h3 class="mt-1 text-xl font-black">ประสิทธิภาพสนาม</h3></div>
+            <Activity class="h-6 w-6 text-court-500" />
+          </div>
+          <div v-if="courtReport.length" class="mt-4 grid gap-3">
+            <div v-for="court in courtReport" :key="court.name" class="rounded-md border border-stone-200 p-3 dark:border-stone-700">
+              <div class="flex items-start justify-between gap-3">
+                <div><p class="font-black">{{ court.name }}</p><p class="text-xs font-semibold text-stone-500">จบ {{ court.finished }} · สด {{ court.live }} · รอ {{ court.queue }} · ยกเลิก {{ court.cancelled }}</p></div>
+                <span class="rounded-md bg-paper-100 px-2.5 py-1 text-sm font-black dark:bg-stone-800">{{ court.total }} เกม</span>
+              </div>
+              <div class="mt-3 h-2 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800"><div class="h-full rounded-full bg-court-500" :style="{ width: `${(court.total / maxCourtMatches) * 100}%` }" /></div>
+            </div>
+          </div>
+          <p v-else class="mt-4 rounded-md bg-paper-100 p-4 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">ยังไม่มีข้อมูลสนาม</p>
+        </article>
+
+        <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
+          <div class="flex items-center justify-between gap-3">
+            <div><p class="text-sm font-semibold text-stone-500">ผลและระดับมือ</p><h3 class="mt-1 text-xl font-black">รูปแบบการแข่งขัน</h3></div>
+            <BarChart3 class="h-6 w-6 text-court-500" />
+          </div>
+          <div class="mt-4 grid grid-cols-2 gap-2">
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">ทีม A ชนะ</p><p class="mt-1 text-2xl font-black">{{ resultSummary.A }}</p></div>
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">ทีม B ชนะ</p><p class="mt-1 text-2xl font-black">{{ resultSummary.B }}</p></div>
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">เสมอ</p><p class="mt-1 text-2xl font-black">{{ resultSummary.draw }}</p></div>
+            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">ไม่ระบุผล</p><p class="mt-1 text-2xl font-black">{{ resultSummary.noResult }}</p></div>
+          </div>
+          <div class="mt-4 border-t border-stone-200 pt-4 dark:border-stone-700">
+            <p class="text-sm font-black">จำนวนเกมตามระดับมือ</p>
+            <div v-if="levelReport.length" class="mt-3 grid gap-2">
+              <div v-for="item in levelReport" :key="item.level" class="flex items-center justify-between gap-3 rounded-md border border-stone-200 px-3 py-2 dark:border-stone-700">
+                <div><p class="font-bold">{{ levelLabel(item.level) }}</p><p class="text-xs text-stone-500">จบ {{ item.finished }} · สด {{ item.live }} · รอ {{ item.queue }}</p></div>
+                <span class="text-lg font-black">{{ item.total }}</span>
+              </div>
+            </div>
+            <p v-else class="mt-3 text-sm font-bold text-stone-500">ยังไม่มีข้อมูลระดับมือ</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
     <div class="grid gap-4 lg:grid-cols-[1.15fr_0.85fr]">
       <div class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
         <div class="flex items-start justify-between gap-3">
@@ -282,5 +435,32 @@ async function exportExcel() {
         </div>
       </div>
     </div>
+
+    <section class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900" aria-labelledby="player-report-title">
+      <div class="flex items-end justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700 sm:p-5">
+        <div><p class="text-sm font-semibold text-stone-500">รายงานสมาชิก</p><h2 id="player-report-title" class="mt-1 text-xl font-black">ผลงานและสถานะชำระทั้งหมด</h2></div>
+        <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ playerReport.length }} คน</span>
+      </div>
+      <div v-if="playerReport.length" class="overflow-x-auto">
+        <table class="w-full min-w-[760px] text-left text-sm">
+          <thead class="bg-paper-100 text-xs text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+            <tr><th class="px-4 py-3">ผู้เล่น</th><th class="px-3 py-3">ระดับมือ</th><th class="px-3 py-3 text-center">เกม</th><th class="px-3 py-3 text-center">ชนะ</th><th class="px-3 py-3 text-center">เสมอ</th><th class="px-3 py-3 text-center">แพ้</th><th class="px-3 py-3 text-right">ค่าใช้จ่าย</th><th class="px-4 py-3 text-right">ชำระเงิน</th></tr>
+          </thead>
+          <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
+            <tr v-for="player in playerReport" :key="player.id">
+              <td class="px-4 py-3 font-black">{{ player.name }}</td>
+              <td class="px-3 py-3 font-bold text-stone-500">{{ levelLabel(player.level) }}</td>
+              <td class="px-3 py-3 text-center font-black">{{ player.games || 0 }}</td>
+              <td class="px-3 py-3 text-center">{{ player.wins || 0 }}</td>
+              <td class="px-3 py-3 text-center">{{ player.draws || 0 }}</td>
+              <td class="px-3 py-3 text-center">{{ player.losses || 0 }}</td>
+              <td class="px-3 py-3 text-right font-black">{{ money(playerCost(player)) }}</td>
+              <td class="px-4 py-3 text-right"><span class="rounded-full px-2.5 py-1 text-xs font-black" :class="player.paid ? 'bg-court-100 text-court-800 dark:bg-court-900/50 dark:text-court-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'">{{ player.paid ? 'จ่ายแล้ว' : 'ค้างชำระ' }}</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p v-else class="p-6 text-center text-sm font-bold text-stone-500">ยังไม่มีข้อมูลสมาชิกสำหรับรายงาน</p>
+    </section>
   </section>
 </template>

@@ -46,6 +46,7 @@ let toastTimer;
 let loadRequest = 0;
 let loadInFlight = false;
 let loadQueued = false;
+let availabilityLoaded = false;
 
 function handleSessionEnded(event) {
   state.user = null;
@@ -135,6 +136,41 @@ const paymentSeconds = computed(() => {
 const paymentCountdown = computed(
   () =>
     `${Math.floor(paymentSeconds.value / 60)}:${String(paymentSeconds.value % 60).padStart(2, "0")}`,
+);
+const availabilitySummary = computed(() => {
+  const interval = Number(state.settings.intervalMinutes || 60);
+  return state.courts.map((court) => {
+    const freeMinutes = slots.value.filter(
+      (minute) => status(court, minute).tone === "free",
+    );
+    const ranges = [];
+    for (const minute of freeMinutes) {
+      const last = ranges.at(-1);
+      if (last && last.endMinute === minute) {
+        last.endMinute = minute + interval;
+        last.slotCount += 1;
+      } else {
+        ranges.push({
+          startMinute: minute,
+          endMinute: minute + interval,
+          slotCount: 1,
+        });
+      }
+    }
+    return {
+      id: court.id,
+      name: court.name,
+      price: Number(court.pricePerInterval || 0),
+      freeCount: freeMinutes.length,
+      ranges,
+    };
+  });
+});
+const freeSlotCount = computed(() =>
+  availabilitySummary.value.reduce((sum, court) => sum + court.freeCount, 0),
+);
+const availableCourtCount = computed(
+  () => availabilitySummary.value.filter((court) => court.freeCount > 0).length,
 );
 
 function localDateTime(minute) {
@@ -248,7 +284,9 @@ async function load() {
   const request = ++loadRequest;
   const requestedDate = state.date;
   const previousScroll = scheduleScroll.value?.scrollLeft || 0;
-  state.loading = true;
+  // Auto-refresh must not replace the visible schedule with a loading card.
+  // That height change caused the guest login page to jump every 10 seconds.
+  state.loading = !availabilityLoaded;
   state.error = "";
   try {
     const availability = await props.apiRequest(
@@ -256,6 +294,7 @@ async function load() {
     );
     if (request !== loadRequest || requestedDate !== state.date) return;
     Object.assign(state, availability);
+    availabilityLoaded = true;
     if (availability.serverNow) {
       state.clockOffsetMs = timestamp(availability.serverNow) - Date.now();
       state.now = Date.now() + state.clockOffsetMs;
@@ -654,6 +693,63 @@ onUnmounted(() => {
       >
         <ShieldCheck class="h-4 w-4" />เราใช้ Google เพื่อยืนยันตัวตนเท่านั้น
       </p>
+
+      <div
+        class="mt-7 w-full border-t border-stone-200 pt-5 text-left dark:border-stone-700"
+        data-testid="guest-availability-summary"
+      >
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">
+              ตารางว่างแบบสรุป
+            </p>
+            <h3 class="mt-1 text-lg font-black">{{ displayDate }}</h3>
+            <p class="mt-1 text-sm font-bold text-stone-500 dark:text-stone-400">
+              ว่าง {{ freeSlotCount }} ช่วง · {{ availableCourtCount }}/{{ state.courts.length }} สนาม
+            </p>
+          </div>
+          <div v-if="canChangeBookingDate" class="grid grid-cols-[2.75rem_1fr_2.75rem] gap-1.5">
+            <button class="booking-date-arrow" aria-label="ดูวันก่อนหน้า" @click="changeDate(-1)">&lt;</button>
+            <button class="booking-today-button !inline-flex" type="button" @click="goToday">วันนี้</button>
+            <button class="booking-date-arrow" aria-label="ดูวันถัดไป" @click="changeDate(1)">&gt;</button>
+          </div>
+        </div>
+
+        <div v-if="state.loading" class="mt-4 rounded-xl bg-paper-100 p-4 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">
+          กำลังโหลดตารางสนามว่าง...
+        </div>
+        <div v-else class="mt-4 grid gap-2 sm:grid-cols-2">
+          <article
+            v-for="court in availabilitySummary"
+            :key="court.id"
+            class="rounded-xl border p-3"
+            :class="court.freeCount ? 'border-court-200 bg-court-500/5 dark:border-court-900/70' : 'border-stone-200 bg-paper-100 dark:border-stone-700 dark:bg-stone-800'"
+          >
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <h4 class="truncate font-black">{{ court.name }}</h4>
+                <p class="mt-0.5 text-xs font-bold text-stone-500 dark:text-stone-400">฿{{ court.price.toLocaleString('th-TH') }} / ช่วง</p>
+              </div>
+              <span
+                class="shrink-0 rounded-full px-2.5 py-1 text-xs font-black"
+                :class="court.freeCount ? 'bg-court-100 text-court-800 dark:bg-court-900/50 dark:text-court-200' : 'bg-stone-200 text-stone-600 dark:bg-stone-700 dark:text-stone-300'"
+              >{{ court.freeCount ? `ว่าง ${court.freeCount} ช่วง` : 'เต็มแล้ว' }}</span>
+            </div>
+            <div v-if="court.ranges.length" class="mt-3 flex flex-wrap gap-1.5">
+              <span
+                v-for="range in court.ranges.slice(0, 3)"
+                :key="`${court.id}-${range.startMinute}`"
+                class="rounded-lg border border-court-200 bg-white px-2 py-1 text-xs font-black text-court-800 dark:border-court-900 dark:bg-stone-900 dark:text-court-200"
+              >{{ label(range.startMinute) }}–{{ label(range.endMinute) }}</span>
+              <span v-if="court.ranges.length > 3" class="px-1 py-1 text-xs font-black text-stone-500">+{{ court.ranges.length - 3 }} ช่วงเวลา</span>
+            </div>
+            <p v-else class="mt-3 text-xs font-bold text-stone-400">ไม่มีช่วงเวลาว่างในวันนี้</p>
+          </article>
+        </div>
+        <p class="mt-3 text-center text-xs font-bold text-stone-500 dark:text-stone-400">
+          เข้าสู่ระบบเพื่อเลือกช่วงเวลาและยืนยันการจอง
+        </p>
+      </div>
     </section>
 
     <section v-else-if="!state.member" class="public-register-panel">

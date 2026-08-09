@@ -194,6 +194,10 @@ export function buildDashboardExportData({
   levelLabel
 }) {
   const isLiveShare = state.session?.type === 'liveShare'
+  const activePlayers = (state.players || []).filter((player) => player.active !== false)
+  const playerById = new Map((state.players || []).map((player) => [Number(player.id), player.name]))
+  const playerName = (id) => playerById.get(Number(id)) || (id ? `#${id}` : '-')
+  const finishedMatches = (state.history || []).filter((match) => match.status !== 'cancelled')
   const summary = [
     ['สมาชิกที่ใช้งาน', numeric(activePlayerCount)],
     ['เกมรอคิว', (state.queue || []).length],
@@ -220,6 +224,38 @@ export function buildDashboardExportData({
     )
   }
 
+  const matchRows = [
+    ...(state.queue || []).map((match) => ['รอคิว', match]),
+    ...(state.live || []).map((match) => ['กำลังเล่น', match]),
+    ...(state.history || []).map((match) => [match.status === 'cancelled' ? 'ยกเลิก' : 'จบแล้ว', match])
+  ].map(([phase, match]) => [
+    phase,
+    match.id,
+    match.court || '-',
+    playerName(match.a1),
+    playerName(match.a2),
+    playerName(match.b1),
+    playerName(match.b2),
+    levelLabel(match.level),
+    match.winner === 'A' ? 'ทีม A' : match.winner === 'B' ? 'ทีม B' : match.winner === 'draw' ? 'เสมอ' : '-',
+    match.startedAt || '-',
+    match.endedAt || '-',
+    numeric(match.shuttles),
+    match.note || ''
+  ])
+
+  const courtNames = new Set(state.settings?.courtNames || [])
+  ;[...(state.queue || []), ...(state.live || []), ...(state.history || [])].forEach((match) => {
+    if (match.court && match.court !== '-') courtNames.add(match.court)
+  })
+  const courtRows = [...courtNames].map((court) => {
+    const queue = (state.queue || []).filter((match) => match.court === court).length
+    const live = (state.live || []).filter((match) => match.court === court).length
+    const finished = finishedMatches.filter((match) => match.court === court)
+    const cancelled = (state.history || []).filter((match) => match.court === court && match.status === 'cancelled').length
+    return [court, queue, live, finished.length, cancelled, queue + live + finished.length, finished.reduce((sum, match) => sum + numeric(match.shuttles), 0)]
+  }).sort((a, b) => b[5] - a[5] || String(a[0]).localeCompare(String(b[0]), 'th'))
+
   return {
     summary,
     unpaid: (unpaidPlayers || []).map((player) => [player.id, player.name, numeric(playerCost(player))]),
@@ -232,7 +268,22 @@ export function buildDashboardExportData({
       numeric(player.draws),
       numeric(player.losses),
       numeric(playerScore(player))
-    ])
+    ]),
+    players: activePlayers.map((player) => [
+      player.id,
+      player.name,
+      levelLabel(player.level),
+      numeric(player.games),
+      numeric(player.wins),
+      numeric(player.draws),
+      numeric(player.losses),
+      numeric(playerScore(player)),
+      numeric(player.shuttles),
+      numeric(playerCost(player)),
+      player.paid ? 'จ่ายแล้ว' : 'ค้างชำระ'
+    ]),
+    matches: matchRows,
+    courts: courtRows
   }
 }
 
@@ -404,5 +455,23 @@ export async function exportDashboardExcel(options) {
   addSectionHeader(worksheet, 'ควรได้ลงรอบถัดไป', 4)
   addTable(worksheet, ['อันดับ', 'ชื่อ', 'ระดับมือ', 'เกม'], data.quietPlayers)
   finishWorksheet(worksheet)
+
+  const players = workbook.addWorksheet('สมาชิกทั้งหมด')
+  styleTitle(players, 'รายงานผลงานและการชำระของสมาชิก', 11)
+  addSessionMeta(players, options.state, 11)
+  addTable(players, ['ID', 'ชื่อ', 'ระดับมือ', 'เกม', 'ชนะ', 'เสมอ', 'แพ้', 'คะแนน', 'ลูกแบด', 'ค่าใช้จ่าย (บาท)', 'สถานะชำระ'], data.players, { currencyColumns: [10], decimalColumns: [8] })
+  finishWorksheet(players)
+
+  const matches = workbook.addWorksheet('การแข่งขันทั้งหมด')
+  styleTitle(matches, 'รายงานการแข่งขันทุกสถานะ', 13)
+  addSessionMeta(matches, options.state, 13)
+  addTable(matches, ['สถานะ', 'เกมที่', 'สนาม', 'A1', 'A2', 'B1', 'B2', 'ระดับมือ', 'ผลการแข่งขัน', 'เวลาเริ่ม', 'เวลาจบ', 'ลูกแบด', 'หมายเหตุ'], data.matches)
+  finishWorksheet(matches)
+
+  const courts = workbook.addWorksheet('สรุปรายสนาม')
+  styleTitle(courts, 'รายงานการใช้งานสนาม', 7)
+  addSessionMeta(courts, options.state, 7)
+  addTable(courts, ['สนาม', 'รอคิว', 'กำลังเล่น', 'จบแล้ว', 'ยกเลิก', 'เกมใช้งานรวม', 'ลูกแบดใช้'], data.courts)
+  finishWorksheet(courts)
   await saveWorkbook(workbook, exportFilename(options.state, 'dashboard'))
 }
