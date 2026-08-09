@@ -148,6 +148,7 @@ describe('Excel export data', () => {
             shuttles: 2,
             status: 'finished',
             winner: 'A',
+            scores: [{ a: 21, b: 18 }, { a: 17, b: 21 }],
             shuttleSequence: '1,2',
             note: 'เกมทดสอบ'
           }
@@ -171,10 +172,17 @@ describe('Excel export data', () => {
       'สรุปยี่ห้อลูกแบด',
       'สถานะ',
       'ผู้ชนะ',
+      'เซต 1',
+      'เซต 2',
+      'เซต 3',
+      'สรุปผลเซต',
       'Shuttle sequence',
       'หมายเหตุ'
     ])
     expect(data.rows[0][12]).toBe('p1 + p2')
-    expect(data.rows[0][13]).toBe('ลูกแบดทั่วไป #1, ลูกแบดทั่วไป #2')
+    expect(data.rows[0][13]).toBe('21–18')
+    expect(data.rows[0][14]).toBe('17–21')
+    expect(data.rows[0][16]).toBe('1–1 เซต')
+    expect(data.rows[0][17]).toBe('ลูกแบดทั่วไป #1, ลูกแบดทั่วไป #2')
   })
 })

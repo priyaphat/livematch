@@ -175,6 +175,11 @@ type ReturnedShuttle struct {
 	Number  int    `json:"number"`
 }
 
+type MatchScore struct {
+	A int `json:"a"`
+	B int `json:"b"`
+}
+
 type Couple struct {
 	ID int `json:"id"`
 	A  int `json:"a"`
@@ -191,6 +196,7 @@ type Match struct {
 	B2                     int              `json:"b2"`
 	Shuttles               int              `json:"shuttles"`
 	Winner                 string           `json:"winner"`
+	Scores                 []MatchScore     `json:"scores"`
 	ShuttleSeq             string           `json:"shuttleSequence"`
 	ShuttleSeqItems        []ShuttleSeqItem `json:"shuttleSequenceItems"`
 	ShuttleReturned        bool             `json:"shuttleReturned"`
@@ -451,6 +457,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches drop constraint if exists matches_phase_check;
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
 		alter table matches add column if not exists winner text not null default '';
+		alter table matches add column if not exists scores jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists shuttle_sequence text not null default '';
 		alter table matches add column if not exists shuttle_sequence_items jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists shuttle_returned boolean not null default false;
@@ -1986,12 +1993,18 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 4 && (parts[3] == "finish" || parts[3] == "cancel"):
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Note            string `json:"note"`
-			Winner          string `json:"winner"`
-			ShuttleReturned bool   `json:"shuttleReturned"`
+			Note            string       `json:"note"`
+			Winner          string       `json:"winner"`
+			Scores          []MatchScore `json:"scores"`
+			ShuttleReturned bool         `json:"shuttleReturned"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note, body.Winner, body.ShuttleReturned) {
+		found, resultErr := closeLiveWithScores(&state, matchID, parts[3] == "cancel", body.Note, body.Winner, body.Scores, body.ShuttleReturned)
+		if resultErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": resultErr.Error()})
+			return
+		}
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
@@ -1999,18 +2012,24 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		if parts[3] == "cancel" {
 			actionName = "cancel_live_match"
 		}
-		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "note": body.Note, "shuttleReturned": body.ShuttleReturned})
+		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "scores": body.Scores, "note": body.Note, "shuttleReturned": body.ShuttleReturned})
 	case r.Method == http.MethodPatch && action == "history" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Winner string `json:"winner"`
+			Winner string        `json:"winner"`
+			Scores *[]MatchScore `json:"scores"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !updateHistoryWinner(&state, matchID, body.Winner) {
+		found, resultErr := updateHistoryResult(&state, matchID, body.Winner, body.Scores)
+		if resultErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": resultErr.Error()})
+			return
+		}
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSavedWithActivity(w, r, state, "update_history_winner", "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner})
+		a.respondSavedWithActivity(w, r, state, "update_history_result", "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "scores": body.Scores})
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -2193,16 +2212,20 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		if err != nil {
 			return err
 		}
+		scores, err := json.Marshal(match.Scores)
+		if err != nil {
+			return err
+		}
 		pricingMode := match.ShuttlePricingMode
 		if pricingMode == "" {
 			pricingMode = shuttlePricingLegacy
 		}
 		_, err = tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, scores, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -2374,7 +2397,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
 		from matches
 		where session_id = $1
 		order by id
@@ -2386,12 +2409,15 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var phase string
 		var match Match
-		var seqItemsRaw, priceSnapshotRaw []byte
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
+		var scoresRaw, seqItemsRaw, priceSnapshotRaw []byte
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &scoresRaw, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
 			return SessionState{}, err
 		}
 		if len(seqItemsRaw) > 0 {
 			_ = json.Unmarshal(seqItemsRaw, &match.ShuttleSeqItems)
+		}
+		if len(scoresRaw) > 0 {
+			_ = json.Unmarshal(scoresRaw, &match.Scores)
 		}
 		if len(priceSnapshotRaw) > 0 {
 			_ = json.Unmarshal(priceSnapshotRaw, &match.ShuttlePriceSnapshot)
@@ -3099,10 +3125,59 @@ func returnLatestShuttle(state *SessionState, matchID int) (int, bool) {
 	return 0, false
 }
 
+func normalizedMatchResult(scores []MatchScore, manualWinner string) ([]MatchScore, string, error) {
+	if len(scores) == 0 {
+		if manualWinner != "A" && manualWinner != "B" && manualWinner != "draw" {
+			manualWinner = ""
+		}
+		return []MatchScore{}, manualWinner, nil
+	}
+	if len(scores) != 2 && len(scores) != 3 {
+		return nil, "", errors.New("คะแนนต้องมี 2 หรือ 3 เซต")
+	}
+	aWins, bWins := 0, 0
+	normalized := make([]MatchScore, len(scores))
+	for i, score := range scores {
+		if score.A < 0 || score.A > 99 || score.B < 0 || score.B > 99 {
+			return nil, "", fmt.Errorf("คะแนนเซตที่ %d ต้องอยู่ระหว่าง 0–99", i+1)
+		}
+		if score.A == score.B {
+			return nil, "", fmt.Errorf("คะแนนเซตที่ %d ห้ามเท่ากัน", i+1)
+		}
+		normalized[i] = score
+		if score.A > score.B {
+			aWins++
+		} else {
+			bWins++
+		}
+	}
+	winner := "draw"
+	if aWins > bWins {
+		winner = "A"
+	} else if bWins > aWins {
+		winner = "B"
+	}
+	return normalized, winner, nil
+}
+
 func closeLive(state *SessionState, matchID int, cancelled bool, note string, winner string, shuttleReturned bool) bool {
+	found, _ := closeLiveWithScores(state, matchID, cancelled, note, winner, nil, shuttleReturned)
+	return found
+}
+
+func closeLiveWithScores(state *SessionState, matchID int, cancelled bool, note string, winner string, scores []MatchScore, shuttleReturned bool) (bool, error) {
 	for i, match := range state.Live {
 		if match.ID != matchID {
 			continue
+		}
+		normalizedScores := []MatchScore{}
+		normalizedWinner := ""
+		if !cancelled {
+			var err error
+			normalizedScores, normalizedWinner, err = normalizedMatchResult(scores, winner)
+			if err != nil {
+				return false, err
+			}
 		}
 		state.Live = append(state.Live[:i], state.Live[i+1:]...)
 		match.EndedAt = nowHHMM()
@@ -3114,10 +3189,9 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 			match.Note = "จบการแข่งขัน"
 		}
 		if !cancelled {
-			if winner != "A" && winner != "B" && winner != "draw" {
-				winner = ""
-			}
-			match.Winner = winner
+			match.Scores = normalizedScores
+			winner = normalizedWinner
+			match.Winner = normalizedWinner
 			match.Status = "finished"
 		} else {
 			match.Winner = ""
@@ -3158,28 +3232,39 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 			}
 		}
 		state.History = append([]Match{match}, state.History...)
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 func updateHistoryWinner(state *SessionState, matchID int, winner string) bool {
-	if winner != "A" && winner != "B" && winner != "draw" {
-		winner = ""
-	}
+	found, _ := updateHistoryResult(state, matchID, winner, nil)
+	return found
+}
+
+func updateHistoryResult(state *SessionState, matchID int, winner string, scores *[]MatchScore) (bool, error) {
 	for i := range state.History {
 		if state.History[i].ID != matchID {
 			continue
 		}
 		if isCancelledMatch(state.History[i]) {
-			return true
+			return true, nil
+		}
+		candidateScores := state.History[i].Scores
+		if scores != nil {
+			candidateScores = *scores
+		}
+		normalizedScores, normalizedWinner, err := normalizedMatchResult(candidateScores, winner)
+		if err != nil {
+			return false, err
 		}
 		applyResultStats(state, state.History[i], state.History[i].Winner, -1)
-		state.History[i].Winner = winner
-		applyResultStats(state, state.History[i], winner, 1)
-		return true
+		state.History[i].Scores = normalizedScores
+		state.History[i].Winner = normalizedWinner
+		applyResultStats(state, state.History[i], normalizedWinner, 1)
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 func applyResultStats(state *SessionState, match Match, winner string, delta int) {

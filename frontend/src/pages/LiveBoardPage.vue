@@ -1,6 +1,8 @@
 <script setup>
+import { computed } from 'vue'
 import { Check, Plus, RotateCcw, X } from '@lucide/vue'
 import LineArt from '../components/LineArt.vue'
+import { emptyMatchScores, validateMatchScores } from '../matchScores.js'
 
 const props = defineProps([
   'state',
@@ -31,6 +33,23 @@ const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) |
 const latestBrandId = (match) => props.latestShuttleBrandId?.(match) || match?.shuttleSequenceItems?.at?.(-1)?.brandId || 'default'
 const teamName = (match = {}, side) => (side === 'A' ? [match?.a1, match?.a2] : [match?.b1, match?.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
 if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId = ''
+if (!Array.isArray(props.forms.finishScores)) props.forms.finishScores = emptyMatchScores()
+if (props.forms.finishScoreError === undefined) props.forms.finishScoreError = ''
+const hasAnyFinishScore = computed(() => (props.forms.finishScores || []).some((score) => score.a !== '' || score.b !== ''))
+const finishScoreResult = computed(() => validateMatchScores(props.forms.finishScores || []))
+const finishResultText = computed(() => finishScoreResult.value.winner === 'A'
+  ? `${teamName(props.ui.finishMatch, 'A')} ชนะ`
+  : finishScoreResult.value.winner === 'B'
+    ? `${teamName(props.ui.finishMatch, 'B')} ชนะ`
+    : finishScoreResult.value.winner === 'draw' ? 'เสมอ' : '')
+function addThirdSet() {
+  if (props.forms.finishScores.length < 3) props.forms.finishScores.push({ a: '', b: '' })
+  props.forms.finishScoreError = ''
+}
+function removeThirdSet() {
+  if (props.forms.finishScores.length === 3) props.forms.finishScores.pop()
+  props.forms.finishScoreError = ''
+}
 </script>
 
 <template>
@@ -121,18 +140,38 @@ if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId =
     </div>
 
     <div v-if="ui.showFinishModal" class="fixed inset-0 z-40 grid place-items-end bg-black/40 p-3 sm:place-items-center">
-      <div class="w-full max-w-md rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
+      <div class="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-4 shadow-soft dark:bg-stone-900">
         <div class="flex items-start justify-between gap-3">
           <div>
             <h2 class="text-lg font-black">จบการแข่งขัน</h2>
-            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">เลือกผลการแข่งขันสำหรับเกมที่ {{ ui.finishMatch?.id }}</p>
+            <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">กรอกคะแนน หรือเลือกผลเองสำหรับเกมที่ {{ ui.finishMatch?.id }}</p>
           </div>
           <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด modal" @click="ui.showFinishModal = false">
             <X class="h-4 w-4" />
           </button>
         </div>
 
-        <div class="mt-4 grid gap-2">
+        <section class="mt-4 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
+          <div class="grid grid-cols-[3rem_1fr_1fr] items-start gap-2 text-center text-xs font-black text-stone-500">
+            <span class="pt-1">เซต</span>
+            <div class="min-w-0"><span>ทีม A</span><small class="mt-0.5 block break-words text-[10px] font-semibold leading-tight text-stone-400">{{ teamName(ui.finishMatch, 'A') }}</small></div>
+            <div class="min-w-0"><span>ทีม B</span><small class="mt-0.5 block break-words text-[10px] font-semibold leading-tight text-stone-400">{{ teamName(ui.finishMatch, 'B') }}</small></div>
+          </div>
+          <div v-for="(score, index) in forms.finishScores" :key="index" class="mt-2 grid grid-cols-[3rem_1fr_1fr] items-center gap-2">
+            <span class="text-center text-sm font-black">{{ index + 1 }}</span>
+            <input v-model="score.a" type="number" min="0" max="99" step="1" inputmode="numeric" :aria-label="`คะแนนทีม A เซต ${index + 1}`" class="h-12 min-w-0 rounded-md border border-stone-200 bg-paper-50 px-2 text-center text-xl font-black outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800" :disabled="isSessionReadOnly" @input="forms.finishScoreError = ''" />
+            <input v-model="score.b" type="number" min="0" max="99" step="1" inputmode="numeric" :aria-label="`คะแนนทีม B เซต ${index + 1}`" class="h-12 min-w-0 rounded-md border border-stone-200 bg-paper-50 px-2 text-center text-xl font-black outline-none focus:border-court-500 dark:border-stone-700 dark:bg-stone-800" :disabled="isSessionReadOnly" @input="forms.finishScoreError = ''" />
+          </div>
+          <div class="mt-3 flex justify-end">
+            <button v-if="forms.finishScores.length < 3" type="button" class="h-9 rounded-md border border-court-200 px-3 text-xs font-black text-court-700 dark:border-court-900 dark:text-court-300" @click="addThirdSet">+ เพิ่มเซตที่ 3</button>
+            <button v-else type="button" class="h-9 rounded-md border border-rose-200 px-3 text-xs font-black text-rose-700 dark:border-rose-900 dark:text-rose-300" @click="removeThirdSet">ลบเซตที่ 3</button>
+          </div>
+          <p v-if="hasAnyFinishScore && finishScoreResult.error" class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-xs font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ finishScoreResult.error }}</p>
+          <p v-else-if="finishResultText" class="mt-3 rounded-md bg-court-500/10 px-3 py-2 text-sm font-black text-court-700 dark:text-court-300">ผลอัตโนมัติ: {{ finishResultText }}</p>
+        </section>
+
+        <div v-if="!hasAnyFinishScore" class="mt-4 grid gap-2">
+          <p class="text-xs font-bold text-stone-500">ไม่กรอกคะแนน — เลือกผลเองได้</p>
           <label class="flex items-center gap-3 rounded-md border border-stone-200 p-3 dark:border-stone-700">
             <input v-model="forms.finishWinner" type="radio" value="" :disabled="isSessionReadOnly" />
             <span class="font-bold">ไม่ระบุ</span>
@@ -150,6 +189,8 @@ if (props.forms.addShuttleBrandId === undefined) props.forms.addShuttleBrandId =
             <span class="font-bold">{{ teamName(ui.finishMatch, 'B') }}</span>
           </label>
         </div>
+
+        <p v-if="forms.finishScoreError" class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ forms.finishScoreError }}</p>
 
         <textarea
           v-model="forms.finishNote"

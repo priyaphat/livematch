@@ -1,3 +1,5 @@
+import { matchScoreCell, matchScoreSummary } from './matchScores.js'
+
 const COLORS = {
   court: 'FF15803D',
   courtLight: 'FFDCFCE7',
@@ -127,6 +129,10 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
     'สรุปยี่ห้อลูกแบด',
     'สถานะ',
     'ผู้ชนะ',
+    'เซต 1',
+    'เซต 2',
+    'เซต 3',
+    'สรุปผลเซต',
     'Shuttle sequence',
     'หมายเหตุ'
   ]
@@ -146,6 +152,10 @@ export function buildHistoryExportData({ state, playerName, matchLevelLabel }) {
       shuttleSummaryText(state, match),
       match.status === 'cancelled' ? 'ยกเลิก' : 'บันทึกผล',
       historyWinnerText(match, playerName),
+      matchScoreCell(match.scores, 0),
+      matchScoreCell(match.scores, 1),
+      matchScoreCell(match.scores, 2),
+      matchScoreSummary(match.scores),
       shuttleSequenceText(state, match),
       match.note || ''
     ])
@@ -238,6 +248,10 @@ export function buildDashboardExportData({
     playerName(match.b2),
     levelLabel(match.level),
     match.winner === 'A' ? 'ทีม A' : match.winner === 'B' ? 'ทีม B' : match.winner === 'draw' ? 'เสมอ' : '-',
+    matchScoreCell(match.scores, 0),
+    matchScoreCell(match.scores, 1),
+    matchScoreCell(match.scores, 2),
+    matchScoreSummary(match.scores),
     match.startedAt || '-',
     match.endedAt || '-',
     numeric(match.shuttles),
@@ -463,9 +477,9 @@ export async function exportDashboardExcel(options) {
   finishWorksheet(players)
 
   const matches = workbook.addWorksheet('การแข่งขันทั้งหมด')
-  styleTitle(matches, 'รายงานการแข่งขันทุกสถานะ', 13)
-  addSessionMeta(matches, options.state, 13)
-  addTable(matches, ['สถานะ', 'เกมที่', 'สนาม', 'A1', 'A2', 'B1', 'B2', 'ระดับมือ', 'ผลการแข่งขัน', 'เวลาเริ่ม', 'เวลาจบ', 'ลูกแบด', 'หมายเหตุ'], data.matches)
+  styleTitle(matches, 'รายงานการแข่งขันทุกสถานะ', 17)
+  addSessionMeta(matches, options.state, 17)
+  addTable(matches, ['สถานะ', 'เกมที่', 'สนาม', 'A1', 'A2', 'B1', 'B2', 'ระดับมือ', 'ผลการแข่งขัน', 'เซต 1', 'เซต 2', 'เซต 3', 'สรุปผลเซต', 'เวลาเริ่ม', 'เวลาจบ', 'ลูกแบด', 'หมายเหตุ'], data.matches)
   finishWorksheet(matches)
 
   const courts = workbook.addWorksheet('สรุปรายสนาม')

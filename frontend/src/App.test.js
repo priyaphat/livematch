@@ -1234,6 +1234,32 @@ describe('LiveMatch app', () => {
     expect(savedWinner).toBe('draw')
   })
 
+  it('collects two or three sets and previews the calculated winner', async () => {
+    const match = { id: 8, a1: 1, a2: 2, b1: 3, b2: 4 }
+    const forms = { finishWinner: '', finishNote: '', finishScores: [{ a: '', b: '' }, { a: '', b: '' }], finishScoreError: '' }
+    const wrapper = mount(LiveBoardPage, {
+      props: {
+        state: { live: [match], settings: {} }, forms,
+        ui: { showShuttleModal: false, showFinishModal: true, finishMatch: match, showCancelModal: false },
+        playerName: (id) => `p${id}`,
+        requestAddShuttle: () => {}, confirmAddShuttle: () => {}, requestFinishMatch: () => {},
+        confirmFinishMatch: () => {}, requestCancelMatch: () => {}, confirmCancelMatch: () => {}
+      }
+    })
+
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(4)
+    await wrapper.get('[aria-label="คะแนนทีม A เซต 1"]').setValue('21')
+    await wrapper.get('[aria-label="คะแนนทีม B เซต 1"]').setValue('18')
+    await wrapper.get('[aria-label="คะแนนทีม A เซต 2"]').setValue('17')
+    await wrapper.get('[aria-label="คะแนนทีม B เซต 2"]').setValue('21')
+    expect(wrapper.text()).toContain('ผลอัตโนมัติ: เสมอ')
+    await wrapper.findAll('button').find((button) => button.text().includes('เพิ่มเซตที่ 3')).trigger('click')
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(6)
+    await wrapper.get('[aria-label="คะแนนทีม A เซต 3"]').setValue('21')
+    await wrapper.get('[aria-label="คะแนนทีม B เซต 3"]').setValue('15')
+    expect(wrapper.text()).toContain('p1 + p2 ชนะ')
+  })
+
   it('does not show an empty second player in the 1v1 finish modal', () => {
     const match = { id: 1, a1: 1, a2: 0, b1: 2, b2: 0 }
     const wrapper = mount(LiveBoardPage, {
@@ -1337,7 +1363,7 @@ describe('LiveMatch app', () => {
       props: {
         state: {
           history: [
-            { id: 1, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'draw' }
+            { id: 1, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'draw', scores: [{ a: 21, b: 18 }, { a: 17, b: 21 }] }
           ]
         },
         playerName: (id) => `p${id}`,
@@ -1348,6 +1374,9 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('เสมอ')
     expect(wrapper.text()).toContain('ทีม A +0.5')
     expect(wrapper.text()).toContain('ทีม B +0.5')
+    expect(wrapper.text()).toContain('คะแนนรายเซต')
+    expect(wrapper.text()).toContain('21–18')
+    expect(wrapper.text()).toContain('1–1 เซต')
   })
 
   it('renders cancelled history and result edit controls', async () => {
@@ -1373,6 +1402,27 @@ describe('LiveMatch app', () => {
     expect(nextWinner).toBe('B')
     expect(selects[1].element.disabled).toBe(true)
     expect(wrapper.text()).toContain('ยกเลิก')
+  })
+
+  it('edits historical set scores and submits the calculated winner', async () => {
+    const match = { id: 20, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'A', status: 'finished' }
+    const updateHistoryWinner = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: { history: [match] },
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('เพิ่มคะแนน')).trigger('click')
+    await wrapper.get('[aria-label="แก้คะแนนทีม A เซต 1"]').setValue('18')
+    await wrapper.get('[aria-label="แก้คะแนนทีม B เซต 1"]').setValue('21')
+    await wrapper.get('[aria-label="แก้คะแนนทีม A เซต 2"]').setValue('17')
+    await wrapper.get('[aria-label="แก้คะแนนทีม B เซต 2"]').setValue('21')
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกคะแนน')).trigger('click')
+
+    expect(updateHistoryWinner).toHaveBeenCalledWith(match, 'B', [{ a: 18, b: 21 }, { a: 17, b: 21 }])
   })
 
   it('shows returned shuttle status in cancelled history', () => {

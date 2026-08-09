@@ -1,7 +1,8 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { CreditCard, Download, Trophy } from '@lucide/vue'
+import { CreditCard, Download, Plus, Trophy, X } from '@lucide/vue'
 import { exportHistoryExcel, exportPaymentHistoryExcel } from '../excelExport'
+import { emptyMatchScores, matchScoreSummary, validateMatchScores } from '../matchScores.js'
 
 const props = defineProps([
   'state',
@@ -23,6 +24,11 @@ const paymentLoaded = ref(false)
 const paymentError = ref('')
 const exportLoading = ref(false)
 const exportError = ref('')
+const editingMatch = ref(null)
+const editScores = ref(emptyMatchScores())
+const editWinner = ref('')
+const editError = ref('')
+const editSaving = ref(false)
 const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.settings?.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
 const shuttleSummary = (match) => props.matchShuttleSummary?.(match) || ''
 const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) || match?.shuttleSequence || '-'
@@ -49,6 +55,48 @@ function resultScoreText(match) {
 
 function isCancelled(match) {
   return match.status === 'cancelled'
+}
+
+function openResultEditor(match) {
+  editingMatch.value = match
+  editScores.value = Array.isArray(match.scores) && match.scores.length
+    ? match.scores.map((score) => ({ a: String(score.a), b: String(score.b) }))
+    : emptyMatchScores()
+  editWinner.value = match.winner || ''
+  editError.value = ''
+}
+
+function closeResultEditor() {
+  editingMatch.value = null
+  editScores.value = emptyMatchScores()
+  editWinner.value = ''
+  editError.value = ''
+}
+
+function addEditSet() {
+  if (editScores.value.length < 3) editScores.value.push({ a: '', b: '' })
+  editError.value = ''
+}
+
+function removeEditSet() {
+  if (editScores.value.length === 3) editScores.value.pop()
+  editError.value = ''
+}
+
+async function saveEditedResult() {
+  if (!editingMatch.value || editSaving.value) return
+  const result = validateMatchScores(editScores.value)
+  editError.value = result.error
+  if (result.error) return
+  editSaving.value = true
+  try {
+    await props.updateHistoryWinner(editingMatch.value, result.scores.length ? result.winner : editWinner.value, result.scores)
+    closeResultEditor()
+  } catch (error) {
+    editError.value = error?.message || 'บันทึกคะแนนไม่สำเร็จ'
+  } finally {
+    editSaving.value = false
+  }
 }
 
 async function loadPaymentEvents(force = false) {
@@ -198,6 +246,19 @@ async function exportExcel() {
           <p class="text-lg font-black">{{ teamText(match, 'B') }}</p>
         </div>
 
+        <div v-if="match.scores?.length" class="rounded-md border border-court-200 bg-court-500/5 p-3 dark:border-court-900/60">
+          <div class="flex items-center justify-between gap-3">
+            <p class="text-sm font-black">คะแนนรายเซต</p>
+            <span class="rounded-md bg-white px-2.5 py-1 text-xs font-black text-court-700 dark:bg-stone-900 dark:text-court-300">{{ matchScoreSummary(match.scores) }}</span>
+          </div>
+          <div class="mt-3 grid gap-2" :class="match.scores.length === 3 ? 'grid-cols-3' : 'grid-cols-2'">
+            <div v-for="(score, index) in match.scores" :key="index" class="rounded-md bg-white p-2 text-center dark:bg-stone-900">
+              <p class="text-[11px] font-bold text-stone-500">เซต {{ index + 1 }}</p>
+              <p class="mt-1 text-xl font-black tabular-nums">{{ score.a }}–{{ score.b }}</p>
+            </div>
+          </div>
+        </div>
+
         <div class="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
           <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
             <p class="text-xs text-stone-500 dark:text-stone-400">เริ่ม</p>
@@ -227,7 +288,7 @@ async function exportExcel() {
             <select
               :value="match.winner || ''"
               class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-bold disabled:opacity-60 dark:border-stone-700 dark:bg-stone-900"
-              :disabled="isSessionReadOnly || isCancelled(match)"
+              :disabled="isSessionReadOnly || isCancelled(match) || match.scores?.length"
               aria-label="เปลี่ยนผลการแข่งขัน"
               @change="updateHistoryWinner(match, $event.target.value)"
             >
@@ -236,11 +297,55 @@ async function exportExcel() {
               <option value="B">ทีม B ชนะ</option>
               <option value="draw">เสมอ</option>
             </select>
+            <button
+              type="button"
+              class="h-10 rounded-md border border-court-200 bg-court-500/10 px-3 text-sm font-black text-court-700 disabled:opacity-50 dark:border-court-900 dark:text-court-300"
+              :disabled="isSessionReadOnly || isCancelled(match)"
+              @click="openResultEditor(match)"
+            >
+              {{ match.scores?.length ? 'แก้คะแนน' : 'เพิ่มคะแนน' }}
+            </button>
           </div>
           <p class="mt-1 text-xs font-black text-court-700 dark:text-court-300">สกอร์ {{ resultScoreText(match) }}</p>
           <p v-if="match.note" class="mt-2 text-stone-600 dark:text-stone-300">{{ match.note }}</p>
         </div>
       </div>
     </article>
+
+    <div v-if="editingMatch" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="edit-match-score-title">
+      <section class="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-4 shadow-2xl dark:bg-stone-900">
+        <div class="flex items-start justify-between gap-3">
+          <div><p class="text-xs font-bold text-court-600">เกมที่ {{ editingMatch.id }}</p><h2 id="edit-match-score-title" class="mt-1 text-xl font-black">แก้คะแนนการแข่งขัน</h2></div>
+          <button class="grid h-10 w-10 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิดแก้คะแนน" @click="closeResultEditor"><X class="h-4 w-4" /></button>
+        </div>
+
+        <div class="mt-4 grid grid-cols-[3rem_1fr_1fr] items-start gap-2 text-center text-xs font-black text-stone-500">
+          <span class="pt-1">เซต</span>
+          <div class="min-w-0"><span>ทีม A</span><small class="mt-0.5 block break-words text-[10px] font-semibold leading-tight text-stone-400">{{ teamText(editingMatch, 'A') }}</small></div>
+          <div class="min-w-0"><span>ทีม B</span><small class="mt-0.5 block break-words text-[10px] font-semibold leading-tight text-stone-400">{{ teamText(editingMatch, 'B') }}</small></div>
+        </div>
+        <div v-for="(score, index) in editScores" :key="index" class="mt-2 grid grid-cols-[3rem_1fr_1fr] items-center gap-2">
+          <span class="text-center font-black">{{ index + 1 }}</span>
+          <input v-model="score.a" type="number" min="0" max="99" step="1" inputmode="numeric" :aria-label="`แก้คะแนนทีม A เซต ${index + 1}`" class="h-12 min-w-0 rounded-md border border-stone-200 bg-paper-50 text-center text-xl font-black dark:border-stone-700 dark:bg-stone-800" @input="editError = ''" />
+          <input v-model="score.b" type="number" min="0" max="99" step="1" inputmode="numeric" :aria-label="`แก้คะแนนทีม B เซต ${index + 1}`" class="h-12 min-w-0 rounded-md border border-stone-200 bg-paper-50 text-center text-xl font-black dark:border-stone-700 dark:bg-stone-800" @input="editError = ''" />
+        </div>
+        <div class="mt-3 flex justify-end">
+          <button v-if="editScores.length < 3" class="inline-flex h-9 items-center gap-1 rounded-md border border-court-200 px-3 text-xs font-black text-court-700" @click="addEditSet"><Plus class="h-3.5 w-3.5" />เพิ่มเซตที่ 3</button>
+          <button v-else class="h-9 rounded-md border border-rose-200 px-3 text-xs font-black text-rose-700" @click="removeEditSet">ลบเซตที่ 3</button>
+        </div>
+
+        <div v-if="!editScores.some((score) => score.a !== '' || score.b !== '')" class="mt-4 grid gap-2">
+          <p class="text-xs font-bold text-stone-500">ไม่กรอกคะแนน — เลือกผลเอง</p>
+          <select v-model="editWinner" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 font-bold dark:border-stone-700 dark:bg-stone-800">
+            <option value="">ไม่ระบุผล</option><option value="A">ทีม A ชนะ</option><option value="B">ทีม B ชนะ</option><option value="draw">เสมอ</option>
+          </select>
+        </div>
+        <p v-if="editError" class="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ editError }}</p>
+        <div class="mt-5 grid grid-cols-2 gap-2">
+          <button class="h-11 rounded-md border border-stone-200 font-black dark:border-stone-700" @click="closeResultEditor">ยกเลิก</button>
+          <button class="h-11 rounded-md bg-court-500 font-black text-white disabled:opacity-50" :disabled="editSaving" @click="saveEditedResult">{{ editSaving ? 'กำลังบันทึก...' : 'บันทึกคะแนน' }}</button>
+        </div>
+      </section>
+    </div>
   </section>
 </template>

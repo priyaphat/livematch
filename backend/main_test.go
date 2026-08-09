@@ -579,6 +579,55 @@ func TestCloseLiveStoresWinnerStatsAndShuttleSequence(t *testing.T) {
 	}
 }
 
+func TestCloseLiveWithScoresCalculatesWinnerAndValidatesSets(t *testing.T) {
+	newState := func() SessionState {
+		return SessionState{
+			Players: []Player{{ID: 1}, {ID: 2}, {ID: 3}, {ID: 4}},
+			Live:    []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+		}
+	}
+	tests := []struct {
+		name   string
+		scores []MatchScore
+		winner string
+	}{
+		{"A wins two sets", []MatchScore{{A: 21, B: 18}, {A: 21, B: 19}}, "A"},
+		{"two sets split is draw", []MatchScore{{A: 21, B: 18}, {A: 17, B: 21}}, "draw"},
+		{"A wins best of three", []MatchScore{{A: 21, B: 18}, {A: 17, B: 21}, {A: 21, B: 15}}, "A"},
+		{"B wins best of three", []MatchScore{{A: 18, B: 21}, {A: 21, B: 17}, {A: 15, B: 21}}, "B"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := newState()
+			found, err := closeLiveWithScores(&state, 1, false, "", "A", test.scores, false)
+			if err != nil || !found {
+				t.Fatalf("expected score result to save, found=%v err=%v", found, err)
+			}
+			if state.History[0].Winner != test.winner {
+				t.Fatalf("expected winner %q, got %q", test.winner, state.History[0].Winner)
+			}
+			if len(state.History[0].Scores) != len(test.scores) {
+				t.Fatalf("expected scores to be stored, got %#v", state.History[0].Scores)
+			}
+		})
+	}
+
+	invalid := [][]MatchScore{
+		{{A: 21, B: 21}, {A: 18, B: 21}},
+		{{A: 100, B: 20}, {A: 18, B: 21}},
+		{{A: 21, B: 18}},
+	}
+	for _, scores := range invalid {
+		state := newState()
+		if found, err := closeLiveWithScores(&state, 1, false, "", "A", scores, false); err == nil || found {
+			t.Fatalf("expected invalid scores to be rejected: %#v", scores)
+		}
+		if len(state.Live) != 1 || len(state.History) != 0 {
+			t.Fatalf("invalid scores must not mutate match state: %#v", state)
+		}
+	}
+}
+
 func TestStartMatchUsesInitialShuttleWhenSettingEnabled(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"light", "middle", "heavy"}, StartMatchWithShuttle: true},
@@ -1268,6 +1317,24 @@ func TestUpdateHistoryWinnerRecalculatesPlayerResultStats(t *testing.T) {
 	}
 	if state.History[0].Winner != "draw" {
 		t.Fatalf("expected history winner draw, got %q", state.History[0].Winner)
+	}
+}
+
+func TestUpdateHistoryScoresReversesOldStatsAndAppliesCalculatedWinner(t *testing.T) {
+	state := SessionState{
+		Players: []Player{{ID: 1, Wins: 1}, {ID: 2, Wins: 1}, {ID: 3, Losses: 1}, {ID: 4, Losses: 1}},
+		History: []Match{{ID: 7, A1: 1, A2: 2, B1: 3, B2: 4, Winner: "A", Scores: []MatchScore{{A: 21, B: 18}, {A: 21, B: 17}}}},
+	}
+	scores := []MatchScore{{A: 18, B: 21}, {A: 17, B: 21}}
+	found, err := updateHistoryResult(&state, 7, "A", &scores)
+	if err != nil || !found {
+		t.Fatalf("expected score edit to succeed, found=%v err=%v", found, err)
+	}
+	if state.History[0].Winner != "B" {
+		t.Fatalf("expected backend-calculated winner B, got %q", state.History[0].Winner)
+	}
+	if state.Players[0].Wins != 0 || state.Players[0].Losses != 1 || state.Players[2].Wins != 1 || state.Players[2].Losses != 0 {
+		t.Fatalf("expected old stats reversed and new stats applied: %#v", state.Players)
 	}
 }
 

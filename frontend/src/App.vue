@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { createAnnouncementAudioCache } from './utils/announcementAudioCache.js'
 import { arrangeTeamsByTeammateHistory } from './utils/teamRotation.js'
+import { emptyMatchScores, validateMatchScores } from './matchScores.js'
 import {
   Activity,
   BarChart3,
@@ -320,6 +321,8 @@ const forms = reactive({
   shareStatus: '',
   finishNote: '',
   finishWinner: '',
+  finishScores: emptyMatchScores(),
+  finishScoreError: '',
   cancelNote: '',
   cancelShuttleReturned: false,
   newPlayerClubMember: false,
@@ -2072,12 +2075,13 @@ function createManualMatch(match) {
   })
 }
 
-function closeLive(match, cancelled = false, note = '', shuttleReturned = false) {
+function closeLive(match, cancelled = false, note = '', shuttleReturned = false, scores = []) {
   selectedLiveId.value = match.id
   const ended = {
     ...match,
     endedAt: currentTime(),
     winner: cancelled ? '' : forms.finishWinner,
+    scores: cancelled ? [] : scores,
     shuttleSequence: match.shuttleSequence || '',
     shuttleSequenceItems: matchShuttleItems(match),
     shuttleReturned: cancelled && shuttleReturned && match.shuttles > 0 && Boolean(match.shuttleSequence),
@@ -2145,15 +2149,23 @@ function requestFinishMatch(match) {
   ui.finishMatch = match
   forms.finishNote = ''
   forms.finishWinner = ''
+  forms.finishScores = emptyMatchScores()
+  forms.finishScoreError = ''
   ui.showFinishModal = true
 }
 
 function confirmFinishMatch() {
   if (!ui.finishMatch) return
-  closeLive(ui.finishMatch, false, forms.finishNote)
+  const result = validateMatchScores(forms.finishScores)
+  forms.finishScoreError = result.error
+  if (result.error) return
+  if (result.scores.length) forms.finishWinner = result.winner
+  closeLive(ui.finishMatch, false, forms.finishNote, false, result.scores)
   ui.finishMatch = null
   forms.finishNote = ''
   forms.finishWinner = ''
+  forms.finishScores = emptyMatchScores()
+  forms.finishScoreError = ''
   ui.showFinishModal = false
 }
 
@@ -3166,37 +3178,55 @@ async function returnShuttleApi(match) {
   }
 }
 
-async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned = false) {
+async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned = false, scores = []) {
   if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/${cancelled ? 'cancel' : 'finish'}`, {
       method: 'POST',
-      body: JSON.stringify({ note, winner: forms.finishWinner, shuttleReturned })
+      body: JSON.stringify({ note, winner: forms.finishWinner, scores, shuttleReturned })
     }))
     forms.finishNote = ''
   } catch {
-    closeLive(match, cancelled, note, shuttleReturned)
+    closeLive(match, cancelled, note, shuttleReturned, scores)
   }
 }
 
-async function updateHistoryWinnerApi(match, winner) {
+async function updateHistoryWinnerApi(match, winner, scores) {
   if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/history/${match.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ winner })
+      body: JSON.stringify({ winner, ...(scores !== undefined ? { scores } : {}) })
     }))
   } catch {
-    updateHistoryWinner(match, winner)
+    if (scores !== undefined) {
+      const result = validateMatchScores(scores)
+      if (result.error) throw new Error(result.error)
+      applyResultStats(match, match.winner, -1)
+      match.scores = result.scores
+      match.winner = result.scores.length ? result.winner : winner
+      applyResultStats(match, match.winner, 1)
+    } else updateHistoryWinner(match, winner)
   }
 }
 
 async function confirmFinishMatchApi() {
   if (!ui.finishMatch) return
-  await closeLiveApi(ui.finishMatch, false, forms.finishNote)
+  const result = validateMatchScores(forms.finishScores)
+  forms.finishScoreError = result.error
+  if (result.error) return
+  if (result.scores.length) forms.finishWinner = result.winner
+  try {
+    await closeLiveApi(ui.finishMatch, false, forms.finishNote, false, result.scores)
+  } catch (error) {
+    forms.finishScoreError = error.message || 'บันทึกผลไม่สำเร็จ'
+    return
+  }
   ui.finishMatch = null
   forms.finishNote = ''
   forms.finishWinner = ''
+  forms.finishScores = emptyMatchScores()
+  forms.finishScoreError = ''
   ui.showFinishModal = false
 }
 
