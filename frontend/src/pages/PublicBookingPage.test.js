@@ -207,24 +207,27 @@ describe("PublicBookingPage", () => {
         "ระบบเปิดให้จองได้เฉพาะวันนี้",
       ),
     );
-    expect(wrapper.get('input[type="date"]').element.value).toBe(currentDate);
-    expect(wrapper.get('input[type="date"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('input[type="date"]').exists()).toBe(false);
+    expect(wrapper.get("#public-booking-date-title").text()).toContain(
+      new Date(`${currentDate}T12:00:00+07:00`).toLocaleDateString("th-TH", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      }),
+    );
     wrapper.unmount();
   });
 
-  it("disables every date control when booking across days is off", async () => {
+  it("hides every public date control when advance booking is off", async () => {
     const apiRequest = apiMock();
     const wrapper = mount(PublicBookingPage, {
       props: { apiRequest, token: "tenant-token" },
     });
-    await vi.waitFor(() =>
-      expect(wrapper.find('input[type="date"]').attributes("disabled")).toBeDefined(),
-    );
-    expect(wrapper.findAll(".booking-date-arrow")).toHaveLength(2);
-    expect(
-      wrapper.findAll(".booking-date-arrow").every((button) => button.attributes("disabled") !== undefined),
-    ).toBe(true);
-    expect(wrapper.get(".booking-today-button").attributes("disabled")).toBeDefined();
+    await vi.waitFor(() => expect(wrapper.text()).toContain("เลือกวันและช่วงเวลา"));
+    expect(wrapper.find('input[type="date"]').exists()).toBe(false);
+    expect(wrapper.findAll(".booking-date-arrow")).toHaveLength(0);
+    expect(wrapper.find(".booking-today-button").exists()).toBe(false);
+    expect(wrapper.get("#public-booking-date-title").text()).toBeTruthy();
     wrapper.unmount();
   });
 

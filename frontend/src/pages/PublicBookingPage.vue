@@ -840,7 +840,7 @@ onUnmounted(() => {
           </p>
           <h2 id="public-booking-date-title" class="mt-1 text-lg font-black">{{ displayDate }}</h2>
         </div>
-        <div class="booking-date-control">
+        <div v-if="canChangeBookingDate" class="booking-date-control">
           <button
             class="booking-date-arrow"
             :disabled="!canChangeBookingDate"
@@ -871,6 +871,7 @@ onUnmounted(() => {
           </button>
         </div>
         <button
+          v-if="canChangeBookingDate"
           class="booking-today-button"
           type="button"
           :disabled="!canChangeBookingDate"
