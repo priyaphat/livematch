@@ -667,7 +667,7 @@ onUnmounted(() => {
       <button aria-label="ปิดข้อความ" @click="toast.message = ''">×</button>
     </div>
 
-    <section v-if="!state.user" class="public-auth-panel">
+    <section v-if="!state.user" class="public-auth-panel min-w-0 overflow-hidden">
       <div
         class="grid h-14 w-14 place-items-center rounded-2xl bg-court-50 text-court-700"
       >
@@ -695,13 +695,13 @@ onUnmounted(() => {
       </p>
 
       <div
-        class="mt-7 w-full border-t border-stone-200 pt-5 text-left dark:border-stone-700"
+        class="mt-7 min-w-0 w-full max-w-full overflow-hidden border-t border-stone-200 pt-5 text-left dark:border-stone-700"
         data-testid="guest-availability-summary"
       >
         <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">
-              ตารางว่างแบบสรุป
+              ตารางจองสนาม
             </p>
             <h3 class="mt-1 text-lg font-black">{{ displayDate }}</h3>
             <p class="mt-1 text-sm font-bold text-stone-500 dark:text-stone-400">
@@ -716,36 +716,47 @@ onUnmounted(() => {
         </div>
 
         <div v-if="state.loading" class="mt-4 rounded-xl bg-paper-100 p-4 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">
-          กำลังโหลดตารางสนามว่าง...
+          กำลังโหลดตารางจองสนาม...
         </div>
-        <div v-else class="mt-4 grid gap-2 sm:grid-cols-2">
-          <article
-            v-for="court in availabilitySummary"
-            :key="court.id"
-            class="rounded-xl border p-3"
-            :class="court.freeCount ? 'border-court-200 bg-court-500/5 dark:border-court-900/70' : 'border-stone-200 bg-paper-100 dark:border-stone-700 dark:bg-stone-800'"
-          >
-            <div class="flex items-start justify-between gap-3">
-              <div class="min-w-0">
-                <h4 class="truncate font-black">{{ court.name }}</h4>
-                <p class="mt-0.5 text-xs font-bold text-stone-500 dark:text-stone-400">฿{{ court.price.toLocaleString('th-TH') }} / ช่วง</p>
-              </div>
-              <span
-                class="shrink-0 rounded-full px-2.5 py-1 text-xs font-black"
-                :class="court.freeCount ? 'bg-court-100 text-court-800 dark:bg-court-900/50 dark:text-court-200' : 'bg-stone-200 text-stone-600 dark:bg-stone-700 dark:text-stone-300'"
-              >{{ court.freeCount ? `ว่าง ${court.freeCount} ช่วง` : 'เต็มแล้ว' }}</span>
-            </div>
-            <div v-if="court.ranges.length" class="mt-3 flex flex-wrap gap-1.5">
-              <span
-                v-for="range in court.ranges.slice(0, 3)"
-                :key="`${court.id}-${range.startMinute}`"
-                class="rounded-lg border border-court-200 bg-white px-2 py-1 text-xs font-black text-court-800 dark:border-court-900 dark:bg-stone-900 dark:text-court-200"
-              >{{ label(range.startMinute) }}–{{ label(range.endMinute) }}</span>
-              <span v-if="court.ranges.length > 3" class="px-1 py-1 text-xs font-black text-stone-500">+{{ court.ranges.length - 3 }} ช่วงเวลา</span>
-            </div>
-            <p v-else class="mt-3 text-xs font-bold text-stone-400">ไม่มีช่วงเวลาว่างในวันนี้</p>
-          </article>
-        </div>
+        <section v-else class="public-schedule-card mt-4 min-w-0 max-w-full" aria-label="ตารางจองสนามสำหรับผู้เยี่ยมชม">
+          <div class="public-schedule-scroll max-w-full">
+            <table class="public-timeline-table border-collapse" data-testid="guest-booking-table">
+              <thead>
+                <tr class="booking-table-head">
+                  <th class="public-court-sticky">สนาม</th>
+                  <th v-for="minute in slots" :key="minute" class="public-time-heading">
+                    {{ label(minute) }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="court in state.courts" :key="court.id" class="border-b">
+                  <th class="public-court-sticky public-court-row-heading">
+                    <span>{{ court.name }}</span>
+                    <small>฿{{ court.pricePerInterval }} / ช่วง</small>
+                  </th>
+                  <td v-for="minute in slots" :key="minute" class="public-slot-cell">
+                    <button
+                      class="public-slot"
+                      :class="slotClass(court, minute)"
+                      disabled
+                      :title="`${status(court, minute).text} · เข้าสู่ระบบเพื่อจอง`"
+                    >
+                      {{ status(court, minute).text }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="public-booking-legend">
+            <span><i class="legend-dot legend-dot--free"></i>ว่าง</span>
+            <span><i class="legend-dot legend-dot--hold"></i>กำลังจอง</span>
+            <span><i class="legend-dot legend-dot--pending"></i>รอตรวจสอบ</span>
+            <span><i class="legend-dot legend-dot--busy"></i>จองแล้ว</span>
+            <span><i class="legend-dot legend-dot--closed"></i>ปิดสนาม</span>
+          </div>
+        </section>
         <p class="mt-3 text-center text-xs font-bold text-stone-500 dark:text-stone-400">
           เข้าสู่ระบบเพื่อเลือกช่วงเวลาและยืนยันการจอง
         </p>

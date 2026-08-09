@@ -64,7 +64,7 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
-  it("shows a mobile-friendly availability summary before member login", async () => {
+  it("shows the full read-only booking table before member login", async () => {
     const apiRequest = vi.fn((url) => {
       if (url.includes("/availability")) return Promise.resolve(availability());
       if (url.includes("/public-auth/me")) {
@@ -83,13 +83,18 @@ describe("PublicBookingPage", () => {
     );
     const summary = wrapper.get('[data-testid="guest-availability-summary"]');
     expect(summary.text()).toContain("ว่าง 7 ช่วง");
-    expect(summary.text()).toContain("16:00–19:00");
+    expect(summary.text()).toContain("16:00");
+    expect(summary.text()).toContain("กำลังจอง");
+    expect(summary.text()).toContain("รอตรวจสอบ");
     expect(summary.text()).toContain("เข้าสู่ระบบเพื่อเลือกช่วงเวลา");
-    expect(wrapper.find(".public-timeline-table").exists()).toBe(false);
+    const table = wrapper.get('[data-testid="guest-booking-table"]');
+    expect(table.findAll("tbody tr")).toHaveLength(3);
+    expect(table.findAll("button")).toHaveLength(9);
+    expect(table.findAll("button").every((button) => button.attributes("disabled") !== undefined)).toBe(true);
     wrapper.unmount();
   });
 
-  it("keeps the guest availability cards stable during auto-refresh", async () => {
+  it("keeps the guest booking table stable during auto-refresh", async () => {
     vi.useFakeTimers();
     let availabilityCalls = 0;
     let resolveRefresh;
@@ -118,7 +123,8 @@ describe("PublicBookingPage", () => {
     await flushPromises();
     expect(availabilityCalls).toBe(2);
     expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
-    expect(wrapper.text()).not.toContain("กำลังโหลดตารางสนามว่าง");
+    expect(wrapper.get('[data-testid="guest-booking-table"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("กำลังโหลดตารางจองสนาม");
 
     resolveRefresh(availability());
     await flushPromises();
