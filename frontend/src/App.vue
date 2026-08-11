@@ -272,6 +272,8 @@ const forms = reactive({
   backofficePromptPayId: '',
   backofficePromptPayType: 'mobile',
   backofficePromptPayReceiverName: '',
+  backofficeCoinShopSaving: false,
+  backofficeCoinShopStatus: '',
   backofficeTelegramBotToken: '',
   backofficeTelegramChatId: '',
   backofficeTelegramWebhookSecret: '',
@@ -1159,6 +1161,8 @@ async function saveBackofficeSettings() {
 
 async function saveBackofficeCoinShop() {
   forms.backofficeError = ''
+  forms.backofficeCoinShopStatus = ''
+  forms.backofficeCoinShopSaving = true
   try {
     forms.backofficeSummary = await api('/api/backoffice/coin-shop', {
       method: 'PUT',
@@ -1180,8 +1184,11 @@ async function saveBackofficeCoinShop() {
       })
     })
     syncBackofficeCoinShopForms()
+    forms.backofficeCoinShopStatus = 'บันทึกการตั้งค่าแล้ว'
   } catch (error) {
     forms.backofficeError = error.message || 'บันทึกโปรโมชัน coin ไม่สำเร็จ'
+  } finally {
+    forms.backofficeCoinShopSaving = false
   }
 }
 

@@ -382,14 +382,14 @@ func normalizePromptPayTarget(settings promptPaySettings) (string, string, error
 		return "", "", errors.New("invalid PromptPay mobile")
 	case "national_id":
 		if len(digits) != 13 {
-			return "", "", errors.New("invalid PromptPay national id")
+			return "", "", errors.New("invalid PromptPay national or tax id")
 		}
-		return digits, "01", nil
+		return digits, "02", nil
 	case "ewallet":
 		if len(digits) < 10 || len(digits) > 15 {
 			return "", "", errors.New("invalid PromptPay e-wallet")
 		}
-		return digits, "02", nil
+		return digits, "03", nil
 	default:
 		return "", "", errors.New("invalid PromptPay type")
 	}

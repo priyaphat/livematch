@@ -1046,6 +1046,11 @@ describe('LiveMatch app', () => {
     const addButton = wrapper.findAll('button').find((button) => button.text().includes('เพิ่มรายเดือน'))
     await addButton.trigger('click')
     expect(addSubscriptionPackage).toHaveBeenCalledOnce()
+
+    const promptPaySaveButton = wrapper.findAll('button').find((button) => button.text().includes('บันทึก PromptPay'))
+    expect(promptPaySaveButton).toBeTruthy()
+    await promptPaySaveButton.trigger('click')
+    expect(saveCoinShop).toHaveBeenCalledOnce()
   })
 
   it('shows subscription products and renewal warning in the admin shop', async () => {

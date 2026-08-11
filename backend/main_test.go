@@ -1580,6 +1580,27 @@ func TestPromptPayPayloadIncludesAmountAndValidCRC(t *testing.T) {
 	}
 }
 
+func TestNormalizePromptPayTargetUsesThaiQRIdentifierTags(t *testing.T) {
+	tests := []struct {
+		name, promptPayType, id, wantTarget, wantTag string
+	}{
+		{name: "mobile", promptPayType: "mobile", id: "0812345678", wantTarget: "0066812345678", wantTag: "01"},
+		{name: "national or corporate tax id", promptPayType: "national_id", id: "0105551234567", wantTarget: "0105551234567", wantTag: "02"},
+		{name: "e-wallet", promptPayType: "ewallet", id: "123456789012345", wantTarget: "123456789012345", wantTag: "03"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotTarget, gotTag, err := normalizePromptPayTarget(promptPaySettings{ID: tt.id, Type: tt.promptPayType})
+			if err != nil {
+				t.Fatalf("normalizePromptPayTarget returned error: %v", err)
+			}
+			if gotTarget != tt.wantTarget || gotTag != tt.wantTag {
+				t.Fatalf("expected target %q tag %q, got target %q tag %q", tt.wantTarget, tt.wantTag, gotTarget, gotTag)
+			}
+		})
+	}
+}
+
 func TestParseSlipQRPayloadExtractsAmountAndTransRef(t *testing.T) {
 	payload := "00020101021229370016A0000006770101110113006681234567853037645406100.005802TH transRef=ABCDEF1234567890"
 	parsed := parseSlipQRPayload(payload)

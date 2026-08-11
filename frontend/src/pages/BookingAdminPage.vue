@@ -1387,7 +1387,7 @@ onUnmounted(() => {
               class="h-10 rounded-lg border bg-transparent px-3"
             >
               <option value="mobile">เบอร์โทร</option>
-              <option value="national_id">บัตรประชาชน</option>
+              <option value="national_id">บัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option>
               <option value="ewallet">e-Wallet</option>
             </select></label
           >

@@ -595,7 +595,7 @@ function closeSlipPreview() {
                   ประเภท PromptPay
                   <select v-model="forms.backofficePromptPayType" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white">
                     <option value="mobile">เบอร์มือถือ</option>
-                    <option value="national_id">เลขบัตรประชาชน</option>
+                    <option value="national_id">เลขบัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option>
                     <option value="ewallet">e-Wallet</option>
                   </select>
                 </label>
@@ -607,6 +607,17 @@ function closeSlipPreview() {
                   ชื่อผู้รับ / label ตรวจสลิป
                   <input v-model="forms.backofficePromptPayReceiverName" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="ชื่อบัญชีผู้รับ" />
                 </label>
+                <button
+                  class="mt-1 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white disabled:cursor-wait disabled:opacity-60"
+                  :disabled="forms.backofficeCoinShopSaving"
+                  @click="saveBackofficeCoinShop"
+                >
+                  <Save class="h-4 w-4" />
+                  {{ forms.backofficeCoinShopSaving ? 'กำลังบันทึก...' : 'บันทึก PromptPay' }}
+                </button>
+                <p v-if="forms.backofficeCoinShopStatus" class="rounded-md bg-court-500/10 px-3 py-2 text-center text-xs font-bold text-court-700 dark:text-court-300">
+                  {{ forms.backofficeCoinShopStatus }}
+                </p>
               </div>
             </div>
 

@@ -2162,7 +2162,7 @@ onMounted(load);
                   class="h-12 rounded-xl border bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800"
                 >
                   <option value="mobile">เบอร์มือถือ</option>
-                  <option value="national_id">เลขบัตร/ภาษี</option>
+                  <option value="national_id">เลขบัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option>
                   <option value="ewallet">E-Wallet</option>
                 </select></label
               ><label class="grid gap-1 text-sm font-black"
