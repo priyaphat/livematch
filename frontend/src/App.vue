@@ -2,6 +2,7 @@
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { createAnnouncementAudioCache } from './utils/announcementAudioCache.js'
 import { arrangeTeamsByTeammateHistory } from './utils/teamRotation.js'
+import { emptyMatchScores, validateMatchScores } from './matchScores.js'
 import {
   Activity,
   BarChart3,
@@ -61,12 +62,13 @@ const SharedQueuePage = defineAsyncComponent(() => import('./pages/SharedQueuePa
 const VerifyEmailPage = defineAsyncComponent(() => import('./pages/VerifyEmailPage.vue'))
 const MemberAdminPage = defineAsyncComponent(() => import('./pages/MemberAdminPage.vue'))
 const BookingAdminPage = defineAsyncComponent(() => import('./pages/BookingAdminPage.vue'))
+const POSPage = defineAsyncComponent(() => import('./pages/POSPage.vue'))
 const PublicBookingPage = defineAsyncComponent(() => import('./pages/PublicBookingPage.vue'))
 const PublicProfilePage = defineAsyncComponent(() => import('./pages/PublicProfilePage.vue'))
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const routePath = window.location.pathname
-const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : ''
+const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : routePath === '/admin/pos' ? 'pos' : ''
 const publicBookingToken = routePath.startsWith('/booking/') ? routePath.slice('/booking/'.length).split('/')[0] : ''
 const publicProfileToken = routePath.startsWith('/p/') ? routePath.slice('/p/'.length).split('/')[0] : ''
 const isPublicBookingSurface = Boolean(publicBookingToken || publicProfileToken)
@@ -166,6 +168,7 @@ const state = reactive({
     randomPriority: 'level',
     showPaymentOnShare: true,
     showTotalOnShare: true,
+    showWaitingOnQueueShare: false,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
     announcementTemplate: defaultAnnouncementTemplate
@@ -318,6 +321,8 @@ const forms = reactive({
   shareStatus: '',
   finishNote: '',
   finishWinner: '',
+  finishScores: emptyMatchScores(),
+  finishScoreError: '',
   cancelNote: '',
   cancelShuttleReturned: false,
   newPlayerClubMember: false,
@@ -394,9 +399,10 @@ const auth = reactive({
   promptPayAvailable: false,
   subscriptionEligibility: { canPurchase: true, reason: '', renewal: false, estimatedStartDate: '' },
   coinOrders: [],
-  features: { memberEnabled: false, bookingEnabled: false },
+  features: { memberEnabled: false, bookingEnabled: false, posEnabled: false },
   memberCount: 0,
-  bookingCount: 0
+  bookingCount: 0,
+  posSaleCount: 0
 })
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
@@ -558,6 +564,9 @@ function normalizeClientSettings() {
   }
   if (state.settings.showTotalOnShare === undefined) {
     state.settings.showTotalOnShare = true
+  }
+  if (state.settings.showWaitingOnQueueShare === undefined) {
+    state.settings.showWaitingOnQueueShare = false
   }
   if (!String(state.settings.announcementTemplate || '').trim()) {
     state.settings.announcementTemplate = defaultAnnouncementTemplate
@@ -730,7 +739,20 @@ async function loginAdmin() {
     }))
     forms.authPassword = ''
   } catch (error) {
-    forms.authError = error.message || 'เข้าสู่ระบบไม่สำเร็จ'
+    const loginMessages = language.value === 'en'
+      ? {
+          'invalid_login': 'The email or password is incorrect. Please try again.',
+          'invalid login': 'The email or password is incorrect. Please try again.',
+          'email not verified': 'Please verify your email before signing in.',
+          'too many requests': 'Too many sign-in attempts. Please wait a moment and try again.'
+        }
+      : {
+          'invalid_login': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่',
+          'invalid login': 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่',
+          'email not verified': 'กรุณายืนยันอีเมลก่อนเข้าสู่ระบบ',
+          'too many requests': 'ลองเข้าสู่ระบบหลายครั้งเกินไป กรุณารอสักครู่แล้วลองใหม่'
+        }
+    forms.authError = loginMessages[error.code] || loginMessages[error.message] || (language.value === 'en' ? 'Unable to sign in right now. Please try again.' : 'เข้าสู่ระบบไม่สำเร็จ กรุณาลองใหม่อีกครั้ง')
   } finally {
     auth.loading = false
   }
@@ -1273,13 +1295,14 @@ function applyAdminPayload(payload) {
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
   auth.benefits = payload.benefits || { discountPercent: 0, pricing: {}, subscription: null }
-  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false }
+  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false, posEnabled: false }
   auth.memberCount = Number(payload.memberCount || 0)
   auth.bookingCount = Number(payload.bookingCount || 0)
+  auth.posSaleCount = Number(payload.posSaleCount || 0)
 }
 
 function navigateAdminFeature(feature) {
-  window.location.href = feature === 'members' ? '/admin/members' : '/admin/booking'
+  window.location.href = feature === 'members' ? '/admin/members' : feature === 'booking' ? '/admin/booking' : '/admin/pos'
 }
 
 async function saveBackofficeAdminFeatures(features) {
@@ -2052,12 +2075,13 @@ function createManualMatch(match) {
   })
 }
 
-function closeLive(match, cancelled = false, note = '', shuttleReturned = false) {
+function closeLive(match, cancelled = false, note = '', shuttleReturned = false, scores = []) {
   selectedLiveId.value = match.id
   const ended = {
     ...match,
     endedAt: currentTime(),
     winner: cancelled ? '' : forms.finishWinner,
+    scores: cancelled ? [] : scores,
     shuttleSequence: match.shuttleSequence || '',
     shuttleSequenceItems: matchShuttleItems(match),
     shuttleReturned: cancelled && shuttleReturned && match.shuttles > 0 && Boolean(match.shuttleSequence),
@@ -2125,15 +2149,23 @@ function requestFinishMatch(match) {
   ui.finishMatch = match
   forms.finishNote = ''
   forms.finishWinner = ''
+  forms.finishScores = emptyMatchScores()
+  forms.finishScoreError = ''
   ui.showFinishModal = true
 }
 
 function confirmFinishMatch() {
   if (!ui.finishMatch) return
-  closeLive(ui.finishMatch, false, forms.finishNote)
+  const result = validateMatchScores(forms.finishScores)
+  forms.finishScoreError = result.error
+  if (result.error) return
+  if (result.scores.length) forms.finishWinner = result.winner
+  closeLive(ui.finishMatch, false, forms.finishNote, false, result.scores)
   ui.finishMatch = null
   forms.finishNote = ''
   forms.finishWinner = ''
+  forms.finishScores = emptyMatchScores()
+  forms.finishScoreError = ''
   ui.showFinishModal = false
 }
 
@@ -2997,14 +3029,22 @@ async function deletePlayerApi(player) {
   }
 }
 
-async function togglePaymentApi(player) {
+async function togglePaymentApi(player, paymentSummary = null, paymentMethod = 'cash') {
   if (!ensureSessionActive()) return
   const targetPaid = !player.paid
   try {
-    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ paid: targetPaid })
-    }))
+    if (targetPaid && paymentSummary?.posEnabled && paymentSummary?.billingAccountId) {
+      const result = await api(`/api/sessions/${state.session.id}/players/${player.id}/settle`, {
+        method: 'POST',
+        body: JSON.stringify({ method: paymentMethod, expectedTotalThb: paymentSummary.totalThb })
+      })
+      applyServerState(result.state)
+    } else {
+      applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ paid: targetPaid, method: paymentMethod })
+      }))
+    }
     showToast(targetPaid ? 'บันทึกการชำระเงินแล้ว' : 'ยกเลิกการชำระเงินแล้ว')
   } catch (error) {
     showToast(error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ')
@@ -3138,37 +3178,55 @@ async function returnShuttleApi(match) {
   }
 }
 
-async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned = false) {
+async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned = false, scores = []) {
   if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/${cancelled ? 'cancel' : 'finish'}`, {
       method: 'POST',
-      body: JSON.stringify({ note, winner: forms.finishWinner, shuttleReturned })
+      body: JSON.stringify({ note, winner: forms.finishWinner, scores, shuttleReturned })
     }))
     forms.finishNote = ''
   } catch {
-    closeLive(match, cancelled, note, shuttleReturned)
+    closeLive(match, cancelled, note, shuttleReturned, scores)
   }
 }
 
-async function updateHistoryWinnerApi(match, winner) {
+async function updateHistoryWinnerApi(match, winner, scores) {
   if (!ensureSessionActive()) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/history/${match.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ winner })
+      body: JSON.stringify({ winner, ...(scores !== undefined ? { scores } : {}) })
     }))
   } catch {
-    updateHistoryWinner(match, winner)
+    if (scores !== undefined) {
+      const result = validateMatchScores(scores)
+      if (result.error) throw new Error(result.error)
+      applyResultStats(match, match.winner, -1)
+      match.scores = result.scores
+      match.winner = result.scores.length ? result.winner : winner
+      applyResultStats(match, match.winner, 1)
+    } else updateHistoryWinner(match, winner)
   }
 }
 
 async function confirmFinishMatchApi() {
   if (!ui.finishMatch) return
-  await closeLiveApi(ui.finishMatch, false, forms.finishNote)
+  const result = validateMatchScores(forms.finishScores)
+  forms.finishScoreError = result.error
+  if (result.error) return
+  if (result.scores.length) forms.finishWinner = result.winner
+  try {
+    await closeLiveApi(ui.finishMatch, false, forms.finishNote, false, result.scores)
+  } catch (error) {
+    forms.finishScoreError = error.message || 'บันทึกผลไม่สำเร็จ'
+    return
+  }
   ui.finishMatch = null
   forms.finishNote = ''
   forms.finishWinner = ''
+  forms.finishScores = emptyMatchScores()
+  forms.finishScoreError = ''
   ui.showFinishModal = false
 }
 
@@ -3413,7 +3471,7 @@ const pageProps = computed(() => ({
     >
       <div
         v-if="ui.toast"
-        class="fixed inset-x-3 top-3 z-50 mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
+        class="fixed inset-x-3 top-3 z-[100] mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
         :class="ui.toast.type === 'error' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100' : 'border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100'"
         role="status"
         aria-live="polite"
@@ -3435,8 +3493,9 @@ const pageProps = computed(() => ({
         <p class="font-black">กำลังเตรียมข้อมูลผู้ดูแล</p>
       </div>
     </div>
-    <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" />
+    <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" />
+    <POSPage v-else-if="adminFeaturePage === 'pos' && auth.user" :api-request="api" :auth="auth" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
@@ -3588,6 +3647,7 @@ const pageProps = computed(() => ({
         :player-name="playerName"
         :available-court-names="availableCourtNames"
         :active-shuttle-brands="activeShuttleBrands"
+        :save-settings="saveSettingsApi"
         :is-session-read-only="isSessionReadOnly"
       />
 

@@ -1,4 +1,4 @@
-import { mount } from "@vue/test-utils";
+import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import PublicBookingPage from "./PublicBookingPage.vue";
 
@@ -64,6 +64,74 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
+  it("shows the full read-only booking table before member login", async () => {
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(availability());
+      if (url.includes("/public-auth/me")) {
+        const error = new Error("unauthorized");
+        error.status = 401;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+
+    await vi.waitFor(() =>
+      expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1"),
+    );
+    const summary = wrapper.get('[data-testid="guest-availability-summary"]');
+    expect(summary.text()).toContain("ว่าง 7 ช่วง");
+    expect(summary.text()).toContain("16:00");
+    expect(summary.text()).toContain("กำลังจอง");
+    expect(summary.text()).toContain("รอตรวจสอบ");
+    expect(summary.text()).toContain("เข้าสู่ระบบเพื่อเลือกช่วงเวลา");
+    const table = wrapper.get('[data-testid="guest-booking-table"]');
+    expect(table.findAll("tbody tr")).toHaveLength(3);
+    expect(table.findAll("button")).toHaveLength(9);
+    expect(table.findAll("button").every((button) => button.attributes("disabled") !== undefined)).toBe(true);
+    wrapper.unmount();
+  });
+
+  it("keeps the guest booking table stable during auto-refresh", async () => {
+    vi.useFakeTimers();
+    let availabilityCalls = 0;
+    let resolveRefresh;
+    const refreshResponse = new Promise((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) {
+        availabilityCalls += 1;
+        return availabilityCalls === 1 ? Promise.resolve(availability()) : refreshResponse;
+      }
+      if (url.includes("/public-auth/me")) {
+        const error = new Error("unauthorized");
+        error.status = 401;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+
+    await flushPromises();
+    expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
+    await vi.advanceTimersByTimeAsync(10000);
+    await flushPromises();
+    expect(availabilityCalls).toBe(2);
+    expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
+    expect(wrapper.get('[data-testid="guest-booking-table"]').exists()).toBe(true);
+    expect(wrapper.text()).not.toContain("กำลังโหลดตารางจองสนาม");
+
+    resolveRefresh(availability());
+    await flushPromises();
+    wrapper.unmount();
+    vi.useRealTimers();
+  });
+
   it("lists an active booking before the schedule and reopens its payment QR", async () => {
     const apiRequest = apiMock({
       queues: [
@@ -145,24 +213,27 @@ describe("PublicBookingPage", () => {
         "ระบบเปิดให้จองได้เฉพาะวันนี้",
       ),
     );
-    expect(wrapper.get('input[type="date"]').element.value).toBe(currentDate);
-    expect(wrapper.get('input[type="date"]').attributes("disabled")).toBeDefined();
+    expect(wrapper.find('input[type="date"]').exists()).toBe(false);
+    expect(wrapper.get("#public-booking-date-title").text()).toContain(
+      new Date(`${currentDate}T12:00:00+07:00`).toLocaleDateString("th-TH", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      }),
+    );
     wrapper.unmount();
   });
 
-  it("disables every date control when booking across days is off", async () => {
+  it("hides every public date control when advance booking is off", async () => {
     const apiRequest = apiMock();
     const wrapper = mount(PublicBookingPage, {
       props: { apiRequest, token: "tenant-token" },
     });
-    await vi.waitFor(() =>
-      expect(wrapper.find('input[type="date"]').attributes("disabled")).toBeDefined(),
-    );
-    expect(wrapper.findAll(".booking-date-arrow")).toHaveLength(2);
-    expect(
-      wrapper.findAll(".booking-date-arrow").every((button) => button.attributes("disabled") !== undefined),
-    ).toBe(true);
-    expect(wrapper.get(".booking-today-button").attributes("disabled")).toBeDefined();
+    await vi.waitFor(() => expect(wrapper.text()).toContain("เลือกวันและช่วงเวลา"));
+    expect(wrapper.find('input[type="date"]').exists()).toBe(false);
+    expect(wrapper.findAll(".booking-date-arrow")).toHaveLength(0);
+    expect(wrapper.find(".booking-today-button").exists()).toBe(false);
+    expect(wrapper.get("#public-booking-date-title").text()).toBeTruthy();
     wrapper.unmount();
   });
 
@@ -177,6 +248,8 @@ describe("PublicBookingPage", () => {
     expect(wrapper.find(".public-slot--hold").exists()).toBe(true);
     expect(wrapper.text()).not.toContain("NaN");
     expect(wrapper.find(".public-slot--pending").exists()).toBe(true);
+    expect(wrapper.get('[data-testid="slot-court-1-960"]').text()).toBe("ว่าง");
+    expect(wrapper.get('[data-testid="slot-court-1-960"]').text()).not.toContain("฿");
 
     const firstSlot = wrapper.get('[data-testid="slot-court-1-960"]');
     await firstSlot.trigger("click");
@@ -222,7 +295,7 @@ describe("PublicBookingPage", () => {
     await wrapper.get('[data-testid="slot-court-1-960"]').trigger("click");
     await wrapper
       .findAll("button")
-      .find((button) => button.text().includes("ล็อกเวลาทั้งหมด 5 นาที"))
+      .find((button) => button.text().includes("ดำเนินการชำระเงิน"))
       .trigger("click");
     await vi.waitFor(() =>
       expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain(

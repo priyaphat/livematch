@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildDashboardExportData,
   buildHistoryExportData,
   buildMembersExportData,
   buildPaymentHistoryExportData,
@@ -8,12 +9,55 @@ import {
 } from './excelExport'
 
 describe('Excel export data', () => {
+  it('builds complete dashboard report data for players, matches, and courts', () => {
+    const state = {
+      session: { type: 'liveMatch' },
+      settings: { courtNames: ['สนาม 1', 'สนาม 2'] },
+      players: [
+        { id: 1, name: 'หนึ่ง', level: 'light', games: 2, wins: 1, draws: 0, losses: 1, paid: true, active: true },
+        { id: 2, name: 'สอง', level: 'middle', games: 1, wins: 0, draws: 1, losses: 0, paid: false, active: true }
+      ],
+      queue: [{ id: 3, court: 'สนาม 2', a1: 1, a2: 2, level: 'middle' }],
+      live: [],
+      history: [{ id: 2, court: 'สนาม 1', a1: 1, a2: 2, winner: 'A', status: 'finished', shuttles: 2 }]
+    }
+    const data = buildDashboardExportData({
+      state,
+      activePlayerCount: 2,
+      totalRecordedMatches: 1,
+      cancelledMatches: [],
+      averageGames: 1.5,
+      minGames: 1,
+      maxGames: 2,
+      totalShuttles: 2,
+      paymentPercent: 50,
+      totalRevenue: 300,
+      paidRevenue: 100,
+      unpaidRevenue: 200,
+      unpaidPlayers: [state.players[1]],
+      topPlayers: state.players,
+      quietPlayers: state.players,
+      topWinners: state.players,
+      playerCost: (player) => player.id * 100,
+      playerScore: (player) => player.wins + player.draws * 0.5,
+      levelLabel: (level) => level || '-'
+    })
+
+    expect(data.players).toHaveLength(2)
+    expect(data.matches.map((row) => row[0])).toEqual(['รอคิว', 'จบแล้ว'])
+    expect(data.matches[1][3]).toBe('หนึ่ง')
+    expect(data.courts).toEqual([
+      ['สนาม 1', 0, 0, 1, 0, 1, 2],
+      ['สนาม 2', 1, 0, 0, 0, 1, 0]
+    ])
+  })
+
   it('builds payment history without exposing internal ids', () => {
     const data = buildPaymentHistoryExportData([
       { id: 99, playerId: 7, playerName: 'Player A', paid: true, amount: 125, createdAt: '28/07/2026 12:00' }
     ])
-    expect(data.headers).toEqual(['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ยอดเงิน (บาท)'])
-    expect(data.rows).toEqual([['28/07/2026 12:00', 'Player A', 'ชำระเงิน', 125]])
+    expect(data.headers).toEqual(['วันและเวลา', 'ชื่อผู้เล่น', 'รายการ', 'ช่องทางชำระ', 'ยอดเงิน (บาท)'])
+    expect(data.rows).toEqual([['28/07/2026 12:00', 'Player A', 'ชำระเงิน', 'เงินสด', 125]])
     expect(JSON.stringify(data)).not.toContain('99')
   })
 
@@ -104,6 +148,7 @@ describe('Excel export data', () => {
             shuttles: 2,
             status: 'finished',
             winner: 'A',
+            scores: [{ a: 21, b: 18 }, { a: 17, b: 21 }],
             shuttleSequence: '1,2',
             note: 'เกมทดสอบ'
           }
@@ -127,10 +172,17 @@ describe('Excel export data', () => {
       'สรุปยี่ห้อลูกแบด',
       'สถานะ',
       'ผู้ชนะ',
+      'เซต 1',
+      'เซต 2',
+      'เซต 3',
+      'สรุปผลเซต',
       'Shuttle sequence',
       'หมายเหตุ'
     ])
     expect(data.rows[0][12]).toBe('p1 + p2')
-    expect(data.rows[0][13]).toBe('ลูกแบดทั่วไป #1, ลูกแบดทั่วไป #2')
+    expect(data.rows[0][13]).toBe('21–18')
+    expect(data.rows[0][14]).toBe('17–21')
+    expect(data.rows[0][16]).toBe('1–1 เซต')
+    expect(data.rows[0][17]).toBe('ลูกแบดทั่วไป #1, ลูกแบดทั่วไป #2')
   })
 })

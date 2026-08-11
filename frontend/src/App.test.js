@@ -132,6 +132,32 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('ผู้เล่นวันนี้')
     expect(wrapper.text()).not.toContain('จัดคู่')
   })
+  it('shows a user-friendly message when admin credentials are incorrect', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn((url, options = {}) => {
+      const isLogin = String(url).includes('/api/auth/login') && options.method === 'POST'
+      return Promise.resolve({
+        ok: false,
+        status: 401,
+        json: () => Promise.resolve(isLogin
+          ? { error: 'อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่', code: 'invalid_login' }
+          : { error: 'login required' })
+      })
+    })
+    const wrapper = mount(App)
+    await flushPromises()
+    const email = wrapper.find('input[type="email"]')
+    const password = wrapper.find('input[type="password"]')
+    await email.setValue('admin@example.com')
+    await password.setValue('wrong-password')
+    await wrapper.findAll('button').filter((button) => button.text() === 'เข้าสู่ระบบ').at(-1).trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่')
+    expect(wrapper.text()).not.toContain('invalid login')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
   it('toggles interface language', async () => {
     localStorage.setItem('livematch.language', 'th')
     const wrapper = mount(App)
@@ -1208,6 +1234,32 @@ describe('LiveMatch app', () => {
     expect(savedWinner).toBe('draw')
   })
 
+  it('collects two or three sets and previews the calculated winner', async () => {
+    const match = { id: 8, a1: 1, a2: 2, b1: 3, b2: 4 }
+    const forms = { finishWinner: '', finishNote: '', finishScores: [{ a: '', b: '' }, { a: '', b: '' }], finishScoreError: '' }
+    const wrapper = mount(LiveBoardPage, {
+      props: {
+        state: { live: [match], settings: {} }, forms,
+        ui: { showShuttleModal: false, showFinishModal: true, finishMatch: match, showCancelModal: false },
+        playerName: (id) => `p${id}`,
+        requestAddShuttle: () => {}, confirmAddShuttle: () => {}, requestFinishMatch: () => {},
+        confirmFinishMatch: () => {}, requestCancelMatch: () => {}, confirmCancelMatch: () => {}
+      }
+    })
+
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(4)
+    await wrapper.get('[aria-label="คะแนนทีม A เซต 1"]').setValue('21')
+    await wrapper.get('[aria-label="คะแนนทีม B เซต 1"]').setValue('18')
+    await wrapper.get('[aria-label="คะแนนทีม A เซต 2"]').setValue('17')
+    await wrapper.get('[aria-label="คะแนนทีม B เซต 2"]').setValue('21')
+    expect(wrapper.text()).toContain('ผลอัตโนมัติ: เสมอ')
+    await wrapper.findAll('button').find((button) => button.text().includes('เพิ่มเซตที่ 3')).trigger('click')
+    expect(wrapper.findAll('input[type="number"]')).toHaveLength(6)
+    await wrapper.get('[aria-label="คะแนนทีม A เซต 3"]').setValue('21')
+    await wrapper.get('[aria-label="คะแนนทีม B เซต 3"]').setValue('15')
+    expect(wrapper.text()).toContain('p1 + p2 ชนะ')
+  })
+
   it('does not show an empty second player in the 1v1 finish modal', () => {
     const match = { id: 1, a1: 1, a2: 0, b1: 2, b2: 0 }
     const wrapper = mount(LiveBoardPage, {
@@ -1311,7 +1363,7 @@ describe('LiveMatch app', () => {
       props: {
         state: {
           history: [
-            { id: 1, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'draw' }
+            { id: 1, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'draw', scores: [{ a: 21, b: 18 }, { a: 17, b: 21 }] }
           ]
         },
         playerName: (id) => `p${id}`,
@@ -1322,6 +1374,9 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('เสมอ')
     expect(wrapper.text()).toContain('ทีม A +0.5')
     expect(wrapper.text()).toContain('ทีม B +0.5')
+    expect(wrapper.text()).toContain('คะแนนรายเซต')
+    expect(wrapper.text()).toContain('21–18')
+    expect(wrapper.text()).toContain('1–1 เซต')
   })
 
   it('renders cancelled history and result edit controls', async () => {
@@ -1347,6 +1402,27 @@ describe('LiveMatch app', () => {
     expect(nextWinner).toBe('B')
     expect(selects[1].element.disabled).toBe(true)
     expect(wrapper.text()).toContain('ยกเลิก')
+  })
+
+  it('edits historical set scores and submits the calculated winner', async () => {
+    const match = { id: 20, court: '1', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 1, winner: 'A', status: 'finished' }
+    const updateHistoryWinner = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: { history: [match] },
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('เพิ่มคะแนน')).trigger('click')
+    await wrapper.get('[aria-label="แก้คะแนนทีม A เซต 1"]').setValue('18')
+    await wrapper.get('[aria-label="แก้คะแนนทีม B เซต 1"]').setValue('21')
+    await wrapper.get('[aria-label="แก้คะแนนทีม A เซต 2"]').setValue('17')
+    await wrapper.get('[aria-label="แก้คะแนนทีม B เซต 2"]').setValue('21')
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกคะแนน')).trigger('click')
+
+    expect(updateHistoryWinner).toHaveBeenCalledWith(match, 'B', [{ a: 18, b: 21 }, { a: 17, b: 21 }])
   })
 
   it('shows returned shuttle status in cancelled history', () => {
@@ -1958,6 +2034,41 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('กำลังแข่ง')
     expect(wrapper.text()).toContain('ตีมาแล้ว 17 นาที')
     expect(wrapper.text()).toContain('เริ่ม 10:00')
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('fades to available players after ten seconds when enabled', async () => {
+    vi.useFakeTimers()
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: {
+          session: { name: 'Fade Session' },
+          settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true },
+          players: [
+            { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle' },
+            { id: 2, name: 'คนไม่มีสิทธิ์', active: true, paid: false, coupon: false, games: 0, level: 'light' },
+            { id: 3, name: 'เข้าแถวรอคิวแล้ว', active: true, paid: false, coupon: true, games: 0, level: 'heavy' },
+            { id: 4, name: 'ทีมสร้างเอง', active: true, paid: false, coupon: false, games: 0, level: 'middle' }
+          ],
+          pending: [{ id: 10, a1: 1, a2: 4, b1: 0, b2: 0 }],
+          queue: [{ id: 11, a1: 3, a2: 0, b1: 0, b2: 0 }],
+          live: []
+        },
+        share: { loading: false, error: '' },
+        playerName: (id) => `p${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    expect(wrapper.find('.shared-waiting-people').exists()).toBe(false)
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(wrapper.find('.shared-flight-waiting-summary').text()).toContain('รายชื่อคนที่ยังรอจับคู่ 2 คน')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('คนรอจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('ทีมสร้างเอง')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('กำลังจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).not.toContain('คนไม่มีสิทธิ์')
+    expect(wrapper.find('.shared-waiting-people').text()).not.toContain('เข้าแถวรอคิวแล้ว')
     wrapper.unmount()
     vi.useRealTimers()
   })

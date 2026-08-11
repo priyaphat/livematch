@@ -20,6 +20,7 @@ import {
   Share2,
   ShieldCheck,
   SlidersHorizontal,
+  ShoppingCart,
   Users,
   X,
   XCircle
@@ -124,6 +125,11 @@ const primaryStats = computed(() => [
   { label: 'รายรับประเมิน', value: moneyValue(totals.value.revenue), detail: `ลูกแบดรวม ${numberValue(totals.value.shuttles)} ลูก`, icon: CreditCard, tone: 'text-rose-700 bg-rose-100 dark:text-rose-300 dark:bg-rose-950/40' }
 ])
 const visiblePrimaryStats = computed(() => primaryStats.value.filter((stat) => stat.label !== 'Coin ที่เหลือ'))
+const visibleFeatureCardCount = computed(() => [
+  props.auth.features?.memberEnabled,
+  props.auth.features?.bookingEnabled,
+  props.auth.features?.posEnabled || props.auth.posSaleCount
+].filter(Boolean).length)
 
 const detailStats = computed(() => [
   { label: 'เกมจริงทั้งหมด', value: numberValue(totals.value.matches), caption: `จบแล้ว ${numberValue(totals.value.historyMatches)} เกม`, icon: Activity },
@@ -196,7 +202,16 @@ function updateDashboardAnnouncement(index, value) {
       </div>
   </header>
 
-    <section v-if="auth.features?.memberEnabled || auth.features?.bookingEnabled" class="grid gap-3 sm:grid-cols-2">
+    <section
+      v-if="visibleFeatureCardCount"
+      data-testid="admin-feature-grid"
+      class="grid gap-3"
+      :class="{
+        'grid-cols-1': visibleFeatureCardCount === 1,
+        'sm:grid-cols-2': visibleFeatureCardCount === 2,
+        'sm:grid-cols-2 lg:grid-cols-3': visibleFeatureCardCount >= 3
+      }"
+    >
       <button v-if="auth.features?.memberEnabled" class="group rounded-xl border border-court-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-court-500 dark:border-court-900 dark:bg-stone-900" @click="navigateAdminFeature('members')">
         <span class="grid h-12 w-12 place-items-center rounded-xl bg-court-500/10 text-court-700 dark:text-court-300"><Users class="h-6 w-6" /></span>
         <h2 class="mt-4 text-xl font-black">ระบบสมาชิก</h2>
@@ -208,6 +223,12 @@ function updateDashboardAnnouncement(index, value) {
         <h2 class="mt-4 text-xl font-black">ระบบจองสนาม</h2>
         <p class="mt-1 text-sm font-semibold text-stone-500">ตารางสนาม การชำระเงิน และอนุมัติการจอง</p>
         <p class="mt-3 text-sm font-black text-sky-700 dark:text-sky-300">{{ Number(auth.bookingCount || 0).toLocaleString('th-TH') }} รายการ →</p>
+      </button>
+      <button v-if="auth.features?.posEnabled || auth.posSaleCount" class="group rounded-xl border border-amber-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-amber-500 dark:border-amber-900 dark:bg-stone-900" @click="navigateAdminFeature('pos')">
+        <span class="grid h-12 w-12 place-items-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><ShoppingCart class="h-6 w-6" /></span>
+        <h2 class="mt-4 text-xl font-black">ระบบ POS</h2>
+        <p class="mt-1 text-sm font-semibold text-stone-500">ขายสินค้า สต็อก บิลรวม และรายงานหน้าร้าน</p>
+        <p class="mt-3 text-sm font-black text-amber-700 dark:text-amber-300">{{ auth.features?.posEnabled ? `${Number(auth.posSaleCount || 0).toLocaleString('th-TH')} บิล →` : 'ปิดใช้งาน · ดูย้อนหลัง →' }}</p>
       </button>
     </section>
 

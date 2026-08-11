@@ -121,9 +121,7 @@ func (a *app) runRateLimitCleanup(ctx context.Context) {
 type adminFeatures struct {
 	MemberEnabled  bool `json:"memberEnabled"`
 	BookingEnabled bool `json:"bookingEnabled"`
-	// Kept for compatibility with the standalone POS module. The current feature
-	// query leaves it false when the POS migration is not installed.
-	POSEnabled bool `json:"posEnabled"`
+	POSEnabled     bool `json:"posEnabled"`
 }
 
 func randUUID() string {
@@ -184,6 +182,7 @@ type bookingCourt struct {
 
 type bookingRecord struct {
 	ID            string `json:"id"`
+	BatchID       string `json:"batchId,omitempty"`
 	CourtID       string `json:"courtId"`
 	CourtName     string `json:"courtName"`
 	MemberID      string `json:"memberId,omitempty"`
@@ -215,7 +214,7 @@ type publicBookingQueue struct {
 
 func (a *app) features(ctx context.Context, adminID string) adminFeatures {
 	var f adminFeatures
-	_ = a.db.QueryRowContext(ctx, `select member_enabled, booking_enabled from admin_features where admin_id = $1`, adminID).Scan(&f.MemberEnabled, &f.BookingEnabled)
+	_ = a.db.QueryRowContext(ctx, `select member_enabled, booking_enabled, pos_enabled from admin_features where admin_id = $1`, adminID).Scan(&f.MemberEnabled, &f.BookingEnabled, &f.POSEnabled)
 	return f
 }
 
@@ -247,11 +246,11 @@ func (a *app) handleBackofficeAdminFeatures(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, updated_by) values ($1,$2,$3,$4) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, actor); err != nil {
+	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, pos_enabled, updated_by) values ($1,$2,$3,$4,$5) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, pos_enabled=excluded.pos_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, body.POSEnabled, actor); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled})
+	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled, "posEnabled": body.POSEnabled})
 	if err = tx.Commit(); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -639,8 +638,8 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	payments := []map[string]any{}
-	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
-	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
+	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)+(select count(*) from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
+	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2 union all select 'pos',ps.id,ps.total_thb,ps.status,to_char(ps.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if paymentRows != nil {
 		defer paymentRows.Close()
 		for paymentRows.Next() {
@@ -1108,6 +1107,12 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 	} else if current.TelegramConfigured {
 		_ = a.db.QueryRowContext(r.Context(), `select telegram_bot_token,telegram_bot_fingerprint,telegram_webhook_id,telegram_secret_hash from booking_settings where admin_id=$1`, user.ID).Scan(&botEncrypted, &botFingerprint, &webhookID, &secretHash)
 	}
+	if plainSecret != "" {
+		if err = a.setAdminTelegramWebhook(r.Context(), b.TelegramBotToken, webhookID, plainSecret); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]string{"error": "ตั้งค่า Telegram webhook ไม่สำเร็จ กรุณาตรวจสอบ Bot Token และลองใหม่"})
+			return
+		}
+	}
 	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,logo_data=$10,telegram_bot_token=$11,telegram_chat_id=$12,telegram_webhook_id=$13,telegram_secret_hash=$14,telegram_bot_fingerprint=$15,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName), b.LogoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_booking_settings_telegram_bot") {
@@ -1125,9 +1130,6 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		}
 	}
 	a.insertActivityLog(r.Context(), "admin", user.ID, "update_booking_settings", "booking_settings", user.ID, map[string]any{"intervalMinutes": b.IntervalMinutes, "allowOvernight": b.AllowOvernight, "useSamePrice": b.UseSamePrice, "telegramConfigured": botEncrypted != ""})
-	if plainSecret != "" {
-		_ = a.setAdminTelegramWebhook(r.Context(), b.TelegramBotToken, webhookID, plainSecret)
-	}
 	a.writeBookingOverview(w, r, user.ID, true)
 }
 
@@ -1425,62 +1427,33 @@ func (a *app) createBookingTx(ctx context.Context, adminID, courtID, memberID, b
 }
 
 func (a *app) createAdminBooking(w http.ResponseWriter, r *http.Request, user adminUser) {
-	var b struct{ CourtID, MemberID, StartAt, EndAt string }
+	type bookingItem struct{ CourtID, StartAt, EndAt string }
+	var b struct {
+		CourtID, MemberID, StartAt, EndAt string
+		Items                             []bookingItem `json:"items"`
+	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&b) != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid booking"})
 		return
 	}
-	start, err := parseBookingTime(b.StartAt)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid start"})
+	if len(b.Items) == 0 && b.CourtID != "" {
+		b.Items = []bookingItem{{CourtID: b.CourtID, StartAt: b.StartAt, EndAt: b.EndAt}}
+	}
+	if len(b.Items) == 0 || len(b.Items) > 48 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "กรุณาเลือกช่วงเวลาจอง 1-48 รายการ"})
 		return
 	}
-	end, err := parseBookingTime(b.EndAt)
+	settings, err := a.ensureBookingSettings(r.Context(), user.ID)
 	if err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid end"})
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ไม่สามารถโหลดการตั้งค่าการจองได้"})
 		return
 	}
 	name := user.Name
 	if b.MemberID != "" {
 		if err = a.db.QueryRowContext(r.Context(), `select name from members where id=$1 and admin_id=$2 and active and deleted_at is null`, b.MemberID, user.ID).Scan(&name); err != nil {
-			writeJSON(w, 400, map[string]string{"error": "member not found"})
+			writeJSON(w, 400, map[string]string{"error": "ไม่พบสมาชิกที่เลือก"})
 			return
 		}
-	}
-	rec, err := a.createBookingTx(r.Context(), user.ID, b.CourtID, b.MemberID, "admin", name, start, end, "confirmed")
-	if err != nil {
-		writeJSON(w, 409, map[string]string{"error": err.Error()})
-		return
-	}
-	a.insertActivityLog(r.Context(), "admin", user.ID, "create_admin_booking", "booking", rec.ID, map[string]any{"courtId": b.CourtID, "memberId": b.MemberID, "total": rec.TotalPrice})
-	writeJSON(w, 201, rec)
-}
-
-func (a *app) createClosure(w http.ResponseWriter, r *http.Request, user adminUser) {
-	var b struct{ CourtID, StartAt, EndAt, Note string }
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&b) != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid closure"})
-		return
-	}
-	start, err := parseBookingTime(b.StartAt)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid start"})
-		return
-	}
-	end, err := parseBookingTime(b.EndAt)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"error": "invalid end"})
-		return
-	}
-	settings, err := a.ensureBookingSettings(r.Context(), user.ID)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot load booking settings"})
-		return
-	}
-	occurrences, err := closureOccurrences(start, end, settings.IntervalMinutes)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ช่วงเวลาปิดสนามไม่ถูกต้อง"})
-		return
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -1488,27 +1461,47 @@ func (a *app) createClosure(w http.ResponseWriter, r *http.Request, user adminUs
 		return
 	}
 	defer tx.Rollback()
-	var courtExists bool
-	if err = tx.QueryRowContext(r.Context(), `select exists(select 1 from booking_courts where id=$1 and admin_id=$2 and active and deleted_at is null)`, b.CourtID, user.ID).Scan(&courtExists); err != nil {
+	if err = a.deleteExpiredHoldsTx(r.Context(), tx, user.ID); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if !courtExists {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "court not found"})
-		return
-	}
-	if err = a.deleteExpiredHoldsTx(r.Context(), tx, user.ID); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
-		return
-	}
-	for _, occurrence := range occurrences {
-		_, err = tx.ExecContext(r.Context(), `insert into booking_occupancies (admin_id,court_id,kind,occupied_range,note) values ($1,$2,'closure',tstzrange($3,$4,'[)'),$5)`, user.ID, b.CourtID, occurrence.Start, occurrence.End, strings.TrimSpace(b.Note))
-		if err != nil {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "มีรายการจองหรือปิดสนามทับซ้อนในช่วงวันที่เลือก"})
+	batchID := randUUID()
+	records := make([]bookingRecord, 0, len(b.Items))
+	totalAmount := 0
+	for _, item := range b.Items {
+		start, startErr := parseBookingTime(item.StartAt)
+		end, endErr := parseBookingTime(item.EndAt)
+		if startErr != nil || endErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "วันหรือเวลาที่เลือกไม่ถูกต้อง"})
 			return
 		}
+		if err = validateBookingWindow(settings, start, end); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		var court bookingCourt
+		if err = tx.QueryRowContext(r.Context(), `select id,name,price_per_interval,active,sort_order from booking_courts where id=$1 and admin_id=$2 and active and deleted_at is null`, item.CourtID, user.ID).Scan(&court.ID, &court.Name, &court.Price, &court.Active, &court.Sort); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ไม่พบสนามที่เลือก"})
+			return
+		}
+		bookingID := randUUID()
+		itemTotal := int(end.Sub(start).Minutes()) / settings.IntervalMinutes * court.Price
+		_, err = tx.ExecContext(r.Context(), `insert into bookings (id,admin_id,court_id,member_id,booked_by,booker_name,start_at,end_at,interval_minutes,unit_price_thb,total_price_thb,status,payment_status,booking_batch_id) values ($1,$2,$3,nullif($4,''),'admin',$5,$6,$7,$8,$9,$10,'confirmed','unpaid',$11)`, bookingID, user.ID, item.CourtID, b.MemberID, name, start, end, settings.IntervalMinutes, court.Price, itemTotal, batchID)
+		if err == nil {
+			_, err = tx.ExecContext(r.Context(), `insert into booking_occupancies (admin_id,court_id,booking_id,kind,occupied_range) values ($1,$2,$3,'booking',tstzrange($4,$5,'[)'))`, user.ID, item.CourtID, bookingID, start, end)
+		}
+		if err != nil {
+			if strings.Contains(err.Error(), "booking_occupancies_no_overlap") {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "มีบางช่วงเวลาที่ไม่ว่างแล้ว กรุณาเลือกใหม่"})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		records = append(records, bookingRecord{ID: bookingID, CourtID: court.ID, CourtName: court.Name, MemberID: b.MemberID, BookerName: name, BookedBy: "admin", StartAt: start.Format(time.RFC3339), EndAt: end.Format(time.RFC3339), Interval: settings.IntervalMinutes, UnitPrice: court.Price, TotalPrice: itemTotal, Status: "confirmed", PaymentStatus: "unpaid"})
+		totalAmount += itemTotal
 	}
-	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "close_booking_slot", "booking_court", b.CourtID, map[string]any{"startAt": start, "endAt": end, "occurrences": len(occurrences)}); err != nil {
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "create_admin_booking_batch", "booking_batch", batchID, map[string]any{"memberId": b.MemberID, "items": len(records), "total": totalAmount}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1516,7 +1509,121 @@ func (a *app) createClosure(w http.ResponseWriter, r *http.Request, user adminUs
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, 201, map[string]any{"status": "closed", "occurrences": len(occurrences)})
+	writeJSON(w, http.StatusCreated, map[string]any{"batchId": batchID, "bookings": records, "totalPriceThb": totalAmount})
+}
+
+func validateBookingWindow(s bookingSettingsRecord, start, end time.Time) error {
+	if start.Before(time.Now().Add(-time.Minute)) {
+		return errors.New("ไม่สามารถจองเวลาที่ผ่านไปแล้ว")
+	}
+	duration := end.Sub(start)
+	if duration <= 0 || int(duration.Minutes())%s.IntervalMinutes != 0 {
+		return errors.New("ช่วงเวลาไม่ถูกต้อง")
+	}
+	if !s.AllowOvernight && start.In(bangkokLocation).Format("2006-01-02") != end.Add(-time.Second).In(bangkokLocation).Format("2006-01-02") {
+		return errors.New("ยังไม่เปิดการจองข้ามวัน")
+	}
+	openParts, closeParts := strings.Split(s.OpenTime, ":"), strings.Split(s.CloseTime, ":")
+	openHour, _ := strconv.Atoi(openParts[0])
+	openMinute, _ := strconv.Atoi(openParts[1])
+	closeHour, _ := strconv.Atoi(closeParts[0])
+	closeMinute, _ := strconv.Atoi(closeParts[1])
+	localStart := start.In(bangkokLocation)
+	anchor := time.Date(localStart.Year(), localStart.Month(), localStart.Day(), openHour, openMinute, 0, 0, bangkokLocation)
+	closeAt := time.Date(localStart.Year(), localStart.Month(), localStart.Day(), closeHour, closeMinute, 0, 0, bangkokLocation)
+	if s.AllowOvernight && !closeAt.After(anchor) {
+		if localStart.Before(closeAt) {
+			anchor = anchor.AddDate(0, 0, -1)
+		}
+		closeAt = anchor.Add(time.Duration((24*60-(openHour*60+openMinute))+(closeHour*60+closeMinute)) * time.Minute)
+	}
+	if start.Before(anchor) || end.After(closeAt) || int(start.Sub(anchor).Minutes())%s.IntervalMinutes != 0 {
+		return errors.New("ช่วงจองอยู่นอกเวลาเปิดให้บริการ")
+	}
+	return nil
+}
+
+func (a *app) createClosure(w http.ResponseWriter, r *http.Request, user adminUser) {
+	type closureItem struct{ CourtID, StartAt, EndAt string }
+	var b struct {
+		CourtID, StartAt, EndAt, Note string
+		Items                         []closureItem `json:"items"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&b) != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid closure"})
+		return
+	}
+	settings, err := a.ensureBookingSettings(r.Context(), user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "cannot load booking settings"})
+		return
+	}
+	type closureTarget struct {
+		CourtID    string
+		Start, End time.Time
+	}
+	targets := make([]closureTarget, 0)
+	if len(b.Items) > 48 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "เลือกปิดได้ไม่เกิน 48 ช่วงต่อครั้ง"})
+		return
+	}
+	if len(b.Items) > 0 {
+		for _, item := range b.Items {
+			start, startErr := parseBookingTime(item.StartAt)
+			end, endErr := parseBookingTime(item.EndAt)
+			if startErr != nil || endErr != nil || !end.After(start) || int(end.Sub(start).Minutes())%settings.IntervalMinutes != 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ช่วงเวลาปิดสนามไม่ถูกต้อง"})
+				return
+			}
+			targets = append(targets, closureTarget{CourtID: item.CourtID, Start: start, End: end})
+		}
+	} else {
+		start, startErr := parseBookingTime(b.StartAt)
+		end, endErr := parseBookingTime(b.EndAt)
+		if startErr != nil || endErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ช่วงเวลาปิดสนามไม่ถูกต้อง"})
+			return
+		}
+		occurrences, occurrenceErr := closureOccurrences(start, end, settings.IntervalMinutes)
+		if occurrenceErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ช่วงเวลาปิดสนามไม่ถูกต้อง"})
+			return
+		}
+		for _, occurrence := range occurrences {
+			targets = append(targets, closureTarget{CourtID: b.CourtID, Start: occurrence.Start, End: occurrence.End})
+		}
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer tx.Rollback()
+	if err = a.deleteExpiredHoldsTx(r.Context(), tx, user.ID); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	for _, target := range targets {
+		var courtExists bool
+		if err = tx.QueryRowContext(r.Context(), `select exists(select 1 from booking_courts where id=$1 and admin_id=$2 and active and deleted_at is null)`, target.CourtID, user.ID).Scan(&courtExists); err != nil || !courtExists {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ไม่พบสนามที่เลือก"})
+			return
+		}
+		_, err = tx.ExecContext(r.Context(), `insert into booking_occupancies (admin_id,court_id,kind,occupied_range,note) values ($1,$2,'closure',tstzrange($3,$4,'[)'),$5)`, user.ID, target.CourtID, target.Start, target.End, strings.TrimSpace(b.Note))
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "มีรายการจองหรือปิดสนามทับซ้อนในช่วงวันที่เลือก"})
+			return
+		}
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, "admin", user.ID, "close_booking_slots", "booking_court", b.CourtID, map[string]any{"slots": len(targets)}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, 201, map[string]any{"status": "closed", "occurrences": len(targets)})
 }
 
 func (a *app) deleteClosure(w http.ResponseWriter, r *http.Request, user adminUser, closureID string) {
@@ -1560,37 +1667,35 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		return
 	}
 	dayEnd := dayStart.Add(48 * time.Hour)
-	rows, err := a.db.QueryContext(r.Context(), `select b.id,b.court_id,c.name,coalesce(b.member_id,''),case when $4 then b.booker_name else '' end,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,case when $4 then b.note else '' end,case when $4 then coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') else '' end,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.start_at<$3 and b.end_at>$2 and b.status<>'expired' and ($4 or b.status in ('hold','pending_review','confirmed')) order by b.start_at,c.sort_order`, adminID, dayStart, dayEnd, admin)
+	rows, err := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),case when $4 then b.booker_name else '' end,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,case when $4 then b.note else '' end,case when $4 then coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') else '' end,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.start_at<$3 and b.end_at>$2 and b.status<>'expired' and ($4 or b.status in ('hold','pending_review','confirmed')) order by b.start_at,c.sort_order`, adminID, dayStart, dayEnd, admin)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
 	defer rows.Close()
-	bookings := []bookingRecord{}
-	for rows.Next() {
-		var b bookingRecord
-		var start, end time.Time
-		var holdExpiresAt sql.NullTime
-		if err = rows.Scan(&b.ID, &b.CourtID, &b.CourtName, &b.MemberID, &b.BookerName, &b.BookedBy, &start, &end, &b.Interval, &b.UnitPrice, &b.TotalPrice, &b.Status, &b.PaymentStatus, &holdExpiresAt, &b.Note, &b.SlipData, &b.CreatedAt); err != nil {
+	bookings, err := scanBookingRows(rows, admin)
+	if closeErr := rows.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	pendingReviews := []bookingRecord{}
+	if admin {
+		pendingRows, queryErr := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),''),to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.status='pending_review' order by b.created_at,b.start_at,c.sort_order`, adminID)
+		if queryErr != nil {
+			writeJSON(w, 500, map[string]string{"error": queryErr.Error()})
+			return
+		}
+		pendingReviews, err = scanBookingRows(pendingRows, true)
+		if closeErr := pendingRows.Close(); err == nil {
+			err = closeErr
+		}
+		if err != nil {
 			writeJSON(w, 500, map[string]string{"error": err.Error()})
 			return
 		}
-		b.StartAt = start.Format(time.RFC3339)
-		b.EndAt = end.Format(time.RFC3339)
-		if holdExpiresAt.Valid {
-			b.HoldExpiresAt = holdExpiresAt.Time.Format(time.RFC3339)
-		}
-		if !admin {
-			b.ID = ""
-			b.MemberID = ""
-			b.BookerName = ""
-			b.BookedBy = ""
-			b.PaymentStatus = ""
-			b.Note = ""
-			b.SlipData = ""
-			b.CreatedAt = ""
-		}
-		bookings = append(bookings, b)
 	}
 	closures := []map[string]any{}
 	cr, _ := a.db.QueryContext(r.Context(), `select id,court_id,lower(occupied_range),upper(occupied_range),note from booking_occupancies where admin_id=$1 and kind='closure' and active and occupied_range && tstzrange($2,$3,'[)')`, adminID, dayStart, dayEnd)
@@ -1604,6 +1709,9 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		}
 	}
 	payload := map[string]any{"settings": s, "courts": courts, "bookings": bookings, "closures": closures, "date": date, "serverNow": time.Now().Format(time.RFC3339)}
+	if admin {
+		payload["pendingReviews"] = pendingReviews
+	}
 	if !admin {
 		s.PublicToken = ""
 		s.PromptPayID = ""
@@ -1613,6 +1721,36 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		payload["settings"] = s
 	}
 	writeJSON(w, 200, payload)
+}
+
+func scanBookingRows(rows *sql.Rows, admin bool) ([]bookingRecord, error) {
+	bookings := []bookingRecord{}
+	for rows.Next() {
+		var b bookingRecord
+		var start, end time.Time
+		var holdExpiresAt sql.NullTime
+		if err := rows.Scan(&b.ID, &b.BatchID, &b.CourtID, &b.CourtName, &b.MemberID, &b.BookerName, &b.BookedBy, &start, &end, &b.Interval, &b.UnitPrice, &b.TotalPrice, &b.Status, &b.PaymentStatus, &holdExpiresAt, &b.Note, &b.SlipData, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		b.StartAt = start.Format(time.RFC3339)
+		b.EndAt = end.Format(time.RFC3339)
+		if holdExpiresAt.Valid {
+			b.HoldExpiresAt = holdExpiresAt.Time.Format(time.RFC3339)
+		}
+		if !admin {
+			b.ID = ""
+			b.BatchID = ""
+			b.MemberID = ""
+			b.BookerName = ""
+			b.BookedBy = ""
+			b.PaymentStatus = ""
+			b.Note = ""
+			b.SlipData = ""
+			b.CreatedAt = ""
+		}
+		bookings = append(bookings, b)
+	}
+	return bookings, rows.Err()
 }
 
 func (a *app) writePublicBookingQueues(w http.ResponseWriter, r *http.Request, adminID string) {
@@ -2470,6 +2608,84 @@ func (a *app) setAdminTelegramWebhook(ctx context.Context, botToken, webhookID, 
 	}
 	return nil
 }
+
+func (a *app) refreshAdminTelegramWebhooks(ctx context.Context) {
+	rows, err := a.db.QueryContext(ctx, `select admin_id,telegram_bot_token from booking_settings where telegram_bot_token<>'' and telegram_chat_id<>''`)
+	if err != nil {
+		return
+	}
+	type configuredBot struct{ adminID, encrypted string }
+	bots := make([]configuredBot, 0)
+	for rows.Next() {
+		var bot configuredBot
+		if rows.Scan(&bot.adminID, &bot.encrypted) == nil {
+			bots = append(bots, bot)
+		}
+	}
+	_ = rows.Close()
+	for _, bot := range bots {
+		token, decryptErr := decryptSecret(bot.encrypted)
+		if decryptErr != nil {
+			continue
+		}
+		webhookID, secret := randHex(12), randHex(20)
+		if webhookErr := a.setAdminTelegramWebhook(ctx, token, webhookID, secret); webhookErr != nil {
+			a.insertActivityLog(ctx, "system", "telegram", "refresh_booking_telegram_webhook_failed", "booking_settings", bot.adminID, map[string]any{"error": webhookErr.Error()})
+			continue
+		}
+		if _, updateErr := a.db.ExecContext(ctx, `update booking_settings set telegram_webhook_id=$2,telegram_secret_hash=$3,updated_at=now() where admin_id=$1 and telegram_bot_token=$4`, bot.adminID, webhookID, tokenDigest(secret), bot.encrypted); updateErr != nil {
+			a.insertActivityLog(ctx, "system", "telegram", "refresh_booking_telegram_webhook_failed", "booking_settings", bot.adminID, map[string]any{"error": updateErr.Error()})
+			continue
+		}
+		a.insertActivityLog(ctx, "system", "telegram", "refresh_booking_telegram_webhook", "booking_settings", bot.adminID, map[string]any{})
+	}
+}
+
+type telegramBookingItem struct {
+	Court  string
+	Start  string
+	End    string
+	Amount int
+}
+
+func telegramBookingMessage(title, name string, items []telegramBookingItem) string {
+	var details strings.Builder
+	total := 0
+	for index, item := range items {
+		total += item.Amount
+		fmt.Fprintf(&details, "\n%d. %s\n%s–%s น. · %d บาท\n", index+1, item.Court, item.Start, item.End, item.Amount)
+	}
+	return fmt.Sprintf("%s\nผู้จอง: %s\nจำนวน: %d ช่วง%s\nยอดรวม: %d บาท", title, name, len(items), details.String(), total)
+}
+
+func (a *app) telegramBookingDetails(ctx context.Context, adminID, bookingID string) (string, string, []telegramBookingItem, error) {
+	var batchID, name, slipData string
+	err := a.db.QueryRowContext(ctx, `select coalesce(b.booking_batch_id,''),b.booker_name,coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') from bookings b where b.id=$1 and b.admin_id=$2`, bookingID, adminID).Scan(&batchID, &name, &slipData)
+	if err != nil {
+		return "", "", nil, err
+	}
+	rows, err := a.db.QueryContext(ctx, `select c.name,to_char(b.start_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI'),to_char(b.end_at at time zone 'Asia/Bangkok','HH24:MI'),b.total_price_thb from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$2 and (b.id=$1 or ($3<>'' and b.booking_batch_id=$3)) order by b.start_at,c.sort_order`, bookingID, adminID, batchID)
+	if err != nil {
+		return "", "", nil, err
+	}
+	defer rows.Close()
+	items := make([]telegramBookingItem, 0)
+	for rows.Next() {
+		var item telegramBookingItem
+		if err = rows.Scan(&item.Court, &item.Start, &item.End, &item.Amount); err != nil {
+			return "", "", nil, err
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil || len(items) == 0 {
+		if err == nil {
+			err = sql.ErrNoRows
+		}
+		return "", "", nil, err
+	}
+	return name, slipData, items, nil
+}
+
 func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string) {
 	var encrypted, chatID string
 	if a.db.QueryRowContext(ctx, `select telegram_bot_token,telegram_chat_id from booking_settings where admin_id=$1`, adminID).Scan(&encrypted, &chatID) != nil || encrypted == "" || chatID == "" {
@@ -2479,13 +2695,12 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 	if err != nil {
 		return
 	}
-	var name, court, start, end, slipData string
-	var amount int
-	if a.db.QueryRowContext(ctx, `select booker_name,c.name,to_char(start_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI'),to_char(end_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI'),total_price_thb,coalesce((select slip_data from booking_payments where booking_id=b.id order by created_at desc limit 1),'') from bookings b join booking_courts c on c.id=b.court_id where b.id=$1 and b.admin_id=$2`, bookingID, adminID).Scan(&name, &court, &start, &end, &amount, &slipData) != nil {
+	name, slipData, items, err := a.telegramBookingDetails(ctx, adminID, bookingID)
+	if err != nil {
 		return
 	}
 	keyboard, _ := json.Marshal(map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "อนุมัติ", "callback_data": "booking:approve:" + bookingID}, {"text": "ปฏิเสธ", "callback_data": "booking:reject:" + bookingID}}}})
-	message := fmt.Sprintf("จองสนามใหม่\n%s\n%s\n%s - %s\nยอด %d บาท", name, court, start, end, amount)
+	message := telegramBookingMessage("🏸 จองสนามใหม่", name, items)
 	if validImageData(slipData, false) {
 		comma := strings.IndexByte(slipData, ',')
 		raw, decodeErr := base64.StdEncoding.DecodeString(slipData[comma+1:])
@@ -2493,8 +2708,11 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 			var body bytes.Buffer
 			writer := multipart.NewWriter(&body)
 			_ = writer.WriteField("chat_id", chatID)
-			_ = writer.WriteField("caption", message)
-			_ = writer.WriteField("reply_markup", string(keyboard))
+			total := 0
+			for _, item := range items {
+				total += item.Amount
+			}
+			_ = writer.WriteField("caption", fmt.Sprintf("สลิปการจองสนาม\nผู้จอง: %s\nจำนวน %d ช่วง · ยอดรวม %d บาท", name, len(items), total))
 			part, partErr := writer.CreateFormFile("photo", "slip.jpg")
 			if partErr == nil {
 				_, _ = part.Write(raw)
@@ -2504,9 +2722,6 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 			req.Header.Set("Content-Type", writer.FormDataContentType())
 			if resp, sendErr := http.DefaultClient.Do(req); sendErr == nil {
 				resp.Body.Close()
-				if resp.StatusCode < 300 {
-					return
-				}
 			}
 		}
 	}
@@ -2536,17 +2751,14 @@ func telegramBotForm(ctx context.Context, token, method string, values url.Value
 	return nil
 }
 
-func telegramReviewText(action, name, court, start string, itemCount int) (string, string) {
-	if itemCount < 1 {
-		itemCount = 1
-	}
+func telegramReviewText(action, name string, items []telegramBookingItem) (string, string) {
 	short := "อนุมัติแล้ว"
 	title := "✅ อนุมัติการจองแล้ว"
 	if action == "reject" {
 		short = "ปฏิเสธแล้ว"
 		title = "❌ ปฏิเสธการจองแล้ว"
 	}
-	return short, fmt.Sprintf("%s\nผู้จอง: %s\nสนาม: %s\nเวลา: %s\nจำนวน %d ช่วง", title, name, court, start, itemCount)
+	return short, telegramBookingMessage(title, name, items)
 }
 
 func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Request) {
@@ -2593,7 +2805,7 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 	if parts[1] == "reject" {
 		note = "ปฏิเสธผ่าน Telegram"
 	}
-	result, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
+	_, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
 	token, tokenErr := decryptSecret(encrypted)
 	if err != nil {
 		if tokenErr == nil {
@@ -2608,12 +2820,13 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, 200, map[string]string{"status": "error", "error": err.Error()})
 		return
 	}
-	var name, court, start string
-	if queryErr := a.db.QueryRowContext(r.Context(), `select b.booker_name,c.name,to_char(b.start_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.id=$1 and b.admin_id=$2`, parts[2], adminID).Scan(&name, &court, &start); queryErr != nil {
-		name, court, start = "-", "-", "-"
+	name, _, items, queryErr := a.telegramBookingDetails(r.Context(), adminID, parts[2])
+	if queryErr != nil {
+		name = "-"
+		items = []telegramBookingItem{{Court: "-", Start: "-", End: "-"}}
 	}
 	if tokenErr == nil {
-		short, message := telegramReviewText(parts[1], name, court, start, len(result.BookingIDs))
+		short, message := telegramReviewText(parts[1], name, items)
 		_ = telegramBotForm(r.Context(), token, "answerCallbackQuery", url.Values{
 			"callback_query_id": {q.ID},
 			"text":              {short},

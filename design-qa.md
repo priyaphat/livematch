@@ -1,46 +1,75 @@
-# Booking UI Design QA
+# LiveMatch POS Full-System Design QA
 
-- Source visual truth: `C:/Users/OTAMOS/.codex/generated_images/019f8932-9ceb-72b0-aa33-8e15d9f3b88e/exec-1be63ccd-a828-48db-989c-15cb2c55afda.png`
-- Public implementation screenshots: `artifacts/booking-ui-qa/public-desktop.png`, `artifacts/booking-ui-qa/public-mobile.png`
-- Target viewport: admin 1440 × 1024; public desktop 1440 × 1024; public mobile 390 × 844
-- Density normalization: browser CSS pixel viewport at device scale 1
-- State: public Google sign-in screen verified; authenticated admin schedule pending verification
+- Source visual truth: `C:/Users/OTAMOS/Desktop/livematch-pos/` rendered from the Stitch React app at `http://localhost:3000`
+- Implementation: `frontend/src/pages/POSPage.vue` rendered from the production Vue component with realistic mock API data
+- Mobile viewport: 390 × 844 CSS px, device scale factor 1
+- Desktop viewport: 1280 × 720 CSS px, device scale factor 1
+- Source normalization: the Stitch app's internal `max-w-[390px]` mobile frame was cropped from a 1280px browser capture to 390 × 844 px
+- Implementation captures: native 390 × 844 px mobile captures; no density scaling
+- State: dashboard, sale, open bills, products, stock, reports, settings, product editor, payment receipt, and desktop dark mode
 
-## Full-view comparison evidence
+## Evidence
 
-- Public booking uses the selected direction's warm paper/dark token surfaces, green primary action, compact branded command header, restrained borders, and centered authentication hierarchy.
-- Desktop and mobile public layouts were captured from the running application. No horizontal overflow or console errors were detected.
-- The authenticated admin schedule cannot yet be captured in the in-app browser because that browser has no LiveMatch admin session.
-
-## Focused region comparison evidence
-
-- Public authentication header, primary action, supporting privacy note, border radii, and spacing were checked at desktop and mobile widths.
-- Admin command bar, booking grid, and side inspector comparison is blocked until an authenticated admin state is available.
+- Full-view paired comparisons: `artifacts/pos-design-qa/full-redesign/compare-01-dashboard.jpg` through `compare-07-settings.jpg`
+- Focused interaction captures:
+  - `artifacts/pos-design-qa/full-redesign/08-product-modal.jpg`
+  - `artifacts/pos-design-qa/full-redesign/09-receipt-modal.jpg`
+  - `artifacts/pos-design-qa/full-redesign/10-dashboard-desktop.jpg`
+  - `artifacts/pos-design-qa/full-redesign/11-sale-desktop.jpg`
+  - `artifacts/pos-design-qa/full-redesign/12-sale-desktop-dark.jpg`
+  - `artifacts/pos-design-qa/full-redesign/13-footer-nav-mobile.jpg`
+  - `artifacts/pos-design-qa/full-redesign/14-footer-nav-desktop.jpg`
 
 ## Findings
 
-- [P1] Authenticated admin visual comparison is unavailable.
-  - Location: `/admin/booking`
-  - Evidence: the in-app browser redirects to the LiveMatch login page without an admin session.
-  - Impact: the primary selected visual target cannot be verified against the rendered admin implementation.
-  - Fix: sign in to an admin account in the in-app browser, then capture the schedule and inspector states at 1440 × 1024.
+- No actionable P0, P1, or P2 issues remain.
+- The implementation uses the source system's screen language while following the selected LiveMatch shell direction: no persistent navbar, one full-width footer navigation on every viewport, Home and theme controls before Dashboard, status badges, paper/dark themes, court-green actions, responsive catalog/cart split, bill view switcher, stock action hierarchy, report-range controls, grouped settings, and bottom-sheet/dialog treatments.
+- Source demo content and implementation content differ intentionally because the Vue screen uses LiveMatch's production API fields and actions.
+
+## Required fidelity surfaces
+
+- Fonts and typography: Thai hierarchy, heavy display headings, small operational labels, currency emphasis, line height, truncation, and mobile wrapping are consistent across all seven screens.
+- Spacing and layout rhythm: screen gutters, dark hero proportions, card grids, section gaps, 12–16px radii, modal headers, sticky actions, and desktop two-column sale structure match the source intent.
+- Colors and tokens: stone-black shell, warm paper surfaces, court green primary actions, amber pending states, rose stock warnings, and sky stock-adjustment actions are mapped consistently in light and dark modes.
+- Image and icon fidelity: product media uses actual uploaded images when present; empty states and all controls use the existing Phosphor-compatible icon system with consistent stroke weight. No handcrafted SVG, emoji, or CSS illustration substitutes are used.
+- Copy and content: Thai-first labels are coherent, production-specific, and preserve every existing POS field and action.
+
+## Interaction and responsive checks
+
+- [x] All seven screens open from the full-width footer navigation on mobile and desktop.
+- [x] Home and Dark/Light controls appear before Dashboard in the footer.
+- [x] The previous top navbar is removed.
+- [x] Sale catalog, filters, add-to-cart, mobile cart sheet, quantity controls, payment method, hold, and payment work.
+- [x] Successful payment opens the redesigned receipt dialog with bill, buyer, items, method, and total.
+- [x] Bills switch between pending and history views.
+- [x] Product, category, unit, and stock dialogs remain interactive.
+- [x] Report range selector changes selected state.
+- [x] Settings remain bound to the production settings model.
+- [x] Every screen reports `scrollWidth === clientWidth` at 390 × 844.
+- [x] Desktop layout reports no horizontal overflow at 1280 × 720.
+- [x] Mobile primary actions remain above bottom navigation.
+- [x] Browser warning/error log is empty in verified states.
 
 ## Comparison history
 
-- Pass 1: Public desktop initially served the previous Vite module after source updates. Frontend was restarted; the new UI was then captured successfully.
-- Pass 2: Public desktop and 390 × 844 mobile captures show no actionable P0/P1/P2 layout issues. Console error list is empty.
+### Earlier implementation
 
-## Implementation checklist
+- [P1] The previous pass changed visual styling but retained too much of the original shell and screen structure, so it did not read as a full POS-system redesign.
+- Fix: rebuilt the responsive shell, desktop and mobile navigation, operational header, bill workflow, report controls, catalog dialogs, and payment receipt; then re-captured every screen.
 
-- [x] Public authentication desktop layout
-- [x] Public authentication mobile layout
-- [x] Public console errors
-- [ ] Authenticated admin schedule capture
-- [ ] Admin selected-slot inspector capture
-- [ ] Final source/implementation comparison
+### Current implementation
+
+- Post-fix paired evidence: `artifacts/pos-design-qa/full-redesign/compare-01-dashboard.jpg` through `compare-07-settings.jpg`.
+- No remaining P0/P1/P2 findings.
+
+## Automated verification
+
+- POS Vitest suite: 6/6 passed
+- Production frontend build: passed
 
 ## Follow-up polish
 
-- Validate the real venue-uploaded logo crop across unusually wide and tall source images.
+- Product image fidelity depends on media uploaded by each venue admin.
+- A dedicated screen-reader pass can further validate accessibility beyond DOM labels, keyboard reachability, and contrast checks.
 
-final result: blocked
+final result: passed

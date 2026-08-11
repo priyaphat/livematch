@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import QRCode from 'qrcode'
 import { ArrowDown, ArrowUp, Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
 import { exportMembersExcel } from '../excelExport'
 
@@ -74,7 +75,11 @@ const memberDropdownOpen = ref(false)
 const memberSearchCompleted = ref('')
 const memberSearchError = ref('')
 const showCreateMember = ref(false)
+const newMemberName = ref('')
+const newMemberPhone = ref('')
 const newMemberType = ref('general')
+const createMemberError = ref('')
+const createMemberSaving = ref(false)
 let memberSearchTimer
 let memberSearchSequence = 0
 let memberBlurTimer
@@ -86,6 +91,11 @@ const paymentSummary = ref(null)
 const paymentLoading = ref(false)
 const paymentSaving = ref(false)
 const paymentError = ref('')
+const paymentMethod = ref('cash')
+const paymentQr = ref('')
+const combinedShuttleBreakdown = computed(() => (
+  paymentSummary.value?.matchBreakdownItems?.find((item) => item.label === 'ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)') || null
+))
 const deleteBlockReasons = computed(() => (
   editingPlayer.value ? props.playerDeleteBlockReasons(editingPlayer.value.id) : []
 ))
@@ -105,10 +115,15 @@ const canAddPlayer = computed(() => (
   Boolean(props.forms.newPlayerMemberId || (newPlayerEntry.value && !isPhoneLookup.value))
 ))
 const canCreateMissingMember = computed(() => (
-  newPlayerPhoneDigits.value.length >= 9 &&
   !memberLoading.value &&
   memberSearchCompleted.value === memberSearchKey.value &&
-  !memberOptions.value.length
+  (isNameLookup.value || (newPlayerPhoneDigits.value.length >= 10 && !memberOptions.value.length))
+))
+const newMemberPhoneDigits = computed(() => String(newMemberPhone.value || '').replace(/\D/g, ''))
+const canSubmitNewMember = computed(() => (
+  !createMemberSaving.value &&
+  Boolean(newMemberName.value.trim()) &&
+  newMemberPhoneDigits.value.length === 10
 ))
 
 function changePlayerSort(key) {
@@ -132,6 +147,10 @@ async function openPaymentModal(player) {
   paymentLoading.value = true
   try {
     paymentSummary.value = await props.apiRequest(`/api/sessions/${props.state.session.id}/players/${player.id}/payment-summary`)
+    paymentMethod.value = 'cash'
+    paymentQr.value = paymentSummary.value.promptPayPayload
+      ? await QRCode.toDataURL(paymentSummary.value.promptPayPayload, { width: 260, margin: 1 })
+      : ''
   } catch (error) {
     paymentError.value = error.message || 'โหลดรายละเอียดค่าใช้จ่ายไม่สำเร็จ'
   } finally {
@@ -144,6 +163,7 @@ function closePaymentModal() {
   paymentPlayer.value = null
   paymentSummary.value = null
   paymentError.value = ''
+  paymentQr.value = ''
 }
 
 async function confirmPaymentChange() {
@@ -152,7 +172,7 @@ async function confirmPaymentChange() {
   paymentError.value = ''
   let saved = false
   try {
-    await props.togglePayment(paymentPlayer.value)
+    await props.togglePayment(paymentPlayer.value, paymentSummary.value, paymentMethod.value)
     saved = true
   } catch (error) {
     paymentError.value = error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ'
@@ -283,14 +303,48 @@ function closeMemberDropdownLater() {
   memberBlurTimer = window.setTimeout(() => { memberDropdownOpen.value = false }, 120)
 }
 
-async function createAndSelectMember() {
-  const created = await props.apiRequest('/api/admin/members', { method: 'POST', body: JSON.stringify({ name: props.forms.newPlayerName, phone: props.forms.newPlayerPhone, memberType: newMemberType.value }) })
-  memberOptions.value = [created]
-  props.forms.newPlayerMemberId = created.id
-  props.forms.newPlayerName = created.name
-  memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
+function openCreateMemberModal() {
+  newMemberName.value = isNameLookup.value ? newPlayerEntry.value : ''
+  newMemberPhone.value = isPhoneLookup.value ? newPlayerEntry.value : ''
+  newMemberType.value = 'general'
+  createMemberError.value = ''
+  showCreateMember.value = true
   memberDropdownOpen.value = false
-  showCreateMember.value = false
+}
+
+function matchHistoryTooltip(match) {
+  return [
+    `เกม #${match.matchId} · ${match.result}`,
+    `ทีม: ${match.team || '-'}`,
+    `พบ: ${match.opponent || '-'}`,
+    `สนาม: ${match.court || '-'} · ระดับ: ${match.level || '-'}`,
+    `เวลา: ${match.startedAt || '-'}${match.endedAt ? ` ถึง ${match.endedAt}` : ''}`,
+    `ลูกแบด: ${match.shuttles || 0} ลูก`,
+    match.note ? `หมายเหตุ: ${match.note}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+async function createAndSelectMember() {
+  if (!canSubmitNewMember.value) return
+  createMemberSaving.value = true
+  createMemberError.value = ''
+  try {
+    const created = await props.apiRequest('/api/admin/members', {
+      method: 'POST',
+      body: JSON.stringify({ name: newMemberName.value.trim(), phone: newMemberPhone.value, memberType: newMemberType.value })
+    })
+    memberOptions.value = [created]
+    props.forms.newPlayerMemberId = created.id
+    props.forms.newPlayerName = created.name
+    props.forms.newPlayerPhone = created.phone
+    memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
+    memberDropdownOpen.value = false
+    showCreateMember.value = false
+  } catch (error) {
+    createMemberError.value = error.message || 'เพิ่มสมาชิกไม่สำเร็จ'
+  } finally {
+    createMemberSaving.value = false
+  }
 }
 
 async function exportExcel() {
@@ -353,9 +407,10 @@ async function exportExcel() {
             </button>
           </template>
           <p v-if="!memberLoading && memberSearchError" class="px-3 py-3 text-sm font-bold text-red-600">{{ memberSearchError }}</p>
-          <div v-else-if="!memberLoading && memberSearchCompleted === memberSearchKey && !memberOptions.length" class="p-2">
-            <p class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : 'ไม่พบสมาชิกจากชื่อนี้ สามารถกดเพิ่มเป็นขาจรได้' }}</p>
-            <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="showCreateMember=true; memberDropdownOpen=false"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
+          <div v-else-if="!memberLoading && memberSearchCompleted === memberSearchKey" class="p-2">
+            <p v-if="!memberOptions.length" class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : 'ไม่พบสมาชิกจากชื่อนี้ สามารถเพิ่มเป็นสมาชิกใหม่หรือขาจรได้' }}</p>
+            <p v-else-if="isNameLookup" class="px-1 pb-2 text-sm font-semibold text-stone-500">หากไม่ใช่คนในรายชื่อ สามารถเพิ่มสมาชิกใหม่ด้วยชื่อซ้ำได้</p>
+            <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="openCreateMemberModal"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
           </div>
         </div>
       </div>
@@ -528,18 +583,77 @@ async function exportExcel() {
           <template v-else>
             <div v-if="paymentLoading" class="rounded-lg bg-paper-100 p-5 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">กำลังคำนวณค่าใช้จ่ายล่าสุด...</div>
             <div v-else-if="paymentSummary" class="grid gap-2">
-              <div v-for="item in paymentSummary.items" :key="item.key" class="flex items-start justify-between gap-3 rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
-                <div class="min-w-0">
-                  <p class="font-black">{{ item.label }}</p>
-                  <p v-if="item.description" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.description }}</p>
-                  <p v-if="item.quantity > 1" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.quantity }} × {{ money(item.unitAmountThb) }}</p>
+              <div v-for="item in paymentSummary.items" :key="item.key" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
+                <div class="flex items-start justify-between gap-3">
+                  <div class="min-w-0">
+                    <p class="font-black">{{ item.label }}</p>
+                    <p v-if="item.description" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.description }}</p>
+                    <p v-if="item.quantity > 1" class="mt-0.5 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ item.quantity }} × {{ money(item.unitAmountThb) }}</p>
+                  </div>
+                  <p class="shrink-0 font-black tabular-nums">{{ money(item.amountThb) }}</p>
                 </div>
-                <p class="shrink-0 font-black tabular-nums">{{ money(item.amountThb) }}</p>
+                <div v-if="item.details?.length" class="mt-3 grid gap-1.5 border-t border-stone-200 pt-2 dark:border-stone-700" data-testid="shuttle-brand-details">
+                  <div v-for="detail in item.details" :key="detail.key" class="flex items-center justify-between gap-3 text-sm">
+                    <span class="font-bold">↳ {{ detail.label }}</span>
+                    <span class="shrink-0 text-xs font-semibold text-stone-500">{{ detail.quantity }} ลูก × {{ money(detail.unitAmountThb) }}</span>
+                  </div>
+                </div>
               </div>
+              <div v-if="combinedShuttleBreakdown?.details?.length" class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800">
+                <div class="flex items-center justify-between gap-3">
+                  <p class="font-black">{{ combinedShuttleBreakdown.label }}</p>
+                  <p class="font-black tabular-nums">{{ money(combinedShuttleBreakdown.amountThb) }}</p>
+                </div>
+                <div class="mt-3 grid gap-1.5 border-t border-stone-200 pt-2 dark:border-stone-700" data-testid="shuttle-brand-details">
+                  <div v-for="detail in combinedShuttleBreakdown.details" :key="detail.key" class="flex items-center justify-between gap-3 text-sm">
+                    <span class="font-bold">↳ {{ detail.label }}</span>
+                    <span class="shrink-0 text-xs font-semibold text-stone-500">{{ detail.quantity }} ลูก × {{ money(detail.unitAmountThb) }}</span>
+                  </div>
+                </div>
+              </div>
+              <section v-if="paymentSummary.matchHistory?.length" class="mt-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700" data-testid="payment-match-history">
+                <div class="flex items-center justify-between gap-3">
+                  <h3 class="font-black">ประวัติการเล่นแบบย่อ</h3>
+                  <span class="text-xs font-semibold text-stone-500">วางเมาส์เพื่อดูรายละเอียด</span>
+                </div>
+                <div class="mt-2 grid gap-1.5">
+                  <div
+                    v-for="match in paymentSummary.matchHistory"
+                    :key="match.matchId"
+                    class="group relative flex cursor-help items-center justify-between gap-3 rounded-md bg-paper-50 px-3 py-2 text-sm outline-none ring-court-500/30 focus:ring-2 dark:bg-stone-900"
+                    tabindex="0"
+                    :title="matchHistoryTooltip(match)"
+                  >
+                    <span class="min-w-0 truncate font-bold">เกม #{{ match.matchId }} · {{ match.court || 'ไม่ระบุสนาม' }}</span>
+                    <span class="shrink-0 rounded px-2 py-0.5 text-xs font-black" :class="match.result === 'ชนะ' ? 'bg-green-100 text-green-700 dark:bg-green-950/40 dark:text-green-300' : match.result === 'แพ้' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300' : 'bg-stone-200 text-stone-700 dark:bg-stone-700 dark:text-stone-200'">{{ match.result }}</span>
+                    <div class="pointer-events-none invisible absolute bottom-full left-0 z-40 mb-2 w-72 rounded-lg bg-stone-950 p-3 text-xs font-semibold leading-5 text-white opacity-0 shadow-xl transition group-hover:visible group-hover:opacity-100 group-focus:visible group-focus:opacity-100">
+                      <p class="font-black">เกม #{{ match.matchId }} · {{ match.result }}</p>
+                      <p>ทีม: {{ match.team || '-' }}</p>
+                      <p>พบ: {{ match.opponent || '-' }}</p>
+                      <p>สนาม: {{ match.court || '-' }} · ระดับ: {{ match.level || '-' }}</p>
+                      <p>เวลา: {{ match.startedAt || '-' }}<template v-if="match.endedAt"> ถึง {{ match.endedAt }}</template></p>
+                      <p>ลูกแบด: {{ match.shuttles || 0 }} ลูก</p>
+                      <p v-if="match.note">หมายเหตุ: {{ match.note }}</p>
+                    </div>
+                  </div>
+                </div>
+              </section>
               <div class="mt-2 flex items-center justify-between border-t border-stone-200 pt-4 text-lg font-black dark:border-stone-700">
                 <span>ยอดรวม</span>
                 <span class="text-court-700 dark:text-court-300">{{ money(paymentSummary.totalThb) }}</span>
               </div>
+              <div v-if="paymentSummary.posEnabled" class="mt-2 grid gap-2 rounded-lg bg-sky-50 p-3 text-sm dark:bg-sky-950/30">
+                <div class="flex justify-between"><span>ยอด Match ทั้งหมด</span><b>{{ money(paymentSummary.matchTotalThb) }}</b></div>
+                <div class="flex justify-between"><span>ยอดสินค้า POS</span><b>{{ money(paymentSummary.posTotalThb) }}</b></div>
+              </div>
+              <fieldset class="mt-2 grid gap-2 text-sm font-black">
+                <legend class="mb-1">ช่องทางชำระ</legend>
+                <div class="grid grid-cols-2 gap-2">
+                  <label class="flex h-11 items-center gap-2 rounded-lg border px-3" :class="paymentMethod === 'cash' ? 'border-court-500 bg-court-500/10' : 'border-stone-200 dark:border-stone-700'"><input v-model="paymentMethod" type="radio" value="cash" /> เงินสด</label>
+                  <label class="flex h-11 items-center gap-2 rounded-lg border px-3" :class="paymentMethod === 'promptpay' ? 'border-court-500 bg-court-500/10' : 'border-stone-200 dark:border-stone-700'"><input v-model="paymentMethod" type="radio" value="promptpay" /> สแกน</label>
+                </div>
+              </fieldset>
+              <div v-if="paymentMethod==='promptpay'" class="mt-2 grid place-items-center rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><img v-if="paymentQr" :src="paymentQr" alt="Match PromptPay QR" class="h-44 w-44 rounded bg-white p-1" /><p v-else class="text-center text-sm font-bold text-stone-500">บันทึกเป็นการชำระแบบสแกน · ยังไม่ได้ตั้งค่า PromptPay QR</p></div>
               <p class="text-xs font-semibold text-stone-500">คำนวณใหม่จากข้อมูลล่าสุดของระบบก่อนแสดงรายการนี้</p>
             </div>
           </template>
@@ -620,6 +734,30 @@ async function exportExcel() {
         </p>
       </div>
     </div>
-    <div v-if="showCreateMember" class="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-3"><form class="w-full max-w-md rounded-lg bg-white p-4 dark:bg-stone-900" @submit.prevent="createAndSelectMember"><h2 class="text-xl font-black">เพิ่มสมาชิกใหม่</h2><div class="mt-3 grid gap-3"><input v-model="forms.newPlayerName" required placeholder="ชื่อ" class="h-11 rounded-md border bg-transparent px-3"/><input :value="forms.newPlayerPhone" disabled class="h-11 rounded-md border bg-stone-100 px-3"/><select v-model="newMemberType" class="h-11 rounded-md border bg-transparent px-3"><option value="general">สมาชิกทั่วไป</option><option value="club">สมาชิกชมรม</option></select><div class="grid grid-cols-2 gap-2"><button type="button" class="h-11 rounded-md border" @click="showCreateMember=false">ยกเลิก</button><button class="h-11 rounded-md bg-court-500 font-black text-white">เพิ่มสมาชิก</button></div></div></form></div>
+    <div v-if="showCreateMember" class="fixed inset-0 z-[60] grid place-items-center bg-black/50 p-3" @click.self="showCreateMember=false">
+      <form class="w-full max-w-md rounded-lg bg-white p-4 dark:bg-stone-900" @submit.prevent="createAndSelectMember">
+        <h2 class="text-xl font-black">เพิ่มสมาชิกใหม่</h2>
+        <div class="mt-3 grid gap-3">
+          <input v-model="newMemberName" required aria-label="ชื่อสมาชิกใหม่" placeholder="ชื่อ" class="h-11 rounded-md border bg-transparent px-3" />
+          <p class="rounded-md bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">** ชื่อซ้ำจะมีผลตอนเรียกชื่อ</p>
+          <div class="grid gap-1">
+            <input v-model="newMemberPhone" required inputmode="tel" autocomplete="tel" aria-label="เบอร์โทรสมาชิกใหม่" placeholder="เบอร์โทร 10 หลัก" class="h-11 rounded-md border bg-transparent px-3" />
+            <p class="text-xs font-semibold" :class="newMemberPhoneDigits.length > 0 && newMemberPhoneDigits.length !== 10 ? 'text-red-600' : 'text-stone-500'">กรอกเบอร์โทรให้ครบ 10 หลัก</p>
+          </div>
+          <div class="relative">
+            <select v-model="newMemberType" aria-label="ประเภทสมาชิก" class="h-11 w-full appearance-none rounded-md border bg-transparent px-3 pr-10">
+              <option value="general">สมาชิกทั่วไป</option>
+              <option value="club">สมาชิกชมรม</option>
+            </select>
+            <ArrowDown class="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-500" aria-hidden="true" />
+          </div>
+          <p v-if="createMemberError" class="rounded-md bg-red-50 p-3 text-sm font-bold text-red-700 dark:bg-red-950/40 dark:text-red-200">{{ createMemberError }}</p>
+          <div class="grid grid-cols-2 gap-2">
+            <button type="button" class="h-11 rounded-md border" :disabled="createMemberSaving" @click="showCreateMember=false">ยกเลิก</button>
+            <button class="h-11 rounded-md bg-court-500 font-black text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="!canSubmitNewMember">{{ createMemberSaving ? 'กำลังเพิ่ม...' : 'เพิ่มสมาชิก' }}</button>
+          </div>
+        </div>
+      </form>
+    </div>
   </section>
 </template>

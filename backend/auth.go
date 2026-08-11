@@ -42,25 +42,25 @@ type adminUser struct {
 }
 
 type adminSessionItem struct {
-	ID                string `json:"id"`
-	Name              string `json:"name"`
-	Type              string `json:"type"`
-	Players           int    `json:"players"`
-	PaidPlayers       int    `json:"paidPlayers"`
-	UnpaidPlayers     int    `json:"unpaidPlayers"`
-	Matches           int    `json:"matches"`
-	QueueMatches      int    `json:"queueMatches"`
-	LiveMatches       int    `json:"liveMatches"`
-	HistoryMatches    int    `json:"historyMatches"`
-	Shuttles          int    `json:"shuttles"`
-	Revenue           int    `json:"revenue"`
-	UpdatedAt         string `json:"updatedAt"`
-	Deletable         bool   `json:"deletable"`
-	DeleteBlocked     string `json:"deleteBlockedReason,omitempty"`
-	BillingMethod     string `json:"billingMethod,omitempty"`
-	ChargedCoin       int    `json:"chargedCoinCost"`
-	RefundAvailable   bool   `json:"refundAvailable"`
-	RefundDescription string `json:"refundDescription,omitempty"`
+	ID                string  `json:"id"`
+	Name              string  `json:"name"`
+	Type              string  `json:"type"`
+	Players           int     `json:"players"`
+	PaidPlayers       int     `json:"paidPlayers"`
+	UnpaidPlayers     int     `json:"unpaidPlayers"`
+	Matches           int     `json:"matches"`
+	QueueMatches      int     `json:"queueMatches"`
+	LiveMatches       int     `json:"liveMatches"`
+	HistoryMatches    int     `json:"historyMatches"`
+	Shuttles          int     `json:"shuttles"`
+	Revenue           float64 `json:"revenue"`
+	UpdatedAt         string  `json:"updatedAt"`
+	Deletable         bool    `json:"deletable"`
+	DeleteBlocked     string  `json:"deleteBlockedReason,omitempty"`
+	BillingMethod     string  `json:"billingMethod,omitempty"`
+	ChargedCoin       int     `json:"chargedCoinCost"`
+	RefundAvailable   bool    `json:"refundAvailable"`
+	RefundDescription string  `json:"refundDescription,omitempty"`
 }
 
 type coinLedgerItem struct {
@@ -239,7 +239,10 @@ func (a *app) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	user, passwordHash, err := a.adminByEmail(r.Context(), normalizeEmail(body.Email))
 	if err != nil || bcrypt.CompareHashAndPassword([]byte(passwordHash), []byte(body.Password)) != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid login"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "อีเมลหรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่",
+			"code":  "invalid_login",
+		})
 		return
 	}
 	if !user.Verified {
@@ -280,9 +283,10 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	benefits, _ := a.adminBenefits(r.Context(), user.ID, false)
 	features := a.features(r.Context(), user.ID)
-	memberCount, bookingCount := 0, 0
+	memberCount, bookingCount, posSaleCount := 0, 0, 0
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, user.ID).Scan(&memberCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, user.ID).Scan(&bookingCount)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, user.ID).Scan(&posSaleCount)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
@@ -294,6 +298,7 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 		"features":             features,
 		"memberCount":          memberCount,
 		"bookingCount":         bookingCount,
+		"posSaleCount":         posSaleCount,
 	})
 }
 
@@ -507,6 +512,8 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.handleAdminMembers(w, r, user, action)
 	case strings.HasPrefix(action, "booking"):
 		a.handleAdminBooking(w, r, user, action)
+	case strings.HasPrefix(action, "pos"):
+		a.handleAdminPOS(w, r, user, action)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -666,9 +673,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1000,7 +1007,10 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 			writeAuthFailure(w, r, backofficeSessionKind)
 			return
 		}
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid backoffice login"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง กรุณาตรวจสอบแล้วลองใหม่",
+			"code":  "invalid_backoffice_login",
+		})
 		return
 	}
 	action := strings.TrimPrefix(r.URL.Path, "/api/backoffice/")
@@ -1349,9 +1359,10 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 	orders, _ := a.coinPurchaseOrders(r.Context(), adminID, true, 20)
 	benefits, _ := a.adminBenefits(r.Context(), adminID, true)
 	features := a.features(r.Context(), adminID)
-	memberCount, bookingCount := 0, 0
+	memberCount, bookingCount, posSaleCount := 0, 0, 0
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, adminID).Scan(&memberCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, adminID).Scan(&bookingCount)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, adminID).Scan(&posSaleCount)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":         user,
 		"sessions":     sessions,
@@ -1361,6 +1372,7 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 		"features":     features,
 		"memberCount":  memberCount,
 		"bookingCount": bookingCount,
+		"posSaleCount": posSaleCount,
 	})
 }
 
@@ -1888,7 +1900,16 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 		}
 		items = append(items, item)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return items, err
+	}
+	rows.Close()
+	for index := range items {
+		if revenue, _, loadErr := a.sessionRevenueExact(ctx, items[index].ID); loadErr == nil {
+			items[index].Revenue = revenue
+		}
+	}
+	return items, nil
 }
 
 func (a *app) coinLedger(ctx context.Context, adminID string, limit int) ([]coinLedgerItem, error) {

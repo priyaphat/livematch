@@ -16,10 +16,13 @@ const props = defineProps([
   'playerName',
   'availableCourtNames',
   'activeShuttleBrands',
+  'saveSettings',
   'isSessionReadOnly'
 ])
 
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+if (!props.state.settings) props.state.settings = {}
+if (props.state.settings.showWaitingOnQueueShare === undefined) props.state.settings.showWaitingOnQueueShare = false
 const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
 if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
 
@@ -68,7 +71,11 @@ function confirmStartMatch() {
           <p class="text-sm font-semibold text-stone-500 dark:text-stone-400">เกมที่ยืนยันแล้ว รอเลือกสนามและเริ่มการแข่งขัน</p>
         </div>
       </div>
-      <div class="grid w-full gap-2 sm:w-auto">
+      <div class="grid w-full gap-2 sm:w-auto sm:grid-cols-2">
+        <label class="flex h-10 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
+          <input v-model="state.settings.showWaitingOnQueueShare" type="checkbox" :disabled="isSessionReadOnly" @change="saveSettings" />
+          Fade รายชื่อคนรอจับคู่
+        </label>
         <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white" @click="openQueueQr">
           <QrCode class="h-4 w-4" />
           QR แสดงคิว

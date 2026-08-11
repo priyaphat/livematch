@@ -87,6 +87,7 @@ type Settings struct {
 	RandomPriority          string         `json:"randomPriority"`
 	ShowPaymentOnShare      bool           `json:"showPaymentOnShare"`
 	ShowTotalOnShare        bool           `json:"showTotalOnShare"`
+	ShowWaitingOnQueueShare bool           `json:"showWaitingOnQueueShare"`
 	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
 	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
 	AnnouncementTemplate    string         `json:"announcementTemplate"`
@@ -94,44 +95,67 @@ type Settings struct {
 }
 
 type Player struct {
-	ID         int    `json:"id"`
-	Name       string `json:"name"`
-	Games      int    `json:"games"`
-	Wins       int    `json:"wins"`
-	Draws      int    `json:"draws"`
-	Losses     int    `json:"losses"`
-	Shuttles   int    `json:"shuttles"`
-	Paid       bool   `json:"paid"`
-	Active     bool   `json:"active"`
-	Level      string `json:"level"`
-	Coupon     bool   `json:"coupon"`
-	ClubMember bool   `json:"clubMember"`
-	MemberID   string `json:"memberId,omitempty"`
+	ID               int    `json:"id"`
+	Name             string `json:"name"`
+	Games            int    `json:"games"`
+	Wins             int    `json:"wins"`
+	Draws            int    `json:"draws"`
+	Losses           int    `json:"losses"`
+	Shuttles         int    `json:"shuttles"`
+	Paid             bool   `json:"paid"`
+	Active           bool   `json:"active"`
+	Level            string `json:"level"`
+	Coupon           bool   `json:"coupon"`
+	ClubMember       bool   `json:"clubMember"`
+	MemberID         string `json:"memberId,omitempty"`
+	BillingAccountID string `json:"billingAccountId,omitempty"`
 }
 
 type PlayerPaymentItem struct {
-	Key              string  `json:"key"`
-	Label            string  `json:"label"`
-	Description      string  `json:"description,omitempty"`
-	Quantity         int     `json:"quantity"`
-	UnitAmount       int     `json:"-"`
-	Amount           int     `json:"-"`
-	UnitAmountTHB    float64 `json:"unitAmountThb"`
-	AmountTHB        float64 `json:"amountThb"`
-	UnitAmountSatang int64   `json:"unitAmountSatang"`
-	AmountSatang     int64   `json:"amountSatang"`
+	Key              string                `json:"key"`
+	Label            string                `json:"label"`
+	Description      string                `json:"description,omitempty"`
+	Quantity         int                   `json:"quantity"`
+	UnitAmount       int                   `json:"-"`
+	Amount           int                   `json:"-"`
+	UnitAmountTHB    float64               `json:"unitAmountThb"`
+	AmountTHB        float64               `json:"amountThb"`
+	UnitAmountSatang int64                 `json:"unitAmountSatang"`
+	AmountSatang     int64                 `json:"amountSatang"`
+	Details          []PlayerPaymentDetail `json:"details,omitempty"`
+}
+
+type PlayerPaymentDetail struct {
+	Key           string  `json:"key"`
+	Label         string  `json:"label"`
+	Quantity      int     `json:"quantity"`
+	UnitAmountTHB float64 `json:"unitAmountThb"`
+}
+
+type PlayerMatchHistoryItem struct {
+	MatchID   int    `json:"matchId"`
+	Court     string `json:"court"`
+	Level     string `json:"level"`
+	Result    string `json:"result"`
+	Team      string `json:"team"`
+	Opponent  string `json:"opponent"`
+	StartedAt string `json:"startedAt"`
+	EndedAt   string `json:"endedAt"`
+	Shuttles  int    `json:"shuttles"`
+	Note      string `json:"note,omitempty"`
 }
 
 type PlayerPaymentSummary struct {
-	PlayerID    int                 `json:"playerId"`
-	PlayerName  string              `json:"playerName"`
-	SessionType string              `json:"sessionType"`
-	Paid        bool                `json:"paid"`
-	Items       []PlayerPaymentItem `json:"items"`
-	Total       int                 `json:"-"`
-	TotalTHB    float64             `json:"totalThb"`
-	TotalSatang int64               `json:"totalSatang"`
-	Calculated  time.Time           `json:"calculatedAt"`
+	PlayerID     int                      `json:"playerId"`
+	PlayerName   string                   `json:"playerName"`
+	SessionType  string                   `json:"sessionType"`
+	Paid         bool                     `json:"paid"`
+	Items        []PlayerPaymentItem      `json:"items"`
+	MatchHistory []PlayerMatchHistoryItem `json:"matchHistory,omitempty"`
+	Total        int                      `json:"-"`
+	TotalTHB     float64                  `json:"totalThb"`
+	TotalSatang  int64                    `json:"totalSatang"`
+	Calculated   time.Time                `json:"calculatedAt"`
 }
 
 type ShuttleBrand struct {
@@ -151,6 +175,11 @@ type ReturnedShuttle struct {
 	Number  int    `json:"number"`
 }
 
+type MatchScore struct {
+	A int `json:"a"`
+	B int `json:"b"`
+}
+
 type Couple struct {
 	ID int `json:"id"`
 	A  int `json:"a"`
@@ -167,6 +196,7 @@ type Match struct {
 	B2                     int              `json:"b2"`
 	Shuttles               int              `json:"shuttles"`
 	Winner                 string           `json:"winner"`
+	Scores                 []MatchScore     `json:"scores"`
 	ShuttleSeq             string           `json:"shuttleSequence"`
 	ShuttleSeqItems        []ShuttleSeqItem `json:"shuttleSequenceItems"`
 	ShuttleReturned        bool             `json:"shuttleReturned"`
@@ -254,6 +284,7 @@ func main() {
 	}
 	go a.runExpiredBookingHoldCleanup(context.Background())
 	go a.runRateLimitCleanup(context.Background())
+	go a.refreshAdminTelegramWebhooks(context.Background())
 	a.tts = newTTSService(db)
 
 	mux := http.NewServeMux()
@@ -348,6 +379,7 @@ func (a *app) migrate(ctx context.Context) error {
 			random_priority text not null default 'level',
 			show_payment_on_share boolean not null default true,
 			show_total_on_share boolean not null default true,
+			show_waiting_on_queue_share boolean not null default false,
 			reset_players_after_finish boolean not null default true,
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
@@ -360,6 +392,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists shuttle_brands jsonb not null default '[]'::jsonb;
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
 		alter table session_settings add column if not exists show_total_on_share boolean not null default true;
+		alter table session_settings add column if not exists show_waiting_on_queue_share boolean not null default false;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
 		alter table session_settings add column if not exists session_fee integer not null default 0;
@@ -424,6 +457,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches drop constraint if exists matches_phase_check;
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
 		alter table matches add column if not exists winner text not null default '';
+		alter table matches add column if not exists scores jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists shuttle_sequence text not null default '';
 		alter table matches add column if not exists shuttle_sequence_items jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists shuttle_returned boolean not null default false;
@@ -646,9 +680,11 @@ func (a *app) migrate(ctx context.Context) error {
 			admin_id text primary key references admin_users(id) on delete cascade,
 			member_enabled boolean not null default false,
 			booking_enabled boolean not null default false,
+			pos_enabled boolean not null default false,
 			updated_by text not null default '',
 			updated_at timestamptz not null default now()
 		);
+		alter table admin_features add column if not exists pos_enabled boolean not null default false;
 		create table if not exists public_users (
 			id text primary key,
 			google_sub text not null unique,
@@ -740,10 +776,12 @@ func (a *app) migrate(ctx context.Context) error {
 			paid boolean not null,
 			amount_thb integer not null default 0,
 			amount_satang bigint not null default 0,
+			payment_method text not null default 'cash',
 			actor_id text not null default '',
 			created_at timestamptz not null default now()
 		);
 		alter table player_payment_events add column if not exists amount_satang bigint not null default 0;
+		alter table player_payment_events add column if not exists payment_method text not null default 'cash';
 		update player_payment_events set amount_satang = amount_thb::bigint * 100 where amount_satang = 0 and amount_thb <> 0;
 		create table if not exists booking_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
@@ -832,6 +870,161 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);
 		create index if not exists idx_booking_payments_booking on booking_payments(booking_id, created_at desc);
 		create index if not exists idx_player_payment_member on player_payment_events(member_id, created_at desc);
+		create table if not exists billing_accounts (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			kind text not null check (kind in ('member','guest')),
+			member_id text references members(id) on delete set null,
+			display_name text not null,
+			phone text not null default '',
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_billing_accounts_member on billing_accounts(admin_id, member_id) where member_id is not null;
+		create index if not exists idx_billing_accounts_admin on billing_accounts(admin_id, active, display_name);
+		alter table players add column if not exists billing_account_id text references billing_accounts(id) on delete set null;
+		create index if not exists idx_players_billing_account on players(billing_account_id) where billing_account_id is not null;
+		create table if not exists pos_settings (
+			admin_id text primary key references admin_users(id) on delete cascade,
+			promptpay_type text not null default 'mobile',
+			promptpay_id text not null default '',
+			promptpay_receiver_name text not null default '',
+			receipt_header text not null default '',
+			receipt_footer text not null default '',
+			logo_data text not null default '',
+			default_low_stock integer not null default 5 check (default_low_stock >= 0),
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		alter table pos_settings add column if not exists theme text not null default 'light';
+		alter table pos_settings add column if not exists language text not null default 'th';
+		alter table pos_settings add column if not exists tax_rate_percent integer not null default 0;
+		alter table pos_settings add column if not exists prices_include_tax boolean not null default true;
+		create table if not exists pos_categories (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			created_at timestamptz not null default now()
+		);
+		alter table pos_categories add column if not exists active boolean not null default true;
+		create unique index if not exists idx_pos_categories_name on pos_categories(admin_id, lower(name));
+		create table if not exists pos_units (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_pos_units_name on pos_units(admin_id, lower(name));
+		create table if not exists pos_products (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			sku text not null default '',
+			category text not null default '',
+			name text not null,
+			price_thb integer not null check (price_thb >= 0),
+			cost_thb integer not null default 0 check (cost_thb >= 0),
+			stock_quantity integer not null default 0 check (stock_quantity >= 0),
+			low_stock_threshold integer not null default 5 check (low_stock_threshold >= 0),
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_pos_products_sku on pos_products(admin_id, lower(sku)) where sku <> '';
+		create index if not exists idx_pos_products_admin on pos_products(admin_id, active, category, name);
+		alter table pos_products add column if not exists unit text not null default 'ชิ้น';
+		alter table pos_products add column if not exists image_data text not null default '';
+		insert into pos_categories (id,admin_id,name)
+		select 'category-'||substr(md5(admin_id||':'||lower(category)),1,16),admin_id,category
+		from pos_products where category<>''
+		on conflict do nothing;
+		insert into pos_units (id,admin_id,name)
+		select 'unit-'||substr(md5(admin_id||':'||lower(unit)),1,16),admin_id,unit
+		from pos_products where unit<>''
+		on conflict do nothing;
+		create table if not exists billing_payments (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			billing_account_id text references billing_accounts(id) on delete set null,
+			amount_thb integer not null check (amount_thb >= 0),
+			method text not null check (method in ('cash','promptpay')),
+			status text not null default 'paid' check (status in ('paid','void')),
+			received_by text not null default '',
+			created_at timestamptz not null default now(),
+			voided_at timestamptz,
+			voided_by text not null default ''
+		);
+		create index if not exists idx_billing_payments_admin on billing_payments(admin_id, created_at desc);
+		create table if not exists pos_sales (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			billing_account_id text references billing_accounts(id) on delete set null,
+			buyer_name text not null default '',
+			status text not null check (status in ('open','paid','void')),
+			total_thb integer not null check (total_thb >= 0),
+			cost_thb integer not null default 0 check (cost_thb >= 0),
+			payment_id text references billing_payments(id) on delete set null,
+			note text not null default '',
+			created_by text not null default '',
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			voided_at timestamptz
+		);
+		create index if not exists idx_pos_sales_admin on pos_sales(admin_id, status, created_at desc);
+		create index if not exists idx_pos_sales_account on pos_sales(billing_account_id, status, created_at desc);
+		create table if not exists pos_sale_items (
+			id bigserial primary key,
+			sale_id text not null references pos_sales(id) on delete cascade,
+			product_id text references pos_products(id) on delete set null,
+			product_name text not null,
+			sku text not null default '',
+			quantity integer not null check (quantity > 0),
+			unit_price_thb integer not null check (unit_price_thb >= 0),
+			unit_cost_thb integer not null default 0 check (unit_cost_thb >= 0),
+			line_total_thb integer not null check (line_total_thb >= 0)
+		);
+		create table if not exists pos_stock_batches (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			name text not null,
+			mode text not null check (mode in ('in','out','adjust')),
+			note text not null default '',
+			total_cost_thb integer not null default 0 check (total_cost_thb >= 0),
+			actor_id text not null default '',
+			created_at timestamptz not null default now()
+		);
+		create index if not exists idx_pos_stock_batches_admin on pos_stock_batches(admin_id, created_at desc);
+		create table if not exists pos_stock_movements (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			product_id text not null references pos_products(id) on delete cascade,
+			sale_id text references pos_sales(id) on delete set null,
+			delta integer not null,
+			balance integer not null check (balance >= 0),
+			reason text not null check (reason in ('sale','void','restock','adjustment')),
+			note text not null default '',
+			actor_id text not null default '',
+			created_at timestamptz not null default now()
+		);
+		alter table pos_stock_movements add column if not exists batch_id text references pos_stock_batches(id) on delete set null;
+		alter table pos_stock_movements add column if not exists unit_cost_thb integer not null default 0 check (unit_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists total_cost_thb integer not null default 0 check (total_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists previous_cost_thb integer not null default 0 check (previous_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists resulting_cost_thb integer not null default 0 check (resulting_cost_thb >= 0);
+		create index if not exists idx_pos_stock_product on pos_stock_movements(product_id, created_at desc);
+		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
+		create table if not exists billing_payment_allocations (
+			id bigserial primary key,
+			payment_id text not null references billing_payments(id) on delete cascade,
+			source_type text not null check (source_type in ('match','pos')),
+			source_id text not null,
+			amount_thb integer not null check (amount_thb >= 0),
+			created_at timestamptz not null default now(),
+			unique (payment_id, source_type, source_id)
+		);
+		create index if not exists idx_billing_alloc_source on billing_payment_allocations(source_type, source_id);
 		create index if not exists idx_sessions_admin on sessions(admin_id);
 		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
@@ -1409,7 +1602,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
 		rows, err := a.db.QueryContext(r.Context(), `
-			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb, e.amount_satang,
+			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb, e.amount_satang, e.payment_method,
 			       to_char(e.created_at at time zone 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI')
 			from player_payment_events e
 			left join players p on p.session_id=e.session_id and p.id=e.player_id
@@ -1425,16 +1618,16 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		for rows.Next() {
 			var eventID, amountSatang int64
 			var playerID, amount int
-			var playerName, createdAt string
+			var playerName, createdAt, paymentMethod string
 			var paid bool
-			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &amountSatang, &createdAt); err != nil {
+			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &amountSatang, &paymentMethod, &createdAt); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
 			if playerName == "" {
 				playerName = fmt.Sprintf("ผู้เล่น #%d", playerID)
 			}
-			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": thbFromSatang(amountSatang), "amountThb": thbFromSatang(amountSatang), "amountSatang": amountSatang, "createdAt": createdAt})
+			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": thbFromSatang(amountSatang), "amountThb": thbFromSatang(amountSatang), "amountSatang": amountSatang, "paymentMethod": paymentMethod, "createdAt": createdAt})
 		}
 		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
 			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
@@ -1450,7 +1643,20 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, player := range state.Players {
 			if player.ID == playerID && player.Active {
-				writeJSON(w, http.StatusOK, playerPaymentSummary(state, player))
+				a.writeCombinedPlayerPaymentSummary(w, r, state, player)
+				return
+			}
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "settle":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		for _, player := range state.Players {
+			if player.ID == playerID && player.Active && !player.Paid {
+				a.settlePlayerCombinedBill(w, r, state, player)
 				return
 			}
 		}
@@ -1512,6 +1718,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Active     *bool   `json:"active"`
 			ClubMember *bool   `json:"clubMember"`
 			MemberID   *string `json:"memberId"`
+			Method     string  `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		logDetails := map[string]any{}
@@ -1530,7 +1737,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					state.Players[i].Name = name
 				}
 				if body.Paid != nil {
+					method := strings.ToLower(strings.TrimSpace(body.Method))
+					if method != "cash" && method != "promptpay" {
+						method = "cash"
+					}
 					logDetails["paid"] = *body.Paid
+					logDetails["paymentMethod"] = method
 					actionName = "toggle_player_paid"
 					state.Players[i].Paid = *body.Paid
 					if *body.Paid {
@@ -1781,12 +1993,18 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "live" && len(parts) >= 4 && (parts[3] == "finish" || parts[3] == "cancel"):
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Note            string `json:"note"`
-			Winner          string `json:"winner"`
-			ShuttleReturned bool   `json:"shuttleReturned"`
+			Note            string       `json:"note"`
+			Winner          string       `json:"winner"`
+			Scores          []MatchScore `json:"scores"`
+			ShuttleReturned bool         `json:"shuttleReturned"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !closeLive(&state, matchID, parts[3] == "cancel", body.Note, body.Winner, body.ShuttleReturned) {
+		found, resultErr := closeLiveWithScores(&state, matchID, parts[3] == "cancel", body.Note, body.Winner, body.Scores, body.ShuttleReturned)
+		if resultErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": resultErr.Error()})
+			return
+		}
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
@@ -1794,18 +2012,24 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		if parts[3] == "cancel" {
 			actionName = "cancel_live_match"
 		}
-		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "note": body.Note, "shuttleReturned": body.ShuttleReturned})
+		a.respondSavedWithActivity(w, r, state, actionName, "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "scores": body.Scores, "note": body.Note, "shuttleReturned": body.ShuttleReturned})
 	case r.Method == http.MethodPatch && action == "history" && len(parts) >= 3:
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Winner string `json:"winner"`
+			Winner string        `json:"winner"`
+			Scores *[]MatchScore `json:"scores"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if !updateHistoryWinner(&state, matchID, body.Winner) {
+		found, resultErr := updateHistoryResult(&state, matchID, body.Winner, body.Scores)
+		if resultErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": resultErr.Error()})
+			return
+		}
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
 			return
 		}
-		a.respondSavedWithActivity(w, r, state, "update_history_winner", "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner})
+		a.respondSavedWithActivity(w, r, state, "update_history_result", "match", strconv.Itoa(matchID), map[string]any{"winner": body.Winner, "scores": body.Scores})
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -1832,6 +2056,10 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 		details["sessionName"] = state.Session.Name
 		a.insertActivityLog(r.Context(), "admin", user.ID, action, targetType, targetID, details)
 		if action == "toggle_player_paid" {
+			paymentMethod, _ := details["paymentMethod"].(string)
+			if paymentMethod != "promptpay" {
+				paymentMethod = "cash"
+			}
 			playerID, _ := strconv.Atoi(targetID)
 			for _, player := range state.Players {
 				if player.ID != playerID {
@@ -1848,7 +2076,7 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 				if player.MemberID != "" {
 					memberID = player.MemberID
 				}
-				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,actor_id) values ($1,$2,$3,$4,$5,$6,$7)`, state.Session.ID, player.ID, memberID, player.Paid, amount, amountSatang, user.ID)
+				_, _ = a.db.ExecContext(r.Context(), `insert into player_payment_events (session_id,player_id,member_id,paid,amount_thb,amount_satang,payment_method,actor_id) values ($1,$2,$3,$4,$5,$6,$7,$8)`, state.Session.ID, player.ID, memberID, player.Paid, amount, amountSatang, paymentMethod, user.ID)
 				break
 			}
 		}
@@ -1894,9 +2122,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			club_entry_fee = excluded.club_entry_fee,
@@ -1912,11 +2140,35 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			random_priority = excluded.random_priority,
 			show_payment_on_share = excluded.show_payment_on_share,
 			show_total_on_share = excluded.show_total_on_share,
+			show_waiting_on_queue_share = excluded.show_waiting_on_queue_share,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		return err
+	}
+
+	// POS may link a session-local guest to a billing account while another admin tab still
+	// holds an older session payload. Preserve that server-owned identity across state saves.
+	accountRows, accountErr := tx.QueryContext(ctx, `select id,coalesce(billing_account_id,'') from players where session_id=$1`, state.Session.ID)
+	if accountErr != nil {
+		return accountErr
+	}
+	existingAccounts := map[int]string{}
+	for accountRows.Next() {
+		var playerID int
+		var accountID string
+		if err = accountRows.Scan(&playerID, &accountID); err != nil {
+			accountRows.Close()
+			return err
+		}
+		existingAccounts[playerID] = accountID
+	}
+	accountRows.Close()
+	for index := range state.Players {
+		if state.Players[index].BillingAccountID == "" {
+			state.Players[index].BillingAccountID = existingAccounts[state.Players[index].ID]
+		}
 	}
 
 	for _, table := range []string{"players", "couples", "matches", "live_share_hours", "returned_shuttles"} {
@@ -1927,9 +2179,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''))
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, billing_account_id)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''))
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.BillingAccountID); err != nil {
 			return err
 		}
 	}
@@ -1960,16 +2212,20 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		if err != nil {
 			return err
 		}
+		scores, err := json.Marshal(match.Scores)
+		if err != nil {
+			return err
+		}
 		pricingMode := match.ShuttlePricingMode
 		if pricingMode == "" {
 			pricingMode = shuttlePricingLegacy
 		}
 		_, err = tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, scores, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -2054,7 +2310,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw, shuttleBrandsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -2072,6 +2328,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.RandomPriority,
 		&state.Settings.ShowPaymentOnShare,
 		&state.Settings.ShowTotalOnShare,
+		&state.Settings.ShowWaitingOnQueueShare,
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
@@ -2092,7 +2349,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, '')
+		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, ''), coalesce(billing_account_id, '')
 		from players
 		where session_id = $1
 		order by id
@@ -2103,7 +2360,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.BillingAccountID); err != nil {
 			return SessionState{}, err
 		}
 		state.Players = append(state.Players, player)
@@ -2140,7 +2397,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
 		from matches
 		where session_id = $1
 		order by id
@@ -2152,12 +2409,15 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var phase string
 		var match Match
-		var seqItemsRaw, priceSnapshotRaw []byte
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
+		var scoresRaw, seqItemsRaw, priceSnapshotRaw []byte
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &scoresRaw, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
 			return SessionState{}, err
 		}
 		if len(seqItemsRaw) > 0 {
 			_ = json.Unmarshal(seqItemsRaw, &match.ShuttleSeqItems)
+		}
+		if len(scoresRaw) > 0 {
+			_ = json.Unmarshal(scoresRaw, &match.Scores)
 		}
 		if len(priceSnapshotRaw) > 0 {
 			_ = json.Unmarshal(priceSnapshotRaw, &match.ShuttlePriceSnapshot)
@@ -2267,6 +2527,7 @@ func defaultState(id, name, passcode string) SessionState {
 			RandomPriority:          "level",
 			ShowPaymentOnShare:      true,
 			ShowTotalOnShare:        true,
+			ShowWaitingOnQueueShare: false,
 			ResetPlayersAfterFinish: true,
 			StartMatchWithShuttle:   true,
 			AnnouncementTemplate:    defaultAnnouncementTemplate,
@@ -2864,10 +3125,59 @@ func returnLatestShuttle(state *SessionState, matchID int) (int, bool) {
 	return 0, false
 }
 
+func normalizedMatchResult(scores []MatchScore, manualWinner string) ([]MatchScore, string, error) {
+	if len(scores) == 0 {
+		if manualWinner != "A" && manualWinner != "B" && manualWinner != "draw" {
+			manualWinner = ""
+		}
+		return []MatchScore{}, manualWinner, nil
+	}
+	if len(scores) != 2 && len(scores) != 3 {
+		return nil, "", errors.New("คะแนนต้องมี 2 หรือ 3 เซต")
+	}
+	aWins, bWins := 0, 0
+	normalized := make([]MatchScore, len(scores))
+	for i, score := range scores {
+		if score.A < 0 || score.A > 99 || score.B < 0 || score.B > 99 {
+			return nil, "", fmt.Errorf("คะแนนเซตที่ %d ต้องอยู่ระหว่าง 0–99", i+1)
+		}
+		if score.A == score.B {
+			return nil, "", fmt.Errorf("คะแนนเซตที่ %d ห้ามเท่ากัน", i+1)
+		}
+		normalized[i] = score
+		if score.A > score.B {
+			aWins++
+		} else {
+			bWins++
+		}
+	}
+	winner := "draw"
+	if aWins > bWins {
+		winner = "A"
+	} else if bWins > aWins {
+		winner = "B"
+	}
+	return normalized, winner, nil
+}
+
 func closeLive(state *SessionState, matchID int, cancelled bool, note string, winner string, shuttleReturned bool) bool {
+	found, _ := closeLiveWithScores(state, matchID, cancelled, note, winner, nil, shuttleReturned)
+	return found
+}
+
+func closeLiveWithScores(state *SessionState, matchID int, cancelled bool, note string, winner string, scores []MatchScore, shuttleReturned bool) (bool, error) {
 	for i, match := range state.Live {
 		if match.ID != matchID {
 			continue
+		}
+		normalizedScores := []MatchScore{}
+		normalizedWinner := ""
+		if !cancelled {
+			var err error
+			normalizedScores, normalizedWinner, err = normalizedMatchResult(scores, winner)
+			if err != nil {
+				return false, err
+			}
 		}
 		state.Live = append(state.Live[:i], state.Live[i+1:]...)
 		match.EndedAt = nowHHMM()
@@ -2879,10 +3189,9 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 			match.Note = "จบการแข่งขัน"
 		}
 		if !cancelled {
-			if winner != "A" && winner != "B" && winner != "draw" {
-				winner = ""
-			}
-			match.Winner = winner
+			match.Scores = normalizedScores
+			winner = normalizedWinner
+			match.Winner = normalizedWinner
 			match.Status = "finished"
 		} else {
 			match.Winner = ""
@@ -2923,28 +3232,39 @@ func closeLive(state *SessionState, matchID int, cancelled bool, note string, wi
 			}
 		}
 		state.History = append([]Match{match}, state.History...)
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 func updateHistoryWinner(state *SessionState, matchID int, winner string) bool {
-	if winner != "A" && winner != "B" && winner != "draw" {
-		winner = ""
-	}
+	found, _ := updateHistoryResult(state, matchID, winner, nil)
+	return found
+}
+
+func updateHistoryResult(state *SessionState, matchID int, winner string, scores *[]MatchScore) (bool, error) {
 	for i := range state.History {
 		if state.History[i].ID != matchID {
 			continue
 		}
 		if isCancelledMatch(state.History[i]) {
-			return true
+			return true, nil
+		}
+		candidateScores := state.History[i].Scores
+		if scores != nil {
+			candidateScores = *scores
+		}
+		normalizedScores, normalizedWinner, err := normalizedMatchResult(candidateScores, winner)
+		if err != nil {
+			return false, err
 		}
 		applyResultStats(state, state.History[i], state.History[i].Winner, -1)
-		state.History[i].Winner = winner
-		applyResultStats(state, state.History[i], winner, 1)
-		return true
+		state.History[i].Scores = normalizedScores
+		state.History[i].Winner = normalizedWinner
+		applyResultStats(state, state.History[i], normalizedWinner, 1)
+		return true, nil
 	}
-	return false
+	return false, nil
 }
 
 func applyResultStats(state *SessionState, match Match, winner string, delta int) {
@@ -3169,6 +3489,44 @@ func paidRevenueExact(state SessionState) float64 {
 	return thbFromSatang(totalSatang)
 }
 
+func (a *app) sessionRevenueExact(ctx context.Context, sessionID string) (float64, float64, error) {
+	state, err := a.loadState(ctx, sessionID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return totalRevenueExact(state), paidRevenueExact(state), nil
+}
+
+func (a *app) revenueTotalsExact(ctx context.Context, adminID string) (float64, float64) {
+	query := `select id from sessions`
+	args := []any{}
+	if adminID != "" {
+		query += ` where admin_id=$1`
+		args = append(args, adminID)
+	}
+	rows, err := a.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return 0, 0
+	}
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if rows.Scan(&id) == nil {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	var total, paid float64
+	for _, id := range ids {
+		sessionTotal, sessionPaid, loadErr := a.sessionRevenueExact(ctx, id)
+		if loadErr == nil {
+			total += sessionTotal
+			paid += sessionPaid
+		}
+	}
+	return total, paid
+}
+
 func playerEntryFee(state SessionState, player Player) int {
 	if player.ClubMember {
 		return state.Settings.ClubEntryFee
@@ -3279,6 +3637,59 @@ func shuttleBrandNameForPayment(state SessionState, brandID string) string {
 	return defaultShuttleBrandName
 }
 
+func playerDisplayName(state SessionState, playerID int) string {
+	if playerID <= 0 {
+		return "-"
+	}
+	for _, player := range state.Players {
+		if player.ID == playerID {
+			return player.Name
+		}
+	}
+	return fmt.Sprintf("#%d", playerID)
+}
+
+func playerMatchHistory(state SessionState, playerID int) []PlayerMatchHistoryItem {
+	items := make([]PlayerMatchHistoryItem, 0)
+	for index := len(state.History) - 1; index >= 0; index-- {
+		match := state.History[index]
+		if !slices.Contains(matchPlayers(match), playerID) {
+			continue
+		}
+		onTeamA := playerID == match.A1 || playerID == match.A2
+		teamIDs, opponentIDs := []int{match.A1, match.A2}, []int{match.B1, match.B2}
+		if !onTeamA {
+			teamIDs, opponentIDs = opponentIDs, teamIDs
+		}
+		names := func(ids []int) string {
+			result := make([]string, 0, len(ids))
+			for _, id := range ids {
+				if id > 0 {
+					result = append(result, playerDisplayName(state, id))
+				}
+			}
+			return strings.Join(result, " + ")
+		}
+		result := "ไม่ระบุผล"
+		switch {
+		case isCancelledMatch(match):
+			result = "ยกเลิก"
+		case match.Winner == "draw":
+			result = "เสมอ"
+		case (onTeamA && match.Winner == "A") || (!onTeamA && match.Winner == "B"):
+			result = "ชนะ"
+		case match.Winner == "A" || match.Winner == "B":
+			result = "แพ้"
+		}
+		items = append(items, PlayerMatchHistoryItem{
+			MatchID: match.ID, Court: match.Court, Level: match.Level, Result: result,
+			Team: names(teamIDs), Opponent: names(opponentIDs), StartedAt: match.StartedAt,
+			EndedAt: match.EndedAt, Shuttles: match.Shuttles, Note: match.Note,
+		})
+	}
+	return items
+}
+
 func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaymentSummary) {
 	summary = PlayerPaymentSummary{
 		PlayerID: player.ID, PlayerName: player.Name, SessionType: state.Session.Type,
@@ -3309,6 +3720,7 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 	}
 
 	entryFee := playerEntryFee(state, player)
+	summary.MatchHistory = playerMatchHistory(state, player.ID)
 	summary.Items = append(summary.Items, PlayerPaymentItem{
 		Key: "entry", Label: "ค่าเข้าสนาม", Quantity: 1, UnitAmount: entryFee, Amount: entryFee,
 	})
@@ -3350,26 +3762,32 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		}
 	}
 	allocatedShuttleSatang := playerShuttleCostSatang(state, player.ID)
-	for lineNumber, line := range lines {
+	if hasSplitPricing && len(lines) > 0 {
+		details := make([]PlayerPaymentDetail, 0, len(lines))
+		for _, line := range lines {
+			details = append(details, PlayerPaymentDetail{
+				Key: "shuttle-detail-" + line.brandID, Label: shuttleBrandNameForPayment(state, line.brandID),
+				Quantity: line.count, UnitAmountTHB: float64(shuttleBrandPrice(state, line.brandID)),
+			})
+		}
+		amount := int((allocatedShuttleSatang + 99) / 100)
+		summary.Items = append(summary.Items, PlayerPaymentItem{
+			Key: "shuttle-split", Label: "ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)",
+			Quantity: 1, UnitAmount: amount, Amount: amount, UnitAmountSatang: allocatedShuttleSatang,
+			AmountSatang: allocatedShuttleSatang, Details: details,
+		})
+		summary.Total += amount
+	}
+	for _, line := range lines {
+		if hasSplitPricing {
+			continue
+		}
 		unitAmount := shuttleBrandPrice(state, line.brandID)
 		amount := line.count * unitAmount
 		unitAmountSatang := int64(unitAmount) * 100
 		amountSatang := int64(amount) * 100
 		label := "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID)
 		quantity := line.count
-		if hasSplitPricing {
-			if lineNumber > 0 {
-				continue
-			}
-			if lineNumber == 0 {
-				amountSatang = allocatedShuttleSatang
-				amount = int((amountSatang + 99) / 100)
-			}
-			unitAmount = amount
-			unitAmountSatang = amountSatang
-			quantity = 1
-			label = "ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)"
-		}
 		summary.Items = append(summary.Items, PlayerPaymentItem{
 			Key: "shuttle-" + line.brandID, Label: label,
 			Quantity: quantity, UnitAmount: unitAmount, Amount: amount, UnitAmountSatang: unitAmountSatang, AmountSatang: amountSatang,

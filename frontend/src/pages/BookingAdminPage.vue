@@ -23,11 +23,13 @@ import {
 import { exportBookingAdminExcel } from "../adminExcelExport";
 
 const props = defineProps(["apiRequest"]);
+const AUTO_REFRESH_MS = 10000;
 const today = new Date().toLocaleDateString("en-CA", {
   timeZone: "Asia/Bangkok",
 });
 const state = reactive({
   bookings: [],
+  pendingReviews: [],
   closures: [],
   date: today,
   loading: false,
@@ -69,6 +71,7 @@ const exportStatus = ref("");
 let timer;
 let settingsReady = false;
 let overviewRequest = 0;
+let memberSearchRequest = 0;
 
 const tabs = computed(() => [
   {
@@ -81,9 +84,28 @@ const tabs = computed(() => [
   { id: "export", label: "รายงาน", icon: Download },
   { id: "settings", label: "ตั้งค่า", icon: Settings },
 ]);
-const pendingBookings = computed(() =>
-  state.bookings.filter((booking) => booking.status === "pending_review"),
-);
+const pendingBookings = computed(() => {
+  const groups = new Map();
+  for (const booking of state.pendingReviews) {
+    const key = booking.batchId || booking.id;
+    if (!groups.has(key)) {
+      groups.set(key, {
+        ...booking,
+        items: [booking],
+        totalPriceThb: Number(booking.totalPriceThb || 0),
+      });
+      continue;
+    }
+    const group = groups.get(key);
+    group.items.push(booking);
+    group.totalPriceThb += Number(booking.totalPriceThb || 0);
+    if (!group.slipData && booking.slipData) group.slipData = booking.slipData;
+  }
+  return [...groups.values()].map((group) => ({
+    ...group,
+    courtCount: new Set(group.items.map((item) => item.courtId)).size,
+  }));
+});
 const activeCourts = computed(() => courts.value.filter((court) => court.active));
 const pendingTotalPages = computed(() =>
   Math.max(1, Math.ceil(pendingBookings.value.length / pendingPageSize)),
@@ -106,7 +128,41 @@ const displayDate = computed(() =>
 const selectedEditorCourt = computed(() =>
   courts.value.find((court) => court.id === editor.value?.courtId),
 );
+const editorSlots = computed(() => editor.value?.slots || []);
+const editorItems = computed(() => {
+  const interval = Number(savedScheduleSettings.intervalMinutes || 60);
+  const result = [];
+  for (const court of activeCourts.value) {
+    const minutes = editorSlots.value
+      .filter((slot) => slot.courtId === court.id)
+      .map((slot) => slot.minute)
+      .sort((a, b) => a - b);
+    for (const minute of minutes) {
+      const previous = result.at(-1);
+      if (previous?.courtId === court.id && previous.endMinute === minute) {
+        previous.endMinute = minute + interval;
+        previous.endAt = localDateTime(minute + interval);
+      } else {
+        result.push({
+          courtId: court.id,
+          courtName: court.name,
+          startMinute: minute,
+          endMinute: minute + interval,
+          startAt: localDateTime(minute),
+          endAt: localDateTime(minute + interval),
+        });
+      }
+    }
+  }
+  return result;
+});
 const editorTotal = computed(() => {
+  if (editorSlots.value.length) {
+    return editorSlots.value.reduce((sum, slot) => {
+      const court = courts.value.find((item) => item.id === slot.courtId);
+      return sum + Number(court?.pricePerInterval || 0);
+    }, 0);
+  }
   if (
     !editor.value?.startAt ||
     !editor.value?.endAt ||
@@ -161,12 +217,16 @@ function changeDate(days) {
   const date = new Date(Date.UTC(year, month - 1, day));
   date.setUTCDate(date.getUTCDate() + days);
   state.date = date.toISOString().slice(0, 10);
+  editor.value = null;
+  review.value = null;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   loadOverview();
 }
 
 function goToday() {
   state.date = today;
+  editor.value = null;
+  review.value = null;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   loadOverview();
 }
@@ -228,7 +288,15 @@ function cell(court, minute) {
   return { kind: "free", label: `ว่าง ฿${court.pricePerInterval}` };
 }
 
-function cellClass(info) {
+function isEditorSlot(court, minute) {
+  return editorSlots.value.some(
+    (slot) => slot.courtId === court.id && slot.minute === minute,
+  );
+}
+
+function cellClass(info, court, minute) {
+  if (info.kind === "free" && isEditorSlot(court, minute))
+    return "booking-state--selected";
   if (info.kind === "closure") return "booking-state--closed";
   if (info.item?.status === "pending_review")
     return "booking-state--pending";
@@ -243,6 +311,9 @@ function applyOverview(
   replaceSettingsDraft = false,
 ) {
   state.bookings = data.bookings || [];
+  state.pendingReviews = data.pendingReviews || state.bookings.filter(
+    (booking) => booking.status === "pending_review",
+  );
   state.closures = data.closures || [];
   pendingPage.value = Math.min(pendingPage.value, pendingTotalPages.value);
   if (includeConfiguration || !settingsReady) {
@@ -416,6 +487,15 @@ async function openCell(court, minute) {
     editor.value = { ...info.item, kind: "reopen" };
     return;
   }
+  if (editor.value && editor.value.kind !== "reopen" && Array.isArray(editor.value.slots)) {
+    const index = editor.value.slots.findIndex(
+      (slot) => slot.courtId === court.id && slot.minute === minute,
+    );
+    if (index >= 0) editor.value.slots.splice(index, 1);
+    else editor.value.slots.push({ courtId: court.id, minute });
+    if (!editor.value.slots.length) editor.value = null;
+    return;
+  }
   editor.value = {
     courtId: court.id,
     startAt: localDateTime(minute),
@@ -424,33 +504,65 @@ async function openCell(court, minute) {
     ),
     kind: "booking",
     memberId: "",
-    phone: "",
+    memberQuery: "จองโดย Admin",
+    memberComboOpen: false,
     memberOptions: [],
+    slots: [{ courtId: court.id, minute }],
   };
 }
 
+function useCustomDateRange() {
+  if (editor.value) editor.value.slots = [];
+}
+
 async function searchMember() {
-  if (String(editor.value?.phone || "").replace(/\D/g, "").length <= 5) {
-    if (editor.value) editor.value.memberOptions = [];
+  const currentEditor = editor.value;
+  const query = String(currentEditor?.memberQuery || "").trim();
+  const request = ++memberSearchRequest;
+  if (!currentEditor || query === "" || query === "จองโดย Admin") {
+    if (currentEditor) currentEditor.memberOptions = [];
     return;
   }
-  const data = await props.apiRequest(
-    `/api/admin/members/search?phone=${encodeURIComponent(editor.value.phone)}`,
-  );
-  editor.value.memberOptions = data.items || [];
+  currentEditor.memberId = "";
+  currentEditor.memberComboOpen = true;
+  try {
+    const data = await props.apiRequest(
+      `/api/admin/members/search?q=${encodeURIComponent(query)}`,
+    );
+    if (request === memberSearchRequest && editor.value === currentEditor)
+      currentEditor.memberOptions = data.items || [];
+  } catch (error) {
+    if (request === memberSearchRequest) state.error = error.message;
+  }
+}
+
+function selectBookingMember(member = null) {
+  if (!editor.value) return;
+  editor.value.memberId = member?.id || "";
+  editor.value.memberQuery = member
+    ? `${member.phone} · ${member.name}`
+    : "จองโดย Admin";
+  editor.value.memberComboOpen = false;
 }
 
 async function createEntry() {
   try {
+    const payload = editorSlots.value.length
+      ? { ...editor.value, items: editorItems.value.map(({ courtId, startAt, endAt }) => ({ courtId, startAt, endAt })) }
+      : editor.value;
+    delete payload.slots;
+    delete payload.memberQuery;
+    delete payload.memberComboOpen;
+    delete payload.memberOptions;
     if (editor.value.kind === "closure") {
       await props.apiRequest("/api/admin/booking/closures", {
         method: "POST",
-        body: JSON.stringify(editor.value),
+        body: JSON.stringify(payload),
       });
     } else {
       await props.apiRequest("/api/admin/booking/bookings", {
         method: "POST",
-        body: JSON.stringify(editor.value),
+        body: JSON.stringify(payload),
       });
     }
     editor.value = null;
@@ -562,11 +674,12 @@ function fileData(event, key, maxSize) {
 const refreshOnFocus = () => loadOverview(true, false);
 onMounted(async () => {
   await loadOverview(false, true, true);
-  timer = window.setInterval(() => loadOverview(true, false), 30000);
+  timer = window.setInterval(() => loadOverview(true, false), AUTO_REFRESH_MS);
   window.addEventListener("focus", refreshOnFocus);
 });
 onUnmounted(() => {
   window.clearInterval(timer);
+  memberSearchRequest += 1;
   window.removeEventListener("focus", refreshOnFocus);
 });
 </script>
@@ -717,7 +830,7 @@ onUnmounted(() => {
                 <td v-for="court in activeCourts" :key="court.id" class="p-1.5">
                   <button
                     class="booking-slot"
-                    :class="cellClass(cell(court, minute))"
+                    :class="cellClass(cell(court, minute), court, minute)"
                     :title="cell(court, minute).item?.note || ''"
                     @click="openCell(court, minute)"
                   >
@@ -763,7 +876,7 @@ onUnmounted(() => {
               v-if="editor?.courtId"
               class="mt-1 text-sm font-bold text-stone-500"
             >
-              {{ selectedEditorCourt?.name }}
+              {{ editorSlots.length > 1 ? `เลือกแล้ว ${editorSlots.length} ช่องเวลา` : selectedEditorCourt?.name }}
             </p>
           </div>
           <button
@@ -800,32 +913,70 @@ onUnmounted(() => {
             </button>
           </div>
           <template v-if="editor.kind === 'booking'">
-            <label class="booking-field"
-              ><span>ค้นสมาชิกด้วยเบอร์</span
-              ><input
-                v-model="editor.phone"
-                placeholder="พิมพ์อย่างน้อย 6 หลัก"
-                @input="searchMember"
-            /></label>
-            <label class="booking-field"
-              ><span>ผู้จอง</span
-              ><select v-model="editor.memberId">
-                <option value="">จองโดย Admin</option>
-                <option
-                  v-for="member in editor.memberOptions"
-                  :key="member.id"
-                  :value="member.id"
+            <div class="booking-field">
+              <label for="admin-booking-member">ผู้จอง</label>
+              <div class="relative">
+                <input
+                  id="admin-booking-member"
+                  v-model="editor.memberQuery"
+                  role="combobox"
+                  aria-label="ผู้จอง"
+                  aria-autocomplete="list"
+                  :aria-expanded="editor.memberComboOpen"
+                  placeholder="ค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"
+                  autocomplete="off"
+                  @focus="editor.memberComboOpen = true; $event.target.select()"
+                  @blur="editor.memberComboOpen = false"
+                  @input="searchMember"
+                />
+                <div
+                  v-if="editor.memberComboOpen"
+                  role="listbox"
+                  class="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-y-auto rounded-xl border border-stone-200 bg-white p-1 shadow-lg dark:border-stone-700 dark:bg-stone-900"
                 >
-                  {{ member.phone }} · {{ member.name }}
-                </option>
-              </select></label
-            >
+                  <button
+                    type="button"
+                    role="option"
+                    :aria-selected="editor.memberId === ''"
+                    class="flex w-full items-center justify-between rounded-lg px-3 py-2 text-left text-sm font-black hover:bg-paper-100 dark:hover:bg-stone-800"
+                    @mousedown.prevent="selectBookingMember()"
+                  >
+                    <span>จองโดย Admin</span>
+                    <CheckCircle2 v-if="editor.memberId === ''" class="h-4 w-4 text-court-600" />
+                  </button>
+                  <button
+                    v-for="member in editor.memberOptions"
+                    :key="member.id"
+                    type="button"
+                    role="option"
+                    :aria-selected="editor.memberId === member.id"
+                    class="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left text-sm hover:bg-paper-100 dark:hover:bg-stone-800"
+                    @mousedown.prevent="selectBookingMember(member)"
+                  >
+                    <span><strong>{{ member.name }}</strong><small class="mt-0.5 block font-semibold text-stone-500">{{ member.phone }}</small></span>
+                    <CheckCircle2 v-if="editor.memberId === member.id" class="h-4 w-4 shrink-0 text-court-600" />
+                  </button>
+                  <p v-if="editor.memberQuery !== 'จองโดย Admin' && !editor.memberOptions.length" class="px-3 py-2 text-sm font-semibold text-stone-500">
+                    ไม่พบสมาชิกที่ค้นหา
+                  </p>
+                </div>
+              </div>
+            </div>
           </template>
+          <div v-if="editorSlots.length" class="rounded-xl border border-court-200 bg-court-500/10 p-3 dark:border-court-900">
+            <p class="text-sm font-black text-court-800 dark:text-court-200">เลือกแล้ว {{ editorSlots.length }} ช่องเวลา</p>
+            <p class="mt-1 text-xs font-semibold text-stone-600 dark:text-stone-300">คลิกช่องว่างในตารางเพื่อเลือกเพิ่มหรือเอาออก</p>
+            <div class="mt-2 grid gap-1 text-sm font-bold">
+              <span v-for="item in editorItems" :key="`${item.courtId}-${item.startMinute}`">
+                {{ item.courtName }} · {{ timeLabel(item.startMinute) }}–{{ timeLabel(item.endMinute) }} น.
+              </span>
+            </div>
+          </div>
           <label class="booking-field"
             ><span>{{
               editor.kind === "closure" ? "วันแรก / เวลาเริ่มปิด" : "เวลาเริ่ม"
             }}</span
-            ><input v-model="editor.startAt" type="datetime-local"
+            ><input v-model="editor.startAt" type="datetime-local" @input="useCustomDateRange"
           /></label>
           <label class="booking-field"
             ><span>{{
@@ -833,7 +984,7 @@ onUnmounted(() => {
                 ? "วันสุดท้าย / เวลาสิ้นสุดในแต่ละวัน"
                 : "เวลาสิ้นสุด"
             }}</span
-            ><input v-model="editor.endAt" type="datetime-local"
+            ><input v-model="editor.endAt" type="datetime-local" @input="useCustomDateRange"
           /></label>
           <p
             v-if="editor.kind === 'closure'"
@@ -978,12 +1129,12 @@ onUnmounted(() => {
         >
           <div>
             <p class="font-black">
-              {{ booking.bookerName }} · {{ booking.courtName }}
+              {{ booking.bookerName }} · {{ booking.items.length > 1 ? `${booking.items.length} ช่วงเวลา` : booking.courtName }}
             </p>
             <p class="text-sm">
-              {{ new Date(booking.startAt).toLocaleString("th-TH") }} · ฿{{
-                booking.totalPriceThb
-              }}
+              {{ new Date(booking.startAt).toLocaleString("th-TH") }}
+              <template v-if="booking.items.length > 1"> · {{ booking.courtCount }} สนาม</template>
+              · ฿{{ Number(booking.totalPriceThb || 0).toLocaleString("th-TH") }}
             </p>
           </div>
           <div class="flex flex-wrap gap-2">
@@ -1481,7 +1632,7 @@ onUnmounted(() => {
             <p class="text-xs font-bold text-stone-500">ผู้จอง</p>
             <p class="mt-1 text-lg font-black">{{ review.bookerName || "Admin" }}</p>
           </div>
-          <div>
+          <div v-if="review.items?.length === 1">
             <p class="text-xs font-bold text-stone-500">สนาม</p>
             <p class="mt-1 font-black">{{ review.courtName }}</p>
           </div>
@@ -1489,11 +1640,22 @@ onUnmounted(() => {
             <p class="text-xs font-bold text-stone-500">ยอดชำระ</p>
             <p class="mt-1 text-xl font-black text-court-700">฿{{ Number(review.totalPriceThb || 0).toLocaleString("th-TH") }}</p>
           </div>
-          <div class="col-span-2">
+          <div v-if="review.items?.length === 1" class="col-span-2">
             <p class="text-xs font-bold text-stone-500">วันและเวลา</p>
             <p class="mt-1 font-black">
               {{ new Date(review.startAt).toLocaleString("th-TH") }}–{{ new Date(review.endAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) }} น.
             </p>
+          </div>
+          <div v-if="review.items?.length > 1" class="col-span-2">
+            <p class="text-xs font-bold text-stone-500">ช่วงเวลาที่จอง {{ review.items.length }} รายการ</p>
+            <div class="mt-2 grid gap-2">
+              <div v-for="(item, index) in review.items" :key="item.id" class="rounded-lg bg-white p-3 dark:bg-stone-900">
+                <p class="font-black">{{ index + 1 }}. {{ item.courtName }} · ฿{{ Number(item.totalPriceThb || 0).toLocaleString("th-TH") }}</p>
+                <p class="mt-1 text-sm font-semibold text-stone-500">
+                  {{ new Date(item.startAt).toLocaleString("th-TH") }}–{{ new Date(item.endAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) }} น.
+                </p>
+              </div>
+            </div>
           </div>
         </div>
         <img

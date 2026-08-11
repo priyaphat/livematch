@@ -15,6 +15,7 @@ import {
 } from "@lucide/vue";
 
 const props = defineProps(["apiRequest", "token", "theme"]);
+const AUTO_REFRESH_MS = 10000;
 const emit = defineEmits(["toggle-theme"]);
 const today = new Date().toLocaleDateString("en-CA", {
   timeZone: "Asia/Bangkok",
@@ -45,6 +46,7 @@ let toastTimer;
 let loadRequest = 0;
 let loadInFlight = false;
 let loadQueued = false;
+let availabilityLoaded = false;
 
 function handleSessionEnded(event) {
   state.user = null;
@@ -135,6 +137,41 @@ const paymentCountdown = computed(
   () =>
     `${Math.floor(paymentSeconds.value / 60)}:${String(paymentSeconds.value % 60).padStart(2, "0")}`,
 );
+const availabilitySummary = computed(() => {
+  const interval = Number(state.settings.intervalMinutes || 60);
+  return state.courts.map((court) => {
+    const freeMinutes = slots.value.filter(
+      (minute) => status(court, minute).tone === "free",
+    );
+    const ranges = [];
+    for (const minute of freeMinutes) {
+      const last = ranges.at(-1);
+      if (last && last.endMinute === minute) {
+        last.endMinute = minute + interval;
+        last.slotCount += 1;
+      } else {
+        ranges.push({
+          startMinute: minute,
+          endMinute: minute + interval,
+          slotCount: 1,
+        });
+      }
+    }
+    return {
+      id: court.id,
+      name: court.name,
+      price: Number(court.pricePerInterval || 0),
+      freeCount: freeMinutes.length,
+      ranges,
+    };
+  });
+});
+const freeSlotCount = computed(() =>
+  availabilitySummary.value.reduce((sum, court) => sum + court.freeCount, 0),
+);
+const availableCourtCount = computed(
+  () => availabilitySummary.value.filter((court) => court.freeCount > 0).length,
+);
 
 function localDateTime(minute) {
   const date = new Date(`${state.date}T00:00:00+07:00`);
@@ -224,7 +261,7 @@ function status(court, minute) {
       text: closure.note ? `ปิด · ${closure.note}` : "ปิดสนาม",
       tone: "closed",
     };
-  return { text: `ว่าง ฿${court.pricePerInterval}`, tone: "free" };
+  return { text: "ว่าง", tone: "free" };
 }
 function isSelected(court, minute) {
   return selections.value.some(
@@ -247,7 +284,9 @@ async function load() {
   const request = ++loadRequest;
   const requestedDate = state.date;
   const previousScroll = scheduleScroll.value?.scrollLeft || 0;
-  state.loading = true;
+  // Auto-refresh must not replace the visible schedule with a loading card.
+  // That height change caused the guest login page to jump every 10 seconds.
+  state.loading = !availabilityLoaded;
   state.error = "";
   try {
     const availability = await props.apiRequest(
@@ -255,6 +294,7 @@ async function load() {
     );
     if (request !== loadRequest || requestedDate !== state.date) return;
     Object.assign(state, availability);
+    availabilityLoaded = true;
     if (availability.serverNow) {
       state.clockOffsetMs = timestamp(availability.serverNow) - Date.now();
       state.now = Date.now() + state.clockOffsetMs;
@@ -522,7 +562,7 @@ function upload(event) {
 onMounted(async () => {
   window.addEventListener("livematch:session-ended", handleSessionEnded);
   await load();
-  timer = setInterval(load, 30000);
+  timer = setInterval(load, AUTO_REFRESH_MS);
   clock = setInterval(() => {
     state.now = Date.now() + state.clockOffsetMs;
     const expiredQueueIds = state.queues
@@ -584,7 +624,7 @@ onUnmounted(() => {
           <h1 class="text-xl font-black sm:text-2xl">จองสนามแบดมินตัน</h1>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+        <div class="flex shrink-0 items-center gap-2">
         <button
           class="booking-icon-button"
           :aria-label="props.theme === 'dark' ? 'ใช้โหมดสว่าง' : 'ใช้โหมดมืด'"
@@ -597,10 +637,10 @@ onUnmounted(() => {
         <template v-if="state.member">
         <button
           v-if="state.member.profileToken"
-          class="booking-secondary-button"
+          class="booking-secondary-button public-profile-button"
           @click="goToProfile"
         >
-          <UserRound class="h-4 w-4" />โปรไฟล์
+          <UserRound class="h-4 w-4" /><span>โปรไฟล์</span>
         </button>
         <div class="hidden text-right sm:block">
           <p class="text-sm font-black">{{ state.member.name }}</p>
@@ -627,7 +667,7 @@ onUnmounted(() => {
       <button aria-label="ปิดข้อความ" @click="toast.message = ''">×</button>
     </div>
 
-    <section v-if="!state.user" class="public-auth-panel">
+    <section v-if="!state.user" class="public-auth-panel min-w-0 overflow-hidden">
       <div
         class="grid h-14 w-14 place-items-center rounded-2xl bg-court-50 text-court-700"
       >
@@ -653,6 +693,74 @@ onUnmounted(() => {
       >
         <ShieldCheck class="h-4 w-4" />เราใช้ Google เพื่อยืนยันตัวตนเท่านั้น
       </p>
+
+      <div
+        class="mt-7 min-w-0 w-full max-w-full overflow-hidden border-t border-stone-200 pt-5 text-left dark:border-stone-700"
+        data-testid="guest-availability-summary"
+      >
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700 dark:text-court-300">
+              ตารางจองสนาม
+            </p>
+            <h3 class="mt-1 text-lg font-black">{{ displayDate }}</h3>
+            <p class="mt-1 text-sm font-bold text-stone-500 dark:text-stone-400">
+              ว่าง {{ freeSlotCount }} ช่วง · {{ availableCourtCount }}/{{ state.courts.length }} สนาม
+            </p>
+          </div>
+          <div v-if="canChangeBookingDate" class="grid grid-cols-[2.75rem_1fr_2.75rem] gap-1.5">
+            <button class="booking-date-arrow" aria-label="ดูวันก่อนหน้า" @click="changeDate(-1)">&lt;</button>
+            <button class="booking-today-button !inline-flex" type="button" @click="goToday">วันนี้</button>
+            <button class="booking-date-arrow" aria-label="ดูวันถัดไป" @click="changeDate(1)">&gt;</button>
+          </div>
+        </div>
+
+        <div v-if="state.loading" class="mt-4 rounded-xl bg-paper-100 p-4 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">
+          กำลังโหลดตารางจองสนาม...
+        </div>
+        <section v-else class="public-schedule-card mt-4 min-w-0 max-w-full" aria-label="ตารางจองสนามสำหรับผู้เยี่ยมชม">
+          <div class="public-schedule-scroll max-w-full">
+            <table class="public-timeline-table border-collapse" data-testid="guest-booking-table">
+              <thead>
+                <tr class="booking-table-head">
+                  <th class="public-court-sticky">สนาม</th>
+                  <th v-for="minute in slots" :key="minute" class="public-time-heading">
+                    {{ label(minute) }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="court in state.courts" :key="court.id" class="border-b">
+                  <th class="public-court-sticky public-court-row-heading">
+                    <span>{{ court.name }}</span>
+                    <small>฿{{ court.pricePerInterval }} / ช่วง</small>
+                  </th>
+                  <td v-for="minute in slots" :key="minute" class="public-slot-cell">
+                    <button
+                      class="public-slot"
+                      :class="slotClass(court, minute)"
+                      disabled
+                      :title="`${status(court, minute).text} · เข้าสู่ระบบเพื่อจอง`"
+                    >
+                      {{ status(court, minute).text }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="public-booking-legend">
+            <span><i class="legend-dot legend-dot--free"></i>ว่าง</span>
+            <span><i class="legend-dot legend-dot--hold"></i>กำลังจอง</span>
+            <span><i class="legend-dot legend-dot--pending"></i>รอตรวจสอบ</span>
+            <span><i class="legend-dot legend-dot--busy"></i>จองแล้ว</span>
+            <span><i class="legend-dot legend-dot--closed"></i>ปิดสนาม</span>
+          </div>
+        </section>
+        <p class="mt-3 text-center text-xs font-bold text-stone-500 dark:text-stone-400">
+          เข้าสู่ระบบเพื่อเลือกช่วงเวลาและยืนยันการจอง
+        </p>
+      </div>
     </section>
 
     <section v-else-if="!state.member" class="public-register-panel">
@@ -734,16 +842,16 @@ onUnmounted(() => {
         </div>
       </section>
 
-      <section class="public-date-bar">
+      <section class="public-date-bar" aria-labelledby="public-booking-date-title">
         <div>
           <p
             class="text-xs font-black uppercase tracking-[0.14em] text-court-700"
           >
             เลือกวันและช่วงเวลา
           </p>
-          <h2 class="mt-1 text-lg font-black">{{ displayDate }}</h2>
+          <h2 id="public-booking-date-title" class="mt-1 text-lg font-black">{{ displayDate }}</h2>
         </div>
-        <div class="booking-date-control">
+        <div v-if="canChangeBookingDate" class="booking-date-control">
           <button
             class="booking-date-arrow"
             :disabled="!canChangeBookingDate"
@@ -774,6 +882,7 @@ onUnmounted(() => {
           </button>
         </div>
         <button
+          v-if="canChangeBookingDate"
           class="booking-today-button"
           type="button"
           :disabled="!canChangeBookingDate"
@@ -788,13 +897,13 @@ onUnmounted(() => {
           <table class="public-timeline-table border-collapse">
             <thead>
               <tr class="booking-table-head">
-                <th class="public-court-sticky">สนาม / เวลา</th>
+                <th class="public-court-sticky">สนาม</th>
                 <th
                   v-for="minute in slots"
                   :key="minute"
                   class="public-time-heading"
                 >
-                  {{ label(minute) }} น.
+                  {{ label(minute) }}
                 </th>
               </tr>
             </thead>
@@ -810,6 +919,7 @@ onUnmounted(() => {
                     :class="slotClass(court, minute)"
                     :disabled="status(court, minute).tone !== 'free'"
                     :aria-pressed="isSelected(court, minute)"
+                    :title="status(court, minute).text"
                     :data-testid="`slot-${court.id}-${minute}`"
                     @click="selectSlot(court, minute)"
                   >
@@ -878,7 +988,7 @@ onUnmounted(() => {
         >
           <X class="h-4 w-4" />
         </button>
-        <div class="min-w-0">
+        <div class="public-summary-copy min-w-0">
           <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700">
             สรุปการจอง · {{ selections.length }} ช่วง
           </p>
@@ -891,14 +1001,14 @@ onUnmounted(() => {
             รวม {{ selectedDuration }} นาที · เลือกข้ามสนามและข้ามชั่วโมงได้
           </p>
         </div>
-        <div class="text-right">
+        <div class="public-summary-total text-right">
           <p class="text-xs font-bold text-stone-500">ยอดรวม</p>
           <p class="text-3xl font-black text-court-700">
             ฿{{ total.toLocaleString("th-TH") }}
           </p>
         </div>
         <button class="booking-primary-button h-12" @click="holdBatch">
-          ล็อกเวลาทั้งหมด 5 นาทีและชำระเงิน
+          ดำเนินการชำระเงิน
         </button>
       </section>
 
@@ -957,7 +1067,7 @@ onUnmounted(() => {
       @click.self="payment = null"
       @keydown.esc="payment = null"
     >
-      <section class="public-payment-sheet">
+      <section class="public-payment-sheet" tabindex="-1">
         <button
           class="booking-icon-button absolute right-4 top-4"
           aria-label="ปิด"

@@ -55,7 +55,7 @@ const adminDetailSessions = computed(() => adminDetail.value.sessions || [])
 const adminDetailLedger = computed(() => adminDetail.value.coinLedger || [])
 const adminDetailOrders = computed(() => adminDetail.value.orders || [])
 const adminBenefits = computed(() => adminDetail.value.benefits || { discountPercent: 0, pricing: {}, subscription: null, subscriptionHistory: [] })
-const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false }))
+const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false, posEnabled: false }))
 const adminSubscription = computed(() => adminBenefits.value.subscription || null)
 const adminSubscriptionHistory = computed(() => adminBenefits.value.subscriptionHistory || [])
 const sessionDeleteTarget = ref(null)
@@ -970,6 +970,7 @@ function closeSlipPreview() {
             <div class="mt-3 grid gap-3 sm:grid-cols-2">
               <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบสมาชิก <small class="block font-semibold text-stone-500">{{ Number(adminDetail.memberCount || 0).toLocaleString('th-TH') }} คน</small></span><input v-model="adminFeatures.memberEnabled" type="checkbox" class="h-5 w-5" /></label>
               <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบจองสนาม <small class="block font-semibold text-stone-500">{{ Number(adminDetail.bookingCount || 0).toLocaleString('th-TH') }} รายการ</small></span><input v-model="adminFeatures.bookingEnabled" type="checkbox" class="h-5 w-5" /></label>
+              <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบ POS <small class="block font-semibold text-stone-500">{{ Number(adminDetail.posSaleCount || 0).toLocaleString('th-TH') }} บิล</small></span><input v-model="adminFeatures.posEnabled" type="checkbox" class="h-5 w-5" /></label>
             </div>
           </section>
 

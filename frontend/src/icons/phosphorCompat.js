@@ -34,7 +34,10 @@ import {
   PhLock,
   PhMedal,
   PhMegaphone,
+  PhMagnifyingGlass,
   PhMoon,
+  PhMinus,
+  PhPackage,
   PhPencilSimple,
   PhPlay,
   PhPlus,
@@ -48,6 +51,7 @@ import {
   PhShieldCheck,
   PhShuffle,
   PhSlidersHorizontal,
+  PhShoppingCart,
   PhSparkle,
   PhSpinnerGap,
   PhSun,
@@ -68,6 +72,7 @@ export const ArrowLeft = PhCaretLeft
 export const ArrowUp = PhCaretUp
 export const Archive = PhArchive
 export const BarChart3 = PhChartBar
+export const Boxes = PhPackage
 export const CalendarDays = PhCalendar
 export const BookOpen = PhClipboardText
 export const Check = PhCheck
@@ -102,6 +107,7 @@ export const MailCheck = PhEnvelopeSimpleOpen
 export const Medal = PhMedal
 export const MessageCircleWarning = PhSealWarning
 export const Moon = PhMoon
+export const Minus = PhMinus
 export const Pencil = PhPencilSimple
 export const Play = PhPlay
 export const Plus = PhPlus
@@ -112,7 +118,7 @@ export const ReceiptText = PhReceipt
 export const RefreshCw = PhArrowClockwise
 export const RotateCcw = PhArrowCounterClockwise
 export const Save = PhCheckCircle
-export const Search = PhListChecks
+export const Search = PhMagnifyingGlass
 export const Send = PhMegaphone
 export const Settings = PhGearSix
 export const Share2 = PhShareNetwork
@@ -120,6 +126,7 @@ export const Shield = PhShield
 export const ShieldCheck = PhShieldCheck
 export const Shuffle = PhShuffle
 export const SlidersHorizontal = PhSlidersHorizontal
+export const ShoppingCart = PhShoppingCart
 export const Sparkles = PhSparkle
 export const Sun = PhSun
 export const Trash2 = PhTrash
