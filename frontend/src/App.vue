@@ -407,6 +407,14 @@ const auth = reactive({
   posSaleCount: 0,
   branding: { systemName: '', logoData: '' }
 })
+
+watch(
+  () => auth.branding?.systemName,
+  (systemName) => {
+    document.title = String(systemName || '').trim() || 'LiveMatch'
+  },
+  { immediate: true },
+)
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
   unlocked: false,

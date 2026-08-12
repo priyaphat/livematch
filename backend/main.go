@@ -1748,6 +1748,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			coupon = *body.Coupon
 		}
 		if body.MemberID != "" {
+			for _, existing := range state.Players {
+				if existing.Active && existing.MemberID == body.MemberID {
+					writeJSON(w, http.StatusConflict, map[string]string{"error": "สมาชิกคนนี้อยู่ใน Match แล้ว"})
+					return
+				}
+			}
 			var memberName, memberType string
 			user, _ := a.currentAdmin(r.Context(), r)
 			if err := a.db.QueryRowContext(r.Context(), `select name, member_type from members where id=$1 and admin_id=$2 and active and deleted_at is null`, body.MemberID, user.ID).Scan(&memberName, &memberType); err != nil {

@@ -80,6 +80,7 @@ const newMemberPhone = ref('')
 const newMemberType = ref('general')
 const createMemberError = ref('')
 const createMemberSaving = ref(false)
+const addingMemberId = ref('')
 let memberSearchTimer
 let memberSearchSequence = 0
 let memberBlurTimer
@@ -281,14 +282,21 @@ watch(() => props.forms.newPlayerPhone, (phone) => {
 })
 
 async function addPlayerFromEntry() {
-  if (!canAddPlayer.value) return
+  if (!canAddPlayer.value || addingMemberId.value) return
   if (!props.forms.newPlayerMemberId) {
     props.forms.newPlayerName = newPlayerEntry.value
   }
   await props.addPlayer()
 }
 
-function selectMember(member) {
+function memberAlreadyInMatch(member) {
+  return props.state.players.some((player) =>
+    player.active && player.memberId && player.memberId === member.id
+  )
+}
+
+async function selectMember(member) {
+  if (memberAlreadyInMatch(member) || addingMemberId.value) return
   clearTimeout(memberBlurTimer)
   props.forms.newPlayerMemberId = member.id
   props.forms.newPlayerPhone = member.phone
@@ -296,6 +304,12 @@ function selectMember(member) {
   memberOptions.value = [member]
   memberSearchCompleted.value = String(member.phone || '').replace(/\D/g, '')
   memberDropdownOpen.value = false
+  addingMemberId.value = member.id
+  try {
+    await props.addPlayer()
+  } finally {
+    addingMemberId.value = ''
+  }
 }
 
 function closeMemberDropdownLater() {
@@ -339,6 +353,7 @@ async function createAndSelectMember() {
     props.forms.newPlayerPhone = created.phone
     memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
     memberDropdownOpen.value = false
+    await props.addPlayer()
     showCreateMember.value = false
   } catch (error) {
     createMemberError.value = error.message || 'เพิ่มสมาชิกไม่สำเร็จ'
@@ -398,12 +413,15 @@ async function exportExcel() {
               type="button"
               role="option"
               :aria-selected="forms.newPlayerMemberId === member.id"
-              class="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left hover:bg-paper-100 dark:hover:bg-stone-800"
+              :disabled="memberAlreadyInMatch(member) || Boolean(addingMemberId)"
+              class="flex w-full items-center justify-between gap-3 rounded-md px-3 py-2 text-left hover:bg-paper-100 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-stone-800"
               @mousedown.prevent
               @click="selectMember(member)"
             >
               <span><b class="block">{{ member.name }}</b><small class="text-stone-500">{{ member.phone }}</small></span>
-              <Check v-if="forms.newPlayerMemberId === member.id" class="h-4 w-4 shrink-0 text-court-600" />
+              <span v-if="memberAlreadyInMatch(member)" class="shrink-0 text-xs font-black text-stone-500">อยู่ใน Match แล้ว</span>
+              <span v-else-if="addingMemberId === member.id" class="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-court-500 border-t-transparent" />
+              <Check v-else-if="forms.newPlayerMemberId === member.id" class="h-4 w-4 shrink-0 text-court-600" />
             </button>
           </template>
           <p v-if="!memberLoading && memberSearchError" class="px-3 py-3 text-sm font-bold text-red-600">{{ memberSearchError }}</p>

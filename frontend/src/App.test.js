@@ -122,6 +122,24 @@ async function openMockedOwnedSession(type = 'liveMatch', extraSession = {}) {
 }
 
 describe('LiveMatch app', () => {
+  it('uses the configured system name as the browser tab title', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', verified: true },
+        sessions: [],
+        branding: { systemName: 'Badminton Phrae', logoData: '' },
+      }),
+    }))
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(document.title).toBe('Badminton Phrae')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
+
   it('hides admin screens before admin account login', async () => {
     const wrapper = mount(App)
     await flushPromises()

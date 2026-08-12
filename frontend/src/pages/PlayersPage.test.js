@@ -66,7 +66,7 @@ describe('PlayersPage member combobox', () => {
     expect(forms.newPlayerName).toBe('สมาชิกทดสอบ')
   })
 
-  it('searches a name from the first character and requires selecting the result to link the member', async () => {
+  it('searches a name and adds the selected member to the match immediately', async () => {
     vi.useFakeTimers()
     const addPlayer = vi.fn()
     const member = { id: 'member-name', phone: '0864407370', name: 'ปรียาภัฒน์' }
@@ -83,7 +83,6 @@ describe('PlayersPage member combobox', () => {
     expect(wrapper.findAll('button').some((button) => button.text().includes('เพิ่มสมาชิกใหม่'))).toBe(true)
 
     await wrapper.find('[role="option"]').trigger('click')
-    await wrapper.find('[data-testid="member-combobox-row"] > button').trigger('click')
     expect(forms.newPlayerMemberId).toBe('member-name')
     expect(forms.newPlayerName).toBe('ปรียาภัฒน์')
     expect(addPlayer).toHaveBeenCalledOnce()
@@ -158,12 +157,13 @@ describe('PlayersPage member combobox', () => {
 
   it('creates a member from an unmatched name only after entering a 10-digit phone', async () => {
     vi.useFakeTimers()
+    const addPlayer = vi.fn()
     const created = { id: 'member-new', name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general' }
     const apiRequest = vi.fn((url, options = {}) => {
       if (url === '/api/admin/members' && options.method === 'POST') return Promise.resolve(created)
       return Promise.resolve({ items: [] })
     })
-    const { wrapper, forms } = mountPlayers(apiRequest)
+    const { wrapper, forms } = mountPlayers(apiRequest, { addPlayer })
     const searchInput = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await searchInput.setValue('สมาชิกใหม่')
@@ -189,6 +189,29 @@ describe('PlayersPage member combobox', () => {
     expect(JSON.parse(createCall[1].body)).toEqual({ name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general' })
     expect(forms.newPlayerMemberId).toBe('member-new')
     expect(forms.newPlayerPhone).toBe('0812345678')
+    expect(addPlayer).toHaveBeenCalledOnce()
+  })
+
+  it('disables a member who is already active in the match', async () => {
+    vi.useFakeTimers()
+    const member = { id: 'member-existing', phone: '0811111111', name: 'Existing' }
+    const addPlayer = vi.fn()
+    const { wrapper } = mountPlayers(vi.fn().mockResolvedValue({ items: [member] }), {
+      addPlayer,
+      state: {
+        players: [{ id: 1, name: 'Existing', memberId: member.id, active: true }],
+        settings: { showPaymentOnShare: true, showTotalOnShare: true },
+        session: { type: 'liveMatch' },
+      },
+    })
+
+    await wrapper.find('input[role="combobox"]').setValue('Existing')
+    await vi.advanceTimersByTimeAsync(300)
+    const option = wrapper.find('[role="option"]')
+    expect(option.attributes('disabled')).toBeDefined()
+    expect(option.text()).toContain('อยู่ใน Match แล้ว')
+    await option.trigger('click')
+    expect(addPlayer).not.toHaveBeenCalled()
   })
 })
 
