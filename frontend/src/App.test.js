@@ -896,7 +896,8 @@ describe('LiveMatch app', () => {
   })
 
   it('groups new session defaults into compact tabs', async () => {
-    const saveDefaults = vi.fn()
+    let resolveSave
+    const saveDefaults = vi.fn(() => new Promise((resolve) => { resolveSave = resolve }))
     const wrapper = mount(AdminSupervisorPage, {
       props: {
         auth: {
@@ -947,7 +948,14 @@ describe('LiveMatch app', () => {
 
     const saveButton = dialog.findAll('button').find((button) => button.text().trim() === 'บันทึก')
     await saveButton.trigger('click')
+    await saveButton.trigger('click')
     expect(saveDefaults).toHaveBeenCalledOnce()
+    expect(saveButton.attributes('disabled')).toBeDefined()
+    expect(saveButton.text()).toContain('กำลังบันทึก...')
+    expect(saveButton.find('.animate-spin').exists()).toBe(true)
+    resolveSave()
+    await vi.waitFor(() => expect(saveButton.element.disabled).toBe(false))
+    expect(saveButton.text()).toBe('บันทึก')
   })
 
   it('shows backend discount pricing and monthly entitlement in create session modal', () => {

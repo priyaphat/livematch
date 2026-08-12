@@ -49,6 +49,7 @@ if (!props.auth.branding) props.auth.branding = { systemName: '', logoData: '' }
 
 const sessionPage = ref(1)
 const adminDefaultSettingsTab = ref('costs')
+const adminDefaultSettingsSaving = ref(false)
 const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
   { id: 'system', label: 'ตั้งค่าระบบ', hint: 'ชื่อ โลโก้ ผู้ดูแล', icon: ShieldCheck },
@@ -162,8 +163,16 @@ function handleBrandLogo(event) {
   reader.readAsDataURL(file)
 }
 
-function saveCurrentSettings() {
-  return adminDefaultSettingsTab.value === 'system' ? props.saveAdminBranding() : props.saveAdminDefaultSettings()
+async function saveCurrentSettings() {
+  if (adminDefaultSettingsSaving.value) return
+  adminDefaultSettingsSaving.value = true
+  try {
+    await (adminDefaultSettingsTab.value === 'system'
+      ? props.saveAdminBranding()
+      : props.saveAdminDefaultSettings())
+  } finally {
+    adminDefaultSettingsSaving.value = false
+  }
 }
 
 const closeAdminDefaultSettingsModal = () => {
@@ -414,9 +423,10 @@ function updateDashboardAnnouncement(index, value) {
         <span v-else class="hidden text-xs font-semibold text-stone-500 sm:block">{{ adminDefaultSettingsTab === 'system' ? 'ใช้กับหน้าฝั่ง Admin ของบัญชีนี้' : 'นำไปใช้เมื่อสร้าง Session ใหม่เท่านั้น' }}</span>
         <div class="ml-auto grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 px-4 text-sm font-black dark:border-stone-700" @click="closeAdminDefaultSettingsModal">ยกเลิก</button>
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600" @click="saveCurrentSettings">
-            <CheckCircle2 class="h-4 w-4" />
-            บันทึก
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600 disabled:cursor-wait disabled:opacity-60" :disabled="adminDefaultSettingsSaving" @click="saveCurrentSettings">
+            <RefreshCw v-if="adminDefaultSettingsSaving" class="h-4 w-4 animate-spin" />
+            <CheckCircle2 v-else class="h-4 w-4" />
+            {{ adminDefaultSettingsSaving ? 'กำลังบันทึก...' : 'บันทึก' }}
           </button>
         </div>
       </div>
