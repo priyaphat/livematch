@@ -64,6 +64,26 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
+  it("locks the booking action while saving to prevent double submission", async () => {
+    let resolveHold
+    const pendingHold = new Promise((resolve) => { resolveHold = resolve })
+    const baseApi = apiMock()
+    const apiRequest = vi.fn((url, options) => url.includes('/hold') ? pendingHold : baseApi(url, options))
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: 'tenant-token' } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('สนาม 1'))
+    await wrapper.get('[data-testid="slot-court-1-960"]').trigger('click')
+    const payButton = wrapper.findAll('button').find((button) => button.text().includes('ดำเนินการชำระเงิน'))
+    await payButton.trigger('click')
+    await payButton.trigger('click')
+    expect(apiRequest.mock.calls.filter(([url]) => url.includes('/hold'))).toHaveLength(1)
+    expect(payButton.attributes('disabled')).toBeDefined()
+    expect(payButton.text()).toContain('กำลังล็อกช่วงเวลา')
+    resolveHold({ batchId: 'batch-1', bookings: [{ holdExpiresAt: new Date(Date.now() + 300000).toISOString() }], totalPriceThb: 100, promptPayPayload: '' })
+    await flushPromises()
+    expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain('ล็อกช่วงเวลาจองแล้ว')
+    wrapper.unmount()
+  })
+
   it("shows the full read-only booking table before member login", async () => {
     const apiRequest = vi.fn((url) => {
       if (url.includes("/availability")) return Promise.resolve(availability());

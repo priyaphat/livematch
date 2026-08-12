@@ -175,6 +175,27 @@ func TestPublicBookingDateFollowsAllowOvernightSetting(t *testing.T) {
 	}
 }
 
+func TestGoogleOAuthRedirectUsesOnlyConfiguredCurrentDomain(t *testing.T) {
+	t.Setenv("GOOGLE_REDIRECT_URL", "https://one.example/api/public-auth/google/callback")
+	t.Setenv("GOOGLE_REDIRECT_URLS", "https://one.example/api/public-auth/google/callback, https://two.example/api/public-auth/google/callback,https://three.example/api/public-auth/google/callback")
+
+	redirect, origin, ok := googleRedirectForOrigin("https://two.example")
+	if !ok || redirect != "https://two.example/api/public-auth/google/callback" || origin != "https://two.example" {
+		t.Fatalf("unexpected domain-specific redirect: %q %q %v", redirect, origin, ok)
+	}
+	for _, malicious := range []string{
+		"https://evil.example",
+		"https://two.example.evil.example",
+		"https://two.example@evil.example",
+		"https://two.example/path",
+		"https://two.example?next=https://evil.example",
+	} {
+		if redirect, origin, ok = googleRedirectForOrigin(malicious); ok || redirect != "" || origin != "" {
+			t.Fatalf("unconfigured OAuth origin %q must be rejected", malicious)
+		}
+	}
+}
+
 func TestPublicBookingServerValidationRejectsTamperedPayloadTimes(t *testing.T) {
 	now := time.Date(2026, 8, 12, 10, 0, 0, 0, bangkokLocation)
 	settings := bookingSettingsRecord{

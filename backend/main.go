@@ -247,7 +247,7 @@ func validateProductionConfig() error {
 		return errors.New("APP_BASE_URL must use HTTPS when APP_ENV=production")
 	}
 	missing := []string{}
-	for _, key := range []string{"APP_ALLOWED_ORIGINS", "APP_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REDIRECT_URL"} {
+	for _, key := range []string{"APP_ALLOWED_ORIGINS", "APP_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"} {
 		if strings.TrimSpace(os.Getenv(key)) == "" {
 			missing = append(missing, key)
 		}
@@ -255,15 +255,19 @@ func validateProductionConfig() error {
 	if len(missing) > 0 {
 		return fmt.Errorf("production configuration missing: %s", strings.Join(missing, ", "))
 	}
+	if len(configuredGoogleRedirectURLs()) == 0 {
+		return errors.New("production configuration missing: GOOGLE_REDIRECT_URLS or GOOGLE_REDIRECT_URL")
+	}
 	if !strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true") {
 		return errors.New("COOKIE_SECURE must be true when APP_BASE_URL uses HTTPS")
 	}
 	if len(strings.TrimSpace(os.Getenv("APP_ENCRYPTION_KEY"))) < 32 {
 		return errors.New("APP_ENCRYPTION_KEY must contain at least 32 characters")
 	}
-	redirect := strings.TrimSpace(os.Getenv("GOOGLE_REDIRECT_URL"))
-	if !strings.HasPrefix(strings.ToLower(redirect), "https://") {
-		return errors.New("GOOGLE_REDIRECT_URL must use HTTPS in production")
+	for _, redirect := range configuredGoogleRedirectURLs() {
+		if !strings.HasPrefix(strings.ToLower(redirect), "https://") {
+			return errors.New("all Google redirect URLs must use HTTPS in production")
+		}
 	}
 	return nil
 }
@@ -748,6 +752,8 @@ func (a *app) migrate(ctx context.Context) error {
 			expires_at timestamptz not null,
 			created_at timestamptz not null default now()
 		);
+		alter table oauth_login_states add column if not exists redirect_uri text not null default '';
+		alter table oauth_login_states add column if not exists return_origin text not null default '';
 		create table if not exists members (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,

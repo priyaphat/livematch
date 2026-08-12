@@ -7,6 +7,7 @@ import {
   Clock3,
   LogIn,
   Moon,
+  RefreshCw,
   ShieldCheck,
   Sun,
   Upload,
@@ -40,6 +41,7 @@ const payment = ref(null);
 const qr = ref("");
 const popup = reactive({ open: false, image: "", revision: "" });
 const toast = reactive({ message: "", tone: "error" });
+const actionBusy = reactive({ claim: false, hold: false, slip: false, login: false });
 const scheduleScroll = ref(null);
 let timer;
 let clock;
@@ -377,8 +379,14 @@ async function load() {
   }
 }
 function googleLogin() {
+  if (actionBusy.login) return;
+  actionBusy.login = true;
+  const params = new URLSearchParams({
+    tenant: props.token,
+    origin: window.location.origin,
+  });
   window.location.assign(
-    `/api/public-auth/google/start?tenant=${encodeURIComponent(props.token)}`,
+    `/api/public-auth/google/start?${params.toString()}`,
   );
 }
 function goToProfile() {
@@ -405,14 +413,20 @@ async function openQueuePayment(queue) {
     : "";
 }
 async function claimMember() {
+  if (actionBusy.claim) return;
+  actionBusy.claim = true;
   try {
     await props.apiRequest("/api/public-auth/claim", {
       method: "POST",
       body: JSON.stringify({ tenant: props.token, ...claim }),
     });
     await load();
+    showToast("บันทึกข้อมูลสมาชิกแล้ว", "success");
   } catch (error) {
     state.error = error.message;
+    showToast(error.message || "บันทึกข้อมูลสมาชิกไม่สำเร็จ");
+  } finally {
+    actionBusy.claim = false;
   }
 }
 function selectSlot(court, minute) {
@@ -505,7 +519,9 @@ function select(court, minute) {
     .replace(" ", "T");
 }
 async function hold() {
+  if (actionBusy.hold) return;
   if (!canBookSelectedDate.value) { showToast(bookingClosedMessage.value); return; }
+  actionBusy.hold = true;
   try {
     const data = await props.apiRequest(
       `/api/public-booking/${props.token}/hold`,
@@ -516,15 +532,20 @@ async function hold() {
       ? await QRCode.toDataURL(data.promptPayPayload, { width: 300, margin: 1 })
       : "";
     await load();
+    showToast("ล็อกช่วงเวลาจองแล้ว กรุณาชำระเงินภายใน 5 นาที", "success");
   } catch (error) {
     const message = error.message || "ไม่สามารถล็อกช่วงเวลานี้ได้";
     showToast(message);
     clearSelection();
     await load();
+  } finally {
+    actionBusy.hold = false;
   }
 }
 async function holdBatch() {
+  if (actionBusy.hold) return;
   if (!canBookSelectedDate.value) { showToast(bookingClosedMessage.value); return; }
+  actionBusy.hold = true;
   try {
     const data = await props.apiRequest(
       `/api/public-booking/${props.token}/hold`,
@@ -553,21 +574,26 @@ async function holdBatch() {
       : "";
     clearSelection();
     await load();
+    showToast("ล็อกช่วงเวลาจองแล้ว กรุณาชำระเงินภายใน 5 นาที", "success");
   } catch (error) {
     showToast(
       error.message || "ไม่สามารถล็อกช่วงเวลาที่เลือกได้ กรุณาเลือกใหม่",
     );
     clearSelection();
     await load();
+  } finally {
+    actionBusy.hold = false;
   }
 }
 function upload(event) {
+  if (actionBusy.slip) return;
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file || file.size > 5 * 1024 * 1024) {
     showToast("ไฟล์ใหญ่เกิน 5 MB");
     return;
   }
+  actionBusy.slip = true;
   const reader = new FileReader();
   reader.onload = async () => {
     try {
@@ -583,7 +609,13 @@ function upload(event) {
       payment.value = null;
       qr.value = "";
       await load();
+    } finally {
+      actionBusy.slip = false;
     }
+  };
+  reader.onerror = () => {
+    actionBusy.slip = false;
+    showToast("อ่านไฟล์สลิปไม่สำเร็จ");
   };
   reader.readAsDataURL(file);
 }
@@ -714,9 +746,10 @@ onUnmounted(() => {
       </p>
       <button
         class="booking-primary-button mt-6 h-12 px-6"
+        :disabled="actionBusy.login"
         @click="googleLogin"
       >
-        ดำเนินการด้วย Google
+        <RefreshCw v-if="actionBusy.login" class="h-4 w-4 animate-spin" />{{ actionBusy.login ? "กำลังเปิด Google..." : "ดำเนินการด้วย Google" }}
       </button>
       <p
         class="mt-4 inline-flex items-center gap-1.5 text-xs font-bold text-stone-400"
@@ -819,8 +852,8 @@ onUnmounted(() => {
             autocomplete="tel"
             placeholder="08X-XXX-XXXX"
         /></label>
-        <button class="booking-primary-button h-12 w-full">
-          ลงทะเบียนและเริ่มจอง
+        <button class="booking-primary-button h-12 w-full" :disabled="actionBusy.claim">
+          <RefreshCw v-if="actionBusy.claim" class="h-4 w-4 animate-spin" />{{ actionBusy.claim ? "กำลังบันทึก..." : "ลงทะเบียนและเริ่มจอง" }}
         </button>
       </form>
     </section>
@@ -1038,8 +1071,8 @@ onUnmounted(() => {
             ฿{{ total.toLocaleString("th-TH") }}
           </p>
         </div>
-        <button class="booking-primary-button h-12 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!canBookSelectedDate || !bookingItems.length" @click="holdBatch">
-          ดำเนินการชำระเงิน
+        <button class="booking-primary-button h-12 disabled:cursor-not-allowed disabled:opacity-50" :disabled="actionBusy.hold || !canBookSelectedDate || !bookingItems.length" @click="holdBatch">
+          <RefreshCw v-if="actionBusy.hold" class="h-4 w-4 animate-spin" />{{ actionBusy.hold ? "กำลังล็อกช่วงเวลา..." : "ดำเนินการชำระเงิน" }}
         </button>
       </section>
 
@@ -1083,8 +1116,8 @@ onUnmounted(() => {
             ฿{{ total.toLocaleString("th-TH") }}
           </p>
         </div>
-        <button class="booking-primary-button h-12 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!canBookSelectedDate || !selection.startAt" @click="hold">
-          ล็อกเวลา 5 นาทีและชำระเงิน
+        <button class="booking-primary-button h-12 disabled:cursor-not-allowed disabled:opacity-50" :disabled="actionBusy.hold || !canBookSelectedDate || !selection.startAt" @click="hold">
+          <RefreshCw v-if="actionBusy.hold" class="h-4 w-4 animate-spin" />{{ actionBusy.hold ? "กำลังล็อกช่วงเวลา..." : "ล็อกเวลา 5 นาทีและชำระเงิน" }}
         </button>
       </section>
     </template>
@@ -1128,11 +1161,12 @@ onUnmounted(() => {
           >
             ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแล
           </p>
-          <label class="booking-primary-button mt-5 h-12 cursor-pointer"
-            ><Upload class="h-4 w-4" />อัปโหลดสลิป<input
+          <label class="booking-primary-button mt-5 h-12" :class="actionBusy.slip ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"
+            ><RefreshCw v-if="actionBusy.slip" class="h-4 w-4 animate-spin" /><Upload v-else class="h-4 w-4" />{{ actionBusy.slip ? "กำลังตรวจสอบสลิป..." : "อัปโหลดสลิป" }}<input
               type="file"
               accept="image/png,image/jpeg,image/webp"
               class="hidden"
+              :disabled="actionBusy.slip"
               @change="upload"
           /></label>
           <p class="mt-3 text-xs text-stone-500">

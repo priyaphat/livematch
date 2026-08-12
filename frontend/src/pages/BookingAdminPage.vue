@@ -76,7 +76,11 @@ const exportLoading = ref(false);
 const exportStatus = ref("");
 const incidents = reactive({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1, search: "", type: "", loading: false });
 const slipOKQuota = reactive({ available: false, used: 0, remaining: 0, limit: 0, capReached: false, error: "" });
+const actionBusy = reactive({ entry: false, reopen: false, review: false, settings: false, addCourt: false });
+const courtBusy = reactive(new Set());
+const adminToast = reactive({ message: "", tone: "success" });
 let timer;
+let adminToastTimer;
 let settingsReady = false;
 let overviewRequest = 0;
 let memberSearchRequest = 0;
@@ -93,6 +97,18 @@ const tabs = computed(() => [
   { id: "export", label: "รายงาน", icon: Download },
   { id: "settings", label: "ตั้งค่า", icon: Settings },
 ]);
+
+function showAdminToast(message, tone = "success") {
+  adminToast.message = message;
+  adminToast.tone = tone;
+  clearTimeout(adminToastTimer);
+  adminToastTimer = setTimeout(() => { adminToast.message = ""; }, 3500);
+}
+
+function setCourtBusy(id, busy) {
+  if (busy) courtBusy.add(id);
+  else courtBusy.delete(id);
+}
 const settingsTabs = [
   { id: "booking", label: "ตารางและกติกา" },
   { id: "payment", label: "การรับชำระ" },
@@ -582,6 +598,8 @@ function selectBookingMember(member = null) {
 }
 
 async function createEntry() {
+  if (actionBusy.entry) return;
+  actionBusy.entry = true;
   try {
     if (!repeatDayCount.value)
       throw new Error("วันสิ้นสุดต้องไม่น้อยกว่าวันเริ่มทำซ้ำ");
@@ -610,24 +628,37 @@ async function createEntry() {
     historyFilters.endDate = editor.value.repeatEndDate || state.date;
     editor.value = null;
     await loadOverview();
+    showAdminToast(payload.kind === "closure" ? "บันทึกการปิดสนามแล้ว" : "บันทึกการจองแล้ว");
   } catch (error) {
     state.error = error.message;
+    showAdminToast(error.message || "บันทึกรายการไม่สำเร็จ", "error");
+  } finally {
+    actionBusy.entry = false;
   }
 }
 
 async function reopenClosure() {
+  if (actionBusy.reopen) return;
+  actionBusy.reopen = true;
   try {
     await props.apiRequest(`/api/admin/booking/closures/${editor.value.id}`, {
       method: "DELETE",
     });
     editor.value = null;
     await loadOverview();
+    showAdminToast("เปิดช่วงเวลาสนามแล้ว");
   } catch (error) {
     state.error = error.message;
+    showAdminToast(error.message || "เปิดช่วงเวลาไม่สำเร็จ", "error");
+  } finally {
+    actionBusy.reopen = false;
   }
 }
 
 async function submitReview() {
+  if (actionBusy.review) return;
+  actionBusy.review = true;
+  const action = review.value?.action;
   try {
     await props.apiRequest(
       `/api/admin/booking/bookings/${review.value.id}/review`,
@@ -641,12 +672,18 @@ async function submitReview() {
     );
     review.value = null;
     await loadOverview();
+    showAdminToast(action === "approve" ? "อนุมัติการจองแล้ว" : action === "cancel" ? "ยกเลิกการจองแล้ว" : "ปฏิเสธการจองแล้ว");
   } catch (error) {
     state.error = error.message;
+    showAdminToast(error.message || "บันทึกผลตรวจสอบไม่สำเร็จ", "error");
+  } finally {
+    actionBusy.review = false;
   }
 }
 
 async function saveSettings() {
+  if (actionBusy.settings) return;
+  actionBusy.settings = true;
   settingsStatus.value = "";
   try {
     await props.apiRequest("/api/admin/booking/settings", {
@@ -656,8 +693,12 @@ async function saveSettings() {
     settingsStatus.value = "บันทึกการตั้งค่าแล้ว";
     await loadOverview(false, true, true);
     await loadSlipOKQuota();
+    showAdminToast("บันทึกการตั้งค่าแล้ว");
   } catch (error) {
     state.error = error.message;
+    showAdminToast(error.message || "บันทึกการตั้งค่าไม่สำเร็จ", "error");
+  } finally {
+    actionBusy.settings = false;
   }
 }
 
@@ -692,6 +733,8 @@ async function loadIncidents(page = incidents.page) {
 }
 
 async function addCourt() {
+  if (actionBusy.addCourt) return;
+  actionBusy.addCourt = true;
   try {
     await props.apiRequest("/api/admin/booking/courts", {
       method: "POST",
@@ -699,26 +742,38 @@ async function addCourt() {
     });
     newCourt.name = "";
     await loadOverview(false, true);
+    showAdminToast("เพิ่มสนามแล้ว");
   } catch (error) {
     state.error = error.message;
+    showAdminToast(error.message || "เพิ่มสนามไม่สำเร็จ", "error");
+  } finally {
+    actionBusy.addCourt = false;
   }
 }
 
 async function updateCourt(court) {
+  if (courtBusy.has(court.id)) return;
+  setCourtBusy(court.id, true);
   try {
     await props.apiRequest(`/api/admin/booking/courts/${court.id}`, {
       method: "PATCH",
       body: JSON.stringify(court),
     });
     await loadOverview(false, true);
+    showAdminToast(`บันทึก ${court.name} แล้ว`);
   } catch (error) {
     state.error = error.message;
     await loadOverview(false, true);
+    showAdminToast(error.message || "บันทึกสนามไม่สำเร็จ", "error");
+  } finally {
+    setCourtBusy(court.id, false);
   }
 }
 
 async function deleteCourt(court) {
+  if (courtBusy.has(court.id)) return;
   if (!window.confirm(`ลบ ${court.name}? หากสนามนี้มีประวัติใช้งาน ระบบจะปิดใช้งานแทน`)) return;
+  setCourtBusy(court.id, true);
   try {
     const result = await props.apiRequest(`/api/admin/booking/courts/${court.id}`, {
       method: "DELETE",
@@ -727,8 +782,12 @@ async function deleteCourt(court) {
       ? `ลบ ${court.name} แล้ว`
       : `สนาม ${court.name} มีประวัติใช้งาน จึงปิดใช้งานแทน`;
     await loadOverview(false, true);
+    showAdminToast(settingsStatus.value);
   } catch (error) {
     state.error = error.message;
+    showAdminToast(error.message || "ลบสนามไม่สำเร็จ", "error");
+  } finally {
+    setCourtBusy(court.id, false);
   }
 }
 
@@ -754,6 +813,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
   window.clearInterval(timer);
+  window.clearTimeout(adminToastTimer);
   memberSearchRequest += 1;
   window.removeEventListener("focus", refreshOnFocus);
 });
@@ -763,6 +823,9 @@ onUnmounted(() => {
   <section
     class="mx-auto grid max-w-[1500px] gap-4 p-4 text-stone-900 dark:text-stone-100"
   >
+    <div v-if="adminToast.message" class="fixed right-4 top-4 z-[100] flex max-w-sm items-center gap-3 rounded-xl px-4 py-3 font-bold text-white shadow-2xl" :class="adminToast.tone === 'error' ? 'bg-red-600' : 'bg-court-600'" role="status">
+      <CheckCircle2 v-if="adminToast.tone !== 'error'" class="h-5 w-5 shrink-0" /><XCircle v-else class="h-5 w-5 shrink-0" />{{ adminToast.message }}
+    </div>
     <header class="booking-command-bar">
       <div class="flex min-w-0 items-center gap-3">
         <button
@@ -1078,9 +1141,10 @@ onUnmounted(() => {
               · {{ editorDailyTotal.toLocaleString("th-TH") }} บาท / วัน</small
             >
           </div>
-          <button class="booking-primary-button h-12 w-full justify-center">
+          <button class="booking-primary-button h-12 w-full justify-center" :disabled="actionBusy.entry">
+            <RefreshCw v-if="actionBusy.entry" class="h-4 w-4 animate-spin" />
             {{
-              editor.kind === "booking" ? "ยืนยันการจอง" : "ยืนยันปิดช่วงเวลา"
+              actionBusy.entry ? "กำลังบันทึก..." : editor.kind === "booking" ? "ยืนยันการจอง" : "ยืนยันปิดช่วงเวลา"
             }}
           </button>
         </form>
@@ -1092,9 +1156,10 @@ onUnmounted(() => {
           </div>
           <button
             class="booking-primary-button h-12 w-full justify-center"
+            :disabled="actionBusy.reopen"
             @click="reopenClosure"
           >
-            เปิดช่วงเวลานี้
+            <RefreshCw v-if="actionBusy.reopen" class="h-4 w-4 animate-spin" />{{ actionBusy.reopen ? "กำลังเปิดช่วงเวลา..." : "เปิดช่วงเวลานี้" }}
           </button>
         </div>
 
@@ -1146,14 +1211,14 @@ onUnmounted(() => {
               :required="review.action !== 'approve'"
             ></textarea>
           </label>
-          <button class="booking-primary-button h-12 w-full justify-center">
-            ยืนยัน{{
+          <button class="booking-primary-button h-12 w-full justify-center" :disabled="actionBusy.review">
+            <RefreshCw v-if="actionBusy.review" class="h-4 w-4 animate-spin" />{{ actionBusy.review ? "กำลังบันทึก..." : "ยืนยัน" }}{{ !actionBusy.review ? (
               review.action === "approve"
                 ? "อนุมัติ"
                 : review.action === "cancel"
                   ? "ยกเลิก"
                   : "ไม่อนุมัติ"
-            }}
+            ) : "" }}
           </button>
         </form>
       </aside>
@@ -1504,8 +1569,8 @@ onUnmounted(() => {
         </div>
 
         <p v-if="settingsStatus" class="mt-4 rounded-lg bg-green-50 p-3 font-bold text-green-700">{{ settingsStatus }}</p>
-        <button class="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-court-500 font-black text-white" @click="saveSettings">
-          <Save class="h-4 w-4" />บันทึกตั้งค่า
+        <button class="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-court-500 font-black text-white disabled:opacity-60" :disabled="actionBusy.settings" @click="saveSettings">
+          <RefreshCw v-if="actionBusy.settings" class="h-4 w-4 animate-spin" /><Save v-else class="h-4 w-4" />{{ actionBusy.settings ? "กำลังบันทึก..." : "บันทึกตั้งค่า" }}
         </button>
       </section>
 
@@ -1531,18 +1596,20 @@ onUnmounted(() => {
               min="0"
               class="h-10 rounded-lg border bg-transparent px-3"
             /><label class="inline-flex h-10 items-center justify-center gap-2 whitespace-nowrap rounded-lg border px-3 font-bold">
-              <input v-model="court.active" type="checkbox" @change="updateCourt(court)" />
+              <input v-model="court.active" type="checkbox" :disabled="courtBusy.has(court.id)" @change="updateCourt(court)" />
               เปิดใช้งาน
             </label><button
               class="h-10 rounded-lg border px-3 font-bold"
+              :disabled="courtBusy.has(court.id)"
               @click="updateCourt(court)"
             >
-              บันทึก</button
+              <RefreshCw v-if="courtBusy.has(court.id)" class="inline h-4 w-4 animate-spin" /> {{ courtBusy.has(court.id) ? "กำลังบันทึก" : "บันทึก" }}</button
             ><button
               class="h-10 rounded-lg border border-red-200 px-3 text-red-700"
+              :disabled="courtBusy.has(court.id)"
               @click="deleteCourt(court)"
             >
-              ลบ
+              {{ courtBusy.has(court.id) ? "รอสักครู่" : "ลบ" }}
             </button>
           </div>
           <div class="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
@@ -1557,9 +1624,10 @@ onUnmounted(() => {
               class="h-10 rounded-lg border bg-transparent px-3"
             /><button
               class="h-10 rounded-lg bg-stone-900 px-3 font-bold text-white dark:bg-white dark:text-stone-900"
+              :disabled="actionBusy.addCourt"
               @click="addCourt"
             >
-              <Plus class="inline h-4 w-4" /> เพิ่ม
+              <RefreshCw v-if="actionBusy.addCourt" class="inline h-4 w-4 animate-spin" /><Plus v-else class="inline h-4 w-4" /> {{ actionBusy.addCourt ? "กำลังเพิ่ม..." : "เพิ่ม" }}
             </button>
           </div>
         </div>
@@ -1671,8 +1739,8 @@ onUnmounted(() => {
               v-model="editor.note"
               required
               class="h-11 rounded-lg border bg-transparent px-3" /></label
-          ><button class="h-11 rounded-lg bg-court-500 font-black text-white">
-            ยืนยัน
+          ><button class="h-11 rounded-lg bg-court-500 font-black text-white" :disabled="actionBusy.entry">
+            <RefreshCw v-if="actionBusy.entry" class="inline h-4 w-4 animate-spin" /> {{ actionBusy.entry ? "กำลังบันทึก..." : "ยืนยัน" }}
           </button>
         </div>
       </form>
@@ -1758,8 +1826,8 @@ onUnmounted(() => {
             @click="review = null"
           >
             กลับ</button
-          ><button class="booking-primary-button h-11 justify-center">
-            ยืนยัน{{ review.action === "approve" ? "อนุมัติ" : review.action === "cancel" ? "ยกเลิก" : "ไม่อนุมัติ" }}
+          ><button class="booking-primary-button h-11 justify-center" :disabled="actionBusy.review">
+            <RefreshCw v-if="actionBusy.review" class="h-4 w-4 animate-spin" />{{ actionBusy.review ? "กำลังบันทึก..." : `ยืนยัน${review.action === "approve" ? "อนุมัติ" : review.action === "cancel" ? "ยกเลิก" : "ไม่อนุมัติ"}` }}
           </button>
         </div>
       </form>

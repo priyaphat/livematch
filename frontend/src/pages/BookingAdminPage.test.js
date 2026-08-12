@@ -27,6 +27,29 @@ function overview(settings = {}) {
 }
 
 describe('BookingAdminPage', () => {
+  it('locks the settings save button and shows a completion toast', async () => {
+    let resolveSave
+    const pendingSave = new Promise((resolve) => { resolveSave = resolve })
+    const apiRequest = vi.fn((url, options) => {
+      if (url === '/api/admin/booking/settings' && options?.method === 'PUT') return pendingSave
+      if (url.includes('/slipok-quota')) return Promise.resolve({})
+      if (url.includes('/blacklist')) return Promise.resolve({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1 })
+      return Promise.resolve(structuredClone(overview()))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+    const saveButton = wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า'))
+    await saveButton.trigger('click')
+    await saveButton.trigger('click')
+    expect(apiRequest.mock.calls.filter(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')).toHaveLength(1)
+    expect(saveButton.attributes('disabled')).toBeDefined()
+    expect(saveButton.text()).toContain('กำลังบันทึก')
+    resolveSave(structuredClone(overview()))
+    await vi.waitFor(() => expect(wrapper.text()).toContain('บันทึกการตั้งค่าแล้ว'))
+    wrapper.unmount()
+  })
+
   it('checks Telegram getUpdates and renders the returned JSON without saving the token', async () => {
     const apiRequest = vi.fn((url, options) => {
       if (url === '/api/admin/booking/telegram-check') {

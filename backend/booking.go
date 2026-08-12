@@ -2663,8 +2663,47 @@ func setPublicCookie(w http.ResponseWriter, r *http.Request, token string) {
 	setSessionCookie(w, r, publicSessionKind, token)
 }
 
-func googleOAuthConfig() *oauth2.Config {
-	return &oauth2.Config{ClientID: os.Getenv("GOOGLE_CLIENT_ID"), ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), RedirectURL: os.Getenv("GOOGLE_REDIRECT_URL"), Scopes: []string{"openid", "email", "profile"}, Endpoint: google.Endpoint}
+const googleCallbackPath = "/api/public-auth/google/callback"
+
+func configuredGoogleRedirectURLs() []string {
+	values := strings.Split(os.Getenv("GOOGLE_REDIRECT_URLS"), ",")
+	values = append(values, os.Getenv("GOOGLE_REDIRECT_URL"))
+	result := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		parsed, err := url.Parse(value)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != googleCallbackPath {
+			continue
+		}
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		parsed.Host = strings.ToLower(parsed.Host)
+		value = parsed.String()
+		if !seen[value] {
+			seen[value] = true
+			result = append(result, value)
+		}
+	}
+	return result
+}
+
+func googleRedirectForOrigin(origin string) (redirectURL, returnOrigin string, ok bool) {
+	parsedOrigin, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || parsedOrigin.Scheme == "" || parsedOrigin.Host == "" || parsedOrigin.User != nil || parsedOrigin.RawQuery != "" || parsedOrigin.Fragment != "" || (parsedOrigin.Path != "" && parsedOrigin.Path != "/") {
+		return "", "", false
+	}
+	canonicalOrigin := strings.ToLower(parsedOrigin.Scheme) + "://" + strings.ToLower(parsedOrigin.Host)
+	for _, candidate := range configuredGoogleRedirectURLs() {
+		parsed, _ := url.Parse(candidate)
+		if strings.EqualFold(parsed.Scheme+"://"+parsed.Host, canonicalOrigin) {
+			return candidate, canonicalOrigin, true
+		}
+	}
+	return "", "", false
+}
+
+func googleOAuthConfig(redirectURL string) *oauth2.Config {
+	return &oauth2.Config{ClientID: os.Getenv("GOOGLE_CLIENT_ID"), ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"), RedirectURL: redirectURL, Scopes: []string{"openid", "email", "profile"}, Endpoint: google.Endpoint}
 }
 func (a *app) handlePublicAuth(w http.ResponseWriter, r *http.Request) {
 	action := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/public-auth/"), "/")
@@ -2698,13 +2737,18 @@ func (a *app) startGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "booking page not found"})
 		return
 	}
-	cfg := googleOAuthConfig()
+	redirectURL, returnOrigin, redirectOK := googleRedirectForOrigin(r.URL.Query().Get("origin"))
+	if !redirectOK {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "โดเมนนี้ยังไม่ได้รับอนุญาตสำหรับ Google Login"})
+		return
+	}
+	cfg := googleOAuthConfig(redirectURL)
 	if cfg.ClientID == "" || cfg.ClientSecret == "" || cfg.RedirectURL == "" {
 		writeJSON(w, 503, map[string]string{"error": "Google login is not configured"})
 		return
 	}
 	state, nonce := randHex(24), randHex(20)
-	_, err := a.db.ExecContext(r.Context(), `insert into oauth_login_states (state_hash,nonce,admin_id,return_path,expires_at) values ($1,$2,$3,$4,now()+interval '10 minutes')`, tokenDigest(state), nonce, adminID, tenant)
+	_, err := a.db.ExecContext(r.Context(), `insert into oauth_login_states (state_hash,nonce,admin_id,return_path,redirect_uri,return_origin,expires_at) values ($1,$2,$3,$4,$5,$6,now()+interval '10 minutes')`, tokenDigest(state), nonce, adminID, tenant, redirectURL, returnOrigin)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -2717,12 +2761,17 @@ func (a *app) finishGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := r.URL.Query().Get("state")
-	var nonce, adminID, tenant string
-	if err := a.db.QueryRowContext(r.Context(), `delete from oauth_login_states where state_hash=$1 and expires_at>now() returning nonce,admin_id,return_path`, tokenDigest(state)).Scan(&nonce, &adminID, &tenant); err != nil {
+	var nonce, adminID, tenant, redirectURL, returnOrigin string
+	if err := a.db.QueryRowContext(r.Context(), `delete from oauth_login_states where state_hash=$1 and expires_at>now() returning nonce,admin_id,return_path,redirect_uri,return_origin`, tokenDigest(state)).Scan(&nonce, &adminID, &tenant, &redirectURL, &returnOrigin); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid oauth state"})
 		return
 	}
-	cfg := googleOAuthConfig()
+	allowedRedirect, allowedOrigin, redirectOK := googleRedirectForOrigin(returnOrigin)
+	if !redirectOK || allowedRedirect != redirectURL || allowedOrigin != returnOrigin {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid oauth redirect"})
+		return
+	}
+	cfg := googleOAuthConfig(redirectURL)
 	tok, err := cfg.Exchange(r.Context(), r.URL.Query().Get("code"))
 	if err != nil {
 		writeJSON(w, 401, map[string]string{"error": "google login failed"})
@@ -2763,7 +2812,7 @@ func (a *app) finishGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setPublicCookie(w, r, sessionToken)
-	http.Redirect(w, r, "/booking/"+tenant, http.StatusFound)
+	http.Redirect(w, r, returnOrigin+"/booking/"+url.PathEscape(tenant), http.StatusFound)
 }
 
 func (a *app) publicMe(w http.ResponseWriter, r *http.Request) {

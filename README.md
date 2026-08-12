@@ -38,6 +38,7 @@ When POS is enabled, a member or explicitly linked guest can settle all outstand
 GOOGLE_CLIENT_ID=google-client-id
 GOOGLE_CLIENT_SECRET=google-client-secret
 GOOGLE_REDIRECT_URL=http://localhost:5173/api/public-auth/google/callback
+GOOGLE_REDIRECT_URLS=http://localhost:5173/api/public-auth/google/callback
 APP_ENV=development
 APP_ALLOWED_ORIGINS=http://localhost:5173
 APP_TRUSTED_PROXY_CIDRS=
@@ -48,6 +49,23 @@ COOKIE_SECURE=false
 Production ต้องใช้ HTTPS, เปลี่ยน redirect URL ให้ตรงกับ Google Console, กำหนด `COOKIE_SECURE=true` และใส่ production origin ใน `APP_ALLOWED_ORIGINS` ระบบชำระเงิน v1 ใช้ PromptPay QR และให้ admin ตรวจสลิปด้วยตนเอง
 
 Telegram สำหรับอนุมัติการจองตั้งค่า Bot token/Chat ID แยกในหน้าจัดการระบบจองของแต่ละ admin โดย bot ต้องไม่ซ้ำกับ bot ของ Backoffice หรือ admin รายอื่น ระบบจะลงทะเบียน webhook เฉพาะ admin และส่งสลิปพร้อมปุ่มอนุมัติ/ปฏิเสธ
+
+### Google OAuth with three domains
+
+Use one Google OAuth client and register all three callback URLs in Google
+Cloud Console. Configure those same exact URLs as a comma-separated allowlist:
+
+```text
+APP_BASE_URL=https://domain-one.example
+APP_ALLOWED_ORIGINS=https://domain-one.example,https://domain-two.example,https://domain-three.example
+GOOGLE_REDIRECT_URL=https://domain-one.example/api/public-auth/google/callback
+GOOGLE_REDIRECT_URLS=https://domain-one.example/api/public-auth/google/callback,https://domain-two.example/api/public-auth/google/callback,https://domain-three.example/api/public-auth/google/callback
+COOKIE_SECURE=true
+```
+
+Google login returns to the domain where it started. Share links and QR codes
+use the currently open browser domain. Telegram webhooks continue to use the
+single canonical `APP_BASE_URL`.
 
 ## Telegram Alert
 
