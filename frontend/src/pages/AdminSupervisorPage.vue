@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import HeroBackground from '../components/HeroBackground.vue'
 import {
   Activity,
@@ -166,11 +166,15 @@ function handleBrandLogo(event) {
 async function saveCurrentSettings() {
   if (adminDefaultSettingsSaving.value) return
   adminDefaultSettingsSaving.value = true
+  const spinnerStartedAt = performance.now()
+  await nextTick()
   try {
     await (adminDefaultSettingsTab.value === 'system'
       ? props.saveAdminBranding()
       : props.saveAdminDefaultSettings())
   } finally {
+    const remaining = 500 - (performance.now() - spinnerStartedAt)
+    if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining))
     adminDefaultSettingsSaving.value = false
   }
 }
