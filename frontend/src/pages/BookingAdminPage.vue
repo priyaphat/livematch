@@ -686,9 +686,14 @@ async function saveSettings() {
   actionBusy.settings = true;
   settingsStatus.value = "";
   try {
+    const payload = { ...settings };
+    if (payload.logoData === savedScheduleSettings.logoData)
+      delete payload.logoData;
+    if (payload.popupImage === savedScheduleSettings.popupImage)
+      delete payload.popupImage;
     await props.apiRequest("/api/admin/booking/settings", {
       method: "PUT",
-      body: JSON.stringify(settings),
+      body: JSON.stringify(payload),
     });
     settingsStatus.value = "บันทึกการตั้งค่าแล้ว";
     await loadOverview(false, true, true);
@@ -1559,6 +1564,7 @@ onUnmounted(() => {
             <h3 class="font-black">โลโก้หน้าจอง</h3>
             <div v-if="settings.logoData" class="grid place-items-center rounded-lg bg-paper-100 p-2 dark:bg-stone-800"><img :src="settings.logoData" alt="ตัวอย่างโลโก้" class="h-20 w-20 rounded-xl object-cover" /></div>
             <label class="inline-flex h-11 cursor-pointer items-center justify-center rounded-lg border border-dashed font-black">เลือกโลโก้<input class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" @change="fileData($event, 'logoData', 2 * 1024 * 1024)" /></label>
+            <button v-if="settings.logoData" type="button" class="h-10 rounded-lg border border-red-200 font-bold text-red-700" @click="settings.logoData = ''">ลบโลโก้</button>
           </div>
           <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700">
             <label class="flex items-center gap-2 font-black"><input v-model="settings.popupEnabled" type="checkbox" />เปิด Popup หน้า Booking User</label>

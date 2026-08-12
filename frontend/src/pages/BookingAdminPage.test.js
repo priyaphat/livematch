@@ -30,11 +30,15 @@ describe('BookingAdminPage', () => {
   it('locks the settings save button and shows a completion toast', async () => {
     let resolveSave
     const pendingSave = new Promise((resolve) => { resolveSave = resolve })
+    const settingsWithImages = overview({
+      logoData: 'data:image/png;base64,current-logo',
+      popupImage: 'data:image/png;base64,current-popup',
+    })
     const apiRequest = vi.fn((url, options) => {
       if (url === '/api/admin/booking/settings' && options?.method === 'PUT') return pendingSave
       if (url.includes('/slipok-quota')) return Promise.resolve({})
       if (url.includes('/blacklist')) return Promise.resolve({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1 })
-      return Promise.resolve(structuredClone(overview()))
+      return Promise.resolve(structuredClone(settingsWithImages))
     })
     const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
     await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
@@ -42,11 +46,39 @@ describe('BookingAdminPage', () => {
     const saveButton = wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า'))
     await saveButton.trigger('click')
     await saveButton.trigger('click')
-    expect(apiRequest.mock.calls.filter(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')).toHaveLength(1)
+    const saveCalls = apiRequest.mock.calls.filter(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')
+    expect(saveCalls).toHaveLength(1)
+    expect(JSON.parse(saveCalls[0][1].body)).not.toHaveProperty('logoData')
+    expect(JSON.parse(saveCalls[0][1].body)).not.toHaveProperty('popupImage')
     expect(saveButton.attributes('disabled')).toBeDefined()
     expect(saveButton.text()).toContain('กำลังบันทึก')
-    resolveSave(structuredClone(overview()))
+    resolveSave(structuredClone(settingsWithImages))
     await vi.waitFor(() => expect(wrapper.text()).toContain('บันทึกการตั้งค่าแล้ว'))
+    wrapper.unmount()
+  })
+
+  it('sends an empty image field only when the admin deletes that image', async () => {
+    const settingsWithImages = overview({
+      logoData: 'data:image/png;base64,current-logo',
+      popupImage: 'data:image/png;base64,current-popup',
+    })
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/slipok-quota')) return Promise.resolve({})
+      return Promise.resolve(structuredClone(settingsWithImages))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('การแสดงผล')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('ลบภาพ Popup')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า')).trigger('click')
+
+    const saveCall = apiRequest.mock.calls.find(([url, options]) =>
+      url === '/api/admin/booking/settings' && options?.method === 'PUT'
+    )
+    const payload = JSON.parse(saveCall[1].body)
+    expect(payload).not.toHaveProperty('logoData')
+    expect(payload.popupImage).toBe('')
     wrapper.unmount()
   })
 

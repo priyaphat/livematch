@@ -1256,8 +1256,10 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		OpenTime, CloseTime                                                                                            string
 		IntervalMinutes                                                                                                int
 		AllowOvernight, UseSamePrice, BookingAcceptanceEnabled, SingleSlotPurchaseEnabled, PopupEnabled, SlipOKEnabled bool
-		PromptPayType, PromptPayID, PromptPayReceiverName, LogoData, TelegramBotToken, TelegramChatID                  string
-		BookingAcceptanceOpenTime, BookingAcceptanceCloseTime, PopupImage, PopupRevision                               string
+		PromptPayType, PromptPayID, PromptPayReceiverName, TelegramBotToken, TelegramChatID                            string
+		LogoData                                                                                                       *string `json:"logoData"`
+		BookingAcceptanceOpenTime, BookingAcceptanceCloseTime, PopupRevision                                           string
+		PopupImage                                                                                                     *string `json:"popupImage"`
 		SlipOKBranchID, SlipOKAPIKey                                                                                   string
 		SlipOKMonthlyCap                                                                                               int
 	}
@@ -1281,7 +1283,15 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		writeJSON(w, 400, map[string]string{"error": "ช่วงเวลาต้องเพิ่มทีละ 10 นาที"})
 		return
 	}
-	if len(b.LogoData) > 2_800_000 || !validImageData(b.LogoData, true) {
+	logoData := current.LogoData
+	if b.LogoData != nil {
+		logoData = *b.LogoData
+	}
+	popupImage := current.PopupImage
+	if b.PopupImage != nil {
+		popupImage = *b.PopupImage
+	}
+	if len(logoData) > 2_800_000 || !validImageData(logoData, true) {
 		writeJSON(w, 400, map[string]string{"error": "invalid logo"})
 		return
 	}
@@ -1295,11 +1305,11 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 			return
 		}
 	}
-	if len(b.PopupImage) > 2_800_000 || !validImageData(b.PopupImage, true) {
+	if len(popupImage) > 2_800_000 || !validImageData(popupImage, true) {
 		writeJSON(w, 400, map[string]string{"error": "รูป Popup ต้องเป็น PNG/JPEG/WebP ไม่เกิน 2 MB"})
 		return
 	}
-	if b.PopupEnabled && b.PopupImage == "" {
+	if b.PopupEnabled && popupImage == "" {
 		writeJSON(w, 400, map[string]string{"error": "กรุณาอัปโหลดรูป Popup ก่อนเปิดใช้งาน"})
 		return
 	}
@@ -1321,8 +1331,8 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		}
 	}
 	popupRevision := current.PopupRevision
-	if b.PopupImage != current.PopupImage || popupRevision == "" {
-		popupRevision = shortHash(b.PopupImage + time.Now().String())
+	if popupImage != current.PopupImage || popupRevision == "" {
+		popupRevision = shortHash(popupImage + time.Now().String())
 	}
 	botEncrypted := ""
 	botFingerprint := ""
@@ -1352,7 +1362,7 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 			return
 		}
 	}
-	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,logo_data=$10,telegram_bot_token=$11,telegram_chat_id=$12,telegram_webhook_id=$13,telegram_secret_hash=$14,telegram_bot_fingerprint=$15,booking_acceptance_enabled=$16,booking_acceptance_open_time=nullif($17,'')::time,booking_acceptance_close_time=nullif($18,'')::time,single_slot_purchase_enabled=$19,popup_enabled=$20,popup_image=$21,popup_revision=$22,slipok_enabled=$23,slipok_branch_id=$24,slipok_api_key=$25,slipok_monthly_cap=$26,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName), b.LogoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint, b.BookingAcceptanceEnabled, strings.TrimSpace(b.BookingAcceptanceOpenTime), strings.TrimSpace(b.BookingAcceptanceCloseTime), b.SingleSlotPurchaseEnabled, b.PopupEnabled, b.PopupImage, popupRevision, b.SlipOKEnabled, normalizeSlipOKBranchID(b.SlipOKBranchID), slipOKEncrypted, b.SlipOKMonthlyCap)
+	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,logo_data=$10,telegram_bot_token=$11,telegram_chat_id=$12,telegram_webhook_id=$13,telegram_secret_hash=$14,telegram_bot_fingerprint=$15,booking_acceptance_enabled=$16,booking_acceptance_open_time=nullif($17,'')::time,booking_acceptance_close_time=nullif($18,'')::time,single_slot_purchase_enabled=$19,popup_enabled=$20,popup_image=$21,popup_revision=$22,slipok_enabled=$23,slipok_branch_id=$24,slipok_api_key=$25,slipok_monthly_cap=$26,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName), logoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint, b.BookingAcceptanceEnabled, strings.TrimSpace(b.BookingAcceptanceOpenTime), strings.TrimSpace(b.BookingAcceptanceCloseTime), b.SingleSlotPurchaseEnabled, b.PopupEnabled, popupImage, popupRevision, b.SlipOKEnabled, normalizeSlipOKBranchID(b.SlipOKBranchID), slipOKEncrypted, b.SlipOKMonthlyCap)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_booking_settings_telegram_bot") {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "Telegram bot นี้ถูกใช้กับ admin อื่นแล้ว"})
