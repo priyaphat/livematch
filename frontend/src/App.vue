@@ -404,7 +404,8 @@ const auth = reactive({
   features: { memberEnabled: false, bookingEnabled: false, posEnabled: false },
   memberCount: 0,
   bookingCount: 0,
-  posSaleCount: 0
+  posSaleCount: 0,
+  branding: { systemName: '', logoData: '' }
 })
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
@@ -424,7 +425,8 @@ const terminalSessionCodes = new Set([
   'session_idle_expired',
   'session_absolute_expired',
   'session_revoked',
-  'session_reuse_detected'
+  'session_reuse_detected',
+  'booking_slip_rejected_logout'
 ])
 
 function sessionEndedMessage(code) {
@@ -433,13 +435,15 @@ function sessionEndedMessage(code) {
         session_idle_expired: 'Your session expired due to inactivity. Please sign in again.',
         session_absolute_expired: 'Your session reached its maximum lifetime. Please sign in again.',
         session_revoked: 'This session has been revoked. Please sign in again.',
-        session_reuse_detected: 'Suspicious session reuse was detected. Please sign in again.'
+        session_reuse_detected: 'Suspicious session reuse was detected. Please sign in again.',
+        booking_slip_rejected_logout: 'The payment slip was rejected. Please sign in again.'
       }
     : {
         session_idle_expired: 'หมดเวลาใช้งานเนื่องจากไม่มีการใช้งาน กรุณาเข้าสู่ระบบใหม่',
         session_absolute_expired: 'Session ครบอายุสูงสุดแล้ว กรุณาเข้าสู่ระบบใหม่',
         session_revoked: 'Session นี้ถูกยกเลิกแล้ว กรุณาเข้าสู่ระบบใหม่',
-        session_reuse_detected: 'ตรวจพบการใช้ Session ที่ผิดปกติ ระบบออกจากระบบเพื่อความปลอดภัย'
+        session_reuse_detected: 'ตรวจพบการใช้ Session ที่ผิดปกติ ระบบออกจากระบบเพื่อความปลอดภัย',
+        booking_slip_rejected_logout: 'สลิปถูกปฏิเสธและออกจากระบบแล้ว กรุณาเข้าสู่ระบบใหม่'
       }
   return messages[code] || (language.value === 'en' ? 'Please sign in again.' : 'กรุณาเข้าสู่ระบบใหม่')
 }
@@ -1199,9 +1203,9 @@ async function refreshBackofficeSlipOKQuota() {
       headers: backofficeAuthHeaders()
     })
     forms.backofficeSlipOKQuota = quota
-    forms.backofficeSlipOKStatus = 'เชื่อมต่อ SlipOK สำเร็จ'
+    forms.backofficeSlipOKStatus = 'เชื่อมต่อ Auto Slip สำเร็จ'
   } catch (error) {
-    forms.backofficeSlipOKStatus = error.message || 'เชื่อมต่อ SlipOK ไม่สำเร็จ'
+    forms.backofficeSlipOKStatus = error.message || 'เชื่อมต่อ Auto Slip ไม่สำเร็จ'
   }
 }
 
@@ -1299,6 +1303,7 @@ function applyAdminPayload(payload) {
   auth.sessions = payload.sessions || []
   auth.coinLedger = payload.coinLedger || []
   auth.defaultSettings = normalizeSessionDefaults(payload.defaultSettings || auth.defaultSettings)
+  auth.branding = payload.branding || auth.branding || { systemName: '', logoData: '' }
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
   auth.benefits = payload.benefits || { discountPercent: 0, pricing: {}, subscription: null }
@@ -1377,8 +1382,8 @@ async function submitCoinOrder() {
     forms.coinSlipImage = ''
     forms.coinOrderStatus = latestOrder?.status === 'approved'
       ? latestOrder?.productType === 'subscription'
-        ? 'SlipOK ตรวจสอบผ่าน เปิดสิทธิ์แพ็กเกจสำเร็จ'
-        : 'SlipOK ตรวจสอบผ่าน เติม coin สำเร็จ'
+        ? 'Auto Slip ตรวจสอบผ่าน เปิดสิทธิ์แพ็กเกจสำเร็จ'
+        : 'Auto Slip ตรวจสอบผ่าน เติม coin สำเร็จ'
       : 'ส่งรายการแล้ว รอ backoffice ตรวจสอบ'
     showToast(forms.coinOrderStatus)
     await restoreAdminAccount()
@@ -2828,6 +2833,21 @@ async function saveAdminDefaultSettings() {
   }
 }
 
+async function saveAdminBranding() {
+  forms.adminDefaultSettingsStatus = ''
+  try {
+    applyAdminPayload(await api('/api/admin/profile-branding', {
+      method: 'PUT',
+      body: JSON.stringify({ name: auth.user?.name || '', systemName: auth.branding?.systemName || '', logoData: auth.branding?.logoData || '' })
+    }))
+    forms.adminDefaultSettingsStatus = 'บันทึกตั้งค่าระบบแล้ว'
+    showToast('บันทึกตั้งค่าระบบแล้ว', 'success')
+  } catch (error) {
+    forms.adminDefaultSettingsStatus = error.message || 'บันทึกตั้งค่าระบบไม่สำเร็จ'
+    showToast(forms.adminDefaultSettingsStatus)
+  }
+}
+
 function playerShareLink() {
   const params = new URLSearchParams({
     view: 'players',
@@ -3405,6 +3425,7 @@ const pageProps = computed(() => ({
   addAdminDefaultLevel,
   removeAdminDefaultLevel,
   saveAdminDefaultSettings,
+  saveAdminBranding,
   saveSettings: saveSettingsApi,
   saveLiveShareHours: saveLiveShareHoursApi,
   selectAdminTab,
@@ -3501,7 +3522,7 @@ const pageProps = computed(() => ({
       </div>
     </div>
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />
-    <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" />
+    <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" :auth="auth" />
     <POSPage v-else-if="adminFeaturePage === 'pos' && auth.user" :api-request="api" :auth="auth" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
 
@@ -3512,11 +3533,12 @@ const pageProps = computed(() => ({
     <header v-if="showAppHeader" class="sticky top-0 z-30 border-b border-stone-200/80 bg-paper-50/80 shadow-[0_10px_30px_rgba(34,41,37,0.06)] backdrop-blur-xl dark:border-stone-700 dark:bg-paper-900/80">
       <div class="mx-auto flex h-16 max-w-7xl items-center justify-between gap-2 px-3 sm:gap-3 sm:px-4">
         <button class="flex min-w-0 items-center gap-2 text-left sm:gap-3" @click="isAdmin ? selectAdminTab('dashboard') : state.tab = 'home'">
-          <span class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-court-500 to-skycourt-500 text-white shadow-soft">
+          <img v-if="auth.branding?.logoData" :src="auth.branding.logoData" alt="โลโก้ระบบ" class="h-10 w-10 shrink-0 rounded-xl object-cover shadow-soft" />
+          <span v-else class="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-court-500 to-skycourt-500 text-white shadow-soft">
             <Medal class="h-5 w-5" />
           </span>
           <span class="hidden min-w-0 xs:block sm:block">
-            <span class="block truncate text-base font-black leading-5 sm:text-lg">LiveMatch</span>
+            <span class="block truncate text-base font-black leading-5 sm:text-lg">{{ auth.branding?.systemName || 'LiveMatch' }}</span>
             <span class="block truncate text-xs text-stone-500 dark:text-stone-400">{{ isAdmin ? currentTab.label : (auth.user ? 'Admin dashboard' : 'Admin access') }}</span>
           </span>
         </button>

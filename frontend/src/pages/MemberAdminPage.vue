@@ -14,7 +14,10 @@ const exportLoading = ref(false)
 const reportModal = ref(false)
 const reportData = ref(null)
 const reportForm = reactive({ reportType: 'members', memberId: '' })
+const manager = reactive({ open: false, items: [], total: 0, page: 1, pageSize: 50, search: '', memberType: '', loading: false, saving: false, error: '' })
+const managerChanges = reactive({})
 let searchTimer
+let managerSearchTimer
 const totalPages = computed(() => Math.max(1, Math.ceil(state.total / state.pageSize)))
 const reportNeedsMember = computed(() => reportForm.reportType !== 'members')
 const paymentStatusText = (payment) => payment.kind === 'match' && payment.status === 'unpaid'
@@ -31,6 +34,32 @@ async function load(page = state.page) {
     const data = await props.apiRequest(`/api/admin/members?${params}`)
     Object.assign(state, { items: data.items || [], total: data.total || 0, page: data.page || page })
   } catch (error) { state.error = error.message } finally { state.loading = false }
+}
+async function loadManager(page = manager.page) {
+  manager.loading = true; manager.error = ''
+  try {
+    const params = new URLSearchParams({ page, pageSize: manager.pageSize, search: manager.search, memberType: manager.memberType })
+    const data = await props.apiRequest(`/api/admin/members?${params}`)
+    manager.items = (data.items || []).map((item) => ({ ...item, club: managerChanges[item.id] ?? item.memberType === 'club' }))
+    manager.total = Number(data.total || 0); manager.page = Number(data.page || page)
+  } catch (error) { manager.error = error.message } finally { manager.loading = false }
+}
+function openManager() {
+  Object.keys(managerChanges).forEach((key) => delete managerChanges[key])
+  Object.assign(manager, { open: true, page: 1, search: '', memberType: '', error: '' })
+  loadManager(1)
+}
+function setManagerMembership(item) { managerChanges[item.id] = Boolean(item.club) }
+function closeManager() { if (!manager.saving) manager.open = false }
+async function saveManager() {
+  manager.saving = true; manager.error = ''
+  try {
+    const updates = Object.entries(managerChanges).map(([id, club]) => ({ id, memberType: club ? 'club' : 'general' }))
+    await props.apiRequest('/api/admin/members/bulk-membership', { method: 'PUT', body: JSON.stringify({ updates }) })
+    manager.open = false
+    if (props.showToast) props.showToast('บันทึกประเภทสมาชิกแล้ว', 'success')
+    await load(1)
+  } catch (error) { manager.error = error.message || 'บันทึกไม่สำเร็จ' } finally { manager.saving = false }
 }
 function openCreate() { modal.value = { id: '', name: '', phone: '', memberType: 'general', active: true } }
 function openEdit(item) { modal.value = { ...item } }
@@ -103,8 +132,9 @@ async function downloadMemberReport() {
   finally { exportLoading.value = false }
 }
 watch(() => state.search, () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => load(1), 300) })
+watch(() => [manager.search, manager.memberType], () => { if (!manager.open) return; clearTimeout(managerSearchTimer); managerSearchTimer = setTimeout(() => loadManager(1), 300) })
 onMounted(() => load(1))
-onUnmounted(() => clearTimeout(searchTimer))
+onUnmounted(() => { clearTimeout(searchTimer); clearTimeout(managerSearchTimer) })
 </script>
 
 <template>
@@ -113,11 +143,18 @@ onUnmounted(() => clearTimeout(searchTimer))
       <div class="flex min-w-0 flex-wrap items-center justify-between gap-3">
         <div class="flex items-center gap-3">
           <button class="grid h-10 w-10 place-items-center rounded-lg border border-stone-200 dark:border-stone-700" aria-label="กลับ Admin dashboard" @click="goBack"><ArrowLeft class="h-5 w-5" /></button>
-          <div><p class="text-sm font-black text-court-700 dark:text-court-300">แดชบอร์ดผู้ดูแล</p><h1 class="text-2xl font-black">ระบบสมาชิก</h1></div>
+          <img
+            v-if="auth?.branding?.logoData"
+            :src="auth.branding.logoData"
+            alt="โลโก้ระบบ"
+            class="h-10 w-10 rounded-lg border border-stone-200 bg-white object-cover dark:border-stone-700"
+          />
+          <div><p class="text-sm font-black text-court-700 dark:text-court-300">{{ auth?.branding?.systemName || 'LiveMatch' }} · แดชบอร์ดผู้ดูแล</p><h1 class="text-2xl font-black">ระบบสมาชิก</h1></div>
         </div>
         <div class="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto">
           <button class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-stone-200 bg-white/70 px-4 font-bold transition hover:border-court-400 hover:text-court-700 dark:border-stone-700 dark:bg-stone-900/70 dark:hover:text-court-300" @click="load()"><RefreshCw class="h-4 w-4" :class="state.loading ? 'animate-spin' : ''" />รีเฟรช</button>
           <button class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-stone-200 bg-white/70 px-4 font-bold transition hover:border-court-400 hover:text-court-700 disabled:opacity-50 dark:border-stone-700 dark:bg-stone-900/70 dark:hover:text-court-300" :disabled="exportLoading" @click="openReportModal"><Download class="h-4 w-4" />{{ exportLoading ? 'กำลังโหลด...' : 'รายงาน' }}</button>
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-court-200 bg-court-500/10 px-4 font-black text-court-700 dark:border-court-900 dark:text-court-300" @click="openManager"><Users class="h-4 w-4" />จัดการสมาชิก</button>
           <button class="col-span-2 inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-court-500 px-4 font-black text-white shadow-soft transition hover:bg-court-600 sm:col-span-1" @click="openCreate"><Plus class="h-4 w-4" />ลงทะเบียนสมาชิก</button>
         </div>
       </div>
@@ -145,6 +182,33 @@ onUnmounted(() => clearTimeout(searchTimer))
       </div>
       <div class="mt-4 flex items-center justify-between rounded-lg bg-paper-100 p-2 dark:bg-stone-800"><button class="rounded-lg border border-stone-200 bg-white px-3 py-2 font-bold disabled:opacity-40 dark:border-stone-700 dark:bg-stone-900" :disabled="state.page<=1" @click="load(state.page-1)">ก่อนหน้า</button><span class="text-sm font-black">หน้า {{ state.page }} / {{ totalPages }}</span><button class="rounded-lg border border-stone-200 bg-white px-3 py-2 font-bold disabled:opacity-40 dark:border-stone-700 dark:bg-stone-900" :disabled="state.page>=totalPages" @click="load(state.page+1)">ถัดไป</button></div>
     </section>
+    <div v-if="manager.open" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="จัดการสมาชิกชมรม" @click.self="closeManager">
+      <section class="flex max-h-[92dvh] w-full max-w-3xl flex-col overflow-hidden rounded-xl bg-white dark:bg-stone-900">
+        <header class="flex items-start justify-between gap-3 border-b p-4 dark:border-stone-700">
+          <div><p class="text-sm font-black text-court-700">จัดการสมาชิก</p><h2 class="text-xl font-black">กำหนดสมาชิกชมรม</h2><p class="text-xs font-semibold text-stone-500">ติ๊กเลือกเป็นสมาชิกชมรม · ไม่ติ๊กเป็นสมาชิกทั่วไป</p></div>
+          <button class="grid h-10 w-10 place-items-center rounded-lg border dark:border-stone-700" aria-label="ปิด" @click="closeManager"><X class="h-5 w-5" /></button>
+        </header>
+        <div class="grid gap-2 border-b p-3 dark:border-stone-700 sm:grid-cols-[1fr_13rem]">
+          <input v-model="manager.search" type="search" class="h-11 rounded-lg border bg-transparent px-3" placeholder="ค้นหาชื่อ เบอร์โทร หรืออีเมล" />
+          <select v-model="manager.memberType" class="h-11 rounded-lg border bg-transparent px-3"><option value="">ทุกประเภท</option><option value="club">สมาชิกชมรม</option><option value="general">สมาชิกทั่วไป</option></select>
+        </div>
+        <div class="min-h-0 flex-1 overflow-y-auto p-3">
+          <p v-if="manager.error" class="mb-3 rounded-lg bg-red-50 p-3 font-bold text-red-700">{{ manager.error }}</p>
+          <label v-for="item in manager.items" :key="item.id" class="mb-2 flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border p-3 dark:border-stone-700">
+            <input v-model="item.club" type="checkbox" class="h-5 w-5" @change="setManagerMembership(item)" />
+            <span class="min-w-0"><b class="block truncate">{{ item.name }}</b><small class="block truncate text-stone-500">{{ item.phone }} · {{ item.email || '-' }}</small></span>
+            <span class="ml-auto shrink-0 text-xs font-black" :class="item.club ? 'text-court-700' : 'text-stone-400'">{{ item.club ? 'สมาชิกชมรม' : 'ทั่วไป' }}</span>
+          </label>
+          <p v-if="!manager.loading && !manager.items.length" class="p-8 text-center text-stone-500">ไม่พบรายชื่อ</p>
+        </div>
+        <div class="flex items-center justify-between gap-2 border-t p-3 dark:border-stone-700">
+          <button class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="manager.page <= 1" @click="loadManager(manager.page-1)">ก่อนหน้า</button>
+          <span class="text-sm font-black">หน้า {{ manager.page }} / {{ Math.max(1, Math.ceil(manager.total/manager.pageSize)) }} · {{ manager.total }} คน</span>
+          <button class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="manager.page >= Math.ceil(manager.total/manager.pageSize)" @click="loadManager(manager.page+1)">ถัดไป</button>
+        </div>
+        <footer class="grid grid-cols-2 gap-2 border-t p-3 dark:border-stone-700"><button class="h-11 rounded-lg border font-bold" :disabled="manager.saving" @click="closeManager">ยกเลิก</button><button class="h-11 rounded-lg bg-court-500 font-black text-white disabled:opacity-50" :disabled="manager.saving" @click="saveManager">{{ manager.saving ? 'กำลังบันทึก...' : 'บันทึก' }}</button></footer>
+      </section>
+    </div>
     <div v-if="detail" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="member-detail-title" @click.self="detail=null" @keydown.esc="detail=null">
       <div class="max-h-[90vh] w-full max-w-4xl overflow-auto rounded-xl bg-white p-4 dark:bg-stone-900" tabindex="-1">
         <div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black text-court-700">ข้อมูลสมาชิก</p><h2 id="member-detail-title" class="text-2xl font-black" data-i18n-ignore>{{ detail.member.name }}</h2></div><button aria-label="ปิด" @click="detail=null"><X class="h-5 w-5" /></button></div>

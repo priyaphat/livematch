@@ -1601,6 +1601,22 @@ func TestNormalizePromptPayTargetUsesThaiQRIdentifierTags(t *testing.T) {
 	}
 }
 
+func TestBookingAcceptanceOpen(t *testing.T) {
+	location := bangkokLocation
+	at := func(hour, minute int) time.Time { return time.Date(2026, 8, 12, hour, minute, 0, 0, location) }
+	if !bookingAcceptanceOpen(bookingSettingsRecord{}, at(3, 0)) {
+		t.Fatal("disabled acceptance window must allow booking")
+	}
+	daytime := bookingSettingsRecord{BookingAcceptanceEnabled: true, BookingAcceptanceOpenTime: "09:00", BookingAcceptanceCloseTime: "18:00"}
+	if !bookingAcceptanceOpen(daytime, at(9, 0)) || bookingAcceptanceOpen(daytime, at(18, 0)) {
+		t.Fatal("daytime acceptance window boundaries are incorrect")
+	}
+	overnight := bookingSettingsRecord{BookingAcceptanceEnabled: true, BookingAcceptanceOpenTime: "20:00", BookingAcceptanceCloseTime: "02:00"}
+	if !bookingAcceptanceOpen(overnight, at(23, 0)) || !bookingAcceptanceOpen(overnight, at(1, 30)) || bookingAcceptanceOpen(overnight, at(12, 0)) {
+		t.Fatal("overnight acceptance window is incorrect")
+	}
+}
+
 func TestParseSlipQRPayloadExtractsAmountAndTransRef(t *testing.T) {
 	payload := "00020101021229370016A0000006770101110113006681234567853037645406100.005802TH transRef=ABCDEF1234567890"
 	parsed := parseSlipQRPayload(payload)

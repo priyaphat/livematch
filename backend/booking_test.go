@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -125,6 +127,34 @@ func TestBookingRateLimitUsesRemoteIPAndScope(t *testing.T) {
 	}
 }
 
+func TestFetchTelegramUpdatesReturnsJSONWithoutExposingTokenInURLResponse(t *testing.T) {
+	token := "123456789:secret-token-value"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/bot"+token+"/getUpdates" {
+			t.Fatalf("unexpected Telegram path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":[{"update_id":42}]}`))
+	}))
+	defer server.Close()
+	previous := telegramAPIBaseURL
+	telegramAPIBaseURL = server.URL
+	defer func() { telegramAPIBaseURL = previous }()
+
+	result, status, err := fetchTelegramUpdates(t.Context(), token)
+	if err != nil || status != http.StatusOK || !strings.Contains(string(result), `"update_id":42`) {
+		t.Fatalf("unexpected Telegram check result: status=%d result=%s err=%v", status, result, err)
+	}
+	if strings.Contains(string(result), token) {
+		t.Fatal("Telegram check response must not expose the bot token")
+	}
+	for _, invalid := range []string{"", "abc", "123:bad/token", "123:bad token"} {
+		if _, _, err = fetchTelegramUpdates(t.Context(), invalid); err == nil {
+			t.Fatalf("invalid token %q should be rejected before the request", invalid)
+		}
+	}
+}
+
 func TestPublicBookingDateFollowsAllowOvernightSetting(t *testing.T) {
 	now := time.Date(2026, 7, 23, 10, 0, 0, 0, bangkokLocation)
 	todayStart := time.Date(2026, 7, 23, 16, 0, 0, 0, bangkokLocation)
@@ -142,6 +172,69 @@ func TestPublicBookingDateFollowsAllowOvernightSetting(t *testing.T) {
 	unlocked := bookingSettingsRecord{AllowOvernight: true}
 	if !publicBookingDateAllowed(unlocked, tomorrowStart, tomorrowStart.Add(time.Hour), now) {
 		t.Fatal("another day must be bookable when allowOvernight is true")
+	}
+}
+
+func TestPublicBookingServerValidationRejectsTamperedPayloadTimes(t *testing.T) {
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, bangkokLocation)
+	settings := bookingSettingsRecord{
+		OpenTime:        "16:00",
+		CloseTime:       "22:00",
+		IntervalMinutes: 60,
+		AllowOvernight:  false,
+	}
+	validStart := time.Date(2026, 8, 12, 16, 0, 0, 0, bangkokLocation)
+	if err := validatePublicBookingWindow(settings, validStart, validStart.Add(time.Hour), now); err != nil {
+		t.Fatalf("valid server-side booking was rejected: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+	}{
+		{"past time", now.Add(-2 * time.Hour), now.Add(-time.Hour)},
+		{"outside opening hours", validStart.Add(-time.Hour), validStart},
+		{"off interval grid", validStart.Add(30 * time.Minute), validStart.Add(90 * time.Minute)},
+		{"invalid duration", validStart, validStart.Add(45 * time.Minute)},
+		{"reversed time", validStart.Add(time.Hour), validStart},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := validatePublicBookingWindow(settings, test.start, test.end, now); err == nil {
+				t.Fatal("crafted public booking payload should be rejected by the backend")
+			}
+		})
+	}
+
+	tomorrow := validStart.AddDate(0, 0, 1)
+	if err := validatePublicBookingWindow(settings, tomorrow, tomorrow.Add(time.Hour), now); !errors.Is(err, errPublicBookingDateNotAllowed) {
+		t.Fatalf("future date bypass should be rejected, got %v", err)
+	}
+
+	settings.AllowOvernight = true
+	settings.SingleSlotPurchaseEnabled = true
+	if err := validatePublicBookingWindow(settings, tomorrow, tomorrow.Add(2*time.Hour), now); !errors.Is(err, errPublicSingleSlotOnly) {
+		t.Fatalf("multi-slot bypass should be rejected, got %v", err)
+	}
+}
+
+func TestAdminBookingCanCrossDaysWhenPublicAdvanceBookingIsDisabled(t *testing.T) {
+	settings := bookingSettingsRecord{
+		OpenTime:        "16:00",
+		CloseTime:       "22:00",
+		IntervalMinutes: 60,
+		AllowOvernight:  false,
+	}
+	now := time.Now().In(bangkokLocation)
+	start := time.Date(now.Year(), now.Month(), now.Day()+1, 20, 0, 0, 0, bangkokLocation)
+	end := start.Add(25 * time.Hour)
+
+	if err := validateAdminBookingWindow(settings, start, end); err != nil {
+		t.Fatalf("admin cross-day booking should not depend on allowOvernight: %v", err)
+	}
+	if err := validateBookingWindow(settings, start, end); err == nil {
+		t.Fatal("the public booking validator must still reject a cross-day booking")
 	}
 }
 

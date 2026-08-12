@@ -517,6 +517,8 @@ func (a *app) migrate(ctx context.Context) error {
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);
+		alter table admin_users add column if not exists system_name text not null default '';
+		alter table admin_users add column if not exists logo_data text not null default '';
 		create table if not exists admin_default_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
 			settings jsonb not null,
@@ -806,6 +808,17 @@ func (a *app) migrate(ctx context.Context) error {
 		);
 		alter table booking_settings add column if not exists public_token text not null default '';
 		alter table booking_settings add column if not exists telegram_bot_fingerprint text not null default '';
+		alter table booking_settings add column if not exists booking_acceptance_enabled boolean not null default false;
+		alter table booking_settings add column if not exists booking_acceptance_open_time time;
+		alter table booking_settings add column if not exists booking_acceptance_close_time time;
+		alter table booking_settings add column if not exists single_slot_purchase_enabled boolean not null default false;
+		alter table booking_settings add column if not exists popup_enabled boolean not null default false;
+		alter table booking_settings add column if not exists popup_image text not null default '';
+		alter table booking_settings add column if not exists popup_revision text not null default '';
+		alter table booking_settings add column if not exists slipok_enabled boolean not null default false;
+		alter table booking_settings add column if not exists slipok_branch_id text not null default '';
+		alter table booking_settings add column if not exists slipok_api_key text not null default '';
+		alter table booking_settings add column if not exists slipok_monthly_cap integer not null default 0;
 		create unique index if not exists idx_booking_settings_telegram_bot on booking_settings(telegram_bot_fingerprint) where telegram_bot_fingerprint <> '';
 		create table if not exists booking_courts (
 			id text primary key,
@@ -865,6 +878,40 @@ func (a *app) migrate(ctx context.Context) error {
 			created_at timestamptz not null default now(),
 			reviewed_at timestamptz
 		);
+		alter table booking_payments add column if not exists admin_id text references admin_users(id) on delete cascade;
+		update booking_payments p set admin_id=b.admin_id from bookings b where p.booking_id=b.id and p.admin_id is null;
+		alter table booking_payments add column if not exists trans_ref text not null default '';
+		alter table booking_payments add column if not exists slip_qr_payload text not null default '';
+		alter table booking_payments add column if not exists detected_amount_thb integer;
+		alter table booking_payments add column if not exists detected_paid_at text not null default '';
+		alter table booking_payments add column if not exists detected_receiver text not null default '';
+		alter table booking_payments add column if not exists verification_provider text not null default 'manual';
+		alter table booking_payments add column if not exists verification_status text not null default 'manual_review';
+		alter table booking_payments add column if not exists verification_note text not null default '';
+		alter table booking_payments add column if not exists provider_error_code integer not null default 0;
+		alter table booking_payments add column if not exists checked_at timestamptz;
+		create table if not exists booking_slip_refs (
+			admin_id text not null references admin_users(id) on delete cascade,
+			trans_ref text not null,
+			payment_id text not null references booking_payments(id) on delete cascade,
+			member_id text references members(id) on delete set null,
+			created_at timestamptz not null default now(),
+			primary key (admin_id,trans_ref)
+		);
+		create table if not exists booking_security_incidents (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			public_user_id text references public_users(id) on delete set null,
+			member_id text references members(id) on delete set null,
+			booking_id text references bookings(id) on delete set null,
+			payment_id text references booking_payments(id) on delete set null,
+			incident_type text not null check (incident_type in ('duplicate','verification_failed')),
+			trans_ref text not null default '',
+			reason text not null default '',
+			duplicate_payment_id text references booking_payments(id) on delete set null,
+			created_at timestamptz not null default now()
+		);
+		create index if not exists idx_booking_incidents_admin on booking_security_incidents(admin_id,created_at desc);
 		create index if not exists idx_members_admin on members(admin_id, active, created_at desc);
 		create index if not exists idx_booking_courts_admin on booking_courts(admin_id, active, sort_order);
 		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);

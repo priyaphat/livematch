@@ -252,6 +252,17 @@ export async function buildBookingAdminWorkbook(data) {
   ], headers.length);
   addTable(sheet, headers, rows, [9, 10, 16]);
   finishSheet(sheet);
+  const incidentHeaders = ["ประเภท", "สมาชิก", "เบอร์โทร", "Booking", "transRef", "เหตุผล", "เวลาที่พบ", "ซ้ำกับสมาชิก", "เวลารายการเดิม"];
+  const incidentRows = (data.incidents || []).map((item) => [
+    item.type === "duplicate" ? "สลิปซ้ำ" : "ตรวจสลิปไม่ผ่าน",
+    item.memberName || "-", item.phone || "-", item.bookingId || "-", item.transRef || "-",
+    item.reason || "", item.createdAt || "-", item.duplicateMemberName || "-", item.duplicateAt || "-",
+  ]);
+  const incidentSheet = workbook.addWorksheet("สลิปผิดปกติ");
+  addTitle(incidentSheet, "ประวัติสลิปผิดปกติ", incidentHeaders.length);
+  addMeta(incidentSheet, [["วันที่เริ่มต้น", data.startDate], ["วันที่สิ้นสุด", data.endDate], ["จำนวนเหตุการณ์", incidentRows.length]], incidentHeaders.length);
+  addTable(incidentSheet, incidentHeaders, incidentRows);
+  finishSheet(incidentSheet);
   return workbook;
 }
 

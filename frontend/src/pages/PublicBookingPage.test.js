@@ -176,7 +176,7 @@ describe("PublicBookingPage", () => {
     wrapper.unmount();
   });
 
-  it("shows a toast and returns to today when another date is rejected", async () => {
+  it("allows viewing another date while keeping it read-only when advance booking is off", async () => {
     const currentDate = new Date().toLocaleDateString("en-CA", {
       timeZone: "Asia/Bangkok",
     });
@@ -184,14 +184,11 @@ describe("PublicBookingPage", () => {
     const apiRequest = vi.fn((url) => {
       if (url.includes("/availability")) {
         availabilityCalls += 1;
-        if (availabilityCalls === 2) {
-          const error = new Error("ระบบเปิดให้จองได้เฉพาะวันนี้");
-          error.status = 403;
-          return Promise.reject(error);
-        }
         const payload = availability();
-        payload.date = currentDate;
-        payload.settings.allowOvernight = availabilityCalls === 1;
+        payload.date = availabilityCalls === 1 ? currentDate : new Date(Date.now() + 86400000).toLocaleDateString("en-CA", { timeZone: "Asia/Bangkok" });
+        payload.settings.allowOvernight = false;
+        payload.bookingDateAllowed = availabilityCalls === 1;
+        payload.bookingAcceptanceOpen = true;
         return Promise.resolve(payload);
       }
       if (url.includes("/public-auth/me"))
@@ -208,31 +205,22 @@ describe("PublicBookingPage", () => {
       expect(wrapper.get('input[type="date"]').attributes("disabled")).toBeUndefined(),
     );
     await wrapper.get('button[aria-label="วันถัดไป"]').trigger("click");
-    await vi.waitFor(() =>
-      expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain(
-        "ระบบเปิดให้จองได้เฉพาะวันนี้",
-      ),
-    );
-    expect(wrapper.find('input[type="date"]').exists()).toBe(false);
-    expect(wrapper.get("#public-booking-date-title").text()).toContain(
-      new Date(`${currentDate}T12:00:00+07:00`).toLocaleDateString("th-TH", {
-        day: "numeric",
-        month: "long",
-        year: "numeric",
-      }),
-    );
+    await vi.waitFor(() => expect(wrapper.text()).toContain("สามารถดูตารางได้อย่างเดียว"));
+    expect(wrapper.find('input[type="date"]').exists()).toBe(true);
+    await wrapper.get('[data-testid="slot-court-1-960"]').trigger('click');
+    expect(wrapper.find('.public-slot--selected').exists()).toBe(false);
     wrapper.unmount();
   });
 
-  it("hides every public date control when advance booking is off", async () => {
+  it("keeps every public date control visible when advance booking is off", async () => {
     const apiRequest = apiMock();
     const wrapper = mount(PublicBookingPage, {
       props: { apiRequest, token: "tenant-token" },
     });
     await vi.waitFor(() => expect(wrapper.text()).toContain("เลือกวันและช่วงเวลา"));
-    expect(wrapper.find('input[type="date"]').exists()).toBe(false);
-    expect(wrapper.findAll(".booking-date-arrow")).toHaveLength(0);
-    expect(wrapper.find(".booking-today-button").exists()).toBe(false);
+    expect(wrapper.find('input[type="date"]').exists()).toBe(true);
+    expect(wrapper.findAll(".booking-date-arrow").length).toBeGreaterThan(0);
+    expect(wrapper.find(".booking-today-button").exists()).toBe(true);
     expect(wrapper.get("#public-booking-date-title").text()).toBeTruthy();
     wrapper.unmount();
   });
@@ -283,6 +271,23 @@ describe("PublicBookingPage", () => {
       "2 ช่วง",
     );
     expect(wrapper.get('[data-testid="booking-summary"]').text()).toContain("฿200");
+    wrapper.unmount();
+  });
+
+  it("keeps only one selected interval when single-slot purchase is enabled", async () => {
+    const apiRequest = apiMock();
+    apiRequest.mockImplementation((url) => {
+      if (url.includes('/availability')) { const data = availability(); data.settings.singleSlotPurchaseEnabled = true; return Promise.resolve(data); }
+      if (url.includes('/public-auth/me')) return Promise.resolve({ user: { name: 'User' }, member: { name: 'สมาชิก', phone: '0882250419' } });
+      if (url.includes('/mine')) return Promise.resolve({ items: [] });
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: 'tenant-token' } });
+    await vi.waitFor(() => expect(wrapper.text()).toContain('สนาม 1'));
+    await wrapper.get('[data-testid="slot-court-1-960"]').trigger('click');
+    await wrapper.get('[data-testid="slot-court-1-1020"]').trigger('click');
+    expect(wrapper.findAll('.public-slot--selected')).toHaveLength(1);
+    expect(wrapper.get('[data-testid="slot-court-1-1020"]').classes()).toContain('public-slot--selected');
     wrapper.unmount();
   });
 

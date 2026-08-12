@@ -16,13 +16,14 @@ import {
   RefreshCw,
   Save,
   Settings,
+  ShieldCheck,
   UserRound,
   X,
   XCircle,
 } from "@lucide/vue";
 import { exportBookingAdminExcel } from "../adminExcelExport";
 
-const props = defineProps(["apiRequest"]);
+const props = defineProps(["apiRequest", "auth"]);
 const AUTO_REFRESH_MS = 10000;
 const today = new Date().toLocaleDateString("en-CA", {
   timeZone: "Asia/Bangkok",
@@ -39,12 +40,17 @@ const settings = reactive({});
 const savedScheduleSettings = reactive({});
 const courts = ref([]);
 const activeTab = ref("pending");
+const settingsTab = ref("booking");
 const editor = ref(null);
 const review = ref(null);
+const historyDetail = ref(null);
 const qrModal = ref(false);
 const qrDataUrl = ref("");
 const qrStatus = ref("");
 const settingsStatus = ref("");
+const telegramCheckLoading = ref(false);
+const telegramCheckResult = ref(null);
+const telegramCheckError = ref("");
 const lastUpdated = ref(null);
 const scheduleScroll = ref(null);
 const newCourt = reactive({ name: "", pricePerInterval: 100 });
@@ -56,8 +62,8 @@ const historyTotal = ref(0);
 const pendingPage = ref(1);
 const pendingPageSize = 10;
 const historyFilters = reactive({
-  startDate: today,
-  endDate: today,
+  startDate: addDateDays(today, -30),
+  endDate: addDateDays(today, 30),
   courtId: "",
   phone: "",
 });
@@ -68,6 +74,8 @@ const exportFilters = reactive({
 });
 const exportLoading = ref(false);
 const exportStatus = ref("");
+const incidents = reactive({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1, search: "", type: "", loading: false });
+const slipOKQuota = reactive({ available: false, used: 0, remaining: 0, limit: 0, capReached: false, error: "" });
 let timer;
 let settingsReady = false;
 let overviewRequest = 0;
@@ -81,9 +89,17 @@ const tabs = computed(() => [
     count: pendingBookings.value.length,
   },
   { id: "history", label: "ประวัติการจอง", icon: History },
+  { id: "blacklist", label: "Blacklist", icon: ShieldCheck, count: incidents.total },
   { id: "export", label: "รายงาน", icon: Download },
   { id: "settings", label: "ตั้งค่า", icon: Settings },
 ]);
+const settingsTabs = [
+  { id: "booking", label: "ตารางและกติกา" },
+  { id: "payment", label: "การรับชำระ" },
+  { id: "slipok", label: "Auto Slip" },
+  { id: "display", label: "การแสดงผล" },
+  { id: "courts", label: "จัดการสนาม" },
+];
 const pendingBookings = computed(() => {
   const groups = new Map();
   for (const booking of state.pendingReviews) {
@@ -129,6 +145,12 @@ const selectedEditorCourt = computed(() =>
   courts.value.find((court) => court.id === editor.value?.courtId),
 );
 const editorSlots = computed(() => editor.value?.slots || []);
+const selectedEditorCourts = computed(() => {
+  const selectedIds = new Set(editor.value?.selectedCourtIds || []);
+  for (const slot of editorSlots.value) selectedIds.add(slot.courtId);
+  if (!selectedIds.size && editor.value?.courtId) selectedIds.add(editor.value.courtId);
+  return courts.value.filter((court) => selectedIds.has(court.id));
+});
 const editorItems = computed(() => {
   const interval = Number(savedScheduleSettings.intervalMinutes || 60);
   const result = [];
@@ -138,47 +160,49 @@ const editorItems = computed(() => {
       .map((slot) => slot.minute)
       .sort((a, b) => a - b);
     for (const minute of minutes) {
-      const previous = result.at(-1);
-      if (previous?.courtId === court.id && previous.endMinute === minute) {
-        previous.endMinute = minute + interval;
-        previous.endAt = localDateTime(minute + interval);
-      } else {
-        result.push({
-          courtId: court.id,
-          courtName: court.name,
-          startMinute: minute,
-          endMinute: minute + interval,
-          startAt: localDateTime(minute),
-          endAt: localDateTime(minute + interval),
-        });
-      }
+      result.push({
+        courtId: court.id,
+        courtName: court.name,
+        startMinute: minute,
+        endMinute: minute + interval,
+        startAt: localDateTime(minute),
+        endAt: localDateTime(minute + interval),
+      });
     }
   }
   return result;
 });
-const editorTotal = computed(() => {
-  if (editorSlots.value.length) {
-    return editorSlots.value.reduce((sum, slot) => {
-      const court = courts.value.find((item) => item.id === slot.courtId);
-      return sum + Number(court?.pricePerInterval || 0);
-    }, 0);
-  }
-  if (
-    !editor.value?.startAt ||
-    !editor.value?.endAt ||
-    !selectedEditorCourt.value
-  )
+const repeatDayCount = computed(() => {
+  const start = editor.value?.repeatStartDate || state.date;
+  const end = editor.value?.repeatEndDate || start;
+  const startTime = new Date(`${start}T12:00:00Z`).getTime();
+  const endTime = new Date(`${end}T12:00:00Z`).getTime();
+  if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime < startTime)
     return 0;
-  const minutes =
-    (new Date(editor.value.endAt).getTime() -
-      new Date(editor.value.startAt).getTime()) /
-    60000;
-  return Math.max(
-    0,
-    Math.round(minutes / Number(savedScheduleSettings.intervalMinutes || 60)) *
-      selectedEditorCourt.value.pricePerInterval,
-  );
+  return Math.floor((endTime - startTime) / 86400000) + 1;
 });
+const editorDailyTotal = computed(() =>
+  editorSlots.value.reduce((sum, slot) => {
+    const court = courts.value.find((item) => item.id === slot.courtId);
+    return sum + Number(court?.pricePerInterval || 0);
+  }, 0),
+);
+const repeatedEditorItems = computed(() => {
+  const result = [];
+  const startDate = editor.value?.repeatStartDate || state.date;
+  for (let day = 0; day < repeatDayCount.value; day += 1) {
+    const targetDate = addDateDays(startDate, day);
+    for (const item of editorItems.value) {
+      result.push({
+        courtId: item.courtId,
+        startAt: repeatDateTime(item.startAt, targetDate),
+        endAt: repeatDateTime(item.endAt, targetDate),
+      });
+    }
+  }
+  return result;
+});
+const editorTotal = computed(() => editorDailyTotal.value * repeatDayCount.value);
 const publicLink = computed(() =>
   savedScheduleSettings.publicToken
     ? `${window.location.origin}/booking/${savedScheduleSettings.publicToken}`
@@ -250,6 +274,22 @@ function localDateTime(minute) {
   })
     .format(date)
     .replace(" ", "T");
+}
+
+function addDateDays(value, days) {
+  const [year, month, day] = String(value).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function repeatDateTime(value, targetDate) {
+  const sourceDate = String(value).slice(0, 10);
+  const sourceTime = String(value).slice(11, 16);
+  const sourceDay = new Date(`${sourceDate}T12:00:00Z`).getTime();
+  const scheduleDay = new Date(`${state.date}T12:00:00Z`).getTime();
+  const offsetDays = Math.round((sourceDay - scheduleDay) / 86400000);
+  return `${addDateDays(targetDate, offsetDays)}T${sourceTime}`;
 }
 
 function timeLabel(minute) {
@@ -385,13 +425,14 @@ function changeTab(tab) {
   activeTab.value = tab;
   editor.value = null;
   review.value = null;
+  historyDetail.value = null;
   if (tab === "history") loadHistory();
 }
 
 function resetHistoryFilters() {
   Object.assign(historyFilters, {
-    startDate: today,
-    endDate: today,
+    startDate: addDateDays(today, -30),
+    endDate: addDateDays(today, 30),
     courtId: "",
     phone: "",
   });
@@ -429,17 +470,6 @@ function bookingStatusLabel(status) {
       rejected: "ไม่อนุมัติ",
       cancelled: "ยกเลิก",
       expired: "หมดเวลา",
-    }[status] || status
-  );
-}
-
-function paymentStatusLabel(status) {
-  return (
-    {
-      unpaid: "ยังไม่ชำระ",
-      pending: "รอตรวจสอบ",
-      paid: "ชำระแล้ว",
-      rejected: "ไม่ผ่าน",
     }[status] || status
   );
 }
@@ -493,6 +523,9 @@ async function openCell(court, minute) {
     );
     if (index >= 0) editor.value.slots.splice(index, 1);
     else editor.value.slots.push({ courtId: court.id, minute });
+    editor.value.selectedCourtIds = [
+      ...new Set(editor.value.slots.map((slot) => slot.courtId)),
+    ];
     if (!editor.value.slots.length) editor.value = null;
     return;
   }
@@ -508,11 +541,14 @@ async function openCell(court, minute) {
     memberComboOpen: false,
     memberOptions: [],
     slots: [{ courtId: court.id, minute }],
+    selectedCourtIds: [court.id],
+    repeatStartDate: state.date,
+    repeatEndDate: state.date,
   };
 }
 
-function useCustomDateRange() {
-  if (editor.value) editor.value.slots = [];
+function openHistoryDetail(booking) {
+  historyDetail.value = booking;
 }
 
 async function searchMember() {
@@ -547,10 +583,15 @@ function selectBookingMember(member = null) {
 
 async function createEntry() {
   try {
-    const payload = editorSlots.value.length
-      ? { ...editor.value, items: editorItems.value.map(({ courtId, startAt, endAt }) => ({ courtId, startAt, endAt })) }
-      : editor.value;
+    if (!repeatDayCount.value)
+      throw new Error("วันสิ้นสุดต้องไม่น้อยกว่าวันเริ่มทำซ้ำ");
+    if (repeatedEditorItems.value.length > 1000)
+      throw new Error("รายการที่ทำซ้ำมากเกินไป กรุณาลดจำนวนวันหรือช่องเวลา");
+    const payload = { ...editor.value, items: repeatedEditorItems.value };
     delete payload.slots;
+    delete payload.selectedCourtIds;
+    delete payload.repeatStartDate;
+    delete payload.repeatEndDate;
     delete payload.memberQuery;
     delete payload.memberComboOpen;
     delete payload.memberOptions;
@@ -565,6 +606,8 @@ async function createEntry() {
         body: JSON.stringify(payload),
       });
     }
+    historyFilters.startDate = editor.value.repeatStartDate || state.date;
+    historyFilters.endDate = editor.value.repeatEndDate || state.date;
     editor.value = null;
     await loadOverview();
   } catch (error) {
@@ -612,9 +655,40 @@ async function saveSettings() {
     });
     settingsStatus.value = "บันทึกการตั้งค่าแล้ว";
     await loadOverview(false, true, true);
+    await loadSlipOKQuota();
   } catch (error) {
     state.error = error.message;
   }
+}
+
+async function loadSlipOKQuota() {
+  try { Object.assign(slipOKQuota, await props.apiRequest('/api/admin/booking/slipok-quota')); }
+  catch (error) { slipOKQuota.error = error.message || 'ตรวจสอบโควตาไม่สำเร็จ'; }
+}
+
+async function checkTelegramConnection() {
+  telegramCheckLoading.value = true;
+  telegramCheckError.value = "";
+  telegramCheckResult.value = null;
+  try {
+    telegramCheckResult.value = await props.apiRequest('/api/admin/booking/telegram-check', {
+      method: 'POST',
+      body: JSON.stringify({ botToken: settings.telegramBotToken || '' }),
+    });
+  } catch (error) {
+    telegramCheckError.value = error.message || 'ตรวจสอบ Telegram ไม่สำเร็จ';
+  } finally {
+    telegramCheckLoading.value = false;
+  }
+}
+
+async function loadIncidents(page = incidents.page) {
+  incidents.loading = true;
+  try {
+    const params = new URLSearchParams({ page, pageSize: incidents.pageSize, search: incidents.search, type: incidents.type });
+    Object.assign(incidents, await props.apiRequest(`/api/admin/booking/blacklist?${params}`));
+  } catch (error) { state.error = error.message; }
+  finally { incidents.loading = false; }
 }
 
 async function addCourt() {
@@ -674,6 +748,7 @@ function fileData(event, key, maxSize) {
 const refreshOnFocus = () => loadOverview(true, false);
 onMounted(async () => {
   await loadOverview(false, true, true);
+  await Promise.all([loadSlipOKQuota(), loadIncidents(1)]);
   timer = window.setInterval(() => loadOverview(true, false), AUTO_REFRESH_MS);
   window.addEventListener("focus", refreshOnFocus);
 });
@@ -697,11 +772,17 @@ onUnmounted(() => {
         >
           <ArrowLeft class="h-5 w-5" />
         </button>
+        <img
+          v-if="auth?.branding?.logoData"
+          :src="auth.branding.logoData"
+          alt="โลโก้ระบบ"
+          class="h-10 w-10 shrink-0 rounded-lg border border-stone-200 bg-white object-cover dark:border-stone-700"
+        />
         <div class="min-w-0">
           <p
             class="text-xs font-black uppercase tracking-[0.16em] text-court-700"
           >
-            ระบบจองสนาม LiveMatch
+            ระบบจองสนาม {{ auth?.branding?.systemName || 'LiveMatch' }}
           </p>
           <h1 class="truncate text-xl font-black sm:text-2xl">
             ศูนย์จัดการตารางจองสนาม
@@ -963,7 +1044,7 @@ onUnmounted(() => {
               </div>
             </div>
           </template>
-          <div v-if="editorSlots.length" class="rounded-xl border border-court-200 bg-court-500/10 p-3 dark:border-court-900">
+          <div class="rounded-xl border border-court-200 bg-court-500/10 p-3 dark:border-court-900">
             <p class="text-sm font-black text-court-800 dark:text-court-200">เลือกแล้ว {{ editorSlots.length }} ช่องเวลา</p>
             <p class="mt-1 text-xs font-semibold text-stone-600 dark:text-stone-300">คลิกช่องว่างในตารางเพื่อเลือกเพิ่มหรือเอาออก</p>
             <div class="mt-2 grid gap-1 text-sm font-bold">
@@ -972,25 +1053,13 @@ onUnmounted(() => {
               </span>
             </div>
           </div>
-          <label class="booking-field"
-            ><span>{{
-              editor.kind === "closure" ? "วันแรก / เวลาเริ่มปิด" : "เวลาเริ่ม"
-            }}</span
-            ><input v-model="editor.startAt" type="datetime-local" @input="useCustomDateRange"
-          /></label>
-          <label class="booking-field"
-            ><span>{{
-              editor.kind === "closure"
-                ? "วันสุดท้าย / เวลาสิ้นสุดในแต่ละวัน"
-                : "เวลาสิ้นสุด"
-            }}</span
-            ><input v-model="editor.endAt" type="datetime-local" @input="useCustomDateRange"
-          /></label>
-          <p
-            v-if="editor.kind === 'closure'"
-            class="rounded-xl bg-paper-100 p-3 text-sm font-semibold text-stone-600 dark:text-stone-300"
-          >
-            ปิดช่วงเวลาเดียวกันซ้ำทุกวัน ตั้งแต่วันแรกถึงวันสุดท้าย
+          <div class="grid min-w-0 gap-3 rounded-xl border border-stone-200 p-3 dark:border-stone-700">
+            <label class="booking-field min-w-0"><span>วันเริ่มทำซ้ำ</span><input v-model="editor.repeatStartDate" class="min-w-0" type="date" /></label>
+            <label class="booking-field min-w-0"><span>วันสุดท้าย</span><input v-model="editor.repeatEndDate" class="min-w-0" type="date" :min="editor.repeatStartDate" /></label>
+            <p class="rounded-lg bg-paper-100 px-3 py-2 text-sm font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">ทำซ้ำ {{ repeatDayCount }} วัน · รวม {{ repeatedEditorItems.length }} รายการ</p>
+          </div>
+          <p class="rounded-xl bg-paper-100 p-3 text-sm font-semibold text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+            ระบบจะทำซ้ำเฉพาะสนามและช่องเวลาที่เลือกในทุกวัน ตั้งแต่วันเริ่มถึงวันสุดท้าย
           </p>
           <label v-if="editor.kind === 'closure'" class="booking-field"
             ><span>เหตุผล</span
@@ -1005,8 +1074,8 @@ onUnmounted(() => {
             <span>สรุปค่าใช้จ่าย</span
             ><strong>฿{{ editorTotal.toLocaleString("th-TH") }}</strong
             ><small
-              >{{ selectedEditorCourt?.pricePerInterval || 0 }} บาท /
-              ช่วง</small
+              >{{ editorSlots.length }} ช่อง / วัน × {{ repeatDayCount }} วัน
+              · {{ editorDailyTotal.toLocaleString("th-TH") }} บาท / วัน</small
             >
           </div>
           <button class="booking-primary-button h-12 w-full justify-center">
@@ -1224,13 +1293,14 @@ onUnmounted(() => {
         <table class="w-full min-w-[900px] border-collapse text-sm">
           <thead>
             <tr class="booking-table-head text-left">
-              <th class="p-3">วันและเวลา</th>
-              <th class="p-3">สนาม</th>
+              <th class="p-3">วันที่จอง</th>
+              <th class="p-3">จำนวน</th>
               <th class="p-3">ผู้จอง</th>
               <th class="p-3">เบอร์โทร</th>
               <th class="p-3">สถานะการจอง</th>
-              <th class="p-3">สถานะชำระ</th>
+              <th class="p-3">เวลาที่ทำรายการ</th>
               <th class="p-3 text-right">ยอดรวม</th>
+              <th class="p-3 text-center">รายการ</th>
             </tr>
           </thead>
           <tbody>
@@ -1239,13 +1309,10 @@ onUnmounted(() => {
               :key="booking.id"
               class="border-b dark:border-stone-700"
             >
-              <td class="p-3 font-bold">
-                {{ new Date(booking.startAt).toLocaleString("th-TH") }}
-                <span class="block text-xs font-medium text-stone-500">
-                  ถึง {{ new Date(booking.endAt).toLocaleTimeString("th-TH", { hour: "2-digit", minute: "2-digit" }) }} น.
-                </span>
+              <td class="p-3 font-bold whitespace-nowrap">{{ new Date(booking.startAt).toLocaleDateString("th-TH") }}</td>
+              <td class="p-3 align-top">
+                <span class="inline-flex rounded-full bg-court-500/10 px-2.5 py-1 text-xs font-black text-court-700 dark:text-court-300">{{ booking.bookingCount || 1 }} ช่วงเวลา</span>
               </td>
-              <td class="p-3 font-black">{{ booking.courtName }}</td>
               <td class="p-3">
                 <span class="font-black">{{ booking.bookerName || "Admin" }}</span>
                 <span class="block text-xs text-stone-500">
@@ -1259,9 +1326,14 @@ onUnmounted(() => {
                   :class="historyStatusClass(booking.status)"
                 >{{ bookingStatusLabel(booking.status) }}</span>
               </td>
-              <td class="p-3 font-bold">{{ paymentStatusLabel(booking.paymentStatus) }}</td>
+              <td class="p-3 font-bold whitespace-nowrap">{{ booking.createdAt || "-" }}</td>
               <td class="p-3 text-right text-base font-black">
                 ฿{{ Number(booking.totalPriceThb || 0).toLocaleString("th-TH") }}
+              </td>
+              <td class="p-3 text-center">
+                <button type="button" class="booking-secondary-button h-9 whitespace-nowrap px-3" @click="openHistoryDetail(booking)">
+                  <ClipboardList class="h-4 w-4" />ดูรายการ
+                </button>
               </td>
             </tr>
           </tbody>
@@ -1281,6 +1353,13 @@ onUnmounted(() => {
           <button class="booking-secondary-button h-10" :disabled="historyPage >= historyTotalPages || historyLoading" @click="loadHistory(historyPage + 1)">ถัดไป</button>
         </div>
       </div>
+    </section>
+
+    <section v-else-if="activeTab === 'blacklist'" class="rounded-xl border bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+      <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="flex items-center gap-2 text-lg font-black"><ShieldCheck class="h-5 w-5 text-red-600" />Blacklist · ประวัติสลิปผิดปกติ</h2><p class="mt-1 text-sm font-semibold text-stone-500">ใช้เก็บประวัติเท่านั้น ไม่ได้ปิดกั้นสมาชิกจากการจอง</p></div><span class="rounded-full bg-red-50 px-3 py-1 text-sm font-black text-red-700">{{ incidents.total }} เหตุการณ์</span></div>
+      <form class="mt-4 grid gap-2 sm:grid-cols-[1fr_13rem_auto]" @submit.prevent="loadIncidents(1)"><input v-model="incidents.search" class="h-11 rounded-lg border bg-transparent px-3" placeholder="ค้นหาชื่อ เบอร์ หรือ transRef" /><select v-model="incidents.type" class="h-11 rounded-lg border bg-transparent px-3"><option value="">ทุกประเภท</option><option value="duplicate">สลิปซ้ำ</option><option value="verification_failed">ตรวจสลิปไม่ผ่าน</option></select><button class="booking-primary-button justify-center">ค้นหา</button></form>
+      <div class="mt-4 grid gap-3"><article v-for="item in incidents.items" :key="item.id" class="rounded-xl border p-4 dark:border-stone-700"><div class="flex flex-wrap items-start justify-between gap-2"><div><p class="font-black">{{ item.memberName || 'ไม่พบชื่อสมาชิก' }} · {{ item.phone || '-' }}</p><p class="text-xs font-semibold text-stone-500">{{ item.createdAt }} · Booking {{ item.bookingId }}</p></div><span class="rounded-full px-2 py-1 text-xs font-black" :class="item.type === 'duplicate' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'">{{ item.type === 'duplicate' ? 'สลิปซ้ำ' : 'ตรวจไม่ผ่าน' }}</span></div><p class="mt-3 rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">{{ item.reason }}</p><p v-if="item.transRef" class="mt-2 break-all text-xs font-semibold text-stone-500">transRef: {{ item.transRef }}</p><div v-if="item.type === 'duplicate'" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900 dark:bg-red-950/20"><b>ซ้ำกับ:</b> {{ item.duplicateMemberName || '-' }} · {{ item.duplicatePhone || '-' }} · {{ item.duplicateAt || '-' }}</div></article><p v-if="!incidents.loading && !incidents.items.length" class="p-8 text-center text-stone-500">ยังไม่มีประวัติสลิปผิดปกติ</p></div>
+      <div v-if="incidents.totalPages > 1" class="mt-4 flex items-center justify-between"><button class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="incidents.page<=1" @click="loadIncidents(incidents.page-1)">ก่อนหน้า</button><span class="text-sm font-black">หน้า {{ incidents.page }} / {{ incidents.totalPages }}</span><button class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="incidents.page>=incidents.totalPages" @click="loadIncidents(incidents.page+1)">ถัดไป</button></div>
     </section>
 
     <section
@@ -1341,105 +1420,102 @@ onUnmounted(() => {
       </div>
     </section>
 
-    <div v-else-if="activeTab === 'settings'" class="grid gap-4 lg:grid-cols-2">
+    <div v-else-if="activeTab === 'settings'" class="grid gap-4">
+      <nav
+        class="flex gap-2 overflow-x-auto rounded-xl border bg-white p-2 dark:border-stone-700 dark:bg-stone-900"
+        aria-label="หมวดการตั้งค่าระบบจอง"
+      >
+        <button
+          v-for="item in settingsTabs"
+          :key="item.id"
+          type="button"
+          class="h-10 shrink-0 rounded-lg px-4 text-sm font-black transition"
+          :class="settingsTab === item.id ? 'bg-court-500 text-white shadow-sm' : 'text-stone-600 hover:bg-paper-100 dark:text-stone-300 dark:hover:bg-stone-800'"
+          @click="settingsTab = item.id"
+        >
+          {{ item.label }}
+        </button>
+      </nav>
+
       <section
+        v-if="settingsTab !== 'courts'"
         class="rounded-xl border bg-white p-4 dark:border-stone-700 dark:bg-stone-900"
       >
         <h2 class="flex items-center gap-2 text-lg font-black">
-          <Settings class="h-5 w-5" />ตั้งค่าการจอง
+          <Settings class="h-5 w-5" />{{ settingsTabs.find((item) => item.id === settingsTab)?.label }}
         </h2>
-        <div class="mt-3 grid gap-3 sm:grid-cols-2">
-          <label class="grid gap-1 text-sm font-bold"
-            >เวลาเริ่ม<input
-              v-model="settings.openTime"
-              type="time"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="grid gap-1 text-sm font-bold"
-            >เวลาสิ้นสุด<input
-              v-model="settings.closeTime"
-              type="time"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="grid gap-1 text-sm font-bold"
-            >ช่วงเวลา (นาที)<input
-              v-model.number="settings.intervalMinutes"
-              type="number"
-              min="10"
-              step="10"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="flex items-center gap-2 font-bold"
-            ><input
-              v-model="settings.allowOvernight"
-              type="checkbox"
-            />จองข้ามวัน</label
-          >
-          <label class="flex items-center gap-2 font-bold"
-            ><input
-              v-model="settings.useSamePrice"
-              type="checkbox"
-            />ใช้ราคาเดียวกันทุกสนาม</label
-          >
-          <label class="grid gap-1 text-sm font-bold"
-            >PromptPay<select
-              v-model="settings.promptPayType"
-              class="h-10 rounded-lg border bg-transparent px-3"
-            >
-              <option value="mobile">เบอร์โทร</option>
-              <option value="national_id">บัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option>
-              <option value="ewallet">e-Wallet</option>
-            </select></label
-          >
-          <label class="grid gap-1 text-sm font-bold"
-            >เลข PromptPay<input
-              v-model="settings.promptPayId"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="grid gap-1 text-sm font-bold"
-            >ชื่อผู้รับ<input
-              v-model="settings.promptPayReceiverName"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="grid gap-1 text-sm font-bold"
-            >Telegram Bot token<input
-              v-model="settings.telegramBotToken"
-              type="password"
-              placeholder="เว้นว่างเพื่อใช้ค่าเดิม"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="grid gap-1 text-sm font-bold"
-            >Telegram Chat ID<input
-              v-model="settings.telegramChatId"
-              class="h-10 rounded-lg border bg-transparent px-3"
-          /></label>
-          <label class="grid gap-1 text-sm font-bold sm:col-span-2"
-            >โลโก้<span class="inline-flex h-11 cursor-pointer items-center justify-center rounded-lg border border-stone-300 bg-white px-4 font-black dark:border-stone-600 dark:bg-stone-800">เลือกโลโก้</span><input
-              class="sr-only"
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              @change="fileData($event, 'logoData', 2 * 1024 * 1024)"
-          /></label>
+
+        <div v-if="settingsTab === 'booking'" class="mt-4 grid gap-3 sm:grid-cols-2">
+          <label class="grid gap-1 text-sm font-bold">เวลาเริ่ม<input v-model="settings.openTime" type="time" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="grid gap-1 text-sm font-bold">เวลาสิ้นสุด<input v-model="settings.closeTime" type="time" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="grid gap-1 text-sm font-bold">ช่วงเวลา (นาที)<input v-model.number="settings.intervalMinutes" type="number" min="10" step="10" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="flex items-center gap-2 font-bold"><input v-model="settings.allowOvernight" type="checkbox" />จองข้ามวัน</label>
+          <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.bookingAcceptanceEnabled" type="checkbox" />จำกัดเวลาเปิดรับการจอง</label>
+          <label v-if="settings.bookingAcceptanceEnabled" class="grid gap-1 text-sm font-bold">เปิดรับเวลา<input v-model="settings.bookingAcceptanceOpenTime" type="time" required class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label v-if="settings.bookingAcceptanceEnabled" class="grid gap-1 text-sm font-bold">ปิดรับเวลา<input v-model="settings.bookingAcceptanceCloseTime" type="time" required class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.singleSlotPurchaseEnabled" type="checkbox" />ซื้อได้ครั้งละ 1 สนาม × 1 ช่วงเวลา</label>
         </div>
-        <p
-          v-if="settingsStatus"
-          class="mt-3 rounded-lg bg-green-50 p-3 font-bold text-green-700"
-        >
-          {{ settingsStatus }}
-        </p>
-        <button
-          class="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-court-500 font-black text-white"
-          @click="saveSettings"
-        >
+
+        <div v-else-if="settingsTab === 'payment'" class="mt-4 grid gap-3 sm:grid-cols-2">
+          <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.useSamePrice" type="checkbox" />ใช้ราคาเดียวกันทุกสนาม</label>
+          <label class="grid gap-1 text-sm font-bold">PromptPay<select v-model="settings.promptPayType" class="h-10 rounded-lg border bg-transparent px-3"><option value="mobile">เบอร์โทร</option><option value="national_id">บัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option><option value="ewallet">e-Wallet</option></select></label>
+          <label class="grid gap-1 text-sm font-bold">เลข PromptPay<input v-model="settings.promptPayId" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="grid gap-1 text-sm font-bold sm:col-span-2">ชื่อผู้รับ<input v-model="settings.promptPayReceiverName" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700 sm:col-span-2 sm:grid-cols-2">
+            <label class="grid gap-1 text-sm font-bold">Telegram Bot token<input v-model="settings.telegramBotToken" type="password" placeholder="เว้นว่างเพื่อใช้ค่าเดิม" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+            <label class="grid gap-1 text-sm font-bold">Telegram Chat ID<input v-model="settings.telegramChatId" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+            <div class="grid gap-2 sm:col-span-2">
+              <button type="button" class="booking-secondary-button h-10 justify-center" :disabled="telegramCheckLoading || (!settings.telegramBotToken && !settings.telegramConfigured)" @click="checkTelegramConnection">
+                <RefreshCw class="h-4 w-4" :class="telegramCheckLoading && 'animate-spin'" />{{ telegramCheckLoading ? 'กำลังยิง getUpdates...' : 'ตรวจสอบ Telegram · getUpdates' }}
+              </button>
+              <p class="text-xs font-semibold text-stone-500">กรอก Bot Token แล้วกดตรวจสอบ ระบบจะแสดง JSON จาก Telegram ด้านล่าง หากเว้นว่างจะใช้ Token ที่บันทึกไว้</p>
+              <pre v-if="telegramCheckResult" class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-stone-950 p-3 text-xs leading-5 text-green-300">{{ JSON.stringify(telegramCheckResult, null, 2) }}</pre>
+              <p v-if="telegramCheckError" class="rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700 dark:bg-red-950/30 dark:text-red-200">{{ telegramCheckError }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div v-else-if="settingsTab === 'slipok'" class="mt-4 grid gap-3">
+          <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 dark:border-stone-700">
+            <label class="flex items-center gap-2 font-black"><input v-model="settings.slipOKEnabled" type="checkbox" />เปิดใช้ Auto Slip</label>
+            <button type="button" class="rounded-lg border px-3 py-2 text-xs font-black" @click="loadSlipOKQuota">รีเฟรชโควตา</button>
+          </div>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label class="grid gap-1 text-sm font-bold">Branch ID<input v-model="settings.slipOKBranchId" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+            <label class="grid gap-1 text-sm font-bold">API Key<input v-model="settings.slipOKApiKey" type="password" class="h-10 rounded-lg border bg-transparent px-3" :placeholder="settings.slipOKApiKeyMasked || 'กรอก API Key'" /></label>
+            <label class="grid gap-1 text-sm font-bold">Monthly cap<input v-model.number="settings.slipOKMonthlyCap" type="number" min="0" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+            <div class="rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">ใช้แล้ว {{ slipOKQuota.used || 0 }} · คงเหลือ {{ slipOKQuota.remaining || 0 }} / {{ slipOKQuota.limit || settings.slipOKMonthlyCap || 0 }}<p v-if="slipOKQuota.error" class="mt-1 text-xs text-amber-700">{{ slipOKQuota.error }}</p></div>
+          </div>
+          <p class="rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">หาก Auto Slip ใช้งานไม่ได้หรือโควตาหมด ระบบจะส่งให้ Admin ตรวจ Manual</p>
+        </div>
+
+        <div v-else-if="settingsTab === 'display'" class="mt-4 grid gap-4 sm:grid-cols-2">
+          <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700">
+            <h3 class="font-black">โลโก้หน้าจอง</h3>
+            <div v-if="settings.logoData" class="grid place-items-center rounded-lg bg-paper-100 p-2 dark:bg-stone-800"><img :src="settings.logoData" alt="ตัวอย่างโลโก้" class="h-20 w-20 rounded-xl object-cover" /></div>
+            <label class="inline-flex h-11 cursor-pointer items-center justify-center rounded-lg border border-dashed font-black">เลือกโลโก้<input class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" @change="fileData($event, 'logoData', 2 * 1024 * 1024)" /></label>
+          </div>
+          <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700">
+            <label class="flex items-center gap-2 font-black"><input v-model="settings.popupEnabled" type="checkbox" />เปิด Popup หน้า Booking User</label>
+            <div v-if="settings.popupImage" class="grid place-items-center rounded-lg bg-paper-100 p-2 dark:bg-stone-800"><img :src="settings.popupImage" alt="ตัวอย่าง Popup" class="max-h-52 rounded-lg object-contain" /></div>
+            <label class="inline-flex h-11 cursor-pointer items-center justify-center rounded-lg border border-dashed font-black">อัปโหลดภาพ Popup<input class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" @change="fileData($event, 'popupImage', 2 * 1024 * 1024)" /></label>
+            <button v-if="settings.popupImage" type="button" class="h-10 rounded-lg border border-red-200 font-bold text-red-700" @click="settings.popupImage = ''">ลบภาพ Popup</button>
+          </div>
+        </div>
+
+        <p v-if="settingsStatus" class="mt-4 rounded-lg bg-green-50 p-3 font-bold text-green-700">{{ settingsStatus }}</p>
+        <button class="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-court-500 font-black text-white" @click="saveSettings">
           <Save class="h-4 w-4" />บันทึกตั้งค่า
         </button>
       </section>
 
       <section
+        v-else
         class="rounded-xl border bg-white p-4 dark:border-stone-700 dark:bg-stone-900"
       >
         <h2 class="text-lg font-black">จัดการสนาม</h2>
-        <div class="mt-3 grid gap-2">
+        <p class="mt-1 text-sm font-semibold text-stone-500">เพิ่ม แก้ไขราคา เปิดใช้งาน หรือลบสนาม</p>
+        <div class="mt-4 grid gap-2">
           <div
             v-for="court in courts"
             :key="court.id"
@@ -1687,6 +1763,51 @@ onUnmounted(() => {
           </button>
         </div>
       </form>
+    </div>
+
+    <div
+      v-if="historyDetail"
+      class="fixed inset-0 z-[70] grid place-items-end bg-black/55 p-3 backdrop-blur-sm sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="booking-history-detail-title"
+      @click.self="historyDetail = null"
+      @keydown.esc="historyDetail = null"
+    >
+      <section class="flex max-h-[90vh] w-full max-w-xl flex-col overflow-hidden rounded-xl border bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+        <header class="flex items-start justify-between gap-3 border-b p-4 dark:border-stone-700">
+          <div>
+            <p class="text-xs font-black uppercase tracking-wider text-court-700 dark:text-court-300">รายละเอียดชุดการจอง</p>
+            <h2 id="booking-history-detail-title" class="mt-1 text-xl font-black">{{ historyDetail.bookingCount || 1 }} ช่วงเวลา</h2>
+            <p class="mt-1 text-sm font-semibold text-stone-500">ทำรายการเมื่อ {{ historyDetail.createdAt || '-' }}</p>
+          </div>
+          <button type="button" class="grid h-10 w-10 shrink-0 place-items-center rounded-lg border dark:border-stone-700" aria-label="ปิดรายละเอียด" @click="historyDetail = null"><X class="h-4 w-4" /></button>
+        </header>
+
+        <div class="min-h-0 flex-1 overflow-y-auto p-4">
+          <div class="grid grid-cols-2 gap-3 rounded-xl bg-paper-100 p-3 text-sm dark:bg-stone-800">
+            <div><p class="text-xs font-bold text-stone-500">ผู้จอง</p><p class="mt-1 font-black">{{ historyDetail.bookerName || 'Admin' }}</p></div>
+            <div><p class="text-xs font-bold text-stone-500">เบอร์โทร</p><p class="mt-1 font-black">{{ historyDetail.phone || '-' }}</p></div>
+            <div><p class="text-xs font-bold text-stone-500">สถานะ</p><span class="mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-black" :class="historyStatusClass(historyDetail.status)">{{ bookingStatusLabel(historyDetail.status) }}</span></div>
+            <div><p class="text-xs font-bold text-stone-500">ยอดรวมทั้งชุด</p><p class="mt-1 text-lg font-black text-court-700 dark:text-court-300">฿{{ Number(historyDetail.totalPriceThb || 0).toLocaleString('th-TH') }}</p></div>
+          </div>
+
+          <div class="mt-4 grid gap-2">
+            <article v-for="(item, index) in historyDetail.items || []" :key="item.id || index" class="rounded-xl border p-3 dark:border-stone-700">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="font-black">{{ index + 1 }}. {{ item.courtName }}</p>
+                  <p class="mt-1 text-sm font-semibold text-stone-500">{{ new Date(item.startAt).toLocaleString('th-TH') }}–{{ new Date(item.endAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) }} น.</p>
+                </div>
+                <p class="shrink-0 font-black">฿{{ Number(item.totalPriceThb || 0).toLocaleString('th-TH') }}</p>
+              </div>
+            </article>
+            <p v-if="!historyDetail.items?.length" class="rounded-xl bg-paper-100 p-5 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">ไม่พบรายละเอียดช่วงเวลา</p>
+          </div>
+          <p v-if="historyDetail.note" class="mt-4 rounded-xl bg-paper-100 p-3 text-sm font-semibold dark:bg-stone-800"><b>หมายเหตุ:</b> {{ historyDetail.note }}</p>
+        </div>
+        <footer class="border-t p-3 dark:border-stone-700"><button type="button" class="booking-primary-button h-11 w-full justify-center" @click="historyDetail = null">ปิด</button></footer>
+      </section>
     </div>
 
     <div

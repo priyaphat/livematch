@@ -37,6 +37,7 @@ const props = defineProps([
   'navigateAdminFeature',
   'openDashboardAnnouncements',
   'saveAdminDefaultSettings',
+  'saveAdminBranding',
   'addAdminDefaultShuttleBrand',
   'removeAdminDefaultShuttleBrand',
   'addAdminDefaultCourt',
@@ -44,11 +45,13 @@ const props = defineProps([
   'addAdminDefaultLevel',
   'removeAdminDefaultLevel'
 ])
+if (!props.auth.branding) props.auth.branding = { systemName: '', logoData: '' }
 
 const sessionPage = ref(1)
 const adminDefaultSettingsTab = ref('costs')
 const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
+  { id: 'system', label: 'ตั้งค่าระบบ', hint: 'ชื่อ โลโก้ ผู้ดูแล', icon: ShieldCheck },
   { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาเริ่มต้น', icon: CreditCard },
   { id: 'courts', label: 'สนาม', hint: 'รายชื่อสนาม', icon: Database },
   { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal },
@@ -143,8 +146,24 @@ const changeSessionPage = (nextPage) => {
 }
 
 const openAdminDefaultSettingsModal = () => {
-  adminDefaultSettingsTab.value = 'costs'
+  adminDefaultSettingsTab.value = 'system'
   props.ui.showAdminDefaultSettingsModal = true
+}
+
+function handleBrandLogo(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file || file.size > 2 * 1024 * 1024 || !['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    props.forms.adminDefaultSettingsStatus = 'โลโก้ต้องเป็น PNG/JPEG/WebP ไม่เกิน 2 MB'
+    return
+  }
+  const reader = new FileReader()
+  reader.onload = () => { props.auth.branding.logoData = String(reader.result || '') }
+  reader.readAsDataURL(file)
+}
+
+function saveCurrentSettings() {
+  return adminDefaultSettingsTab.value === 'system' ? props.saveAdminBranding() : props.saveAdminDefaultSettings()
 }
 
 const closeAdminDefaultSettingsModal = () => {
@@ -268,6 +287,20 @@ function updateDashboardAnnouncement(index, value) {
 
       <div class="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
 
+      <div v-show="adminDefaultSettingsTab === 'system'" class="grid gap-4 md:grid-cols-[14rem_1fr]">
+        <div class="grid place-items-center rounded-xl border border-stone-200 bg-paper-50 p-4 dark:border-stone-700 dark:bg-stone-800">
+          <img v-if="auth.branding?.logoData" :src="auth.branding.logoData" alt="โลโก้ระบบ" class="h-32 w-32 rounded-2xl object-cover" />
+          <div v-else class="grid h-32 w-32 place-items-center rounded-2xl bg-gradient-to-br from-court-500 to-skycourt-500 text-white"><ShieldCheck class="h-12 w-12" /></div>
+          <label class="mt-3 inline-flex h-10 cursor-pointer items-center rounded-md border px-3 text-sm font-black">อัปโหลดโลโก้<input class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" @change="handleBrandLogo" /></label>
+          <button v-if="auth.branding?.logoData" class="mt-2 text-xs font-black text-red-700" @click="auth.branding.logoData=''">ใช้โลโก้เริ่มต้น</button>
+        </div>
+        <div class="grid content-start gap-3">
+          <label class="grid gap-2 text-sm font-black">ชื่อระบบ<input v-model="auth.branding.systemName" maxlength="100" class="h-11 rounded-md border bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="LiveMatch" /><small class="font-semibold text-stone-500">หากเว้นว่าง ระบบจะแสดง LiveMatch</small></label>
+          <label class="grid gap-2 text-sm font-black">ชื่อผู้ดูแล Admin<input v-model="auth.user.name" required maxlength="100" class="h-11 rounded-md border bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" /></label>
+          <p class="rounded-lg bg-court-500/10 p-3 text-sm font-bold text-court-700 dark:text-court-300">ใช้บน Navbar, Admin dashboard, ระบบสมาชิก ระบบจองสนาม และ POS</p>
+        </div>
+      </div>
+
       <div v-show="adminDefaultSettingsTab === 'announcements'" class="grid gap-3">
         <div class="flex items-start justify-between gap-3 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
           <div>
@@ -378,10 +411,10 @@ function updateDashboardAnnouncement(index, value) {
 
       <div class="flex shrink-0 items-center justify-between gap-3 border-t border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900 sm:p-4">
         <p v-if="forms.adminDefaultSettingsStatus" class="min-w-0 flex-1 truncate text-sm font-black text-court-700 dark:text-court-300">{{ forms.adminDefaultSettingsStatus }}</p>
-        <span v-else class="hidden text-xs font-semibold text-stone-500 sm:block">นำไปใช้เมื่อสร้าง Session ใหม่เท่านั้น</span>
+        <span v-else class="hidden text-xs font-semibold text-stone-500 sm:block">{{ adminDefaultSettingsTab === 'system' ? 'ใช้กับหน้าฝั่ง Admin ของบัญชีนี้' : 'นำไปใช้เมื่อสร้าง Session ใหม่เท่านั้น' }}</span>
         <div class="ml-auto grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 px-4 text-sm font-black dark:border-stone-700" @click="closeAdminDefaultSettingsModal">ยกเลิก</button>
-          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600" @click="saveAdminDefaultSettings">
+          <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600" @click="saveCurrentSettings">
             <CheckCircle2 class="h-4 w-4" />
             บันทึก
           </button>

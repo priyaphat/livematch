@@ -113,7 +113,7 @@ const tabs = [
 ]
 const overviewTabs = [
   { id: 'system', label: 'ระบบและราคา', description: 'TTS และราคา Session', icon: Settings },
-  { id: 'integrations', label: 'บริการเชื่อมต่อ', description: 'SlipOK และ Telegram', icon: Link },
+  { id: 'integrations', label: 'บริการเชื่อมต่อ', description: 'Auto Slip และ Telegram', icon: Link },
   { id: 'coins', label: 'จัดการ Coin', description: 'เพิ่มหรือหัก Coin', icon: Coins }
 ]
 const overviewTab = computed(() => props.forms.backofficeOverviewTab || 'system')
@@ -359,7 +359,7 @@ function closeSlipPreview() {
               <div class="flex items-center justify-between gap-3">
                 <div class="flex items-center gap-2">
                   <CheckCircle2 class="h-5 w-5 text-court-600" />
-                  <h2 class="text-lg font-black">SlipOK verification</h2>
+                  <h2 class="text-lg font-black">Auto Slip</h2>
                 </div>
                 <label class="inline-flex items-center gap-2 text-sm font-black">
                   <input v-model="forms.backofficeSlipOKEnabled" type="checkbox" />
@@ -374,7 +374,7 @@ function closeSlipPreview() {
                 </label>
                 <label class="grid gap-2 text-sm font-bold">
                   API Key
-                  <input v-model="forms.backofficeSlipOKApiKey" type="password" autocomplete="new-password" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :placeholder="forms.backofficeSlipOKApiKeyMasked || 'SlipOK API Key'" />
+                  <input v-model="forms.backofficeSlipOKApiKey" type="password" autocomplete="new-password" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" :placeholder="forms.backofficeSlipOKApiKeyMasked || 'Auto Slip API Key'" />
                 </label>
                 <label class="grid gap-2 text-sm font-bold sm:col-span-2">
                   ขีดจำกัดการตรวจต่อเดือน
@@ -394,7 +394,7 @@ function closeSlipPreview() {
               <div class="mt-3 grid gap-2 sm:grid-cols-2">
                 <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeCoinShop">
                   <Save class="h-4 w-4" />
-                  บันทึก SlipOK
+                  บันทึก Auto Slip
                 </button>
                 <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 font-bold text-court-700 dark:border-court-900 dark:text-court-300" @click="refreshBackofficeSlipOKQuota">
                   <RefreshCw class="h-4 w-4" />

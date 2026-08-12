@@ -665,12 +665,20 @@ onMounted(load);
           class="rounded-2xl bg-stone-950 p-5 text-white shadow-soft dark:bg-stone-900"
         >
           <div class="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-black text-court-300">LiveMatch POS</p>
-              <h1 class="mt-1 text-3xl font-black">แดชบอร์ดการขาย</h1>
-              <p class="mt-1 text-sm text-stone-300">
-                ภาพรวมร้านและการขายวันนี้
-              </p>
+            <div class="flex min-w-0 items-center gap-3">
+              <img
+                v-if="auth?.branding?.logoData"
+                :src="auth.branding.logoData"
+                alt="โลโก้ระบบ"
+                class="h-12 w-12 shrink-0 rounded-xl border border-white/15 bg-white object-cover"
+              />
+              <div class="min-w-0">
+                <p class="truncate text-sm font-black text-court-300">{{ auth?.branding?.systemName || 'LiveMatch' }} POS</p>
+                <h1 class="mt-1 text-3xl font-black">แดชบอร์ดการขาย</h1>
+                <p class="mt-1 text-sm text-stone-300">
+                  ภาพรวมร้านและการขายวันนี้
+                </p>
+              </div>
             </div>
             <div class="flex flex-wrap gap-2">
               <button

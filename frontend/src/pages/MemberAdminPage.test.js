@@ -39,4 +39,21 @@ describe('MemberAdminPage', () => {
     expect(wrapper.findAll('form')).toHaveLength(1)
     expect(wrapper.text()).not.toContain(duplicateMessage)
   })
+
+  it('bulk manages club membership with 50 rows per page and saves changed members', async () => {
+    const apiRequest = vi.fn((url, options = {}) => {
+      if (url === '/api/admin/members/bulk-membership') return Promise.resolve({ changed: 1 })
+      if (String(url).includes('pageSize=50')) return Promise.resolve({ items: [{ id: 'm1', name: 'สมชาย', phone: '0812345678', memberType: 'general' }], total: 51, page: 1 })
+      return Promise.resolve({ items: [], total: 0, page: 1 })
+    })
+    const wrapper = mount(MemberAdminPage, { props: { apiRequest, auth: {} } })
+    await vi.waitFor(() => expect(apiRequest).toHaveBeenCalled())
+    await wrapper.findAll('button').find((button) => button.text().includes('จัดการสมาชิก')).trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('สมชาย'))
+    await wrapper.get('input[type="checkbox"]').setValue(true)
+    await wrapper.findAll('button').find((button) => button.text() === 'บันทึก').trigger('click')
+    await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url === '/api/admin/members/bulk-membership')).toBe(true))
+    const call = apiRequest.mock.calls.find(([url]) => url === '/api/admin/members/bulk-membership')
+    expect(JSON.parse(call[1].body)).toEqual({ updates: [{ id: 'm1', memberType: 'club' }] })
+  })
 })

@@ -38,6 +38,7 @@ const claim = reactive({ name: "", phone: "" });
 const selections = ref([]);
 const payment = ref(null);
 const qr = ref("");
+const popup = reactive({ open: false, image: "", revision: "" });
 const toast = reactive({ message: "", tone: "error" });
 const scheduleScroll = ref(null);
 let timer;
@@ -87,9 +88,13 @@ const displayDate = computed(() =>
     year: "numeric",
   }).format(new Date(`${state.date}T12:00:00+07:00`)),
 );
-const canChangeBookingDate = computed(
-  () => state.settings.allowOvernight === true,
-);
+const canChangeBookingDate = computed(() => true);
+const canBookSelectedDate = computed(() => state.bookingDateAllowed !== false && state.bookingAcceptanceOpen !== false);
+const bookingClosedMessage = computed(() => {
+  if (state.bookingDateAllowed === false) return "วันนี้ไม่ได้เปิดให้จองล่วงหน้า สามารถดูตารางได้อย่างเดียว";
+  if (state.bookingAcceptanceOpen === false) return `ขณะนี้อยู่นอกเวลาเปิดรับการจอง${state.settings.bookingAcceptanceOpenTime ? ` · เปิด ${state.settings.bookingAcceptanceOpenTime}–${state.settings.bookingAcceptanceCloseTime} น.` : ''}`;
+  return "";
+});
 const total = computed(() =>
   selections.value.reduce((sum, item) => {
     const court = state.courts.find((entry) => entry.id === item.courtId);
@@ -196,21 +201,36 @@ function timestamp(value) {
   return Number.isFinite(result) ? result : 0;
 }
 function changeDate(days) {
-  if (!canChangeBookingDate.value) return;
   const [year, month, day] = state.date.split("-").map(Number);
   const date = new Date(Date.UTC(year, month - 1, day));
   date.setUTCDate(date.getUTCDate() + days);
-  state.date = date.toISOString().slice(0, 10);
+  const next = date.toISOString().slice(0, 10);
+  if (next < today) return;
+  state.date = next;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
   load();
 }
 function goToday() {
-  if (!canChangeBookingDate.value) return;
   state.date = today;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
   load();
+}
+
+async function maybeShowPopup() {
+  const revision = state.settings.popupRevision || "";
+  if (!state.settings.popupEnabled || !revision || popup.open || popup.revision === revision) return;
+  const key = `livematch-booking-popup:${props.token}:${revision}:${today}`;
+  if (localStorage.getItem(key)) { popup.revision = revision; return; }
+  try {
+    const data = await props.apiRequest(`/api/public-booking/${props.token}/popup`);
+    popup.image = data.image || ""; popup.revision = data.revision || revision; popup.open = Boolean(popup.image);
+  } catch { popup.revision = revision; }
+}
+function closePopup() {
+  popup.open = false;
+  if (popup.revision) localStorage.setItem(`livematch-booking-popup:${props.token}:${popup.revision}:${today}`, "1");
 }
 function clearSelection() {
   selections.value = [];
@@ -294,6 +314,7 @@ async function load() {
     );
     if (request !== loadRequest || requestedDate !== state.date) return;
     Object.assign(state, availability);
+    await maybeShowPopup();
     availabilityLoaded = true;
     if (availability.serverNow) {
       state.clockOffsetMs = timestamp(availability.serverNow) - Date.now();
@@ -402,18 +423,23 @@ function selectSlot(court, minute) {
     selections.value.splice(index, 1);
     return;
   }
-  if (status(court, minute).tone !== "free" || !state.member) {
+  if (status(court, minute).tone !== "free" || !state.member || !canBookSelectedDate.value) {
     showToast("ช่วงเวลานี้ไม่ว่างหรือไม่สามารถเลือกได้");
     return;
   }
-  selections.value.push({ courtId: court.id, minute });
+  if (state.settings.singleSlotPurchaseEnabled) selections.value = [{ courtId: court.id, minute }];
+  else selections.value.push({ courtId: court.id, minute });
 }
 function select(court, minute) {
-  if (status(court, minute).tone !== "free" || !state.member) return;
+  if (status(court, minute).tone !== "free" || !state.member || !canBookSelectedDate.value) return;
   const intervalMinutes = Number(state.settings.intervalMinutes || 60);
   const intervalMs = intervalMinutes * 60000;
   const start = localDateTime(minute);
   const end = localDateTime(minute + intervalMinutes);
+  if (state.settings.singleSlotPurchaseEnabled) {
+    Object.assign(selection, { courtId: court.id, startAt: start, endAt: end });
+    return;
+  }
   if (selection.courtId !== court.id || !selection.startAt) {
     if (selection.courtId && selection.courtId !== court.id)
       showToast(
@@ -479,6 +505,7 @@ function select(court, minute) {
     .replace(" ", "T");
 }
 async function hold() {
+  if (!canBookSelectedDate.value) { showToast(bookingClosedMessage.value); return; }
   try {
     const data = await props.apiRequest(
       `/api/public-booking/${props.token}/hold`,
@@ -497,6 +524,7 @@ async function hold() {
   }
 }
 async function holdBatch() {
+  if (!canBookSelectedDate.value) { showToast(bookingClosedMessage.value); return; }
   try {
     const data = await props.apiRequest(
       `/api/public-booking/${props.token}/hold`,
@@ -543,11 +571,12 @@ function upload(event) {
   const reader = new FileReader();
   reader.onload = async () => {
     try {
-      await props.apiRequest(
+      const result = await props.apiRequest(
         `/api/public-booking/${props.token}/slip/${payment.value.id}`,
         { method: "POST", body: JSON.stringify({ slipData: reader.result }) },
       );
-      payment.value.status = "pending_review";
+      payment.value.status = result.status || "pending_review";
+      showToast(result.status === "confirmed" ? "ชำระเงินผ่านและยืนยันการจองแล้ว" : "ส่งสลิปแล้ว รอผู้ดูแลตรวจสอบ", "success");
       await load();
     } catch (error) {
       showToast(error.message || "อัปโหลดสลิปไม่สำเร็จ กรุณาตรวจสอบสถานะการจอง");
@@ -607,6 +636,7 @@ onUnmounted(() => {
 
 <template>
   <main class="public-booking-shell">
+    <div v-if="popup.open" class="fixed inset-0 z-[120] grid place-items-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="ประกาศ"><div class="relative max-h-[92dvh] w-full max-w-lg overflow-hidden rounded-2xl bg-white p-2 shadow-2xl dark:bg-stone-900"><button class="absolute right-3 top-3 z-10 grid h-10 w-10 place-items-center rounded-full bg-black/70 text-white" aria-label="ปิดประกาศ" @click="closePopup"><X class="h-5 w-5" /></button><img :src="popup.image" alt="ประกาศจากสนาม" class="max-h-[88dvh] w-full rounded-xl object-contain" /></div></div>
     <header class="public-booking-header">
       <div class="flex min-w-0 items-center gap-3">
         <img
@@ -891,6 +921,7 @@ onUnmounted(() => {
           วันนี้
         </button>
       </section>
+      <p v-if="bookingClosedMessage" class="rounded-xl border border-amber-200 bg-amber-50 p-3 text-center text-sm font-black text-amber-800 dark:border-amber-900 dark:bg-amber-950/30 dark:text-amber-200">{{ bookingClosedMessage }}</p>
 
       <section class="public-schedule-card">
         <div ref="scheduleScroll" class="public-schedule-scroll">
@@ -1007,7 +1038,7 @@ onUnmounted(() => {
             ฿{{ total.toLocaleString("th-TH") }}
           </p>
         </div>
-        <button class="booking-primary-button h-12" @click="holdBatch">
+        <button class="booking-primary-button h-12 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!canBookSelectedDate || !bookingItems.length" @click="holdBatch">
           ดำเนินการชำระเงิน
         </button>
       </section>
@@ -1052,7 +1083,7 @@ onUnmounted(() => {
             ฿{{ total.toLocaleString("th-TH") }}
           </p>
         </div>
-        <button class="booking-primary-button h-12" @click="hold">
+        <button class="booking-primary-button h-12 disabled:cursor-not-allowed disabled:opacity-50" :disabled="!canBookSelectedDate || !selection.startAt" @click="hold">
           ล็อกเวลา 5 นาทีและชำระเงิน
         </button>
       </section>

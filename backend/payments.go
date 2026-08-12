@@ -67,14 +67,15 @@ type slipOKQuota struct {
 }
 
 type slipOKResult struct {
-	Passed    bool
-	Status    string
-	ErrorCode int
-	Note      string
-	TransRef  string
-	AmountTHB *int
-	PaidAt    string
-	Receiver  string
+	Passed     bool
+	Definitive bool
+	Status     string
+	ErrorCode  int
+	Note       string
+	TransRef   string
+	AmountTHB  *int
+	PaidAt     string
+	Receiver   string
 }
 
 var slipOKAPIBaseURL = "https://api.slipok.com"
@@ -135,7 +136,7 @@ func maskSecret(value string) string {
 func (a *app) fetchSlipOKQuota(ctx context.Context, settings slipOKSettings) slipOKQuota {
 	result := slipOKQuota{Limit: settings.MonthlyCap}
 	if settings.BranchID == "" || settings.APIKey == "" {
-		result.Error = "SlipOK Branch ID หรือ API Key ยังไม่พร้อม"
+		result.Error = "Auto Slip Branch ID หรือ API Key ยังไม่พร้อม"
 		return result
 	}
 	url := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID + "/quota"
@@ -161,13 +162,13 @@ func (a *app) fetchSlipOKQuota(ctx context.Context, settings slipOKSettings) sli
 		Message string `json:"message"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
-		result.Error = "อ่านผล SlipOK quota ไม่สำเร็จ"
+		result.Error = "อ่านผล Auto Slip quota ไม่สำเร็จ"
 		return result
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 || !payload.Success {
 		result.Error = strings.TrimSpace(payload.Message)
 		if result.Error == "" {
-			result.Error = fmt.Sprintf("SlipOK quota HTTP %d", resp.StatusCode)
+			result.Error = fmt.Sprintf("Auto Slip quota HTTP %d", resp.StatusCode)
 		}
 		return result
 	}
@@ -183,7 +184,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 	result := slipOKResult{Status: "manual_review"}
 	raw, err := decodeDataURL(slipDataURL)
 	if err != nil {
-		result.Note = "แปลงรูปสลิปเพื่อส่ง SlipOK ไม่สำเร็จ"
+		result.Note = "แปลงรูปสลิปเพื่อส่ง Auto Slip ไม่สำเร็จ"
 		return result
 	}
 	var body bytes.Buffer
@@ -213,7 +214,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 	req.Header.Set("x-authorization", settings.APIKey)
 	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if err != nil {
-		result.Note = "เรียก SlipOK ไม่สำเร็จ: " + err.Error()
+		result.Note = "เรียก Auto Slip ไม่สำเร็จ: " + err.Error()
 		return result
 	}
 	defer resp.Body.Close()
@@ -235,7 +236,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(responseBody, &payload); err != nil {
-		result.Note = fmt.Sprintf("อ่านผล SlipOK ไม่สำเร็จ (HTTP %d)", resp.StatusCode)
+		result.Note = fmt.Sprintf("อ่านผล Auto Slip ไม่สำเร็จ (HTTP %d)", resp.StatusCode)
 		return result
 	}
 	result.ErrorCode = payload.Code
@@ -251,9 +252,14 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 	}
 	result.Passed = resp.StatusCode >= 200 && resp.StatusCode < 300 && payload.Success && payload.Data.Success
 	if result.Passed {
+		result.Definitive = true
 		result.Status = "passed"
-		result.Note = "SlipOK ตรวจสอบสลิป ยอดเงิน และบัญชีผู้รับผ่าน"
+		result.Note = "Auto Slip ตรวจสอบสลิป ยอดเงิน และบัญชีผู้รับผ่าน"
 		return result
+	}
+	result.Definitive = resp.StatusCode >= 200 && resp.StatusCode < 300
+	if result.Definitive {
+		result.Status = "failed"
 	}
 	result.Status = "manual_review"
 	result.Note = strings.TrimSpace(payload.Message)
@@ -261,7 +267,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		result.Note = strings.TrimSpace(payload.Data.Message)
 	}
 	if result.Note == "" {
-		result.Note = fmt.Sprintf("SlipOK ไม่ผ่าน (code %d)", payload.Code)
+		result.Note = fmt.Sprintf("Auto Slip ไม่ผ่าน (code %d)", payload.Code)
 	}
 	return result
 }

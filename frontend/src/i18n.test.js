@@ -33,7 +33,7 @@ describe('bilingual UI dictionary', () => {
     const translated = translateText('Telegram notification')
     expect(translated).toBe('Telegram notifications')
     expect(translateText(translated)).toBe('Telegram notifications')
-    expect(translateText('เชื่อมต่อ SlipOK สำเร็จ')).toBe('SlipOK connected successfully')
+    expect(translateText('เชื่อมต่อ Auto Slip สำเร็จ')).toBe('Auto Slip connected successfully')
   })
 
   it('never translates API/user data inside an explicit ignore boundary', async () => {

@@ -287,6 +287,8 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from members where admin_id=$1 and deleted_at is null`, user.ID).Scan(&memberCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, user.ID).Scan(&bookingCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, user.ID).Scan(&posSaleCount)
+	var systemName, logoData string
+	_ = a.db.QueryRowContext(r.Context(), `select system_name,logo_data from admin_users where id=$1`, user.ID).Scan(&systemName, &logoData)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
@@ -299,6 +301,7 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 		"memberCount":          memberCount,
 		"bookingCount":         bookingCount,
 		"posSaleCount":         posSaleCount,
+		"branding":             map[string]any{"systemName": systemName, "logoData": logoData},
 	})
 }
 
@@ -498,6 +501,8 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.writeAdminMe(w, r, user)
 	case r.Method == http.MethodPut && action == "default-settings":
 		a.handleAdminDefaultSettings(w, r, user)
+	case r.Method == http.MethodPut && action == "profile-branding":
+		a.handleAdminProfileBranding(w, r, user)
 	case r.Method == http.MethodPost && action == "announcement-audio":
 		a.handleAdminAnnouncementAudio(w, r)
 	case r.Method == http.MethodPost && action == "sessions":
@@ -517,6 +522,35 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) handleAdminProfileBranding(w http.ResponseWriter, r *http.Request, user adminUser) {
+	var body struct {
+		Name       string `json:"name"`
+		SystemName string `json:"systemName"`
+		LogoData   string `json:"logoData"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 3<<20)).Decode(&body) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลระบบไม่ถูกต้อง"})
+		return
+	}
+	body.Name = strings.TrimSpace(body.Name)
+	body.SystemName = strings.TrimSpace(body.SystemName)
+	if body.Name == "" || utf8.RuneCountInString(body.Name) > 100 || utf8.RuneCountInString(body.SystemName) > 100 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "กรุณากรอกชื่อผู้ดูแล และใช้ชื่อไม่เกิน 100 ตัวอักษร"})
+		return
+	}
+	if len(body.LogoData) > 2_800_000 || !validImageData(body.LogoData, true) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "โลโก้ต้องเป็น PNG/JPEG/WebP ไม่เกิน 2 MB"})
+		return
+	}
+	if _, err := a.db.ExecContext(r.Context(), `update admin_users set name=$2,system_name=$3,logo_data=$4,updated_at=now() where id=$1`, user.ID, body.Name, body.SystemName, body.LogoData); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	user.Name = body.Name
+	a.insertActivityLog(r.Context(), "admin", user.ID, "update_admin_branding", "admin_user", user.ID, map[string]any{"systemName": body.SystemName, "hasLogo": body.LogoData != ""})
+	a.writeAdminMe(w, r, user)
 }
 
 func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
@@ -857,12 +891,12 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 			provider = "slipok"
 			providerStatus = "cap_reached"
 			slipCheck.VerificationStatus = "manual_review"
-			slipCheck.VerificationNote = "SlipOK ถึงขีดจำกัดรายเดือน ใช้การตรวจสอบด้วยผู้ดูแล"
+			slipCheck.VerificationNote = "Auto Slip ถึงขีดจำกัดรายเดือน ใช้การตรวจสอบด้วยผู้ดูแล"
 		} else {
 			provider = "slipok"
 			providerStatus = "quota_unavailable"
 			slipCheck.VerificationStatus = "manual_review"
-			slipCheck.VerificationNote = "ตรวจสอบโควตา SlipOK ไม่สำเร็จ: " + quota.Error
+			slipCheck.VerificationNote = "ตรวจสอบโควตา Auto Slip ไม่สำเร็จ: " + quota.Error
 		}
 	}
 	if slipCheck.TransRef != "" {
@@ -967,7 +1001,7 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 			if _, err = tx.ExecContext(r.Context(), `
 				insert into coin_ledger (admin_id, delta, balance, reason, note)
 				values ($1, $2, $3, 'coin_purchase', $4)
-			`, user.ID, order.Coins, next, "SlipOK auto-approved order "+id); err != nil {
+			`, user.ID, order.Coins, next, "Auto Slip auto-approved order "+id); err != nil {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
@@ -1515,7 +1549,7 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 		return
 	}
 	if body.SlipOKMonthlyCap < 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "SlipOK monthly cap ต้องไม่น้อยกว่า 0"})
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Auto Slip monthly cap ต้องไม่น้อยกว่า 0"})
 		return
 	}
 	currentSlipOK := a.slipOKSettings(r.Context())

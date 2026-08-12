@@ -643,6 +643,7 @@ textarea {
   }
   .booking-field {
     display: grid;
+    min-width: 0;
     gap: 0.4rem;
     color: var(--lm-ink-soft);
     font-size: 0.82rem;
@@ -652,6 +653,7 @@ textarea {
   .booking-field select,
   .booking-field textarea {
     width: 100%;
+    min-width: 0;
     border: 1px solid var(--lm-border);
     border-radius: 0.8rem;
     background: var(--lm-card-solid);
