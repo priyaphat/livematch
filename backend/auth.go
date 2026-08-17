@@ -707,9 +707,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
-	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

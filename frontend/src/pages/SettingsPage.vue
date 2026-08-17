@@ -25,7 +25,10 @@ const settingsTabs = computed(() => [
   { id: 'general', label: 'ทั่วไป', hint: 'ชื่อ session และ workflow' },
   { id: 'costs', label: 'ค่าใช้จ่าย', hint: 'ค่าสนามและลูกแบด' },
   { id: 'courts', label: 'สนาม', hint: 'ชื่อสนามทั้งหมด' },
-  ...(!isLiveShare.value ? [{ id: 'match', label: 'จัดคู่ / เสียง', hint: 'ระดับมือ การสุ่ม และคำอ่าน' }] : [])
+  ...(!isLiveShare.value ? [
+    { id: 'waiting', label: 'เวลารอเล่น', hint: 'แสดงเวลาแยกแต่ละหน้า' },
+    { id: 'match', label: 'จัดคู่ / เสียง', hint: 'ระดับมือ การสุ่ม และคำอ่าน' }
+  ] : [])
 ])
 
 const sessionName = computed({
@@ -173,6 +176,33 @@ watch(settingsTabs, (tabs) => {
               เพิ่ม
             </button>
           </div>
+        </div>
+      </div>
+
+      <div v-else-if="activeSettingsTab === 'waiting'" class="grid gap-4 lg:grid-cols-3">
+        <label class="flex items-center justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <span>
+            <span class="block font-black">หน้าเมนูสมาชิก</span>
+            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">แสดงจำนวนนาทีต่อหลังชื่อผู้เล่น</span>
+          </span>
+          <input v-model="state.settings.showWaitTimePlayers" type="checkbox" class="h-5 w-5 shrink-0" @change="saveSettings" />
+        </label>
+        <label class="flex items-center justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <span>
+            <span class="block font-black">หน้าเมนูจัดคู่</span>
+            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">แสดงจำนวนนาทีต่อหลังชื่อผู้เล่น</span>
+          </span>
+          <input v-model="state.settings.showWaitTimePairing" type="checkbox" class="h-5 w-5 shrink-0" @change="saveSettings" />
+        </label>
+        <label class="flex items-center justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <span>
+            <span class="block font-black">หน้าเมนูรอคิว</span>
+            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">แสดงจำนวนนาทีต่อหลังชื่อผู้เล่น</span>
+          </span>
+          <input v-model="state.settings.showWaitTimeQueue" type="checkbox" class="h-5 w-5 shrink-0" @change="saveSettings" />
+        </label>
+        <div class="rounded-lg border border-court-200 bg-court-500/10 p-4 text-sm font-semibold text-court-800 dark:border-court-900 dark:text-court-200 lg:col-span-3">
+          เวลาเริ่มนับเมื่อเพิ่มผู้เล่นหรือจบการแข่งขัน และหยุดนับทันทีเมื่อกดเริ่มเกม ผู้เล่นแต่ละคนมีเวลาแยกกัน
         </div>
       </div>
 

@@ -88,6 +88,9 @@ type Settings struct {
 	ShowPaymentOnShare      bool           `json:"showPaymentOnShare"`
 	ShowTotalOnShare        bool           `json:"showTotalOnShare"`
 	ShowWaitingOnQueueShare bool           `json:"showWaitingOnQueueShare"`
+	ShowWaitTimePlayers     bool           `json:"showWaitTimePlayers"`
+	ShowWaitTimePairing     bool           `json:"showWaitTimePairing"`
+	ShowWaitTimeQueue       bool           `json:"showWaitTimeQueue"`
 	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
 	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
 	AnnouncementTemplate    string         `json:"announcementTemplate"`
@@ -109,6 +112,7 @@ type Player struct {
 	ClubMember       bool   `json:"clubMember"`
 	MemberID         string `json:"memberId,omitempty"`
 	BillingAccountID string `json:"billingAccountId,omitempty"`
+	WaitStartedAt    string `json:"waitStartedAt"`
 }
 
 type PlayerPaymentItem struct {
@@ -396,6 +400,9 @@ func (a *app) migrate(ctx context.Context) error {
 			show_payment_on_share boolean not null default true,
 			show_total_on_share boolean not null default true,
 			show_waiting_on_queue_share boolean not null default false,
+			show_wait_time_players boolean not null default true,
+			show_wait_time_pairing boolean not null default true,
+			show_wait_time_queue boolean not null default true,
 			reset_players_after_finish boolean not null default true,
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
@@ -409,6 +416,9 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
 		alter table session_settings add column if not exists show_total_on_share boolean not null default true;
 		alter table session_settings add column if not exists show_waiting_on_queue_share boolean not null default false;
+		alter table session_settings add column if not exists show_wait_time_players boolean not null default true;
+		alter table session_settings add column if not exists show_wait_time_pairing boolean not null default true;
+		alter table session_settings add column if not exists show_wait_time_queue boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
 		alter table session_settings add column if not exists session_fee integer not null default 0;
@@ -437,6 +447,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players alter column coupon set default false;
 		alter table players add column if not exists club_member boolean not null default false;
 		alter table players add column if not exists member_id text;
+		alter table players add column if not exists wait_started_at timestamptz default now();
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -1185,6 +1196,7 @@ func (a *app) seedBackofficeSuperadmin(ctx context.Context) error {
 		username = "superadmin"
 	}
 	password := os.Getenv("SUPERADMIN_PASSWORD")
+	passwordConfigured := password != ""
 	if password == "" {
 		password = "12345678"
 	}
@@ -1192,11 +1204,22 @@ func (a *app) seedBackofficeSuperadmin(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	_, err = a.db.ExecContext(ctx, `
+	query := `
 		insert into backoffice_users (username, name, password_hash, active)
 		values ($1, 'Superadmin', $2, true)
-		on conflict (username) do nothing
-	`, username, string(hash))
+		on conflict (username) do nothing`
+	if passwordConfigured {
+		// An explicitly configured environment password is authoritative. This
+		// keeps restored databases and changed deployment secrets in sync.
+		query = `
+			insert into backoffice_users (username, name, password_hash, active)
+			values ($1, 'Superadmin', $2, true)
+			on conflict (username) do update set
+				password_hash=excluded.password_hash,
+				active=true,
+				updated_at=now()`
+	}
+	_, err = a.db.ExecContext(ctx, query, username, string(hash))
 	return err
 }
 
@@ -1806,7 +1829,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			body.ClubMember = memberType == "club"
 		}
 		state.NextIDs.Player++
-		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember, MemberID: body.MemberID}
+		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember, MemberID: body.MemberID, WaitStartedAt: time.Now().UTC().Format(time.RFC3339)}
 		state.Players = append(state.Players, player)
 		a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon, "clubMember": player.ClubMember})
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
@@ -2223,9 +2246,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			club_entry_fee = excluded.club_entry_fee,
@@ -2242,10 +2265,13 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			show_payment_on_share = excluded.show_payment_on_share,
 			show_total_on_share = excluded.show_total_on_share,
 			show_waiting_on_queue_share = excluded.show_waiting_on_queue_share,
+			show_wait_time_players = excluded.show_wait_time_players,
+			show_wait_time_pairing = excluded.show_wait_time_pairing,
+			show_wait_time_queue = excluded.show_wait_time_queue,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
 		return err
 	}
 
@@ -2280,9 +2306,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, billing_account_id)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''))
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.BillingAccountID); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, billing_account_id, wait_started_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, '')::timestamptz)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.BillingAccountID, player.WaitStartedAt); err != nil {
 			return err
 		}
 	}
@@ -2411,7 +2437,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw, shuttleBrandsRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -2430,6 +2456,9 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.ShowPaymentOnShare,
 		&state.Settings.ShowTotalOnShare,
 		&state.Settings.ShowWaitingOnQueueShare,
+		&state.Settings.ShowWaitTimePlayers,
+		&state.Settings.ShowWaitTimePairing,
+		&state.Settings.ShowWaitTimeQueue,
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
@@ -2450,7 +2479,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, ''), coalesce(billing_account_id, '')
+		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, ''), coalesce(billing_account_id, ''), wait_started_at
 		from players
 		where session_id = $1
 		order by id
@@ -2461,8 +2490,12 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.BillingAccountID); err != nil {
+		var waitStartedAt sql.NullTime
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.BillingAccountID, &waitStartedAt); err != nil {
 			return SessionState{}, err
+		}
+		if waitStartedAt.Valid {
+			player.WaitStartedAt = waitStartedAt.Time.UTC().Format(time.RFC3339)
 		}
 		state.Players = append(state.Players, player)
 		if player.ID > state.NextIDs.Player {
@@ -2598,8 +2631,24 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		return SessionState{}, err
 	}
 
+	normalizePlayerWaitState(&state)
 	applySessionReadOnly(&state, createdAt)
 	return state, nil
+}
+
+func normalizePlayerWaitState(state *SessionState) {
+	livePlayers := map[int]bool{}
+	for _, match := range state.Live {
+		for _, playerID := range matchPlayers(match) {
+			livePlayers[playerID] = true
+		}
+	}
+	startedAt := time.Now().UTC().Format(time.RFC3339)
+	for i := range state.Players {
+		if !livePlayers[state.Players[i].ID] && state.Players[i].WaitStartedAt == "" {
+			state.Players[i].WaitStartedAt = startedAt
+		}
+	}
 }
 
 func defaultState(id, name, passcode string) SessionState {
@@ -2629,6 +2678,9 @@ func defaultState(id, name, passcode string) SessionState {
 			ShowPaymentOnShare:      true,
 			ShowTotalOnShare:        true,
 			ShowWaitingOnQueueShare: false,
+			ShowWaitTimePlayers:     true,
+			ShowWaitTimePairing:     true,
+			ShowWaitTimeQueue:       true,
 			ResetPlayersAfterFinish: true,
 			StartMatchWithShuttle:   true,
 			AnnouncementTemplate:    defaultAnnouncementTemplate,
@@ -3082,6 +3134,7 @@ func startMatch(state *SessionState, matchID int, court string, brandIDs ...stri
 			}
 			match.Status = "กำลังเล่น"
 			match.StartedAt = nowHHMM()
+			setPlayerWaitStartedAt(state, matchPlayers(match), "")
 			state.Live = append(state.Live, match)
 			return true
 		}
@@ -3282,6 +3335,7 @@ func closeLiveWithScores(state *SessionState, matchID int, cancelled bool, note 
 		}
 		state.Live = append(state.Live[:i], state.Live[i+1:]...)
 		match.EndedAt = nowHHMM()
+		setPlayerWaitStartedAt(state, matchPlayers(match), time.Now().UTC().Format(time.RFC3339))
 		if note != "" {
 			match.Note = note
 		} else if cancelled {
@@ -3336,6 +3390,14 @@ func closeLiveWithScores(state *SessionState, matchID int, cancelled bool, note 
 		return true, nil
 	}
 	return false, nil
+}
+
+func setPlayerWaitStartedAt(state *SessionState, playerIDs []int, value string) {
+	for i := range state.Players {
+		if slices.Contains(playerIDs, state.Players[i].ID) {
+			state.Players[i].WaitStartedAt = value
+		}
+	}
 }
 
 func updateHistoryWinner(state *SessionState, matchID int, winner string) bool {

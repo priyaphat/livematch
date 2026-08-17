@@ -654,6 +654,41 @@ func TestStartMatchUsesInitialShuttleWhenSettingEnabled(t *testing.T) {
 	}
 }
 
+func TestPlayerWaitTimerStopsAtStartAndRestartsAtFinish(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{StartMatchWithShuttle: false},
+		Players: []Player{
+			{ID: 1, WaitStartedAt: "2026-08-17T10:00:00Z"},
+			{ID: 2, WaitStartedAt: "2026-08-17T10:01:00Z"},
+			{ID: 3, WaitStartedAt: "2026-08-17T10:02:00Z"},
+			{ID: 4, WaitStartedAt: "2026-08-17T10:03:00Z"},
+			{ID: 5, WaitStartedAt: "2026-08-17T10:04:00Z"},
+		},
+		Queue: []Match{{ID: 1, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	if !startMatch(&state, 1, "สนาม 1") {
+		t.Fatal("expected match to start")
+	}
+	for _, player := range state.Players[:4] {
+		if player.WaitStartedAt != "" {
+			t.Fatalf("expected player %d wait timer to stop, got %q", player.ID, player.WaitStartedAt)
+		}
+	}
+	if state.Players[4].WaitStartedAt != "2026-08-17T10:04:00Z" {
+		t.Fatal("expected unrelated player wait timer to remain unchanged")
+	}
+
+	if found, err := closeLiveWithScores(&state, 1, false, "", "A", nil, false); err != nil || !found {
+		t.Fatalf("expected match to finish, found=%v err=%v", found, err)
+	}
+	for _, player := range state.Players[:4] {
+		if _, err := time.Parse(time.RFC3339, player.WaitStartedAt); err != nil {
+			t.Fatalf("expected player %d wait timer to restart with RFC3339 timestamp, got %q", player.ID, player.WaitStartedAt)
+		}
+	}
+}
+
 func TestStartMatchUsesSelectedShuttleBrandAndPrice(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{

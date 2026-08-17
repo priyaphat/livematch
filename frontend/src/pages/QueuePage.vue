@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import { CheckCircle2, Clock3, Play, QrCode, Volume2, X, XCircle } from '@lucide/vue'
 import LineArt from '../components/LineArt.vue'
+import { useWaitClock, waitMinutes } from '../waitTime'
 
 defineOptions({ inheritAttrs: false })
 
@@ -23,7 +24,15 @@ const props = defineProps([
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
 if (!props.state.settings) props.state.settings = {}
 if (props.state.settings.showWaitingOnQueueShare === undefined) props.state.settings.showWaitingOnQueueShare = false
-const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
+const waitClock = useWaitClock()
+const playerLabel = (id) => {
+  const name = props.playerName(id)
+  if (!props.state.settings?.showWaitTimeQueue) return name
+  const player = props.state.players.find((item) => item.id === Number(id))
+  const minutes = waitMinutes(player?.waitStartedAt, waitClock.value)
+  return minutes === null ? name : `${name} · ${minutes} นาที`
+}
+const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map(playerLabel).join(' + ')
 if (!props.forms.matchShuttleBrands) props.forms.matchShuttleBrands = {}
 
 const startMatchSelection = ref(null)

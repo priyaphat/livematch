@@ -150,20 +150,16 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('ผู้เล่นวันนี้')
     expect(wrapper.text()).not.toContain('จัดคู่')
   })
-	it('leaves the auth boot screen when the session probe does not finish', async () => {
-    vi.useFakeTimers()
+	it('keeps the login page available when the session probe does not finish', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn(() => new Promise(() => {}))
     const wrapper = mount(App)
 
-    expect(wrapper.text()).toContain('กำลังเตรียมข้อมูลผู้ดูแล')
-    await vi.advanceTimersByTimeAsync(5000)
     expect(wrapper.text()).toContain('เข้าสู่ระบบ')
     expect(wrapper.text()).not.toContain('กำลังเตรียมข้อมูลผู้ดูแล')
 
     wrapper.unmount()
     globalThis.fetch = originalFetch
-    vi.useRealTimers()
 	})
 	it('locks the whole app with a server-authoritative booking countdown', async () => {
 		const wrapper = mount(App)
@@ -248,15 +244,14 @@ describe('LiveMatch app', () => {
     document.documentElement.classList.remove('dark')
   })
 
-  it('shows an auth boot screen instead of flashing the login page while restoring a session', async () => {
+  it('shows the login page while checking an unauthenticated session', async () => {
     const originalFetch = globalThis.fetch
     let resolveAuth
     globalThis.fetch = vi.fn(() => new Promise((resolve) => { resolveAuth = resolve }))
     const wrapper = mount(App)
 
-    expect(wrapper.get('[data-testid="auth-boot-screen"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('กำลังเตรียมข้อมูลผู้ดูแล')
-    expect(wrapper.text()).not.toContain('เข้าสู่ระบบ')
+    expect(wrapper.find('[data-testid="auth-boot-screen"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('เข้าสู่ระบบ')
 
     resolveAuth({ ok: false, status: 401, json: () => Promise.resolve({ error: 'login required' }) })
     await flushPromises()
@@ -282,7 +277,7 @@ describe('LiveMatch app', () => {
 			return new Promise(() => {})
 		})
 		const wrapper = mount(App)
-		await vi.waitFor(() => expect(wrapper.find('[data-testid="auth-boot-screen"]').exists()).toBe(false))
+		expect(wrapper.find('[data-testid="auth-boot-screen"]').exists()).toBe(false)
 		expect(wrapper.text()).toContain('Admin')
 		wrapper.unmount()
 		globalThis.fetch = originalFetch

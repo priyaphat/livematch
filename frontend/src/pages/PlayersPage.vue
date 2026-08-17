@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import { ArrowDown, ArrowUp, Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
 import { exportMembersExcel } from '../excelExport'
+import { useWaitClock, waitMinutes } from '../waitTime'
 
 const props = defineProps([
   'state',
@@ -22,6 +23,8 @@ const props = defineProps([
   'isSessionReadOnly',
   'apiRequest'
 ])
+const waitClock = useWaitClock()
+const playerWaitMinutes = (player) => waitMinutes(player.waitStartedAt, waitClock.value)
 
 const filteredPlayers = computed(() => {
   const keyword = props.forms.playerSearch.trim().toLocaleLowerCase('th-TH')
@@ -534,7 +537,7 @@ async function exportExcel() {
         @click="forms.selectedPlayerId = player.id"
       >
         <div class="grid grid-cols-[1fr_4rem_4rem_6rem] items-baseline gap-2">
-          <span class="truncate text-base font-black"><span class="tabular-nums text-stone-500 dark:text-stone-400">#{{ player.id }}</span> {{ player.name }} <span v-if="player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">ชมรม</span></span>
+          <span class="truncate text-base font-black"><span class="tabular-nums text-stone-500 dark:text-stone-400">#{{ player.id }}</span> {{ player.name }} <small v-if="state.settings?.showWaitTimePlayers && playerWaitMinutes(player) !== null" class="font-bold tabular-nums text-court-600 dark:text-court-300">· {{ playerWaitMinutes(player) }} นาที</small> <span v-if="player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">ชมรม</span></span>
           <span class="text-right font-bold">{{ player.games }}</span>
           <span class="text-right font-bold">{{ player.shuttles }}</span>
           <span class="text-right font-black tabular-nums text-court-700 dark:text-court-300">{{ money(playerCost(player)) }}</span>

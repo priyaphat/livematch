@@ -1,5 +1,6 @@
 <script setup>
 import { Check, ClipboardList, Plus, Shuffle, Users, X } from '@lucide/vue'
+import { useWaitClock, waitMinutes } from '../waitTime'
 
 const props = defineProps([
   'state',
@@ -11,7 +12,15 @@ const props = defineProps([
   'playerName',
   'isSessionReadOnly'
 ])
-const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map((id) => props.playerName(id)).join(' + ')
+const waitClock = useWaitClock()
+const playerLabel = (id) => {
+  const name = props.playerName(id)
+  if (!props.state.settings?.showWaitTimePairing) return name
+  const player = props.state.players.find((item) => item.id === Number(id))
+  const minutes = waitMinutes(player?.waitStartedAt, waitClock.value)
+  return minutes === null ? name : `${name} · ${minutes} นาที`
+}
+const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map(playerLabel).join(' + ')
 </script>
 
 <template>

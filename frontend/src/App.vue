@@ -177,6 +177,9 @@ const state = reactive({
     showPaymentOnShare: true,
     showTotalOnShare: true,
     showWaitingOnQueueShare: false,
+    showWaitTimePlayers: true,
+    showWaitTimePairing: true,
+    showWaitTimeQueue: true,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
     announcementTemplate: defaultAnnouncementTemplate
@@ -391,7 +394,7 @@ const dashboardAnnouncementModal = ref(null)
 let dashboardAnnouncementTrigger = null
 const auth = reactive({
   loading: false,
-  ready: false,
+  ready: true,
   user: null,
   sessions: [],
   coinLedger: [],
@@ -439,10 +442,6 @@ const bookingBlock = reactive({ blockedUntil: '', targets: [], deadlineMs: 0, su
 let toastTimer = null
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
-let authBootTimer = window.setTimeout(() => {
-  auth.ready = true
-	authBootTimer = null
-}, 5000)
 let bookingBlockTimer = null
 const terminalSessionCodes = new Set([
   'session_idle_expired',
@@ -586,6 +585,12 @@ function normalizeClientSettings() {
   for (const player of state.players || []) {
     if (player.clubMember === undefined) player.clubMember = false
   }
+  const livePlayerIds = new Set((state.live || []).flatMap((match) => matchPlayers(match)))
+  for (const player of state.players || []) {
+    if (player.waitStartedAt === undefined) {
+      player.waitStartedAt = livePlayerIds.has(player.id) ? '' : new Date().toISOString()
+    }
+  }
   for (const match of [...(state.live || []), ...(state.history || []), ...(state.queue || []), ...(state.pending || [])]) {
     normalizeMatchShuttleItems(match)
   }
@@ -601,6 +606,9 @@ function normalizeClientSettings() {
   if (state.settings.showWaitingOnQueueShare === undefined) {
     state.settings.showWaitingOnQueueShare = false
   }
+  if (state.settings.showWaitTimePlayers === undefined) state.settings.showWaitTimePlayers = true
+  if (state.settings.showWaitTimePairing === undefined) state.settings.showWaitTimePairing = true
+  if (state.settings.showWaitTimeQueue === undefined) state.settings.showWaitTimeQueue = true
   if (!String(state.settings.announcementTemplate || '').trim()) {
     state.settings.announcementTemplate = defaultAnnouncementTemplate
   }
@@ -718,7 +726,7 @@ onMounted(() => {
     forms.resetToken = resetToken
   }
   loadSharedView()
-  restoreAdminAccount(true).finally(finishAuthBoot)
+  restoreAdminAccount(true)
 })
 
 async function confirmVerifyEmail(token) {
@@ -744,7 +752,6 @@ onUnmounted(() => {
 	window.removeEventListener('livematch:session-ended', handleSessionEnded)
 	window.removeEventListener('livematch:booking-blocked', handleBookingBlocked)
 	if (bookingBlockTimer) window.clearInterval(bookingBlockTimer)
-  if (authBootTimer) window.clearTimeout(authBootTimer)
   stopSharedRefresh()
   stopAnnouncementAudio()
   announcementAudioCache.dispose()
@@ -1473,15 +1480,12 @@ async function submitCoinOrder() {
 
 async function restoreAdminAccount(restoreNavigation = false) {
   if (share.isPublic) {
-    finishAuthBoot()
+    auth.ready = true
     return
   }
   try {
     const payload = await api('/api/auth/me')
     applyAdminPayload(payload)
-		// Authentication is complete. Restoring the previously opened session
-		// must not keep the whole application behind the auth boot screen.
-		finishAuthBoot()
     if (restoreNavigation) {
       const navigation = readAdminNavigation()
       if (navigation && auth.sessions.some((session) => session.id === navigation.sessionId)) {
@@ -1493,14 +1497,8 @@ async function restoreAdminAccount(restoreNavigation = false) {
   } catch {
     auth.user = null
   } finally {
-		finishAuthBoot()
+		auth.ready = true
   }
-}
-
-function finishAuthBoot() {
-	auth.ready = true
-	if (authBootTimer) window.clearTimeout(authBootTimer)
-	authBootTimer = null
 }
 
 async function logout() {
@@ -1923,7 +1921,7 @@ function addPlayer() {
   const name = forms.newPlayerName.trim()
   if (!name) return
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
-  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: forms.newPlayerClubMember })
+  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: forms.newPlayerClubMember, waitStartedAt: new Date().toISOString() })
   forms.newPlayerName = ''
   forms.newPlayerClubMember = false
 }
@@ -2108,6 +2106,10 @@ function startMatch(match, court = '', brandId = defaultShuttleBrand().id) {
     started.shuttleSequenceItems.push({ brandId, number })
     started.shuttleSequence = appendShuttleNumber(started.shuttleSequence, number)
   }
+  for (const id of matchPlayers(match)) {
+    const player = playerById(id)
+    if (player) player.waitStartedAt = ''
+  }
   state.live.push(started)
   state.tab = 'liveboard'
 }
@@ -2196,8 +2198,10 @@ function closeLive(match, cancelled = false, note = '', shuttleReturned = false,
     }
   }
   state.history.unshift(ended)
+  const waitStartedAt = new Date().toISOString()
   for (const id of matchPlayers(match)) {
     const player = playerById(id)
+    if (player) player.waitStartedAt = waitStartedAt
     if (player && (!cancelled || !ended.shuttleReturned)) {
       player.shuttles += match.shuttles
       if (cancelled) continue
@@ -3610,12 +3614,6 @@ const pageProps = computed(() => ({
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
     <PublicBookingPage v-else-if="publicBookingToken" :api-request="api" :token="publicBookingToken" :theme="state.theme" @toggle-theme="toggleTheme" />
     <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />
-    <div v-else-if="!auth.ready && !share.isPublic" data-testid="auth-boot-screen" class="grid min-h-screen place-items-center px-4">
-      <div class="grid justify-items-center gap-3 text-center" role="status" aria-live="polite">
-        <span class="h-10 w-10 animate-spin rounded-full border-4 border-court-200 border-t-court-600 dark:border-stone-700 dark:border-t-court-400" />
-        <p class="font-black">กำลังเตรียมข้อมูลผู้ดูแล</p>
-      </div>
-    </div>
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" :auth="auth" />
     <POSPage v-else-if="adminFeaturePage === 'pos' && auth.user" :api-request="api" :auth="auth" />

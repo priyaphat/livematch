@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { Plus, Search, X } from '@lucide/vue'
+import { useWaitClock, waitMinutes } from '../waitTime'
 
 const props = defineProps([
   'state',
@@ -18,6 +19,18 @@ const props = defineProps([
 const coupleAQuery = ref('')
 const coupleBQuery = ref('')
 const openCoupleSelect = ref('')
+const waitClock = useWaitClock()
+
+function playerLabel(player) {
+  if (!player) return ''
+  if (!props.state.settings?.showWaitTimePairing) return player.name
+  const minutes = waitMinutes(player.waitStartedAt, waitClock.value)
+  return minutes === null ? player.name : `${player.name} · ${minutes} นาที`
+}
+
+function groupLabel(group) {
+  return group.ids.map((id) => playerLabel(props.state.players.find((player) => player.id === id))).join(' + ')
+}
 
 const activePlayers = computed(() => props.state.players.filter((player) => player.active))
 const couponFiltered = computed(() => {
@@ -151,7 +164,7 @@ function changeGroupStatus(group, event) {
           class="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
           <span class="font-bold">{{ group.ids.join('/') }}</span>
-          <span class="min-w-0 truncate">{{ group.name }}</span>
+          <span class="min-w-0 truncate">{{ groupLabel(group) }}</span>
           <select
             class="h-10 rounded-md border border-stone-200 bg-white px-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-900"
             :value="groupValue(group)"
@@ -197,7 +210,7 @@ function changeGroupStatus(group, event) {
                 class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-paper-100 dark:hover:bg-stone-800"
                 @mousedown.prevent="selectCouplePlayer('a', player)"
               >
-                <span class="truncate">{{ player.name }}</span>
+                <span class="truncate">{{ playerLabel(player) }}</span>
                 <span class="text-xs text-stone-500">#{{ player.id }}</span>
               </button>
               <p v-if="!filteredCouplePlayers(coupleAQuery, forms.coupleBId).length" class="px-3 py-2 text-sm font-semibold text-stone-500">ไม่พบสมาชิก</p>
@@ -223,7 +236,7 @@ function changeGroupStatus(group, event) {
                 class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-paper-100 dark:hover:bg-stone-800"
                 @mousedown.prevent="selectCouplePlayer('b', player)"
               >
-                <span class="truncate">{{ player.name }}</span>
+                <span class="truncate">{{ playerLabel(player) }}</span>
                 <span class="text-xs text-stone-500">#{{ player.id }}</span>
               </button>
               <p v-if="!filteredCouplePlayers(coupleBQuery, forms.coupleAId).length" class="px-3 py-2 text-sm font-semibold text-stone-500">ไม่พบสมาชิก</p>
@@ -241,7 +254,7 @@ function changeGroupStatus(group, event) {
           :key="couple.id"
           class="flex items-center justify-between rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
-          <span>{{ playerName(couple.a) }} + {{ playerName(couple.b) }}</span>
+          <span>{{ playerLabel(selectedPlayer(couple.a)) }} + {{ playerLabel(selectedPlayer(couple.b)) }}</span>
           <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" aria-label="ลบคู่" @click="removeCouple(couple.id)">
             <X class="h-4 w-4" />
           </button>

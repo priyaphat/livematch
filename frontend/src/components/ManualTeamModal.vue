@@ -1,6 +1,7 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
 import { Check, Plus, Trash2, Users, X } from '@lucide/vue'
+import { useWaitClock, waitMinutes } from '../waitTime'
 
 const props = defineProps({
   state: { type: Object, required: true },
@@ -15,6 +16,7 @@ const optionalSlots = reactive({ a2: false, b2: false })
 const level = ref(props.state.settings.levels?.[0] || '')
 const submitting = ref(false)
 const error = ref('')
+const waitClock = useWaitClock()
 const slots = ['a1', 'a2', 'b1', 'b2']
 
 const selectedIds = computed(() => slots.map((slot) => Number(selected[slot])).filter(Boolean))
@@ -35,7 +37,9 @@ function optionsFor(slot) {
 
 function optionLabel(player) {
   const couponLabel = player.coupon ? ` · ${player.level || '-'}` : ''
-  return `#${player.id} ${player.name}${couponLabel} · ${player.games || 0} เกม`
+  const minutes = props.state.settings?.showWaitTimePairing ? waitMinutes(player.waitStartedAt, waitClock.value) : null
+  const waitLabel = minutes === null ? '' : ` · ${minutes} นาที`
+  return `#${player.id} ${player.name}${waitLabel}${couponLabel} · ${player.games || 0} เกม`
 }
 
 async function submit() {
