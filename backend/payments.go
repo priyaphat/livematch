@@ -764,7 +764,9 @@ type telegramCallbackQuery struct {
 		Chat struct {
 			ID int64 `json:"id"`
 		} `json:"chat"`
-		MessageID int `json:"message_id"`
+		MessageID int    `json:"message_id"`
+		Text      string `json:"text"`
+		Caption   string `json:"caption"`
 	} `json:"message"`
 }
 
@@ -823,8 +825,42 @@ func (a *app) handleTelegramWebhook(w http.ResponseWriter, r *http.Request) {
 	if status == "rejected" {
 		label = "ปฏิเสธแล้ว"
 	}
+	if editErr := a.editTelegramOrderResult(r.Context(), settings, update.CallbackQuery, label, actor); editErr != nil {
+		a.insertActivityLog(r.Context(), "system", "telegram", "telegram_order_result_edit_failed", "coin_purchase_order", orderID, map[string]any{"error": editErr.Error(), "status": status})
+	}
 	a.answerTelegramCallback(r.Context(), settings, update.CallbackQuery.ID, label)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (a *app) editTelegramOrderResult(ctx context.Context, settings telegramNotifySettings, callback *telegramCallbackQuery, label, actor string) error {
+	if callback == nil || callback.Message == nil || !settings.enabled() {
+		return errors.New("telegram message unavailable")
+	}
+	original := strings.TrimSpace(callback.Message.Text)
+	method, field := "editMessageText", "text"
+	if strings.TrimSpace(callback.Message.Caption) != "" {
+		original = strings.TrimSpace(callback.Message.Caption)
+		method, field = "editMessageCaption", "caption"
+	}
+	result := fmt.Sprintf("%s\n\n%s\nผู้ดำเนินการ: %s\nเวลา: %s น.", original, label, actor, time.Now().In(bangkokLocation).Format("02/01/2006 15:04"))
+	payload, _ := json.Marshal(map[string]any{
+		"chat_id": callback.Message.Chat.ID, "message_id": callback.Message.MessageID,
+		field: result, "reply_markup": map[string]any{"inline_keyboard": []any{}},
+	})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(telegramAPIBaseURL, "/")+"/bot"+settings.BotToken+"/"+method, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("telegram %s: %s", method, resp.Status)
+	}
+	return nil
 }
 
 func parseTelegramOrderAction(data string) (string, string, bool) {

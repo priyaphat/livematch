@@ -362,6 +362,7 @@ describe("PublicBookingPage", () => {
         queueMicrotask(() => this.onload?.());
       }
     });
+    vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 640, height: 960, close: vi.fn() })));
     const wrapper = mount(PublicBookingPage, {
       props: { apiRequest, token: "tenant-token" },
     });

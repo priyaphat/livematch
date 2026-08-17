@@ -286,8 +286,20 @@ func main() {
 	if err := a.migrate(context.Background()); err != nil {
 		log.Fatal(err)
 	}
+	if err := os.MkdirAll(bookingSlipStorageDir(), 0o750); err != nil {
+		log.Fatal(err)
+	}
+	if len(os.Args) > 1 && os.Args[1] == "migrate-booking-slips" {
+		migrated, failed, migrationErr := a.migrateBookingSlipFiles(context.Background())
+		if migrationErr != nil {
+			log.Fatal(migrationErr)
+		}
+		log.Printf("booking slip migration complete: migrated=%d failed=%d", migrated, failed)
+		return
+	}
 	go a.runExpiredBookingHoldCleanup(context.Background())
 	go a.runRateLimitCleanup(context.Background())
+	go a.runBookingSlipCleanup(context.Background())
 	go a.refreshAdminTelegramWebhooks(context.Background())
 	a.tts = newTTSService(db)
 
@@ -825,6 +837,9 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_settings add column if not exists slipok_branch_id text not null default '';
 		alter table booking_settings add column if not exists slipok_api_key text not null default '';
 		alter table booking_settings add column if not exists slipok_monthly_cap integer not null default 0;
+		alter table booking_settings add column if not exists block_account_enabled boolean not null default true;
+		alter table booking_settings add column if not exists block_ip_enabled boolean not null default true;
+		alter table booking_settings add column if not exists block_duration_minutes integer not null default 10;
 		create unique index if not exists idx_booking_settings_telegram_bot on booking_settings(telegram_bot_fingerprint) where telegram_bot_fingerprint <> '';
 		create table if not exists booking_courts (
 			id text primary key,
@@ -896,6 +911,10 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_payments add column if not exists verification_note text not null default '';
 		alter table booking_payments add column if not exists provider_error_code integer not null default 0;
 		alter table booking_payments add column if not exists checked_at timestamptz;
+		alter table booking_payments add column if not exists slip_file_key text not null default '';
+		alter table booking_payments add column if not exists slip_mime_type text not null default '';
+		alter table booking_payments add column if not exists slip_size_bytes bigint not null default 0;
+		alter table booking_payments add column if not exists slip_sha256 text not null default '';
 		create table if not exists booking_slip_refs (
 			admin_id text not null references admin_users(id) on delete cascade,
 			trans_ref text not null,
@@ -918,6 +937,29 @@ func (a *app) migrate(ctx context.Context) error {
 			created_at timestamptz not null default now()
 		);
 		create index if not exists idx_booking_incidents_admin on booking_security_incidents(admin_id,created_at desc);
+		create table if not exists booking_blocks (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			incident_id bigint references booking_security_incidents(id) on delete set null,
+			public_user_id text references public_users(id) on delete cascade,
+			target_type text not null check (target_type in ('account','ip')),
+			ip_hash text not null default '',
+			ip_encrypted text not null default '',
+			ip_masked text not null default '',
+			reason text not null default '',
+			created_by text not null default 'system',
+			starts_at timestamptz not null default now(),
+			expires_at timestamptz not null,
+			revoked_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			check ((target_type='account' and public_user_id is not null) or (target_type='ip' and ip_hash<>''))
+		);
+		create index if not exists idx_booking_blocks_account on booking_blocks(admin_id,public_user_id,expires_at) where revoked_at is null and target_type='account';
+		create index if not exists idx_booking_blocks_ip on booking_blocks(admin_id,ip_hash,expires_at) where revoked_at is null and target_type='ip';
+		alter table booking_security_incidents add column if not exists client_ip_hash text not null default '';
+		alter table booking_security_incidents add column if not exists client_ip_encrypted text not null default '';
+		alter table booking_security_incidents add column if not exists client_ip_masked text not null default '';
 		create index if not exists idx_members_admin on members(admin_id, active, created_at desc);
 		create index if not exists idx_booking_courts_admin on booking_courts(admin_id, active, sort_order);
 		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);

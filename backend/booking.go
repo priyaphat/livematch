@@ -174,6 +174,9 @@ type bookingSettingsRecord struct {
 	SlipOKBranchID             string `json:"slipOKBranchId"`
 	SlipOKAPIKeyMasked         string `json:"slipOKApiKeyMasked,omitempty"`
 	SlipOKMonthlyCap           int    `json:"slipOKMonthlyCap"`
+	BlockAccountEnabled        bool   `json:"blockAccountEnabled"`
+	BlockIPEnabled             bool   `json:"blockIPEnabled"`
+	BlockDurationMinutes       int    `json:"blockDurationMinutes"`
 }
 
 func publicBookingDateAllowed(settings bookingSettingsRecord, start, end, now time.Time) bool {
@@ -250,7 +253,7 @@ type bookingRecord struct {
 	PaymentStatus string `json:"paymentStatus"`
 	HoldExpiresAt string `json:"holdExpiresAt,omitempty"`
 	Note          string `json:"note,omitempty"`
-	SlipData      string `json:"slipData,omitempty"`
+	SlipURL       string `json:"slipUrl,omitempty"`
 	CreatedAt     string `json:"createdAt"`
 }
 
@@ -865,7 +868,7 @@ func (a *app) ensureBookingSettings(ctx context.Context, adminID string) (bookin
 	var s bookingSettingsRecord
 	var open, close string
 	var tokenHash, botToken, webhookID, secretHash, acceptanceOpen, acceptanceClose, slipKey string
-	err := a.db.QueryRowContext(ctx, `select public_token_hash,public_token,to_char(open_time,'HH24:MI'),to_char(close_time,'HH24:MI'),interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name,logo_data,telegram_bot_token,telegram_chat_id,telegram_webhook_id,telegram_secret_hash,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),''),single_slot_purchase_enabled,popup_enabled,popup_image,popup_revision,slipok_enabled,slipok_branch_id,slipok_api_key,slipok_monthly_cap from booking_settings where admin_id=$1`, adminID).Scan(&tokenHash, &s.PublicToken, &open, &close, &s.IntervalMinutes, &s.AllowOvernight, &s.UseSamePrice, &s.PromptPayType, &s.PromptPayID, &s.PromptPayReceiverName, &s.LogoData, &botToken, &s.TelegramChatID, &webhookID, &secretHash, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose, &s.SingleSlotPurchaseEnabled, &s.PopupEnabled, &s.PopupImage, &s.PopupRevision, &s.SlipOKEnabled, &s.SlipOKBranchID, &slipKey, &s.SlipOKMonthlyCap)
+	err := a.db.QueryRowContext(ctx, `select public_token_hash,public_token,to_char(open_time,'HH24:MI'),to_char(close_time,'HH24:MI'),interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name,logo_data,telegram_bot_token,telegram_chat_id,telegram_webhook_id,telegram_secret_hash,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),''),single_slot_purchase_enabled,popup_enabled,popup_image,popup_revision,slipok_enabled,slipok_branch_id,slipok_api_key,slipok_monthly_cap,block_account_enabled,block_ip_enabled,block_duration_minutes from booking_settings where admin_id=$1`, adminID).Scan(&tokenHash, &s.PublicToken, &open, &close, &s.IntervalMinutes, &s.AllowOvernight, &s.UseSamePrice, &s.PromptPayType, &s.PromptPayID, &s.PromptPayReceiverName, &s.LogoData, &botToken, &s.TelegramChatID, &webhookID, &secretHash, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose, &s.SingleSlotPurchaseEnabled, &s.PopupEnabled, &s.PopupImage, &s.PopupRevision, &s.SlipOKEnabled, &s.SlipOKBranchID, &slipKey, &s.SlipOKMonthlyCap, &s.BlockAccountEnabled, &s.BlockIPEnabled, &s.BlockDurationMinutes)
 	if errors.Is(err, sql.ErrNoRows) {
 		token := randHex(24)
 		_, err = a.db.ExecContext(ctx, `insert into booking_settings (admin_id,public_token_hash,public_token) values ($1,$2,$3)`, adminID, tokenDigest(token), token)
@@ -956,6 +959,14 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 		writeJSON(w, http.StatusOK, a.fetchSlipOKQuota(r.Context(), a.bookingSlipOKSettings(r.Context(), user.ID)))
 	case r.Method == http.MethodGet && path == "/blacklist":
 		a.writeBookingIncidents(w, r, user.ID)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/blacklist/") && strings.HasSuffix(path, "/block"):
+		incidentID := strings.TrimSuffix(strings.TrimPrefix(path, "/blacklist/"), "/block")
+		a.createIncidentBlocks(w, r, user.ID, incidentID)
+	case (r.Method == http.MethodPatch || r.Method == http.MethodDelete) && strings.HasPrefix(path, "/blocks/"):
+		a.changeBookingBlock(w, r, user.ID, strings.TrimPrefix(path, "/blocks/"))
+	case r.Method == http.MethodGet && strings.HasPrefix(path, "/payments/") && strings.HasSuffix(path, "/slip"):
+		paymentID := strings.TrimSuffix(strings.TrimPrefix(path, "/payments/"), "/slip")
+		a.serveBookingSlip(w, r, user.ID, paymentID)
 	case r.Method == http.MethodPost && path == "/courts":
 		a.createBookingCourt(w, r, user)
 	case (r.Method == http.MethodPatch || r.Method == http.MethodDelete) && strings.HasPrefix(path, "/courts/"):
@@ -1107,10 +1118,11 @@ func (a *app) writeBookingIncidents(w http.ResponseWriter, r *http.Request, admi
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		items = append(items, map[string]any{"id": id, "type": kind, "transRef": transRef, "reason": reason, "bookingId": bookingID, "paymentId": paymentID, "memberName": name, "phone": displayPhone(phone), "createdAt": createdAt, "duplicateMemberName": duplicateName, "duplicatePhone": displayPhone(duplicatePhone), "duplicateAt": duplicateAt, "duplicatePaymentId": duplicatePaymentID})
+		items = append(items, map[string]any{"id": id, "type": kind, "transRef": transRef, "reason": reason, "bookingId": bookingID, "paymentId": paymentID, "memberName": name, "phone": displayPhone(phone), "createdAt": createdAt, "duplicateMemberName": duplicateName, "duplicatePhone": displayPhone(duplicatePhone), "duplicateAt": duplicateAt, "duplicatePaymentId": duplicatePaymentID, "blocks": a.bookingBlocksForIncident(r.Context(), adminID, id)})
 	}
 	totalPages := max(1, (total+pageSize-1)/pageSize)
-	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": page, "pageSize": pageSize, "total": total, "totalPages": totalPages})
+	settings, _ := a.ensureBookingSettings(r.Context(), adminID)
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "page": page, "pageSize": pageSize, "total": total, "totalPages": totalPages, "policy": map[string]any{"blockAccountEnabled": settings.BlockAccountEnabled, "blockIpEnabled": settings.BlockIPEnabled, "blockDurationMinutes": settings.BlockDurationMinutes}})
 }
 
 func bookingExportDateRange(r *http.Request) (time.Time, time.Time, string, string, error) {
@@ -1253,15 +1265,16 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		return
 	}
 	var b struct {
-		OpenTime, CloseTime                                                                                            string
-		IntervalMinutes                                                                                                int
-		AllowOvernight, UseSamePrice, BookingAcceptanceEnabled, SingleSlotPurchaseEnabled, PopupEnabled, SlipOKEnabled bool
-		PromptPayType, PromptPayID, PromptPayReceiverName, TelegramBotToken, TelegramChatID                            string
-		LogoData                                                                                                       *string `json:"logoData"`
-		BookingAcceptanceOpenTime, BookingAcceptanceCloseTime, PopupRevision                                           string
-		PopupImage                                                                                                     *string `json:"popupImage"`
-		SlipOKBranchID, SlipOKAPIKey                                                                                   string
-		SlipOKMonthlyCap                                                                                               int
+		OpenTime, CloseTime                                                                                                                                 string
+		IntervalMinutes                                                                                                                                     int
+		AllowOvernight, UseSamePrice, BookingAcceptanceEnabled, SingleSlotPurchaseEnabled, PopupEnabled, SlipOKEnabled, BlockAccountEnabled, BlockIPEnabled bool
+		PromptPayType, PromptPayID, PromptPayReceiverName, TelegramBotToken, TelegramChatID                                                                 string
+		LogoData                                                                                                                                            *string `json:"logoData"`
+		BookingAcceptanceOpenTime, BookingAcceptanceCloseTime, PopupRevision                                                                                string
+		PopupImage                                                                                                                                          *string `json:"popupImage"`
+		SlipOKBranchID, SlipOKAPIKey                                                                                                                        string
+		SlipOKMonthlyCap                                                                                                                                    int
+		BlockDurationMinutes                                                                                                                                int
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 6<<20)).Decode(&b) != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid settings"})
@@ -1322,6 +1335,10 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		writeJSON(w, 400, map[string]string{"error": "เปิด Auto Slip ต้องกรอก Branch ID, API Key และ Monthly cap"})
 		return
 	}
+	if b.BlockDurationMinutes < 1 || b.BlockDurationMinutes > 43200 {
+		writeJSON(w, 400, map[string]string{"error": "ระยะเวลา Blacklist ต้องอยู่ระหว่าง 1 นาทีถึง 30 วัน"})
+		return
+	}
 	slipOKEncrypted := ""
 	if slipOKAPIKey != "" {
 		slipOKEncrypted, err = encryptSecret(slipOKAPIKey)
@@ -1362,7 +1379,7 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 			return
 		}
 	}
-	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,logo_data=$10,telegram_bot_token=$11,telegram_chat_id=$12,telegram_webhook_id=$13,telegram_secret_hash=$14,telegram_bot_fingerprint=$15,booking_acceptance_enabled=$16,booking_acceptance_open_time=nullif($17,'')::time,booking_acceptance_close_time=nullif($18,'')::time,single_slot_purchase_enabled=$19,popup_enabled=$20,popup_image=$21,popup_revision=$22,slipok_enabled=$23,slipok_branch_id=$24,slipok_api_key=$25,slipok_monthly_cap=$26,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName), logoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint, b.BookingAcceptanceEnabled, strings.TrimSpace(b.BookingAcceptanceOpenTime), strings.TrimSpace(b.BookingAcceptanceCloseTime), b.SingleSlotPurchaseEnabled, b.PopupEnabled, popupImage, popupRevision, b.SlipOKEnabled, normalizeSlipOKBranchID(b.SlipOKBranchID), slipOKEncrypted, b.SlipOKMonthlyCap)
+	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,logo_data=$10,telegram_bot_token=$11,telegram_chat_id=$12,telegram_webhook_id=$13,telegram_secret_hash=$14,telegram_bot_fingerprint=$15,booking_acceptance_enabled=$16,booking_acceptance_open_time=nullif($17,'')::time,booking_acceptance_close_time=nullif($18,'')::time,single_slot_purchase_enabled=$19,popup_enabled=$20,popup_image=$21,popup_revision=$22,slipok_enabled=$23,slipok_branch_id=$24,slipok_api_key=$25,slipok_monthly_cap=$26,block_account_enabled=$27,block_ip_enabled=$28,block_duration_minutes=$29,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName), logoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint, b.BookingAcceptanceEnabled, strings.TrimSpace(b.BookingAcceptanceOpenTime), strings.TrimSpace(b.BookingAcceptanceCloseTime), b.SingleSlotPurchaseEnabled, b.PopupEnabled, popupImage, popupRevision, b.SlipOKEnabled, normalizeSlipOKBranchID(b.SlipOKBranchID), slipOKEncrypted, b.SlipOKMonthlyCap, b.BlockAccountEnabled, b.BlockIPEnabled, b.BlockDurationMinutes)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_booking_settings_telegram_bot") {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "Telegram bot นี้ถูกใช้กับ admin อื่นแล้ว"})
@@ -2013,7 +2030,7 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		return
 	}
 	dayEnd := dayStart.Add(48 * time.Hour)
-	rows, err := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),case when $4 then b.booker_name else '' end,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,case when $4 then b.note else '' end,case when $4 then coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') else '' end,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.start_at<$3 and b.end_at>$2 and b.status<>'expired' and ($4 or b.status in ('hold','pending_review','confirmed')) order by b.start_at,c.sort_order`, adminID, dayStart, dayEnd, admin)
+	rows, err := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),case when $4 then b.booker_name else '' end,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,case when $4 then b.note else '' end,case when $4 then coalesce((select p.id from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') else '' end,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.start_at<$3 and b.end_at>$2 and b.status<>'expired' and ($4 or b.status in ('hold','pending_review','confirmed')) order by b.start_at,c.sort_order`, adminID, dayStart, dayEnd, admin)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -2029,7 +2046,7 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 	}
 	pendingReviews := []bookingRecord{}
 	if admin {
-		pendingRows, queryErr := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),''),to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.status='pending_review' order by b.created_at,b.start_at,c.sort_order`, adminID)
+		pendingRows, queryErr := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),b.booker_name,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,b.note,coalesce((select p.id from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),''),to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.status='pending_review' order by b.created_at,b.start_at,c.sort_order`, adminID)
 		if queryErr != nil {
 			writeJSON(w, 500, map[string]string{"error": queryErr.Error()})
 			return
@@ -2080,8 +2097,12 @@ func scanBookingRows(rows *sql.Rows, admin bool) ([]bookingRecord, error) {
 		var b bookingRecord
 		var start, end time.Time
 		var holdExpiresAt sql.NullTime
-		if err := rows.Scan(&b.ID, &b.BatchID, &b.CourtID, &b.CourtName, &b.MemberID, &b.BookerName, &b.BookedBy, &start, &end, &b.Interval, &b.UnitPrice, &b.TotalPrice, &b.Status, &b.PaymentStatus, &holdExpiresAt, &b.Note, &b.SlipData, &b.CreatedAt); err != nil {
+		var paymentID string
+		if err := rows.Scan(&b.ID, &b.BatchID, &b.CourtID, &b.CourtName, &b.MemberID, &b.BookerName, &b.BookedBy, &start, &end, &b.Interval, &b.UnitPrice, &b.TotalPrice, &b.Status, &b.PaymentStatus, &holdExpiresAt, &b.Note, &paymentID, &b.CreatedAt); err != nil {
 			return nil, err
+		}
+		if admin && paymentID != "" {
+			b.SlipURL = "/api/admin/booking/payments/" + url.PathEscape(paymentID) + "/slip"
 		}
 		b.StartAt = start.Format(time.RFC3339)
 		b.EndAt = end.Format(time.RFC3339)
@@ -2096,7 +2117,7 @@ func scanBookingRows(rows *sql.Rows, admin bool) ([]bookingRecord, error) {
 			b.BookedBy = ""
 			b.PaymentStatus = ""
 			b.Note = ""
-			b.SlipData = ""
+			b.SlipURL = ""
 			b.CreatedAt = ""
 		}
 		bookings = append(bookings, b)
@@ -2362,6 +2383,9 @@ func (a *app) handlePublicBooking(w http.ResponseWriter, r *http.Request) {
 	if !a.requireFeature(w, r, adminID, "booking") {
 		return
 	}
+	if !a.requireNoBookingBlock(w, r, adminID) {
+		return
+	}
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
@@ -2506,13 +2530,17 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
-	var b struct {
-		SlipData string `json:"slipData"`
-	}
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 7<<20)).Decode(&b) != nil || len(b.SlipData) > 6_800_000 || !validImageData(b.SlipData, false) {
-		writeJSON(w, 400, map[string]string{"error": "รองรับสลิป JPEG/PNG/WebP ไม่เกิน 5 MB"})
+	slipRaw, err := readMultipartSlip(w, r)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
 		return
 	}
+	slipMIME, err := validateSlipBytes(slipRaw)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": err.Error()})
+		return
+	}
+	slipDataURL := "data:" + slipMIME + ";base64," + base64.StdEncoding.EncodeToString(slipRaw)
 	var memberID, status, batchID, primaryBookingID string
 	var expires time.Time
 	var amount int
@@ -2533,7 +2561,7 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	}
 
 	settings, _ := a.ensureBookingSettings(r.Context(), adminID)
-	localCheck := inspectSlipImage(b.SlipData, amount, promptPaySettings{ID: settings.PromptPayID, Type: settings.PromptPayType, ReceiverName: settings.PromptPayReceiverName}, time.Now())
+	localCheck := inspectSlipImage(slipDataURL, amount, promptPaySettings{ID: settings.PromptPayID, Type: settings.PromptPayType, ReceiverName: settings.PromptPayReceiverName}, time.Now())
 	provider, verificationStatus, verificationNote := "local", "manual_review", localCheck.VerificationNote
 	transRef := localCheck.TransRef
 	detectedAmount, detectedPaidAt, detectedReceiver := localCheck.DetectedAmountTHB, localCheck.DetectedPaidAt, localCheck.DetectedReceiver
@@ -2543,7 +2571,7 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	if slipSettings.ready() {
 		quota := a.fetchSlipOKQuota(r.Context(), slipSettings)
 		if quota.Available && !quota.CapReached {
-			checked := a.checkSlipOK(r.Context(), slipSettings, b.SlipData, amount)
+			checked := a.checkSlipOK(r.Context(), slipSettings, slipDataURL, amount)
 			provider = "slipok"
 			providerErrorCode = checked.ErrorCode
 			if checked.TransRef != "" {
@@ -2579,6 +2607,17 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		return
 	}
 	paymentID := randUUID()
+	stored, err := storeBookingSlip(adminID, paymentID, slipRaw)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "บันทึกไฟล์สลิปไม่สำเร็จ"})
+		return
+	}
+	keepStoredSlip := false
+	defer func() {
+		if !keepStoredSlip {
+			removeBookingSlip(stored.Key)
+		}
+	}()
 	paymentStatus := "pending"
 	bookingStatus, bookingPaymentStatus := "pending_review", "pending"
 	if autoApproved {
@@ -2587,7 +2626,7 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	if definitiveFailure {
 		paymentStatus, bookingStatus, bookingPaymentStatus = "rejected", "rejected", "rejected"
 	}
-	_, err = tx.ExecContext(r.Context(), `insert into booking_payments (id,admin_id,booking_id,member_id,amount_thb,slip_data,status,trans_ref,slip_qr_payload,detected_amount_thb,detected_paid_at,detected_receiver,verification_provider,verification_status,verification_note,provider_error_code,checked_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,case when $13='slipok' then now() else null end)`, paymentID, adminID, primaryBookingID, memberID, amount, b.SlipData, paymentStatus, transRef, localCheck.QRPayload, detectedAmount, detectedPaidAt, detectedReceiver, provider, verificationStatus, verificationNote, providerErrorCode)
+	_, err = tx.ExecContext(r.Context(), `insert into booking_payments (id,admin_id,booking_id,member_id,amount_thb,slip_data,slip_file_key,slip_mime_type,slip_size_bytes,slip_sha256,status,trans_ref,slip_qr_payload,detected_amount_thb,detected_paid_at,detected_receiver,verification_provider,verification_status,verification_note,provider_error_code,checked_at) values ($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,case when $16='slipok' then now() else null end)`, paymentID, adminID, primaryBookingID, memberID, amount, stored.Key, stored.MIME, stored.Size, stored.SHA256, paymentStatus, transRef, localCheck.QRPayload, detectedAmount, detectedPaidAt, detectedReceiver, provider, verificationStatus, verificationNote, providerErrorCode)
 	var duplicatePaymentID string
 	if err == nil && transRef != "" {
 		var inserted string
@@ -2618,9 +2657,11 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		if duplicatePaymentID != "" {
 			kind = "duplicate"
 		}
-		_, err = tx.ExecContext(r.Context(), `insert into booking_security_incidents (admin_id,public_user_id,member_id,booking_id,payment_id,incident_type,trans_ref,reason,duplicate_payment_id) values ($1,$2,$3,$4,$5,$6,$7,$8,nullif($9,''))`, adminID, u.ID, memberID, primaryBookingID, paymentID, kind, transRef, verificationNote, duplicatePaymentID)
+		ipHash, ipEncrypted, ipMasked := bookingIPProtection(clientIP(r))
+		var incidentID int64
+		err = tx.QueryRowContext(r.Context(), `insert into booking_security_incidents (admin_id,public_user_id,member_id,booking_id,payment_id,incident_type,trans_ref,reason,duplicate_payment_id,client_ip_hash,client_ip_encrypted,client_ip_masked) values ($1,$2,$3,$4,$5,$6,$7,$8,nullif($9,''),$10,$11,$12) returning id`, adminID, u.ID, memberID, primaryBookingID, paymentID, kind, transRef, verificationNote, duplicatePaymentID, ipHash, ipEncrypted, ipMasked).Scan(&incidentID)
 		if err == nil {
-			_, err = tx.ExecContext(r.Context(), `update public_user_sessions set revoked_at=coalesce(revoked_at,now()) where public_user_id=$1`, u.ID)
+			err = a.createAutomaticBookingBlocks(r.Context(), tx, settings, incidentID, u.ID, clientIP(r), verificationNote)
 		}
 	}
 	if err != nil {
@@ -2632,10 +2673,14 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
+	keepStoredSlip = true
 	go a.notifyAdminBooking(context.Background(), adminID, primaryBookingID)
 	if securityIncident {
-		clearSessionCookies(w, r, publicSessionKind)
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": verificationNote, "code": "booking_slip_rejected_logout", "status": "rejected"})
+		if status, blocked := a.activeBookingBlock(r.Context(), adminID, u.ID, clientIP(r)); blocked {
+			writeBookingBlocked(w, status)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": verificationNote, "code": "booking_slip_rejected", "status": "rejected"})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": bookingStatus, "verificationStatus": verificationStatus})
@@ -2747,6 +2792,9 @@ func (a *app) startGoogleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "booking page not found"})
 		return
 	}
+	if !a.requireNoBookingBlock(w, r, adminID) {
+		return
+	}
 	redirectURL, returnOrigin, redirectOK := googleRedirectForOrigin(r.URL.Query().Get("origin"))
 	if !redirectOK {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "โดเมนนี้ยังไม่ได้รับอนุญาตสำหรับ Google Login"})
@@ -2841,6 +2889,9 @@ func (a *app) publicMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature disabled"})
 		return
 	}
+	if !a.requireNoBookingBlock(w, r, adminID) {
+		return
+	}
 	var m memberRecord
 	var phone, tokenHash string
 	err := a.db.QueryRowContext(r.Context(), `select id,name,phone,member_type,active,profile_token_hash,profile_token from members where admin_id=$1 and public_user_id=$2 and deleted_at is null`, adminID, u.ID).Scan(&m.ID, &m.Name, &phone, &m.MemberType, &m.Active, &tokenHash, &m.ProfileToken)
@@ -2884,6 +2935,9 @@ func (a *app) claimMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.features(r.Context(), adminID).BookingEnabled {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature disabled"})
+		return
+	}
+	if !a.requireNoBookingBlock(w, r, adminID) {
 		return
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
@@ -2942,6 +2996,9 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 	features := a.features(r.Context(), adminID)
 	if !features.MemberEnabled && !features.BookingEnabled {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature disabled"})
+		return
+	}
+	if features.BookingEnabled && !a.requireNoBookingBlock(w, r, adminID) {
 		return
 	}
 	if r.Method == http.MethodPatch {
@@ -3133,8 +3190,8 @@ func telegramBookingMessage(title, name string, items []telegramBookingItem) str
 }
 
 func (a *app) telegramBookingDetails(ctx context.Context, adminID, bookingID string) (string, string, []telegramBookingItem, error) {
-	var batchID, name, slipData string
-	err := a.db.QueryRowContext(ctx, `select coalesce(b.booking_batch_id,''),b.booker_name,coalesce((select p.slip_data from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') from bookings b where b.id=$1 and b.admin_id=$2`, bookingID, adminID).Scan(&batchID, &name, &slipData)
+	var batchID, name, slipPaymentID string
+	err := a.db.QueryRowContext(ctx, `select coalesce(b.booking_batch_id,''),b.booker_name,coalesce((select p.id from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') from bookings b where b.id=$1 and b.admin_id=$2`, bookingID, adminID).Scan(&batchID, &name, &slipPaymentID)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -3157,7 +3214,7 @@ func (a *app) telegramBookingDetails(ctx context.Context, adminID, bookingID str
 		}
 		return "", "", nil, err
 	}
-	return name, slipData, items, nil
+	return name, slipPaymentID, items, nil
 }
 
 func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string) {
@@ -3169,7 +3226,7 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 	if err != nil {
 		return
 	}
-	name, slipData, items, err := a.telegramBookingDetails(ctx, adminID, bookingID)
+	name, slipPaymentID, items, err := a.telegramBookingDetails(ctx, adminID, bookingID)
 	if err != nil {
 		return
 	}
@@ -3186,10 +3243,9 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 	}
 	keyboard, _ := json.Marshal(map[string]any{"inline_keyboard": keyboardRows})
 	message := telegramBookingMessage(title, name, items)
-	if validImageData(slipData, false) {
-		comma := strings.IndexByte(slipData, ',')
-		raw, decodeErr := base64.StdEncoding.DecodeString(slipData[comma+1:])
-		if decodeErr == nil {
+	if slipPaymentID != "" {
+		stored, readErr := a.bookingSlipData(ctx, slipPaymentID, adminID)
+		if readErr == nil {
 			var body bytes.Buffer
 			writer := multipart.NewWriter(&body)
 			_ = writer.WriteField("chat_id", chatID)
@@ -3200,7 +3256,7 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 			_ = writer.WriteField("caption", fmt.Sprintf("สลิปการจองสนาม\nผู้จอง: %s\nจำนวน %d ช่วง · ยอดรวม %d บาท", name, len(items), total))
 			part, partErr := writer.CreateFormFile("photo", "slip.jpg")
 			if partErr == nil {
-				_, _ = part.Write(raw)
+				_, _ = part.Write(stored.Data)
 			}
 			_ = writer.Close()
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+token+"/sendPhoto", &body)

@@ -43,9 +43,9 @@ import {
 import MatchSetupModal from './components/MatchSetupModal.vue'
 import ManualTeamModal from './components/ManualTeamModal.vue'
 import AuthPage from './pages/AuthPage.vue'
+import BackofficePage from './pages/BackofficePage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 import { persistPublicTheme, persistTheme, readStoredPublicTheme, readStoredTheme } from './theme'
-const BackofficePage = defineAsyncComponent(() => import('./pages/BackofficePage.vue'))
 const AdminSupervisorPage = defineAsyncComponent(() => import('./pages/AdminSupervisorPage.vue'))
 const DashboardPage = defineAsyncComponent(() => import('./pages/DashboardPage.vue'))
 const HistoryPage = defineAsyncComponent(() => import('./pages/HistoryPage.vue'))
@@ -72,6 +72,14 @@ const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath 
 const publicBookingToken = routePath.startsWith('/booking/') ? routePath.slice('/booking/'.length).split('/')[0] : ''
 const publicProfileToken = routePath.startsWith('/p/') ? routePath.slice('/p/'.length).split('/')[0] : ''
 const isPublicBookingSurface = Boolean(publicBookingToken || publicProfileToken)
+function bookingBlockSurfaceToken() {
+	const path = window.location.pathname
+	if (path.startsWith('/booking/')) return path.slice('/booking/'.length).split('/')[0]
+	if (path.startsWith('/p/')) return path.slice('/p/'.length).split('/')[0]
+	return ''
+}
+const isBookingBlockSurface = () => Boolean(bookingBlockSurfaceToken())
+const bookingBlockStorageKey = () => `livematch_booking_block:${bookingBlockSurfaceToken() || 'none'}`
 const adminNavigationKey = 'livematch_admin_navigation'
 const restorableAdminTabs = new Set(['dashboard', 'players', 'livematch', 'queue', 'liveboard', 'history', 'settings', 'liveShareHours', 'help'])
 const defaultAnnouncementTemplate = 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}'
@@ -264,8 +272,9 @@ const forms = reactive({
   backofficeCoinAdminId: '',
   backofficeCoinDelta: 0,
   backofficeCoinNote: '',
-  backofficeLiveMatchCost: null,
-  backofficeLiveShareCost: null,
+	backofficeLiveMatchCost: null,
+	backofficeLiveShareCost: null,
+	backofficeSettingsSaving: false,
   backofficeCoinPackages: [],
   backofficeSubscriptionPackages: [],
   backofficeCoinPaymentQrImage: '',
@@ -426,9 +435,15 @@ const verifyEmail = reactive({
   message: 'กรุณารอสักครู่ ระบบกำลังตรวจสอบลิงก์ยืนยันอีเมลของคุณ'
 })
 const selectedLiveId = ref(null)
+const bookingBlock = reactive({ blockedUntil: '', targets: [], deadlineMs: 0, surfaceToken: '', now: Date.now() })
 let toastTimer = null
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
+let authBootTimer = window.setTimeout(() => {
+  auth.ready = true
+	authBootTimer = null
+}, 5000)
+let bookingBlockTimer = null
 const terminalSessionCodes = new Set([
   'session_idle_expired',
   'session_absolute_expired',
@@ -503,7 +518,11 @@ async function api(path, options = {}) {
     const error = await response.json().catch(() => ({ error: 'request failed' }))
     const requestError = new Error(error.error || 'request failed')
     requestError.status = response.status
-    requestError.code = error.code || error.error || ''
+		requestError.code = error.code || error.error || ''
+		requestError.payload = error
+		if (requestError.code === 'booking_blacklisted') {
+			window.dispatchEvent(new CustomEvent('livematch:booking-blocked', { detail: error }))
+		}
     if (terminalSessionCodes.has(requestError.code)) {
       window.dispatchEvent(new CustomEvent('livematch:session-ended', { detail: { code: requestError.code } }))
     }
@@ -663,7 +682,22 @@ async function selectAdminTab(tabId) {
 
 onMounted(() => {
   window.addEventListener('keydown', handleDashboardAnnouncementKeydown)
-  window.addEventListener('livematch:session-ended', handleSessionEnded)
+	window.addEventListener('livematch:session-ended', handleSessionEnded)
+	window.addEventListener('livematch:booking-blocked', handleBookingBlocked)
+	try {
+		const saved = JSON.parse(localStorage.getItem(bookingBlockStorageKey()) || 'null')
+		if (isBookingBlockSurface() && Number(saved?.deadlineMs) > Date.now()) Object.assign(bookingBlock, saved, { surfaceToken: bookingBlockSurfaceToken() })
+	} catch { /* Ignore invalid local state. */ }
+	bookingBlockTimer = window.setInterval(() => {
+		bookingBlock.now = Date.now()
+		if (isBookingBlockSurface() && bookingBlock.deadlineMs && bookingBlock.deadlineMs <= bookingBlock.now) {
+			bookingBlock.blockedUntil = ''
+			bookingBlock.targets = []
+			bookingBlock.deadlineMs = 0
+			localStorage.removeItem(bookingBlockStorageKey())
+			window.location.reload()
+		}
+	}, 1000)
   state.theme = persistTheme(readStoredTheme())
   installDomTranslator(() => document.body)
   const params = new URLSearchParams(window.location.search)
@@ -684,7 +718,7 @@ onMounted(() => {
     forms.resetToken = resetToken
   }
   loadSharedView()
-  restoreAdminAccount(true)
+  restoreAdminAccount(true).finally(finishAuthBoot)
 })
 
 async function confirmVerifyEmail(token) {
@@ -707,11 +741,39 @@ async function confirmVerifyEmail(token) {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleDashboardAnnouncementKeydown)
-  window.removeEventListener('livematch:session-ended', handleSessionEnded)
+	window.removeEventListener('livematch:session-ended', handleSessionEnded)
+	window.removeEventListener('livematch:booking-blocked', handleBookingBlocked)
+	if (bookingBlockTimer) window.clearInterval(bookingBlockTimer)
+  if (authBootTimer) window.clearTimeout(authBootTimer)
   stopSharedRefresh()
   stopAnnouncementAudio()
   announcementAudioCache.dispose()
   dashboardAnnouncementAudioCache.dispose()
+})
+
+function handleBookingBlocked(event) {
+	const detail = event.detail || {}
+	const surfaceToken = bookingBlockSurfaceToken()
+	if (!surfaceToken) return
+	bookingBlock.blockedUntil = detail.blockedUntil || ''
+	bookingBlock.targets = Array.isArray(detail.targets) ? detail.targets : []
+	bookingBlock.surfaceToken = surfaceToken
+	bookingBlock.now = Date.now()
+	bookingBlock.deadlineMs = bookingBlock.now + Math.max(0, Number(detail.remainingSeconds) || 0) * 1000
+	if (!bookingBlock.deadlineMs || bookingBlock.deadlineMs <= bookingBlock.now) {
+		const parsedUntil = Date.parse(bookingBlock.blockedUntil)
+		bookingBlock.deadlineMs = Number.isFinite(parsedUntil) ? parsedUntil : 0
+	}
+	try { localStorage.setItem(bookingBlockStorageKey(), JSON.stringify({ blockedUntil: bookingBlock.blockedUntil, targets: bookingBlock.targets, deadlineMs: bookingBlock.deadlineMs })) } catch { /* Backend remains authoritative. */ }
+}
+
+const bookingBlockRemaining = computed(() => Math.max(0, Math.ceil((bookingBlock.deadlineMs - bookingBlock.now) / 1000)))
+const bookingBlockCountdown = computed(() => {
+	const seconds = bookingBlockRemaining.value
+	const hours = Math.floor(seconds / 3600)
+	const minutes = Math.floor((seconds % 3600) / 60)
+	const rest = seconds % 60
+	return `${hours ? `${hours}:` : ''}${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
 })
 
 function handleDashboardAnnouncementKeydown(event) {
@@ -1156,8 +1218,10 @@ function syncBackofficeCoinShopForms() {
 }
 
 async function saveBackofficeSettings() {
-  forms.backofficeError = ''
-  try {
+	if (forms.backofficeSettingsSaving) return
+	forms.backofficeError = ''
+	forms.backofficeSettingsSaving = true
+	try {
     forms.backofficeSummary = await api('/api/backoffice/settings', {
       method: 'PUT',
       headers: backofficeAuthHeaders(),
@@ -1165,10 +1229,14 @@ async function saveBackofficeSettings() {
         liveMatchSessionCost: Number(forms.backofficeLiveMatchCost),
         liveShareSessionCost: Number(forms.backofficeLiveShareCost)
       })
-    })
-  } catch (error) {
-    forms.backofficeError = error.message || 'บันทึกราคา coin ไม่สำเร็จ'
-  }
+		})
+		showToast('บันทึกราคา Session แล้ว', 'success')
+	} catch (error) {
+		forms.backofficeError = error.message || 'บันทึกราคา coin ไม่สำเร็จ'
+		showToast(forms.backofficeError)
+	} finally {
+		forms.backofficeSettingsSaving = false
+	}
 }
 
 async function saveBackofficeCoinShop() {
@@ -1405,12 +1473,15 @@ async function submitCoinOrder() {
 
 async function restoreAdminAccount(restoreNavigation = false) {
   if (share.isPublic) {
-    auth.ready = true
+    finishAuthBoot()
     return
   }
   try {
     const payload = await api('/api/auth/me')
     applyAdminPayload(payload)
+		// Authentication is complete. Restoring the previously opened session
+		// must not keep the whole application behind the auth boot screen.
+		finishAuthBoot()
     if (restoreNavigation) {
       const navigation = readAdminNavigation()
       if (navigation && auth.sessions.some((session) => session.id === navigation.sessionId)) {
@@ -1422,8 +1493,14 @@ async function restoreAdminAccount(restoreNavigation = false) {
   } catch {
     auth.user = null
   } finally {
-    auth.ready = true
+		finishAuthBoot()
   }
+}
+
+function finishAuthBoot() {
+	auth.ready = true
+	if (authBootTimer) window.clearTimeout(authBootTimer)
+	authBootTimer = null
 }
 
 async function logout() {
@@ -3519,7 +3596,17 @@ const pageProps = computed(() => ({
       </div>
     </Transition>
 
-    <VerifyEmailPage v-if="verifyEmail.isPage" v-bind="pageProps" />
+	<section v-if="bookingBlock.surfaceToken && bookingBlockRemaining > 0" class="fixed inset-0 z-[200] grid min-h-screen place-items-center bg-paper-50 px-5 text-center text-stone-950 dark:bg-paper-900 dark:text-white">
+	  <div class="w-full max-w-md rounded-2xl border border-red-200 bg-white p-6 shadow-soft dark:border-red-900 dark:bg-stone-900">
+		<Clock3 class="mx-auto h-12 w-12 text-red-600" />
+		<p class="mt-4 text-sm font-black uppercase tracking-[0.16em] text-red-600">ระงับการใช้งานชั่วคราว</p>
+		<h1 class="mt-2 text-2xl font-black">ไม่สามารถใช้งานระบบจองสนามได้</h1>
+		<p class="mt-3 font-semibold text-stone-500 dark:text-stone-400">ระบบตรวจพบรายการสลิปผิดปกติ กรุณารอจนกว่าจะครบกำหนด</p>
+		<p class="mt-6 font-mono text-5xl font-black tabular-nums">{{ bookingBlockCountdown }}</p>
+		<p class="mt-4 text-xs font-bold text-stone-400">ระบบตรวจสอบทั้งบัญชีและเครือข่ายจาก Backend การเปลี่ยนหน้าเว็บจะไม่ข้ามข้อจำกัดนี้</p>
+	  </div>
+	</section>
+	<VerifyEmailPage v-else-if="verifyEmail.isPage" v-bind="pageProps" />
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
     <PublicBookingPage v-else-if="publicBookingToken" :api-request="api" :token="publicBookingToken" :theme="state.theme" @toggle-theme="toggleTheme" />
     <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />

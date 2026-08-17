@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import QRCode from "qrcode";
+import { compressBookingSlip } from "../imageCompression";
 import {
   CalendarDays,
   CheckCircle2,
@@ -585,39 +586,34 @@ async function holdBatch() {
     actionBusy.hold = false;
   }
 }
-function upload(event) {
+async function upload(event) {
   if (actionBusy.slip) return;
   const file = event.target.files?.[0];
   event.target.value = "";
-  if (!file || file.size > 5 * 1024 * 1024) {
-    showToast("ไฟล์ใหญ่เกิน 5 MB");
-    return;
-  }
-  actionBusy.slip = true;
-  const reader = new FileReader();
-  reader.onload = async () => {
-    try {
-      const result = await props.apiRequest(
-        `/api/public-booking/${props.token}/slip/${payment.value.id}`,
-        { method: "POST", body: JSON.stringify({ slipData: reader.result }) },
-      );
+	if (!file) {
+		showToast("กรุณาเลือกไฟล์สลิป");
+		return;
+	}
+	actionBusy.slip = true;
+	try {
+		const compressed = await compressBookingSlip(file);
+		const form = new FormData();
+		form.append("slip", compressed, compressed.name);
+			const result = await props.apiRequest(
+				`/api/public-booking/${props.token}/slip/${payment.value.id}`,
+				{ method: "POST", body: form },
+			);
       payment.value.status = result.status || "pending_review";
       showToast(result.status === "confirmed" ? "ชำระเงินผ่านและยืนยันการจองแล้ว" : "ส่งสลิปแล้ว รอผู้ดูแลตรวจสอบ", "success");
       await load();
-    } catch (error) {
+	} catch (error) {
       showToast(error.message || "อัปโหลดสลิปไม่สำเร็จ กรุณาตรวจสอบสถานะการจอง");
       payment.value = null;
       qr.value = "";
       await load();
-    } finally {
-      actionBusy.slip = false;
-    }
-  };
-  reader.onerror = () => {
-    actionBusy.slip = false;
-    showToast("อ่านไฟล์สลิปไม่สำเร็จ");
-  };
-  reader.readAsDataURL(file);
+	} finally {
+			actionBusy.slip = false;
+	}
 }
 
 onMounted(async () => {
@@ -1170,7 +1166,7 @@ onUnmounted(() => {
               @change="upload"
           /></label>
           <p class="mt-3 text-xs text-stone-500">
-            รองรับ JPEG, PNG, WebP ขนาดไม่เกิน 5 MB
+			ระบบจะย่อ JPEG, PNG หรือ WebP ให้ไม่เกินประมาณ 100 KB ก่อนส่ง
           </p>
         </template>
         <template v-else>

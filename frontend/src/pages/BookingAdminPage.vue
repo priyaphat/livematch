@@ -78,6 +78,7 @@ const incidents = reactive({ items: [], page: 1, pageSize: 20, total: 0, totalPa
 const slipOKQuota = reactive({ available: false, used: 0, remaining: 0, limit: 0, capReached: false, error: "" });
 const actionBusy = reactive({ entry: false, reopen: false, review: false, settings: false, addCourt: false });
 const courtBusy = reactive(new Set());
+const blockBusy = reactive(new Set());
 const adminToast = reactive({ message: "", tone: "success" });
 let timer;
 let adminToastTimer;
@@ -113,6 +114,7 @@ const settingsTabs = [
   { id: "booking", label: "ตารางและกติกา" },
   { id: "payment", label: "การรับชำระ" },
   { id: "slipok", label: "Auto Slip" },
+  { id: "security", label: "Blacklist และความปลอดภัย" },
   { id: "display", label: "การแสดงผล" },
   { id: "courts", label: "จัดการสนาม" },
 ];
@@ -131,7 +133,8 @@ const pendingBookings = computed(() => {
     const group = groups.get(key);
     group.items.push(booking);
     group.totalPriceThb += Number(booking.totalPriceThb || 0);
-    if (!group.slipData && booking.slipData) group.slipData = booking.slipData;
+		if (!group.slipUrl && booking.slipUrl) group.slipUrl = booking.slipUrl;
+		if (!group.slipData && booking.slipData) group.slipData = booking.slipData;
   }
   return [...groups.values()].map((group) => ({
     ...group,
@@ -732,9 +735,55 @@ async function loadIncidents(page = incidents.page) {
   incidents.loading = true;
   try {
     const params = new URLSearchParams({ page, pageSize: incidents.pageSize, search: incidents.search, type: incidents.type });
-    Object.assign(incidents, await props.apiRequest(`/api/admin/booking/blacklist?${params}`));
+		Object.assign(incidents, await props.apiRequest(`/api/admin/booking/blacklist?${params}`));
+		for (const item of incidents.items || []) {
+			item.blockAccount ??= true;
+			item.blockIp ??= true;
+			item.durationMinutes ??= Number(incidents.policy?.blockDurationMinutes || 10);
+			for (const block of item.blocks || []) block.editUntil = toDateTimeLocal(block.blockedUntil);
+		}
   } catch (error) { state.error = error.message; }
   finally { incidents.loading = false; }
+}
+
+function toDateTimeLocal(value) {
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return "";
+	const offset = date.getTimezoneOffset() * 60000;
+	return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+async function createIncidentBlock(item) {
+	if (blockBusy.has(`incident-${item.id}`)) return;
+	blockBusy.add(`incident-${item.id}`);
+	try {
+		await props.apiRequest(`/api/admin/booking/blacklist/${item.id}/block`, { method: "POST", body: JSON.stringify({ blockAccount: item.blockAccount, blockIp: item.blockIp, durationMinutes: Number(item.durationMinutes || 10) }) });
+		await loadIncidents(incidents.page);
+		showAdminToast("เพิ่มการบล็อกแล้ว");
+	} catch (error) { showAdminToast(error.message || "เพิ่มการบล็อกไม่สำเร็จ", "error"); }
+	finally { blockBusy.delete(`incident-${item.id}`); }
+}
+
+async function updateBlock(block) {
+	if (blockBusy.has(block.id)) return;
+	blockBusy.add(block.id);
+	try {
+		await props.apiRequest(`/api/admin/booking/blocks/${block.id}`, { method: "PATCH", body: JSON.stringify({ expiresAt: new Date(block.editUntil).toISOString() }) });
+		await loadIncidents(incidents.page);
+		showAdminToast("ปรับเวลาบล็อกแล้ว");
+	} catch (error) { showAdminToast(error.message || "ปรับเวลาบล็อกไม่สำเร็จ", "error"); }
+	finally { blockBusy.delete(block.id); }
+}
+
+async function revokeBlock(block) {
+	if (blockBusy.has(block.id)) return;
+	blockBusy.add(block.id);
+	try {
+		await props.apiRequest(`/api/admin/booking/blocks/${block.id}`, { method: "DELETE" });
+		await loadIncidents(incidents.page);
+		showAdminToast("ปลดบล็อกแล้ว");
+	} catch (error) { showAdminToast(error.message || "ปลดบล็อกไม่สำเร็จ", "error"); }
+	finally { blockBusy.delete(block.id); }
 }
 
 async function addCourt() {
@@ -1185,8 +1234,8 @@ onUnmounted(() => {
             </p>
           </div>
           <img
-            v-if="review.slipData"
-            :src="review.slipData"
+			v-if="review.slipUrl || review.slipData"
+			:src="review.slipUrl || review.slipData"
             alt="สลิปชำระเงิน"
             class="max-h-72 w-full rounded-xl bg-paper-100 object-contain"
           />
@@ -1426,9 +1475,31 @@ onUnmounted(() => {
     </section>
 
     <section v-else-if="activeTab === 'blacklist'" class="rounded-xl border bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-      <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="flex items-center gap-2 text-lg font-black"><ShieldCheck class="h-5 w-5 text-red-600" />Blacklist · ประวัติสลิปผิดปกติ</h2><p class="mt-1 text-sm font-semibold text-stone-500">ใช้เก็บประวัติเท่านั้น ไม่ได้ปิดกั้นสมาชิกจากการจอง</p></div><span class="rounded-full bg-red-50 px-3 py-1 text-sm font-black text-red-700">{{ incidents.total }} เหตุการณ์</span></div>
+	  <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="flex items-center gap-2 text-lg font-black"><ShieldCheck class="h-5 w-5 text-red-600" />Blacklist · ประวัติสลิปผิดปกติ</h2><p class="mt-1 text-sm font-semibold text-stone-500">บล็อกบัญชีและ IP ตาม policy พร้อมปรับเวลาหรือปลดรายกรณีได้</p></div><span class="rounded-full bg-red-50 px-3 py-1 text-sm font-black text-red-700">{{ incidents.total }} เหตุการณ์</span></div>
       <form class="mt-4 grid gap-2 sm:grid-cols-[1fr_13rem_auto]" @submit.prevent="loadIncidents(1)"><input v-model="incidents.search" class="h-11 rounded-lg border bg-transparent px-3" placeholder="ค้นหาชื่อ เบอร์ หรือ transRef" /><select v-model="incidents.type" class="h-11 rounded-lg border bg-transparent px-3"><option value="">ทุกประเภท</option><option value="duplicate">สลิปซ้ำ</option><option value="verification_failed">ตรวจสลิปไม่ผ่าน</option></select><button class="booking-primary-button justify-center">ค้นหา</button></form>
-      <div class="mt-4 grid gap-3"><article v-for="item in incidents.items" :key="item.id" class="rounded-xl border p-4 dark:border-stone-700"><div class="flex flex-wrap items-start justify-between gap-2"><div><p class="font-black">{{ item.memberName || 'ไม่พบชื่อสมาชิก' }} · {{ item.phone || '-' }}</p><p class="text-xs font-semibold text-stone-500">{{ item.createdAt }} · Booking {{ item.bookingId }}</p></div><span class="rounded-full px-2 py-1 text-xs font-black" :class="item.type === 'duplicate' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'">{{ item.type === 'duplicate' ? 'สลิปซ้ำ' : 'ตรวจไม่ผ่าน' }}</span></div><p class="mt-3 rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">{{ item.reason }}</p><p v-if="item.transRef" class="mt-2 break-all text-xs font-semibold text-stone-500">transRef: {{ item.transRef }}</p><div v-if="item.type === 'duplicate'" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900 dark:bg-red-950/20"><b>ซ้ำกับ:</b> {{ item.duplicateMemberName || '-' }} · {{ item.duplicatePhone || '-' }} · {{ item.duplicateAt || '-' }}</div></article><p v-if="!incidents.loading && !incidents.items.length" class="p-8 text-center text-stone-500">ยังไม่มีประวัติสลิปผิดปกติ</p></div>
+	  <div class="mt-4 grid gap-3">
+		<article v-for="item in incidents.items" :key="item.id" class="rounded-xl border p-4 dark:border-stone-700">
+		  <div class="flex flex-wrap items-start justify-between gap-2"><div><p class="font-black">{{ item.memberName || 'ไม่พบชื่อสมาชิก' }} · {{ item.phone || '-' }}</p><p class="text-xs font-semibold text-stone-500">{{ item.createdAt }} · Booking {{ item.bookingId }}</p></div><span class="rounded-full px-2 py-1 text-xs font-black" :class="item.type === 'duplicate' ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-800'">{{ item.type === 'duplicate' ? 'สลิปซ้ำ' : 'ตรวจไม่ผ่าน' }}</span></div>
+		  <p class="mt-3 rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">{{ item.reason }}</p>
+		  <p v-if="item.transRef" class="mt-2 break-all text-xs font-semibold text-stone-500">transRef: {{ item.transRef }}</p>
+		  <div v-if="item.type === 'duplicate'" class="mt-3 rounded-lg border border-red-200 bg-red-50 p-3 text-sm dark:border-red-900 dark:bg-red-950/20"><b>ซ้ำกับ:</b> {{ item.duplicateMemberName || '-' }} · {{ item.duplicatePhone || '-' }} · {{ item.duplicateAt || '-' }}</div>
+		  <div class="mt-3 grid gap-2">
+			<div v-for="block in item.blocks" :key="block.id" class="grid min-w-0 gap-2 rounded-lg border p-3 sm:grid-cols-[7rem_minmax(0,1fr)_auto_auto] sm:items-end">
+			  <p class="font-black">{{ block.target === 'account' ? 'บัญชีผู้ใช้' : `IP ${block.ipMasked || ''}` }}</p>
+			  <label class="grid min-w-0 gap-1 text-xs font-bold">บล็อกถึง<input v-model="block.editUntil" type="datetime-local" class="h-10 min-w-0 rounded-lg border bg-transparent px-2" :disabled="!block.active" /></label>
+			  <button class="booking-secondary-button h-10 justify-center" :disabled="!block.active || blockBusy.has(block.id)" @click="updateBlock(block)">ปรับเวลา</button>
+			  <button class="h-10 rounded-lg border border-red-200 px-3 font-black text-red-700 disabled:opacity-40" :disabled="!block.active || blockBusy.has(block.id)" @click="revokeBlock(block)">{{ block.active ? 'ปลดบล็อก' : 'สิ้นสุดแล้ว' }}</button>
+			</div>
+			<div class="grid gap-2 rounded-lg bg-paper-100 p-3 dark:bg-stone-800 sm:grid-cols-[auto_auto_8rem_auto] sm:items-center">
+			  <label class="flex items-center gap-2 font-bold"><input v-model="item.blockAccount" type="checkbox" />บัญชี</label>
+			  <label class="flex items-center gap-2 font-bold"><input v-model="item.blockIp" type="checkbox" />IP</label>
+			  <label class="grid gap-1 text-xs font-bold">นาที<input v-model.number="item.durationMinutes" type="number" min="1" max="43200" class="h-10 rounded-lg border bg-transparent px-2" /></label>
+			  <button class="booking-primary-button h-10 justify-center" :disabled="blockBusy.has(`incident-${item.id}`)" @click="createIncidentBlock(item)">เพิ่มการบล็อก</button>
+			</div>
+		  </div>
+		</article>
+		<p v-if="!incidents.loading && !incidents.items.length" class="p-8 text-center text-stone-500">ยังไม่มีประวัติสลิปผิดปกติ</p>
+	  </div>
       <div v-if="incidents.totalPages > 1" class="mt-4 flex items-center justify-between"><button class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="incidents.page<=1" @click="loadIncidents(incidents.page-1)">ก่อนหน้า</button><span class="text-sm font-black">หน้า {{ incidents.page }} / {{ incidents.totalPages }}</span><button class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="incidents.page>=incidents.totalPages" @click="loadIncidents(incidents.page+1)">ถัดไป</button></div>
     </section>
 
@@ -1545,7 +1616,7 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <div v-else-if="settingsTab === 'slipok'" class="mt-4 grid gap-3">
+		<div v-else-if="settingsTab === 'slipok'" class="mt-4 grid gap-3">
           <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 dark:border-stone-700">
             <label class="flex items-center gap-2 font-black"><input v-model="settings.slipOKEnabled" type="checkbox" />เปิดใช้ Auto Slip</label>
             <button type="button" class="rounded-lg border px-3 py-2 text-xs font-black" @click="loadSlipOKQuota">รีเฟรชโควตา</button>
@@ -1557,9 +1628,16 @@ onUnmounted(() => {
             <div class="rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">ใช้แล้ว {{ slipOKQuota.used || 0 }} · คงเหลือ {{ slipOKQuota.remaining || 0 }} / {{ slipOKQuota.limit || settings.slipOKMonthlyCap || 0 }}<p v-if="slipOKQuota.error" class="mt-1 text-xs text-amber-700">{{ slipOKQuota.error }}</p></div>
           </div>
           <p class="rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">หาก Auto Slip ใช้งานไม่ได้หรือโควตาหมด ระบบจะส่งให้ Admin ตรวจ Manual</p>
-        </div>
+		</div>
 
-        <div v-else-if="settingsTab === 'display'" class="mt-4 grid gap-4 sm:grid-cols-2">
+		<div v-else-if="settingsTab === 'security'" class="mt-4 grid gap-3 sm:grid-cols-2">
+		  <label class="flex items-center gap-2 rounded-lg border p-3 font-black dark:border-stone-700"><input v-model="settings.blockAccountEnabled" type="checkbox" />บล็อกบัญชีอัตโนมัติ</label>
+		  <label class="flex items-center gap-2 rounded-lg border p-3 font-black dark:border-stone-700"><input v-model="settings.blockIPEnabled" type="checkbox" />บล็อก IP อัตโนมัติ</label>
+		  <label class="grid gap-1 text-sm font-bold sm:col-span-2">ระยะเวลาบล็อก (นาที)<input v-model.number="settings.blockDurationMinutes" type="number" min="1" max="43200" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+		  <p class="rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200 sm:col-span-2">ค่าเริ่มต้นบล็อกบัญชีและ IP 10 นาทีเมื่อพบสลิปซ้ำหรือ Auto Slip ยืนยันว่าไม่ผ่าน IP block อาจกระทบผู้ใช้ที่ใช้เครือข่ายร่วมกัน</p>
+		</div>
+
+		<div v-else-if="settingsTab === 'display'" class="mt-4 grid gap-4 sm:grid-cols-2">
           <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700">
             <h3 class="font-black">โลโก้หน้าจอง</h3>
             <div v-if="settings.logoData" class="grid place-items-center rounded-lg bg-paper-100 p-2 dark:bg-stone-800"><img :src="settings.logoData" alt="ตัวอย่างโลโก้" class="h-20 w-20 rounded-xl object-cover" /></div>
@@ -1809,8 +1887,8 @@ onUnmounted(() => {
           </div>
         </div>
         <img
-          v-if="review.slipData"
-          :src="review.slipData"
+		  v-if="review.slipUrl || review.slipData"
+		  :src="review.slipUrl || review.slipData"
           alt="สลิปชำระเงิน"
           class="mt-4 max-h-80 w-full rounded-xl border bg-paper-100 object-contain dark:border-stone-700 dark:bg-stone-800"
         />

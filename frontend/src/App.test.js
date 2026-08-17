@@ -150,6 +150,35 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('ผู้เล่นวันนี้')
     expect(wrapper.text()).not.toContain('จัดคู่')
   })
+	it('leaves the auth boot screen when the session probe does not finish', async () => {
+    vi.useFakeTimers()
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = vi.fn(() => new Promise(() => {}))
+    const wrapper = mount(App)
+
+    expect(wrapper.text()).toContain('กำลังเตรียมข้อมูลผู้ดูแล')
+    await vi.advanceTimersByTimeAsync(5000)
+    expect(wrapper.text()).toContain('เข้าสู่ระบบ')
+    expect(wrapper.text()).not.toContain('กำลังเตรียมข้อมูลผู้ดูแล')
+
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+    vi.useRealTimers()
+	})
+	it('locks the whole app with a server-authoritative booking countdown', async () => {
+		const wrapper = mount(App)
+		await flushPromises()
+		window.history.replaceState({}, '', '/booking/test-tenant')
+		window.dispatchEvent(new window.CustomEvent('livematch:booking-blocked', { detail: { code: 'booking_blacklisted', blockedUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(), remainingSeconds: 600, targets: ['account', 'ip'] } }))
+		await wrapper.vm.$nextTick()
+		expect(localStorage.getItem('livematch_booking_block:test-tenant')).toContain('account')
+		const blockedScreen = wrapper.text()
+		expect(blockedScreen).toContain('ระงับการใช้งานชั่วคราว')
+		expect(blockedScreen).toContain('ไม่สามารถใช้งานระบบจองสนามได้')
+		wrapper.unmount()
+		localStorage.removeItem('livematch_booking_block:test-tenant')
+		window.history.replaceState({}, '', '/')
+	})
   it('shows a user-friendly message when admin credentials are incorrect', async () => {
     const originalFetch = globalThis.fetch
     globalThis.fetch = vi.fn((url, options = {}) => {
@@ -236,6 +265,28 @@ describe('LiveMatch app', () => {
     wrapper.unmount()
     globalThis.fetch = originalFetch
   })
+
+	it('leaves the auth boot screen after auth succeeds even when restoring the previous session stalls', async () => {
+		sessionStorage.setItem('livematch_admin_navigation', JSON.stringify({ sessionId: 'stalled-session', tab: 'dashboard' }))
+		const originalFetch = globalThis.fetch
+		globalThis.fetch = vi.fn((url) => {
+			if (String(url).includes('/api/auth/me')) {
+				return Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({
+						user: { id: 'admin-1', email: 'admin@example.com', name: 'Admin', verified: true, coins: 5 },
+						sessions: [{ id: 'stalled-session', name: 'Stalled Session', type: 'liveMatch' }]
+					})
+				})
+			}
+			return new Promise(() => {})
+		})
+		const wrapper = mount(App)
+		await vi.waitFor(() => expect(wrapper.find('[data-testid="auth-boot-screen"]').exists()).toBe(false))
+		expect(wrapper.text()).toContain('Admin')
+		wrapper.unmount()
+		globalThis.fetch = originalFetch
+	})
 
   it('creates the theme storage key when the app opens', () => {
     localStorage.removeItem('livematch.theme')

@@ -343,15 +343,15 @@ function closeSlipPreview() {
               </div>
               <label class="mt-3 grid gap-2 text-sm font-bold">
                 liveMatch session cost
-                <input v-model.number="forms.backofficeLiveMatchCost" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+				<input v-model.number="forms.backofficeLiveMatchCost" type="number" min="0" :disabled="forms.backofficeSettingsSaving" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" />
               </label>
               <label class="mt-3 grid gap-2 text-sm font-bold">
                 liveShare session cost
-                <input v-model.number="forms.backofficeLiveShareCost" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+				<input v-model.number="forms.backofficeLiveShareCost" type="number" min="0" :disabled="forms.backofficeSettingsSaving" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" />
               </label>
-              <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white" @click="saveBackofficeSettings">
-                <Save class="h-4 w-4" />
-                บันทึกราคา
+			  <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white disabled:cursor-wait disabled:opacity-60" :disabled="forms.backofficeSettingsSaving" @click="saveBackofficeSettings">
+				<RefreshCw v-if="forms.backofficeSettingsSaving" class="h-4 w-4 animate-spin" /><Save v-else class="h-4 w-4" />
+				{{ forms.backofficeSettingsSaving ? 'กำลังบันทึก...' : 'บันทึกราคา' }}
               </button>
             </article>
 
@@ -587,13 +587,13 @@ function closeSlipPreview() {
               <p v-if="!forms.backofficeSubscriptionPackages.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีแพ็กเกจรายเดือน</p>
             </div>
 
-            <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
+			<div class="min-w-0 overflow-hidden rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <p class="font-black">PromptPay ตามยอด</p>
               <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">ตั้งบัญชีรับเงิน ระบบจะสร้าง QR ตามราคาแพ็กเกจให้ลูกค้าอัตโนมัติ</p>
-              <div class="mt-3 grid gap-2">
+			  <div class="mt-3 grid min-w-0 gap-2">
                 <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
                   ประเภท PromptPay
-                  <select v-model="forms.backofficePromptPayType" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white">
+				  <select v-model="forms.backofficePromptPayType" class="h-10 w-full min-w-0 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white">
                     <option value="mobile">เบอร์มือถือ</option>
                     <option value="national_id">เลขบัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option>
                     <option value="ewallet">e-Wallet</option>
@@ -601,11 +601,11 @@ function closeSlipPreview() {
                 </label>
                 <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
                   PromptPay ID
-                  <input v-model="forms.backofficePromptPayId" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="เช่น 0812345678" />
+				  <input v-model="forms.backofficePromptPayId" class="h-10 w-full min-w-0 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="เช่น 0812345678" />
                 </label>
                 <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
                   ชื่อผู้รับ / label ตรวจสลิป
-                  <input v-model="forms.backofficePromptPayReceiverName" class="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="ชื่อบัญชีผู้รับ" />
+				  <input v-model="forms.backofficePromptPayReceiverName" class="h-10 w-full min-w-0 rounded-md border border-stone-200 bg-white px-3 text-sm font-semibold text-stone-900 dark:border-stone-700 dark:bg-stone-900 dark:text-white" placeholder="ชื่อบัญชีผู้รับ" />
                 </label>
                 <button
                   class="mt-1 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white disabled:cursor-wait disabled:opacity-60"
