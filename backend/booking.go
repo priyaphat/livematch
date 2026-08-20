@@ -137,15 +137,216 @@ func randUUID() string {
 }
 
 type memberRecord struct {
-	ID           string `json:"id"`
-	Name         string `json:"name"`
-	Phone        string `json:"phone"`
-	Email        string `json:"email"`
-	MemberType   string `json:"memberType"`
-	Active       bool   `json:"active"`
-	Linked       bool   `json:"linked"`
-	ProfileToken string `json:"profileToken,omitempty"`
-	CreatedAt    string `json:"createdAt"`
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	Phone          string `json:"phone"`
+	Email          string `json:"email"`
+	MemberType     string `json:"memberType"`
+	MemberTypeID   string `json:"memberTypeId"`
+	MemberTypeName string `json:"memberTypeName"`
+	Active         bool   `json:"active"`
+	Linked         bool   `json:"linked"`
+	ProfileToken   string `json:"profileToken,omitempty"`
+	CreatedAt      string `json:"createdAt"`
+}
+
+func (a *app) ensureSystemMemberTypes(ctx context.Context, adminID string) error {
+	for _, item := range []struct{ code, name string }{{"general", "สมาชิกทั่วไป"}, {"club", "สมาชิกชมรม"}} {
+		if _, err := a.db.ExecContext(ctx, `insert into member_types(id,admin_id,code,name,system,active) values($1,$2,$3,$4,true,true) on conflict do nothing`, randUUID(), adminID, item.code, item.name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *app) memberTypesForAdmin(ctx context.Context, adminID string, includeDeleted bool) ([]MemberType, error) {
+	if adminID == "" {
+		return []MemberType{}, nil
+	}
+	if err := a.ensureSystemMemberTypes(ctx, adminID); err != nil {
+		return nil, err
+	}
+	rows, err := a.db.QueryContext(ctx, `
+		select mt.id,mt.code,mt.name,mt.system,mt.active,
+			exists(select 1 from members m where m.admin_id=mt.admin_id and m.member_type_id=mt.id and m.active and m.deleted_at is null)
+			or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=mt.admin_id and p.member_type_id=mt.id and p.active),
+			exists(select 1 from members m where m.admin_id=mt.admin_id and m.member_type_id=mt.id)
+			or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=mt.admin_id and p.member_type_id=mt.id)
+		from member_types mt
+		where mt.admin_id=$1 and ($2 or mt.deleted_at is null)
+		order by mt.system desc,case mt.code when 'general' then 0 when 'club' then 1 else 2 end,mt.created_at
+	`, adminID, includeDeleted)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []MemberType{}
+	for rows.Next() {
+		var item MemberType
+		if err := rows.Scan(&item.ID, &item.Code, &item.Name, &item.System, &item.Active, &item.InUse, &item.HasHistory); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (a *app) memberTypeForWrite(ctx context.Context, adminID, typeID string) (MemberType, error) {
+	if strings.TrimSpace(typeID) == "" {
+		if err := a.ensureSystemMemberTypes(ctx, adminID); err != nil {
+			return MemberType{}, err
+		}
+		_ = a.db.QueryRowContext(ctx, `select id from member_types where admin_id=$1 and code='general' and active and deleted_at is null`, adminID).Scan(&typeID)
+	}
+	var item MemberType
+	err := a.db.QueryRowContext(ctx, `select id,code,name,system,active from member_types where id=$1 and admin_id=$2 and deleted_at is null`, typeID, adminID).Scan(&item.ID, &item.Code, &item.Name, &item.System, &item.Active)
+	if err != nil || !item.Active {
+		return MemberType{}, errors.New("ประเภทสมาชิกไม่ถูกต้องหรือปิดใช้งานแล้ว")
+	}
+	return item, nil
+}
+
+func (a *app) handleAdminMemberTypes(w http.ResponseWriter, r *http.Request, user adminUser, action string) {
+	path := strings.TrimPrefix(action, "member-types")
+	switch {
+	case r.Method == http.MethodGet && (path == "" || path == "/"):
+		items, err := a.memberTypesForAdmin(r.Context(), user.ID, false)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items})
+	case r.Method == http.MethodPost && (path == "" || path == "/"):
+		var body struct {
+			Name string `json:"name"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body) != nil {
+			writeJSON(w, 400, map[string]string{"error": "ข้อมูลประเภทสมาชิกไม่ถูกต้อง"})
+			return
+		}
+		body.Name = strings.TrimSpace(body.Name)
+		if body.Name == "" || utf8.RuneCountInString(body.Name) > 50 {
+			writeJSON(w, 400, map[string]string{"error": "ชื่อประเภทต้องมี 1–50 ตัวอักษร"})
+			return
+		}
+		id := randUUID()
+		if _, err := a.db.ExecContext(r.Context(), `insert into member_types(id,admin_id,name,active) values($1,$2,$3,true)`, id, user.ID, body.Name); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+				writeJSON(w, 409, map[string]string{"error": "มีชื่อประเภทสมาชิกนี้แล้ว"})
+			} else {
+				writeJSON(w, 500, map[string]string{"error": err.Error()})
+			}
+			return
+		}
+		a.insertActivityLog(r.Context(), "admin", user.ID, "create_member_type", "member_type", id, map[string]any{"name": body.Name})
+		items, _ := a.memberTypesForAdmin(r.Context(), user.ID, false)
+		writeJSON(w, 201, map[string]any{"items": items})
+	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/"):
+		a.patchMemberType(w, r, user.ID, strings.TrimPrefix(path, "/"))
+	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/"):
+		a.deleteMemberType(w, r, user.ID, strings.TrimPrefix(path, "/"))
+	default:
+		writeJSON(w, 404, map[string]string{"error": "not found"})
+	}
+}
+
+func (a *app) patchMemberType(w http.ResponseWriter, r *http.Request, adminID, id string) {
+	var body struct {
+		Name   *string `json:"name"`
+		Active *bool   `json:"active"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body) != nil {
+		writeJSON(w, 400, map[string]string{"error": "ข้อมูลประเภทสมาชิกไม่ถูกต้อง"})
+		return
+	}
+	items, err := a.memberTypesForAdmin(r.Context(), adminID, false)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	var current *MemberType
+	for i := range items {
+		if items[i].ID == id {
+			current = &items[i]
+			break
+		}
+	}
+	if current == nil {
+		writeJSON(w, 404, map[string]string{"error": "ไม่พบประเภทสมาชิก"})
+		return
+	}
+	if current.InUse && !current.System {
+		writeJSON(w, 409, map[string]string{"error": "ประเภทนี้มีสมาชิกใช้งานอยู่ จึงยังแก้ไขหรือปิดใช้งานไม่ได้"})
+		return
+	}
+	name := current.Name
+	active := current.Active
+	if body.Name != nil {
+		name = strings.TrimSpace(*body.Name)
+		if name == "" || utf8.RuneCountInString(name) > 50 {
+			writeJSON(w, 400, map[string]string{"error": "ชื่อประเภทต้องมี 1–50 ตัวอักษร"})
+			return
+		}
+	}
+	if body.Active != nil {
+		active = *body.Active
+		if current.System && !active {
+			writeJSON(w, 409, map[string]string{"error": "ประเภทหลักไม่สามารถปิดใช้งานได้"})
+			return
+		}
+	}
+	if _, err = a.db.ExecContext(r.Context(), `update member_types set name=$3,active=$4,updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null`, id, adminID, name, active); err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			writeJSON(w, 409, map[string]string{"error": "มีชื่อประเภทสมาชิกนี้แล้ว"})
+		} else {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+	a.insertActivityLog(r.Context(), "admin", adminID, "update_member_type", "member_type", id, map[string]any{"name": name, "active": active})
+	items, _ = a.memberTypesForAdmin(r.Context(), adminID, false)
+	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (a *app) deleteMemberType(w http.ResponseWriter, r *http.Request, adminID, id string) {
+	items, err := a.memberTypesForAdmin(r.Context(), adminID, false)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	var current *MemberType
+	for i := range items {
+		if items[i].ID == id {
+			current = &items[i]
+			break
+		}
+	}
+	if current == nil {
+		writeJSON(w, 404, map[string]string{"error": "ไม่พบประเภทสมาชิก"})
+		return
+	}
+	if current.System {
+		writeJSON(w, 409, map[string]string{"error": "ประเภทหลักไม่สามารถลบได้"})
+		return
+	}
+	if current.InUse {
+		writeJSON(w, 409, map[string]string{"error": "ประเภทนี้มีสมาชิกใช้งานอยู่ จึงยังลบไม่ได้"})
+		return
+	}
+	mode := "hard"
+	if current.HasHistory {
+		mode = "soft"
+		_, err = a.db.ExecContext(r.Context(), `update member_types set active=false,deleted_at=now(),updated_at=now() where id=$1 and admin_id=$2`, id, adminID)
+	} else {
+		_, err = a.db.ExecContext(r.Context(), `delete from member_types where id=$1 and admin_id=$2`, id, adminID)
+	}
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	a.insertActivityLog(r.Context(), "admin", adminID, "delete_member_type", "member_type", id, map[string]any{"mode": mode})
+	items, _ = a.memberTypesForAdmin(r.Context(), adminID, false)
+	writeJSON(w, 200, map[string]any{"items": items, "mode": mode})
 }
 
 type bookingSettingsRecord struct {
@@ -386,15 +587,13 @@ func (a *app) listMembers(ctx context.Context, adminID, search, memberType strin
 	like := "%" + strings.ToLower(search) + "%"
 	phoneSearch := phoneSearchDigits(search)
 	phoneLike := "%" + phoneSearch + "%"
-	if memberType != "club" && memberType != "general" {
-		memberType = ""
-	}
+	memberType = strings.TrimSpace(memberType)
 	var total int
-	err := a.db.QueryRowContext(ctx, `select count(*) from members m where m.admin_id=$1 and m.deleted_at is null and (not $6 or m.active) and ($7='' or m.member_type=$7) and ($2='' or lower(m.name) like $3 or lower(coalesce(nullif(m.contact_email,''),(select email from public_users where id=m.public_user_id))) like $3 or ($4<>'' and (m.phone like $5 or replace(m.phone,'+66','0') like $5)))`, adminID, search, like, phoneSearch, phoneLike, activeOnly, memberType).Scan(&total)
+	err := a.db.QueryRowContext(ctx, `select count(*) from members m left join member_types mt on mt.id=m.member_type_id where m.admin_id=$1 and m.deleted_at is null and (not $6 or m.active) and ($7='' or m.member_type_id=$7 or mt.code=$7) and ($2='' or lower(m.name) like $3 or lower(coalesce(nullif(m.contact_email,''),(select email from public_users where id=m.public_user_id))) like $3 or ($4<>'' and (m.phone like $5 or replace(m.phone,'+66','0') like $5)))`, adminID, search, like, phoneSearch, phoneLike, activeOnly, memberType).Scan(&total)
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := a.db.QueryContext(ctx, `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),m.member_type,m.active,m.public_user_id is not null,m.profile_token_hash,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id where m.admin_id=$1 and m.deleted_at is null and (not $6 or m.active) and ($7='' or m.member_type=$7) and ($2='' or lower(m.name) like $3 or lower(coalesce(nullif(m.contact_email,''),u.email,'')) like $3 or ($4<>'' and (m.phone like $5 or replace(m.phone,'+66','0') like $5))) order by m.created_at desc limit $8 offset $9`, adminID, search, like, phoneSearch, phoneLike, activeOnly, memberType, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(ctx, `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,m.profile_token_hash,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id left join member_types mt on mt.id=m.member_type_id where m.admin_id=$1 and m.deleted_at is null and (not $6 or m.active) and ($7='' or m.member_type_id=$7 or mt.code=$7) and ($2='' or lower(m.name) like $3 or lower(coalesce(nullif(m.contact_email,''),u.email,'')) like $3 or ($4<>'' and (m.phone like $5 or replace(m.phone,'+66','0') like $5))) order by m.created_at desc limit $8 offset $9`, adminID, search, like, phoneSearch, phoneLike, activeOnly, memberType, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -403,7 +602,7 @@ func (a *app) listMembers(ctx context.Context, adminID, search, memberType strin
 	for rows.Next() {
 		var m memberRecord
 		var phone, tokenHash string
-		if err = rows.Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.Active, &m.Linked, &tokenHash, &m.CreatedAt); err != nil {
+		if err = rows.Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.MemberTypeID, &m.MemberTypeName, &m.Active, &m.Linked, &tokenHash, &m.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		m.Phone = displayPhone(phone)
@@ -418,19 +617,28 @@ func (a *app) createMember(ctx context.Context, adminID, name, phone, memberType
 	if err != nil || name == "" {
 		return memberRecord{}, errors.New("กรุณากรอกชื่อและเบอร์โทรให้ถูกต้อง")
 	}
-	if memberType != "club" {
-		memberType = "general"
+	if memberType == "general" || memberType == "club" {
+		_ = a.ensureSystemMemberTypes(ctx, adminID)
+		_ = a.db.QueryRowContext(ctx, `select id from member_types where admin_id=$1 and code=$2 and deleted_at is null`, adminID, memberType).Scan(&memberType)
+	}
+	typeItem, err := a.memberTypeForWrite(ctx, adminID, memberType)
+	if err != nil {
+		return memberRecord{}, err
+	}
+	legacyType := typeItem.Code
+	if legacyType != "club" {
+		legacyType = "general"
 	}
 	id, token := randUUID(), randHex(24)
-	_, err = a.db.ExecContext(ctx, `insert into members (id,admin_id,name,phone,member_type,profile_token_hash,profile_token) values ($1,$2,$3,$4,$5,$6,$7)`, id, adminID, name, normalized, memberType, tokenDigest(token), token)
+	_, err = a.db.ExecContext(ctx, `insert into members (id,admin_id,name,phone,member_type,member_type_id,profile_token_hash,profile_token) values ($1,$2,$3,$4,$5,$6,$7,$8)`, id, adminID, name, normalized, legacyType, typeItem.ID, tokenDigest(token), token)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return memberRecord{}, errors.New("เบอร์โทรนี้มีอยู่แล้ว")
 		}
 		return memberRecord{}, err
 	}
-	a.insertActivityLog(ctx, actorType, actorID, "create_member", "member", id, map[string]any{"adminId": adminID, "name": name, "phone": maskPhone(normalized), "memberType": memberType})
-	return memberRecord{ID: id, Name: name, Phone: displayPhone(normalized), MemberType: memberType, Active: true, ProfileToken: token}, nil
+	a.insertActivityLog(ctx, actorType, actorID, "create_member", "member", id, map[string]any{"adminId": adminID, "name": name, "phone": maskPhone(normalized), "memberTypeId": typeItem.ID})
+	return memberRecord{ID: id, Name: name, Phone: displayPhone(normalized), MemberType: legacyType, MemberTypeID: typeItem.ID, MemberTypeName: typeItem.Name, Active: true, ProfileToken: token}, nil
 }
 
 func maskPhone(phone string) string {
@@ -465,7 +673,7 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 			writeJSON(w, 200, map[string]any{"items": []memberRecord{}})
 			return
 		}
-		if !a.requireRequestRate(w, r, "member-phone-search:"+user.ID, 60, 10*time.Minute) {
+		if !a.requireRequestRate(w, r, "member-phone-search:"+user.ID, 60, 5*time.Minute) {
 			return
 		}
 		items, _, err := a.listMembers(r.Context(), user.ID, query, "", 1, 12, true)
@@ -479,12 +687,19 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/"):
 		a.writeAdminMemberDetail(w, r, user.ID, strings.TrimPrefix(path, "/"))
 	case r.Method == http.MethodPost && (path == "" || path == "/"):
-		var b struct{ Name, Phone, MemberType string }
+		var b struct {
+			Name, Phone, MemberType string
+			MemberTypeID            string `json:"memberTypeId"`
+		}
 		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&b) != nil {
 			writeJSON(w, 400, map[string]string{"error": "invalid member"})
 			return
 		}
-		m, err := a.createMember(r.Context(), user.ID, b.Name, b.Phone, b.MemberType, "admin", user.ID)
+		memberType := b.MemberTypeID
+		if memberType == "" {
+			memberType = b.MemberType
+		}
+		m, err := a.createMember(r.Context(), user.ID, b.Name, b.Phone, memberType, "admin", user.ID)
 		if err != nil {
 			writeJSON(w, 409, map[string]string{"error": err.Error()})
 			return
@@ -502,8 +717,9 @@ func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user ad
 func (a *app) bulkUpdateMemberTypes(w http.ResponseWriter, r *http.Request, adminID string) {
 	var body struct {
 		Updates []struct {
-			ID         string `json:"id"`
-			MemberType string `json:"memberType"`
+			ID           string `json:"id"`
+			MemberType   string `json:"memberType"`
+			MemberTypeID string `json:"memberTypeId"`
 		} `json:"updates"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body) != nil || len(body.Updates) > 2000 {
@@ -520,12 +736,24 @@ func (a *app) bulkUpdateMemberTypes(w http.ResponseWriter, r *http.Request, admi
 	seen := map[string]bool{}
 	for _, update := range body.Updates {
 		id := strings.TrimSpace(update.ID)
-		if id == "" || seen[id] || (update.MemberType != "club" && update.MemberType != "general") {
+		typeID := strings.TrimSpace(update.MemberTypeID)
+		if typeID == "" {
+			typeID = strings.TrimSpace(update.MemberType)
+		}
+		if typeID == "general" || typeID == "club" {
+			_ = a.db.QueryRowContext(r.Context(), `select id from member_types where admin_id=$1 and code=$2 and deleted_at is null`, adminID, typeID).Scan(&typeID)
+		}
+		typeItem, typeErr := a.memberTypeForWrite(r.Context(), adminID, typeID)
+		if id == "" || seen[id] || typeErr != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลประเภทสมาชิกไม่ถูกต้อง"})
 			return
 		}
 		seen[id] = true
-		result, execErr := tx.ExecContext(r.Context(), `update members set member_type=$3,updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null and member_type<>$3`, id, adminID, update.MemberType)
+		legacyType := typeItem.Code
+		if legacyType != "club" {
+			legacyType = "general"
+		}
+		result, execErr := tx.ExecContext(r.Context(), `update members set member_type=$3,member_type_id=$4,updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null and member_type_id is distinct from $4`, id, adminID, legacyType, typeItem.ID)
 		if execErr != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": execErr.Error()})
 			return
@@ -548,7 +776,7 @@ func (a *app) writeAdminMembersExport(w http.ResponseWriter, r *http.Request, ad
 	members := make([]map[string]any, 0)
 	rows, err := a.db.QueryContext(r.Context(), `
 		select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),
-			m.member_type,m.active,m.public_user_id is not null,
+			coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,
 			to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
 			to_char(m.updated_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
 			(select count(*) from players p join sessions s on s.id=p.session_id where p.member_id=m.id and s.admin_id=m.admin_id),
@@ -557,6 +785,7 @@ func (a *app) writeAdminMembersExport(w http.ResponseWriter, r *http.Request, ad
 			coalesce((select sum(bp.amount_thb) from booking_payments bp join bookings b on b.id=bp.booking_id where bp.member_id=m.id and b.admin_id=m.admin_id and bp.status in ('approved','manual_paid')),0)
 		from members m
 		left join public_users u on u.id=m.public_user_id
+		left join member_types mt on mt.id=m.member_type_id
 		where m.admin_id=$1 and m.deleted_at is null
 		order by m.created_at,m.name`, adminID)
 	if err != nil {
@@ -564,17 +793,17 @@ func (a *app) writeAdminMembersExport(w http.ResponseWriter, r *http.Request, ad
 		return
 	}
 	for rows.Next() {
-		var id, name, phone, email, memberType, createdAt, updatedAt string
+		var id, name, phone, email, memberType, memberTypeID, memberTypeName, createdAt, updatedAt string
 		var active, linked bool
 		var playerCount, bookingCount, paymentCount, approvedAmount int
-		if err = rows.Scan(&id, &name, &phone, &email, &memberType, &active, &linked, &createdAt, &updatedAt, &playerCount, &bookingCount, &paymentCount, &approvedAmount); err != nil {
+		if err = rows.Scan(&id, &name, &phone, &email, &memberType, &memberTypeID, &memberTypeName, &active, &linked, &createdAt, &updatedAt, &playerCount, &bookingCount, &paymentCount, &approvedAmount); err != nil {
 			rows.Close()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		members = append(members, map[string]any{
 			"id": id, "name": name, "phone": displayPhone(phone), "email": email,
-			"memberType": memberType, "active": active, "linked": linked,
+			"memberType": memberType, "memberTypeId": memberTypeID, "memberTypeName": memberTypeName, "active": active, "linked": linked,
 			"createdAt": createdAt, "updatedAt": updatedAt, "playerCount": playerCount,
 			"bookingCount": bookingCount, "paymentCount": paymentCount, "approvedAmountThb": approvedAmount,
 		})
@@ -716,7 +945,7 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	matchPage, _ := requestPage(r, "matchPage", "pageSize", 6, 50)
 	var m memberRecord
 	var phone string
-	if err := a.db.QueryRowContext(r.Context(), `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),m.member_type,m.active,m.public_user_id is not null,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id where m.id=$1 and m.admin_id=$2 and m.deleted_at is null`, memberID, adminID).Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.Active, &m.Linked, &m.CreatedAt); err != nil {
+	if err := a.db.QueryRowContext(r.Context(), `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id left join member_types mt on mt.id=m.member_type_id where m.id=$1 and m.admin_id=$2 and m.deleted_at is null`, memberID, adminID).Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.MemberTypeID, &m.MemberTypeName, &m.Active, &m.Linked, &m.CreatedAt); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "member not found"})
 		return
 	}
@@ -797,8 +1026,8 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 
 func (a *app) patchMember(w http.ResponseWriter, r *http.Request, adminID, memberID, actorType, actorID string, admin bool) {
 	var b struct {
-		Name, Phone, MemberType string
-		Active                  *bool
+		Name, Phone, MemberType, MemberTypeID string
+		Active                                *bool
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&b) != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid member"})
@@ -806,7 +1035,7 @@ func (a *app) patchMember(w http.ResponseWriter, r *http.Request, adminID, membe
 	}
 	var current memberRecord
 	var oldPhone string
-	if err := a.db.QueryRowContext(r.Context(), `select name,phone,member_type,active from members where id=$1 and admin_id=$2 and deleted_at is null`, memberID, adminID).Scan(&current.Name, &oldPhone, &current.MemberType, &current.Active); err != nil {
+	if err := a.db.QueryRowContext(r.Context(), `select name,phone,member_type,coalesce(member_type_id,''),active from members where id=$1 and admin_id=$2 and deleted_at is null`, memberID, adminID).Scan(&current.Name, &oldPhone, &current.MemberType, &current.MemberTypeID, &current.Active); err != nil {
 		writeJSON(w, 404, map[string]string{"error": "member not found"})
 		return
 	}
@@ -823,21 +1052,38 @@ func (a *app) patchMember(w http.ResponseWriter, r *http.Request, adminID, membe
 			return
 		}
 	}
-	memberType := current.MemberType
+	memberTypeID := current.MemberTypeID
+	legacyType := current.MemberType
 	active := current.Active
 	if admin {
-		if b.MemberType == "club" || b.MemberType == "general" {
-			memberType = b.MemberType
+		candidate := strings.TrimSpace(b.MemberTypeID)
+		if candidate == "" {
+			candidate = strings.TrimSpace(b.MemberType)
+		}
+		if candidate != "" {
+			if candidate == "general" || candidate == "club" {
+				_ = a.db.QueryRowContext(r.Context(), `select id from member_types where admin_id=$1 and code=$2 and deleted_at is null`, adminID, candidate).Scan(&candidate)
+			}
+			typeItem, typeErr := a.memberTypeForWrite(r.Context(), adminID, candidate)
+			if typeErr != nil {
+				writeJSON(w, 400, map[string]string{"error": typeErr.Error()})
+				return
+			}
+			memberTypeID = typeItem.ID
+			legacyType = typeItem.Code
+			if legacyType != "club" {
+				legacyType = "general"
+			}
 		}
 		if b.Active != nil {
 			active = *b.Active
 		}
 	}
-	if _, err = a.db.ExecContext(r.Context(), `update members set name=$3,phone=$4,member_type=$5,active=$6,updated_at=now() where id=$1 and admin_id=$2`, memberID, adminID, name, phone, memberType, active); err != nil {
+	if _, err = a.db.ExecContext(r.Context(), `update members set name=$3,phone=$4,member_type=$5,member_type_id=nullif($6,''),active=$7,updated_at=now() where id=$1 and admin_id=$2`, memberID, adminID, name, phone, legacyType, memberTypeID, active); err != nil {
 		writeJSON(w, 409, map[string]string{"error": "เบอร์โทรนี้มีอยู่แล้ว"})
 		return
 	}
-	a.insertActivityLog(r.Context(), actorType, actorID, "update_member", "member", memberID, map[string]any{"adminId": adminID, "name": name, "phone": maskPhone(phone), "memberType": memberType, "active": active})
+	a.insertActivityLog(r.Context(), actorType, actorID, "update_member", "member", memberID, map[string]any{"adminId": adminID, "name": name, "phone": maskPhone(phone), "memberTypeId": memberTypeID, "active": active})
 	writeJSON(w, 200, map[string]any{"status": "ok"})
 }
 

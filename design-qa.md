@@ -72,4 +72,39 @@
 - Product image fidelity depends on media uploaded by each venue admin.
 - A dedicated screen-reader pass can further validate accessibility beyond DOM labels, keyboard reachability, and contrast checks.
 
+## Admin default settings modal overflow addendum
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-91cb3ebe-1ad2-44a9-b161-330effb92987.png`
+- Implementation: `frontend/src/pages/AdminSupervisorPage.vue`
+- Implementation screenshot: Codex in-app Browser capture `qaShotAnnounce` in the task output
+- Viewport and density: 918 × 546 CSS px at device scale factor 1; source and implementation are both 918 × 546 px
+- State: light theme, modal open, “ประกาศ” selected
+- Full-view evidence: all five tabs remain inside the modal after the tab bar changed from fixed-minimum flex items to responsive equal grid tracks.
+- Focused evidence: at 918 px `nav.scrollWidth === nav.clientWidth === 877`; at 390 × 844 `nav.scrollWidth === nav.clientWidth === 349`; document width does not overflow at either breakpoint.
+- Typography, spacing, colors, icons, and copy remain on the existing LiveMatch design tokens. Labels wrap within their tracks without being clipped.
+- Interaction tested: selected the announcement tab and verified its content; no browser console errors.
+- Comparison history: initial running Docker bundle still overflowed by 51 px; after rebuilding the frontend container, the overflow was eliminated at desktop and mobile sizes.
+- Remaining P0/P1/P2 findings: none.
+
+final result: passed
+
+## Match announcement bell card redesign addendum
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-a14bfff1-edf9-4ef2-8a33-ae9048350fa0.png`
+- Implementation: `frontend/src/pages/AdminSupervisorPage.vue`
+- Implementation screenshot: `D:/VibeStudio/LiveMatch/artifacts/product-design/match-bell-card/implementation-mobile.png`
+- Paired comparison: `D:/VibeStudio/LiveMatch/artifacts/product-design/match-bell-card/comparison.png`
+- Viewport: 500 × 900 CSS px, device scale factor 1. Source component is 438 × 252 px; implementation component is 441 × 285 px. The implementation crop was compared at native 1× density.
+- State: light theme, Admin default settings open, LiveMatch tab selected, custom bell uploaded.
+- Full-view evidence: the card remains inside the modal content column with no horizontal overflow and the sticky Save action remains visible.
+- Focused comparison evidence: the original three equal actions caused Thai labels to wrap and gave destructive reset equal visual weight. The implementation uses one compact audio row, a circular preview control, one full-width primary upload/replace action, and a low-emphasis reset action.
+- Fonts and typography: Thai labels retain the existing LiveMatch font and weights; file name truncates on one line; no action label wraps.
+- Spacing and layout rhythm: 12–16 px spacing, 11 px metadata, 40–44 px controls, and nested 12 px radii create a clear audio-player hierarchy.
+- Colors and visual tokens: court green is reserved for the audio/play identity and primary action; reset is neutral until hover; paper and stone surfaces match the surrounding modal.
+- Image and icon fidelity: no raster assets are required; controls use the existing Lucide icon library consistently.
+- Copy and content: supported types and maximum size remain visible, while the redundant “Session ใหม่เท่านั้น” copy is already communicated by the parent modal.
+- Interaction tested: preview and reset controls are enabled; preview click completes; browser console reports no errors.
+- Comparison history: P1 wrapping and equal-weight actions in the source were replaced with a responsive stacked hierarchy. Post-fix comparison shows no remaining P0/P1/P2 findings. The 33 px height increase is intentional to preserve touch targets and readable metadata.
+- Automated verification: focused App Vitest 72/72 passed; production frontend build passed.
+
 final result: passed

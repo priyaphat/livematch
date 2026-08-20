@@ -68,7 +68,7 @@ const pagedPlayers = computed(() => {
 })
 const editingPlayer = ref(null)
 const editingName = ref('')
-const editingClubMember = ref(false)
+const editingMemberTypeId = ref('')
 const editingPhone = ref('')
 const editingMemberId = ref('')
 const editingMemberOptions = ref([])
@@ -80,12 +80,14 @@ const memberSearchError = ref('')
 const showCreateMember = ref(false)
 const newMemberName = ref('')
 const newMemberPhone = ref('')
-const newMemberType = ref('general')
+const newMemberType = ref('')
 const createMemberError = ref('')
 const createMemberSaving = ref(false)
 const addingMemberId = ref('')
 let memberSearchTimer
 let memberSearchSequence = 0
+const memberSearchCache = new Map()
+let memberSearchBlockedUntil = 0
 let memberBlurTimer
 let editingMemberSearchTimer
 const exportLoading = ref(false)
@@ -116,7 +118,7 @@ const memberSearchKey = computed(() => (
 ))
 const canAddPlayer = computed(() => (
   !props.isSessionReadOnly &&
-  Boolean(props.forms.newPlayerMemberId || (newPlayerEntry.value && !isPhoneLookup.value))
+  Boolean(props.forms.newPlayerMemberId || (props.state.session?.allowMatchGuestEntry && newPlayerEntry.value && !isPhoneLookup.value))
 ))
 const canCreateMissingMember = computed(() => (
   !memberLoading.value &&
@@ -190,7 +192,7 @@ function openEditPlayer(player) {
   if (props.isSessionReadOnly) return
   editingPlayer.value = player
   editingName.value = player.name
-  editingClubMember.value = Boolean(player.clubMember)
+  editingMemberTypeId.value = player.memberTypeId || props.state.memberTypes?.find((item) => item.code === (player.clubMember ? 'club' : 'general'))?.id || ''
   editingPhone.value = ''
   editingMemberId.value = player.memberId || ''
   editingMemberOptions.value = []
@@ -199,7 +201,7 @@ function openEditPlayer(player) {
 function closeEditPlayer() {
   editingPlayer.value = null
   editingName.value = ''
-  editingClubMember.value = false
+  editingMemberTypeId.value = ''
   editingPhone.value = ''
   editingMemberId.value = ''
   editingMemberOptions.value = []
@@ -207,7 +209,7 @@ function closeEditPlayer() {
 
 async function saveEditPlayer() {
   if (!editingPlayer.value || editingPlayer.value.memberId || !editingName.value.trim()) return
-  await props.renamePlayer(editingPlayer.value, editingName.value, editingClubMember.value, editingMemberId.value)
+  await props.renamePlayer(editingPlayer.value, editingName.value, editingMemberTypeId.value, editingMemberId.value)
   closeEditPlayer()
 }
 
@@ -220,7 +222,7 @@ function searchEditingMember() {
   editingMemberSearchTimer = setTimeout(async () => {
     const payload = await props.apiRequest(`/api/admin/members/search?phone=${encodeURIComponent(editingPhone.value)}`)
     editingMemberOptions.value = payload.items || []
-  }, 300)
+  }, 700)
 }
 
 function selectEditingMember() {
@@ -269,19 +271,26 @@ watch(() => props.forms.newPlayerPhone, (phone) => {
   const searchSequence = memberSearchSequence
   memberSearchTimer = setTimeout(async () => {
     try {
+      if (Date.now() < memberSearchBlockedUntil) {
+        memberSearchError.value = `ค้นหาได้อีกครั้งใน ${Math.ceil((memberSearchBlockedUntil - Date.now()) / 1000)} วินาที`
+        return
+      }
       const parameter = isPhoneLookup.value
         ? `phone=${encodeURIComponent(phone)}`
         : `q=${encodeURIComponent(newPlayerEntry.value)}`
-      const payload = await props.apiRequest(`/api/admin/members/search?${parameter}`)
+      const cacheKey = memberSearchKey.value
+      const payload = memberSearchCache.get(cacheKey) || await props.apiRequest(`/api/admin/members/search?${parameter}`)
       if (searchSequence !== memberSearchSequence) return
       memberOptions.value = payload.items || []
+      memberSearchCache.set(cacheKey, payload)
       memberSearchCompleted.value = memberSearchKey.value
     } catch (error) {
+      if (error?.status === 429 || error?.retryAfter) memberSearchBlockedUntil = Date.now() + Math.max(1, Number(error.retryAfter || 60)) * 1000
       if (searchSequence === memberSearchSequence) memberSearchError.value = error.message || 'ค้นหาสมาชิกไม่สำเร็จ'
     } finally {
       if (searchSequence === memberSearchSequence) memberLoading.value = false
     }
-  }, 300)
+  }, 700)
 })
 
 async function addPlayerFromEntry() {
@@ -304,6 +313,7 @@ async function selectMember(member) {
   props.forms.newPlayerMemberId = member.id
   props.forms.newPlayerPhone = member.phone
   props.forms.newPlayerName = member.name
+  props.forms.newPlayerMemberTypeId = member.memberTypeId || ''
   memberOptions.value = [member]
   memberSearchCompleted.value = String(member.phone || '').replace(/\D/g, '')
   memberDropdownOpen.value = false
@@ -323,7 +333,7 @@ function closeMemberDropdownLater() {
 function openCreateMemberModal() {
   newMemberName.value = isNameLookup.value ? newPlayerEntry.value : ''
   newMemberPhone.value = isPhoneLookup.value ? newPlayerEntry.value : ''
-  newMemberType.value = 'general'
+  newMemberType.value = props.state.memberTypes?.find((item) => item.code === 'general')?.id || props.state.memberTypes?.find((item) => item.active)?.id || ''
   createMemberError.value = ''
   showCreateMember.value = true
   memberDropdownOpen.value = false
@@ -348,12 +358,13 @@ async function createAndSelectMember() {
   try {
     const created = await props.apiRequest('/api/admin/members', {
       method: 'POST',
-      body: JSON.stringify({ name: newMemberName.value.trim(), phone: newMemberPhone.value, memberType: newMemberType.value })
+      body: JSON.stringify({ name: newMemberName.value.trim(), phone: newMemberPhone.value, memberTypeId: newMemberType.value })
     })
     memberOptions.value = [created]
     props.forms.newPlayerMemberId = created.id
     props.forms.newPlayerName = created.name
     props.forms.newPlayerPhone = created.phone
+    props.forms.newPlayerMemberTypeId = created.memberTypeId || newMemberType.value
     memberSearchCompleted.value = String(created.phone || '').replace(/\D/g, '')
     memberDropdownOpen.value = false
     await props.addPlayer()
@@ -429,7 +440,7 @@ async function exportExcel() {
           </template>
           <p v-if="!memberLoading && memberSearchError" class="px-3 py-3 text-sm font-bold text-red-600">{{ memberSearchError }}</p>
           <div v-else-if="!memberLoading && memberSearchCompleted === memberSearchKey" class="p-2">
-            <p v-if="!memberOptions.length" class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : 'ไม่พบสมาชิกจากชื่อนี้ สามารถเพิ่มเป็นสมาชิกใหม่หรือขาจรได้' }}</p>
+            <p v-if="!memberOptions.length" class="px-1 pb-2 text-sm font-semibold text-stone-500">{{ isPhoneLookup ? 'ไม่พบสมาชิกจากเบอร์นี้' : props.state.session?.allowMatchGuestEntry ? 'ไม่พบสมาชิกจากชื่อนี้ สามารถเพิ่มเป็นสมาชิกใหม่หรือขาจรได้' : 'ไม่พบสมาชิกจากชื่อนี้ กรุณาเพิ่มเป็นสมาชิกใหม่ก่อน' }}</p>
             <p v-else-if="isNameLookup" class="px-1 pb-2 text-sm font-semibold text-stone-500">หากไม่ใช่คนในรายชื่อ สามารถเพิ่มสมาชิกใหม่ด้วยชื่อซ้ำได้</p>
             <button v-if="canCreateMissingMember" type="button" class="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-court-500 px-3 text-sm font-black text-white" @mousedown.prevent @click="openCreateMemberModal"><Plus class="h-4 w-4" />เพิ่มสมาชิกใหม่</button>
           </div>
@@ -440,7 +451,7 @@ async function exportExcel() {
         เพิ่ม
       </button>
       <p class="text-xs font-medium text-stone-500 md:col-span-2">
-        ระบบค้นหาสมาชิกทันทีตั้งแต่พิมพ์ตัวแรก · หากไม่เลือกสมาชิกจากผลค้นหา ชื่อที่พิมพ์จะถูกเพิ่มเป็นขาจรใน Match นี้
+        ระบบค้นหาหลังหยุดพิมพ์ 700 ms ตั้งแต่ตัวแรก · {{ state.session?.allowMatchGuestEntry ? 'พิมพ์ชื่อแล้วกด Enter เพื่อเพิ่มขาจรได้' : 'ปิดการเพิ่มขาจรอยู่ ต้องเลือกหรือสร้างสมาชิกก่อน' }}
       </p>
     </div>
 
@@ -537,7 +548,7 @@ async function exportExcel() {
         @click="forms.selectedPlayerId = player.id"
       >
         <div class="grid grid-cols-[1fr_4rem_4rem_6rem] items-baseline gap-2">
-          <span class="truncate text-base font-black"><span class="tabular-nums text-stone-500 dark:text-stone-400">#{{ player.id }}</span> {{ player.name }} <small v-if="state.settings?.showWaitTimePlayers && playerWaitMinutes(player) !== null" class="font-bold tabular-nums text-court-600 dark:text-court-300">· {{ playerWaitMinutes(player) }} นาที</small> <span v-if="player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">ชมรม</span></span>
+          <span class="truncate text-base font-black"><span class="tabular-nums text-stone-500 dark:text-stone-400">#{{ player.id }}</span> {{ player.name }} <small v-if="state.settings?.showWaitTimePlayers && playerWaitMinutes(player) !== null" class="font-bold tabular-nums text-court-600 dark:text-court-300">· {{ playerWaitMinutes(player) }} นาที</small> <span v-if="player.memberTypeName || player.clubMember" class="rounded bg-court-500/10 px-1.5 py-0.5 text-xs text-court-700 dark:text-court-300">{{ player.memberTypeName || 'สมาชิกชมรม' }}</span></span>
           <span class="text-right font-bold">{{ player.games }}</span>
           <span class="text-right font-bold">{{ player.shuttles }}</span>
           <span class="text-right font-black tabular-nums text-court-700 dark:text-court-300">{{ money(playerCost(player)) }}</span>
@@ -734,6 +745,7 @@ async function exportExcel() {
           <option v-for="member in editingMemberOptions" :key="member.id" :value="member.id">{{ member.phone }} · {{ member.name }}</option>
         </select>
         <p v-else-if="editingMemberId" class="mt-2 rounded-md bg-court-500/10 p-3 text-xs font-bold text-court-700 dark:text-court-300">เชื่อมกับระบบสมาชิกแล้ว ชื่อและเบอร์โทรต้องแก้ไขจากระบบสมาชิกเท่านั้น</p>
+        <label v-if="!editingPlayer.memberId" class="mt-3 grid gap-2 text-sm font-bold">ประเภทสมาชิก<select v-model="editingMemberTypeId" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800"><option v-for="type in (state.memberTypes || []).filter(type => type.active || type.id === editingMemberTypeId)" :key="type.id" :value="type.id">{{ type.name }}</option></select></label>
 
         <div class="mt-4 grid gap-2 sm:grid-cols-2">
           <button v-if="!editingPlayer.memberId" class="inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="saveEditPlayer">
@@ -767,8 +779,7 @@ async function exportExcel() {
           </div>
           <div class="relative">
             <select v-model="newMemberType" aria-label="ประเภทสมาชิก" class="h-11 w-full appearance-none rounded-md border bg-transparent px-3 pr-10">
-              <option value="general">สมาชิกทั่วไป</option>
-              <option value="club">สมาชิกชมรม</option>
+              <option v-for="type in (state.memberTypes || []).filter(type => type.active)" :key="type.id" :value="type.id">{{ type.name }}</option>
             </select>
             <ArrowDown class="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-500" aria-hidden="true" />
           </div>

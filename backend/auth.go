@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"mime"
 	"net"
 	"net/http"
@@ -279,6 +280,8 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	sessions, _ := a.adminSessions(r.Context(), user.ID)
 	ledger, _ := a.coinLedger(r.Context(), user.ID, 8)
 	defaultSettings, _ := a.adminDefaultSettings(r.Context(), user.ID)
+	memberTypes, _ := a.memberTypesForAdmin(r.Context(), user.ID, false)
+	mergeMemberEntryFees(&defaultSettings, memberTypes)
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
 	benefits, _ := a.adminBenefits(r.Context(), user.ID, false)
@@ -288,12 +291,15 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, user.ID).Scan(&bookingCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, user.ID).Scan(&posSaleCount)
 	var systemName, logoData string
-	_ = a.db.QueryRowContext(r.Context(), `select system_name,logo_data from admin_users where id=$1`, user.ID).Scan(&systemName, &logoData)
+	var allowMatchGuestEntry bool
+	_ = a.db.QueryRowContext(r.Context(), `select system_name,logo_data,allow_match_guest_entry from admin_users where id=$1`, user.ID).Scan(&systemName, &logoData, &allowMatchGuestEntry)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
 		"coinLedger":           ledger,
 		"defaultSettings":      defaultSettings,
+		"memberTypes":          memberTypes,
+		"matchPolicy":          map[string]any{"allowMatchGuestEntry": allowMatchGuestEntry},
 		"liveMatchSessionCost": nullableCost(liveMatchCost, hasLiveMatchCost),
 		"liveShareSessionCost": nullableCost(liveShareCost, hasLiveShareCost),
 		"benefits":             benefits,
@@ -365,6 +371,9 @@ func (a *app) adminDefaultSettings(ctx context.Context, adminID string) (Setting
 		_ = json.Unmarshal(raw, &settings)
 	}
 	normalizeAdminDefaultSettings(&settings)
+	if types, typeErr := a.memberTypesForAdmin(ctx, adminID, false); typeErr == nil {
+		mergeMemberEntryFees(&settings, types)
+	}
 	return settings, nil
 }
 
@@ -503,10 +512,28 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.handleAdminDefaultSettings(w, r, user)
 	case r.Method == http.MethodPut && action == "profile-branding":
 		a.handleAdminProfileBranding(w, r, user)
+	case r.Method == http.MethodPut && action == "match-policy":
+		var body struct {
+			AllowMatchGuestEntry bool `json:"allowMatchGuestEntry"`
+		}
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body) != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid match policy"})
+			return
+		}
+		if _, err := a.db.ExecContext(r.Context(), `update admin_users set allow_match_guest_entry=$2,updated_at=now() where id=$1`, user.ID, body.AllowMatchGuestEntry); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		a.insertActivityLog(r.Context(), "admin", user.ID, "update_match_policy", "admin_user", user.ID, map[string]any{"allowMatchGuestEntry": body.AllowMatchGuestEntry})
+		a.writeAdminMe(w, r, user)
+	case action == "announcement-bell":
+		a.handleAdminAnnouncementBell(w, r, user)
 	case r.Method == http.MethodPost && action == "announcement-audio":
 		a.handleAdminAnnouncementAudio(w, r)
 	case r.Method == http.MethodPost && action == "sessions":
 		a.handleCreateOwnedSession(w, r, user)
+	case strings.HasPrefix(action, "member-types"):
+		a.handleAdminMemberTypes(w, r, user, action)
 	case r.Method == http.MethodGet && action == "coin-shop":
 		a.handleAdminCoinShop(w, r, user)
 	case r.Method == http.MethodGet && action == "coin-orders":
@@ -559,11 +586,26 @@ func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid default settings"})
 		return
 	}
+	// Audio file references may only be changed by the multipart bell endpoint.
+	currentSettings, currentErr := a.adminDefaultSettings(r.Context(), user.ID)
+	if currentErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": currentErr.Error()})
+		return
+	}
+	settings.AnnouncementBellKey = currentSettings.AnnouncementBellKey
+	settings.AnnouncementBellName = currentSettings.AnnouncementBellName
+	settings.AnnouncementBellMIME = currentSettings.AnnouncementBellMIME
 	if err := validateDashboardAnnouncements(settings.DashboardAnnouncements); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	normalizeAdminDefaultSettings(&settings)
+	memberTypes, typeErr := a.memberTypesForAdmin(r.Context(), user.ID, false)
+	if typeErr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": typeErr.Error()})
+		return
+	}
+	mergeMemberEntryFees(&settings, memberTypes)
 	raw, err := json.Marshal(settings)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid default settings"})
@@ -637,6 +679,8 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	state.Settings.EntryFee = defaultSettings.EntryFee
 	state.Settings.ClubEntryFee = defaultSettings.ClubEntryFee
+	state.Settings.MemberEntryFees = maps.Clone(defaultSettings.MemberEntryFees)
+	_ = a.db.QueryRowContext(r.Context(), `select allow_match_guest_entry from admin_users where id=$1`, user.ID).Scan(&state.Session.AllowMatchGuestEntry)
 	state.Settings.CourtFeePerHour = defaultSettings.CourtFeePerHour
 	state.Settings.ShuttleFee = defaultSettings.ShuttleFee
 	state.Settings.ShuttleBrands = defaultSettings.ShuttleBrands
@@ -644,6 +688,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	state.Settings.CourtCount = len(state.Settings.CourtNames)
 	if sessionType == "liveMatch" {
 		state.Settings.AnnouncementTemplate = defaultSettings.AnnouncementTemplate
+		state.Settings.AnnouncementBellKey = defaultSettings.AnnouncementBellKey
+		state.Settings.AnnouncementBellName = defaultSettings.AnnouncementBellName
+		state.Settings.AnnouncementBellMIME = defaultSettings.AnnouncementBellMIME
 		state.Settings.Levels = append([]string{}, defaultSettings.Levels...)
 	}
 	normalizeSettings(&state.Settings)
@@ -655,6 +702,7 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	courtNames, _ := json.Marshal(state.Settings.CourtNames)
 	levels, _ := json.Marshal(state.Settings.Levels)
 	shuttleBrands, _ := json.Marshal(state.Settings.ShuttleBrands)
+	memberEntryFees, _ := json.Marshal(state.Settings.MemberEntryFees)
 
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -707,9 +755,9 @@ func (a *app) handleCreateOwnedSession(w http.ResponseWriter, r *http.Request, u
 	}
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template
-		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
-	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+			session_id, entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
+		) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+	`, id, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1896,7 +1944,7 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 					coalesce((select ss.session_fee from session_settings ss where ss.session_id = s.id), 0)
 				)
 			else (
-				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
+				select coalesce(sum(coalesce((ss.member_entry_fees->>p.member_type_id)::int,case when p.club_member then ss.club_entry_fee else ss.entry_fee end) + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 				from players p
 				join session_settings ss on ss.session_id = p.session_id
 				where p.session_id = s.id and p.active

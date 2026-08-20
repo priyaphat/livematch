@@ -1688,6 +1688,27 @@ func TestInspectSlipVerificationFlagsAmountMismatch(t *testing.T) {
 	}
 }
 
+func TestDynamicMemberEntryFees(t *testing.T) {
+	settings := Settings{EntryFee: 120, ClubEntryFee: 80}
+	types := []MemberType{
+		{ID: "general-id", Code: "general"},
+		{ID: "club-id", Code: "club"},
+		{ID: "student-id", Name: "นักเรียน"},
+	}
+	mergeMemberEntryFees(&settings, types)
+	if settings.MemberEntryFees["general-id"] != 120 || settings.MemberEntryFees["club-id"] != 80 {
+		t.Fatalf("legacy fees were not migrated: %#v", settings.MemberEntryFees)
+	}
+	if settings.MemberEntryFees["student-id"] != 0 {
+		t.Fatalf("new custom type must default to zero: %#v", settings.MemberEntryFees)
+	}
+	settings.MemberEntryFees["student-id"] = 35
+	state := SessionState{Settings: settings}
+	if got := playerEntryFee(state, Player{MemberTypeID: "student-id"}); got != 35 {
+		t.Fatalf("dynamic fee = %d, want 35", got)
+	}
+}
+
 func qrDataURL(t *testing.T, payload string) string {
 	t.Helper()
 	matrix, err := qrwriter.NewQRCodeWriter().Encode(payload, gozxing.BarcodeFormat_QR_CODE, 240, 240, nil)

@@ -108,15 +108,14 @@ watch(settingsTabs, (tabs) => {
       </div>
 
       <div v-else-if="activeSettingsTab === 'costs'" class="grid gap-4 lg:grid-cols-2">
-        <label class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-          <span class="font-bold">{{ isLiveShare ? 'ค่าสนามต่อชั่วโมง' : 'ค่าเข้าสนามต่อคนทั่วไป' }}</span>
-          <input v-if="isLiveShare" v-model.number="state.settings.courtFeePerHour" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
-          <input v-else v-model.number="state.settings.entryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
+        <label v-if="isLiveShare" class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <span class="font-bold">ค่าสนามต่อชั่วโมง</span>
+          <input v-model.number="state.settings.courtFeePerHour" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
         </label>
 
-        <label v-if="!isLiveShare" class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
-          <span class="font-bold">ค่าเข้าสนามสมาชิกชมรม</span>
-          <input v-model.number="state.settings.clubEntryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
+        <label v-for="memberType in (!isLiveShare ? (state.memberTypes || []).filter((item) => item.active) : [])" :key="memberType.id" class="grid gap-2 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <span class="font-bold">ค่าเข้าสนาม {{ memberType.name }}</span>
+          <input v-model.number="state.settings.memberEntryFees[memberType.id]" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
         </label>
 
         <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 lg:col-span-2">

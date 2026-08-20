@@ -137,7 +137,7 @@ export async function buildMembersAdminWorkbook(data, options = {}) {
     "จำนวนการจอง", "รายการชำระเงิน", "ยอดจองที่อนุมัติ (บาท)",
   ];
   const memberRows = (data.members || []).map((item) => [
-    item.name, item.phone, item.email || "-", item.memberType === "club" ? "สมาชิกชมรม" : "สมาชิกทั่วไป",
+    item.name, item.phone, item.email || "-", item.memberTypeName || (item.memberType === "club" ? "สมาชิกชมรม" : "สมาชิกทั่วไป"),
     item.active ? "ใช้งาน" : "ปิดใช้งาน", boolLabel(item.linked), item.createdAt, item.updatedAt,
     item.playerCount, item.bookingCount, item.paymentCount, Number(item.approvedAmountThb || 0),
   ]);

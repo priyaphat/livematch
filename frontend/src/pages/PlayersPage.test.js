@@ -16,7 +16,7 @@ function mountPlayers(apiRequest, overrides = {}) {
   }
   const wrapper = mount(PlayersPage, {
     props: {
-      state: overrides.state || { players: [], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
+      state: overrides.state || { players: [], memberTypes: [{ id: 'type-general', code: 'general', name: 'สมาชิกทั่วไป', active: true }, { id: 'type-club', code: 'club', name: 'สมาชิกชมรม', active: true }], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch', allowMatchGuestEntry: true } },
       forms,
       money: (value) => String(value),
       playerCost: overrides.playerCost || (() => 0),
@@ -50,13 +50,13 @@ describe('PlayersPage member combobox', () => {
     expect(wrapper.find('[data-testid="member-combobox-row"]').findAll('input')).toHaveLength(1)
 
     await input.setValue('0')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await Promise.resolve()
     expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?phone=0')
     expect(wrapper.text()).toContain('0882250419')
     expect(wrapper.text()).toContain('สมาชิกทดสอบ')
     await input.setValue('0882250419')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await Promise.resolve()
     expect(wrapper.findAll('button').some((button) => button.text().includes('เพิ่มสมาชิกใหม่'))).toBe(false)
 
@@ -75,7 +75,7 @@ describe('PlayersPage member combobox', () => {
     const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('ป')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await Promise.resolve()
     expect(apiRequest).toHaveBeenCalledWith('/api/admin/members/search?q=%E0%B8%9B')
     expect(wrapper.find('[role="option"]').text()).toContain('ปรียาภัฒน์')
@@ -96,7 +96,7 @@ describe('PlayersPage member combobox', () => {
     const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('สมชาย')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await wrapper.find('[data-testid="member-combobox-row"] > button').trigger('click')
 
     expect(forms.newPlayerName).toBe('สมชาย')
@@ -111,7 +111,7 @@ describe('PlayersPage member combobox', () => {
     const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('สมาชิก')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await wrapper.find('[role="option"]').trigger('click')
     expect(forms.newPlayerMemberId).toBe('member-1')
 
@@ -130,9 +130,9 @@ describe('PlayersPage member combobox', () => {
     const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('สม')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await input.setValue('สมศรี')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     resolveSecond({ items: [{ id: 'new', name: 'สมศรี', phone: '0822222222' }] })
     await Promise.resolve()
     resolveFirst({ items: [{ id: 'old', name: 'สมชาย', phone: '0811111111' }] })
@@ -149,7 +149,7 @@ describe('PlayersPage member combobox', () => {
     const input = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await input.setValue('0882250419')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
 
     expect(wrapper.find('[data-testid="member-combobox-row"] > button').attributes('disabled')).toBeDefined()
     expect(addPlayer).not.toHaveBeenCalled()
@@ -158,7 +158,7 @@ describe('PlayersPage member combobox', () => {
   it('creates a member from an unmatched name only after entering a 10-digit phone', async () => {
     vi.useFakeTimers()
     const addPlayer = vi.fn()
-    const created = { id: 'member-new', name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general' }
+    const created = { id: 'member-new', name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general', memberTypeId: 'type-general' }
     const apiRequest = vi.fn((url, options = {}) => {
       if (url === '/api/admin/members' && options.method === 'POST') return Promise.resolve(created)
       return Promise.resolve({ items: [] })
@@ -167,7 +167,7 @@ describe('PlayersPage member combobox', () => {
     const searchInput = wrapper.find('input[aria-label="ชื่อขาจรหรือค้นหาสมาชิกด้วยชื่อหรือเบอร์โทร"]')
 
     await searchInput.setValue('สมาชิกใหม่')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     await Promise.resolve()
     const createButton = wrapper.findAll('button').find((button) => button.text().includes('เพิ่มสมาชิกใหม่'))
     expect(createButton).toBeTruthy()
@@ -186,10 +186,32 @@ describe('PlayersPage member combobox', () => {
 
     await vi.waitFor(() => expect(apiRequest).toHaveBeenCalledWith('/api/admin/members', expect.objectContaining({ method: 'POST' })))
     const createCall = apiRequest.mock.calls.find(([url, options]) => url === '/api/admin/members' && options?.method === 'POST')
-    expect(JSON.parse(createCall[1].body)).toEqual({ name: 'สมาชิกใหม่', phone: '0812345678', memberType: 'general' })
+    expect(JSON.parse(createCall[1].body)).toEqual({ name: 'สมาชิกใหม่', phone: '0812345678', memberTypeId: 'type-general' })
     expect(forms.newPlayerMemberId).toBe('member-new')
     expect(forms.newPlayerPhone).toBe('0812345678')
     expect(addPlayer).toHaveBeenCalledOnce()
+  })
+
+  it('blocks a typed guest when the central guest policy is disabled', async () => {
+    vi.useFakeTimers()
+    const addPlayer = vi.fn()
+    const { wrapper } = mountPlayers(vi.fn().mockResolvedValue({ items: [] }), {
+      addPlayer,
+      state: {
+        players: [],
+        memberTypes: [{ id: 'type-general', code: 'general', name: 'สมาชิกทั่วไป', active: true }],
+        settings: { showPaymentOnShare: true, showTotalOnShare: true },
+        session: { type: 'liveMatch', allowMatchGuestEntry: false },
+      },
+    })
+
+    await wrapper.find('input[role="combobox"]').setValue('ขาจร')
+    await vi.advanceTimersByTimeAsync(700)
+    const addButton = wrapper.find('[data-testid="member-combobox-row"] > button')
+    expect(addButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('ต้องเลือกหรือสร้างสมาชิกก่อน')
+    await addButton.trigger('click')
+    expect(addPlayer).not.toHaveBeenCalled()
   })
 
   it('disables a member who is already active in the match', async () => {
@@ -201,12 +223,13 @@ describe('PlayersPage member combobox', () => {
       state: {
         players: [{ id: 1, name: 'Existing', memberId: member.id, active: true }],
         settings: { showPaymentOnShare: true, showTotalOnShare: true },
-        session: { type: 'liveMatch' },
+        memberTypes: [{ id: 'type-general', code: 'general', name: 'สมาชิกทั่วไป', active: true }],
+        session: { type: 'liveMatch', allowMatchGuestEntry: true },
       },
     })
 
     await wrapper.find('input[role="combobox"]').setValue('Existing')
-    await vi.advanceTimersByTimeAsync(300)
+    await vi.advanceTimersByTimeAsync(700)
     const option = wrapper.find('[role="option"]')
     expect(option.attributes('disabled')).toBeDefined()
     expect(option.text()).toContain('อยู่ใน Match แล้ว')

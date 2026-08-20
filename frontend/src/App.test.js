@@ -943,7 +943,12 @@ describe('LiveMatch app', () => {
 
   it('groups new session defaults into compact tabs', async () => {
     let resolveSave
-    const saveDefaults = vi.fn(() => new Promise((resolve) => { resolveSave = resolve }))
+    const saveOrder = []
+    const savePolicy = vi.fn(async () => { saveOrder.push('policy') })
+    const saveDefaults = vi.fn(() => { saveOrder.push('defaults'); return new Promise((resolve) => { resolveSave = resolve }) })
+    const uploadBell = vi.fn().mockResolvedValue(undefined)
+    const removeBell = vi.fn().mockResolvedValue(undefined)
+    const previewBell = vi.fn().mockResolvedValue(undefined)
     const wrapper = mount(AdminSupervisorPage, {
       props: {
         auth: {
@@ -957,6 +962,8 @@ describe('LiveMatch app', () => {
             courtFeePerHour: 150,
             shuttleBrands: [{ id: 'default', name: 'Shuttle', price: 85, active: true }],
             announcementTemplate: 'court {court}',
+            announcementBellKey: 'bell.mp3',
+            announcementBellName: 'กริ่งสนาม.mp3',
             courtNames: ['Court 1'],
             levels: ['เบา', 'กลาง', 'หนัก']
           }
@@ -975,6 +982,10 @@ describe('LiveMatch app', () => {
         openOwnedSession: vi.fn(),
         refreshAdminSupervisor: vi.fn(),
         saveAdminDefaultSettings: saveDefaults,
+        saveAdminMatchPolicy: savePolicy,
+        uploadAdminAnnouncementBell: uploadBell,
+        removeAdminAnnouncementBell: removeBell,
+        previewAdminAnnouncementBell: previewBell,
         addAdminDefaultShuttleBrand: vi.fn(),
         removeAdminDefaultShuttleBrand: vi.fn(),
         addAdminDefaultCourt: vi.fn(),
@@ -991,11 +1002,24 @@ describe('LiveMatch app', () => {
     const liveMatchTab = dialog.findAll('nav button').find((button) => button.text().includes('LiveMatch'))
     await liveMatchTab.trigger('click')
     expect(dialog.get('textarea').element.parentElement.style.display).toBe('')
+    expect(dialog.text()).toContain('เสียงกริ่งก่อนเรียกคิว')
+    expect(dialog.text()).toContain('กริ่งสนาม.mp3')
+    await dialog.get('button[aria-label="ทดลองฟังเสียงกริ่ง"]').trigger('click')
+    expect(previewBell).toHaveBeenCalledOnce()
+    await dialog.findAll('button').find((button) => button.text().includes('คืนค่าเสียงเริ่มต้น')).trigger('click')
+    expect(removeBell).toHaveBeenCalledOnce()
+    const bellFile = new File([new Uint8Array([0x49, 0x44, 0x33])], 'new-bell.mp3', { type: 'audio/mpeg' })
+    const bellInput = dialog.get('input[type="file"][accept*="audio/mpeg"]')
+    Object.defineProperty(bellInput.element, 'files', { value: [bellFile] })
+    await bellInput.trigger('change')
+    expect(uploadBell).toHaveBeenCalledWith(bellFile)
 
     const saveButton = dialog.findAll('button').find((button) => button.text().trim() === 'บันทึก')
     await saveButton.trigger('click')
     await saveButton.trigger('click')
+    expect(savePolicy).toHaveBeenCalledOnce()
     expect(saveDefaults).toHaveBeenCalledOnce()
+    expect(saveOrder).toEqual(['policy', 'defaults'])
     expect(saveButton.attributes('disabled')).toBeDefined()
     expect(saveButton.text()).toContain('กำลังบันทึก...')
     expect(saveButton.find('.animate-spin').exists()).toBe(true)

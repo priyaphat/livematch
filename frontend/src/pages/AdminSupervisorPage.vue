@@ -12,6 +12,7 @@ import {
   CreditCard,
   Database,
   Eye,
+  Play,
   Volume2,
   Plus,
   Radio,
@@ -21,6 +22,8 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   ShoppingCart,
+  Trash2,
+  Upload,
   Users,
   X,
   XCircle
@@ -37,6 +40,10 @@ const props = defineProps([
   'navigateAdminFeature',
   'openDashboardAnnouncements',
   'saveAdminDefaultSettings',
+  'saveAdminMatchPolicy',
+  'uploadAdminAnnouncementBell',
+  'removeAdminAnnouncementBell',
+  'previewAdminAnnouncementBell',
   'saveAdminBranding',
   'addAdminDefaultShuttleBrand',
   'removeAdminDefaultShuttleBrand',
@@ -46,10 +53,14 @@ const props = defineProps([
   'removeAdminDefaultLevel'
 ])
 if (!props.auth.branding) props.auth.branding = { systemName: '', logoData: '' }
+if (!props.auth.matchPolicy) props.auth.matchPolicy = { allowMatchGuestEntry: true }
+if (!Array.isArray(props.auth.memberTypes)) props.auth.memberTypes = []
 
 const sessionPage = ref(1)
 const adminDefaultSettingsTab = ref('costs')
 const adminDefaultSettingsSaving = ref(false)
+const announcementBellSaving = ref(false)
+const announcementBellPlaying = ref(false)
 const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
   { id: 'system', label: 'ตั้งค่าระบบ', hint: 'ชื่อ โลโก้ ผู้ดูแล', icon: ShieldCheck },
@@ -169,13 +180,56 @@ async function saveCurrentSettings() {
   const spinnerStartedAt = performance.now()
   await nextTick()
   try {
-    await (adminDefaultSettingsTab.value === 'system'
-      ? props.saveAdminBranding()
-      : props.saveAdminDefaultSettings())
+    if (adminDefaultSettingsTab.value === 'system') await props.saveAdminBranding()
+    else if (adminDefaultSettingsTab.value === 'match') {
+      if (props.saveAdminMatchPolicy) await props.saveAdminMatchPolicy()
+      await props.saveAdminDefaultSettings()
+    }
+    else {
+      await props.saveAdminDefaultSettings()
+    }
   } finally {
     const remaining = 500 - (performance.now() - spinnerStartedAt)
     if (remaining > 0) await new Promise((resolve) => window.setTimeout(resolve, remaining))
     adminDefaultSettingsSaving.value = false
+  }
+}
+
+async function handleAnnouncementBellUpload(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  if (!file || announcementBellSaving.value) return
+  if (file.size > 2 * 1024 * 1024) {
+    props.forms.adminDefaultSettingsStatus = 'ไฟล์เสียงต้องมีขนาดไม่เกิน 2 MB'
+    return
+  }
+  announcementBellSaving.value = true
+  try {
+    await props.uploadAdminAnnouncementBell(file)
+  } finally {
+    announcementBellSaving.value = false
+  }
+}
+
+async function previewAnnouncementBell() {
+  if (announcementBellPlaying.value) return
+  announcementBellPlaying.value = true
+  try {
+    await props.previewAdminAnnouncementBell()
+  } catch (error) {
+    props.forms.adminDefaultSettingsStatus = error?.message || 'เปิดเสียงตัวอย่างไม่สำเร็จ'
+  } finally {
+    announcementBellPlaying.value = false
+  }
+}
+
+async function removeAnnouncementBell() {
+  if (announcementBellSaving.value) return
+  announcementBellSaving.value = true
+  try {
+    await props.removeAdminAnnouncementBell()
+  } finally {
+    announcementBellSaving.value = false
   }
 }
 
@@ -279,21 +333,21 @@ function updateDashboardAnnouncement(index, value) {
         </div>
       </div>
 
-      <nav class="scrollbar-none flex shrink-0 gap-2 overflow-x-auto border-b border-stone-200 bg-paper-50 p-2 dark:border-stone-700 dark:bg-stone-950" aria-label="หมวดค่าเริ่มต้น Session ใหม่">
+      <nav class="grid shrink-0 grid-cols-2 gap-2 border-b border-stone-200 bg-paper-50 p-2 dark:border-stone-700 dark:bg-stone-950 sm:grid-cols-3 md:grid-cols-5" aria-label="หมวดค่าเริ่มต้น Session ใหม่">
         <button
           v-for="tab in adminDefaultSettingsTabs"
           :key="tab.id"
           type="button"
-          class="flex min-w-44 items-center gap-3 rounded-md px-3 py-2.5 text-left transition"
+          class="flex min-w-0 items-center gap-2 rounded-md px-2 py-2.5 text-left transition"
           :class="adminDefaultSettingsTab === tab.id ? 'bg-white text-court-700 shadow-soft dark:bg-stone-800 dark:text-court-300' : 'text-stone-500 hover:bg-white/70 dark:text-stone-400 dark:hover:bg-stone-800/70'"
           @click="adminDefaultSettingsTab = tab.id"
         >
           <span class="grid h-9 w-9 shrink-0 place-items-center rounded-md bg-court-500/10">
             <component :is="tab.icon" class="h-4 w-4" />
           </span>
-          <span>
-            <span class="block text-sm font-black">{{ tab.label }}</span>
-            <span class="block text-xs font-semibold opacity-70">{{ tab.hint }}</span>
+          <span class="min-w-0">
+            <span class="block break-words text-sm font-black leading-tight">{{ tab.label }}</span>
+            <span class="mt-0.5 block break-words text-xs font-semibold leading-tight opacity-70">{{ tab.hint }}</span>
           </span>
         </button>
       </nav>
@@ -340,13 +394,9 @@ function updateDashboardAnnouncement(index, value) {
       </div>
 
       <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-3 md:grid-cols-3">
-        <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
-          ค่าเข้าสนามคนทั่วไป
-          <input v-model.number="auth.defaultSettings.entryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
-        </label>
-        <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
-          ค่าเข้าสนามสมาชิกชมรม
-          <input v-model.number="auth.defaultSettings.clubEntryFee" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
+        <label v-for="memberType in (auth.memberTypes || []).filter((item) => item.active)" :key="memberType.id" class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
+          ค่าเข้าสนาม {{ memberType.name }}
+          <input v-model.number="auth.defaultSettings.memberEntryFees[memberType.id]" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" />
         </label>
         <label class="grid gap-2 rounded-lg border border-stone-200 bg-paper-50 p-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800">
           ค่าสนามต่อชั่วโมง liveShare
@@ -386,6 +436,50 @@ function updateDashboardAnnouncement(index, value) {
           <textarea v-model="auth.defaultSettings.announcementTemplate" rows="5" class="rounded-md border border-stone-200 bg-paper-50 px-3 py-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-800" placeholder="บุฟเฟ่ต์สนามที่ {court}&#10;{pause}&#10;คุณ{a} คุณ{b} คุณ{c} คุณ{d}"></textarea>
           <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">ตัวแปร: court, pause, a, b, c, d</p>
         </div>
+        <section v-show="adminDefaultSettingsTab === 'match'" class="overflow-hidden rounded-xl border border-stone-200 bg-paper-50 dark:border-stone-700 dark:bg-stone-800/60">
+          <div class="flex items-start justify-between gap-3 px-4 pb-3 pt-4">
+            <div class="min-w-0">
+              <p class="font-black">เสียงกริ่งก่อนเรียกคิว</p>
+              <p class="mt-1 text-xs font-semibold leading-5 text-stone-500 dark:text-stone-400">เสียงจะเล่นหนึ่งครั้งก่อนระบบอ่านชื่อผู้เล่น</p>
+            </div>
+            <span class="shrink-0 rounded-full px-2.5 py-1 text-[11px] font-black" :class="auth.defaultSettings.announcementBellKey ? 'bg-court-500/15 text-court-700 dark:text-court-300' : 'bg-stone-200/70 text-stone-600 dark:bg-stone-700 dark:text-stone-300'">
+              {{ auth.defaultSettings.announcementBellKey ? 'กำหนดเอง' : 'ค่าเริ่มต้น' }}
+            </span>
+          </div>
+
+          <div class="mx-3 flex min-w-0 items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
+            <span class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-court-500 text-white shadow-sm"><Volume2 class="h-5 w-5" /></span>
+            <div class="min-w-0 flex-1">
+              <p class="truncate text-sm font-black">{{ auth.defaultSettings.announcementBellName || 'เสียงกริ่ง LiveMatch' }}</p>
+              <p class="mt-0.5 text-xs font-semibold text-stone-400">{{ auth.defaultSettings.announcementBellKey ? 'ไฟล์เสียงที่อัปโหลด' : 'เสียงมาตรฐานของระบบ' }}</p>
+            </div>
+            <button type="button" class="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-stone-200 text-court-700 transition hover:bg-court-500/10 disabled:opacity-50 dark:border-stone-700 dark:text-court-300" :disabled="announcementBellPlaying || announcementBellSaving" aria-label="ทดลองฟังเสียงกริ่ง" @click="previewAnnouncementBell">
+              <RefreshCw v-if="announcementBellPlaying" class="h-4 w-4 animate-spin" />
+              <Play v-else class="ml-0.5 h-4 w-4 fill-current" />
+            </button>
+          </div>
+
+          <div class="flex flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center">
+            <label class="inline-flex h-10 cursor-pointer items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white transition hover:bg-court-600 sm:w-auto" :class="announcementBellSaving ? 'pointer-events-none opacity-60' : ''">
+              <RefreshCw v-if="announcementBellSaving" class="h-4 w-4 animate-spin" />
+              <Upload v-else class="h-4 w-4" />
+              {{ announcementBellSaving ? 'กำลังอัปโหลด...' : (auth.defaultSettings.announcementBellKey ? 'เปลี่ยนเสียง' : 'อัปโหลดเสียง') }}
+              <input class="sr-only" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/webm,.mp3,.wav,.ogg,.webm" :disabled="announcementBellSaving" @change="handleAnnouncementBellUpload" />
+            </label>
+            <button v-if="auth.defaultSettings.announcementBellKey" type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-3 text-sm font-black text-stone-500 transition hover:bg-rose-500/10 hover:text-rose-700 disabled:opacity-60 dark:text-stone-400 dark:hover:text-rose-300" :disabled="announcementBellSaving" @click="removeAnnouncementBell">
+              <Trash2 class="h-4 w-4" />
+              คืนค่าเสียงเริ่มต้น
+            </button>
+            <p class="text-center text-[11px] font-semibold text-stone-400 sm:ml-auto sm:text-right">MP3, WAV, OGG, WebM · สูงสุด 2 MB</p>
+          </div>
+        </section>
+        <label v-show="adminDefaultSettingsTab === 'match'" class="flex items-center justify-between gap-4 rounded-lg border border-court-200 bg-court-500/10 p-4 dark:border-court-900/60">
+          <span>
+            <span class="block font-black">อนุญาตเพิ่มขาจรด้วย Enter</span>
+            <span class="mt-1 block text-xs font-semibold text-stone-500 dark:text-stone-400">มีผลทันทีกับ Match ทุก Session<span v-if="!auth.matchPolicy.allowMatchGuestEntry"> ระบบจะไม่สามารถเพิ่มขาจรได้</span></span>
+          </span>
+          <input v-model="auth.matchPolicy.allowMatchGuestEntry" type="checkbox" class="h-5 w-5 shrink-0" />
+        </label>
       </div>
 
       <div class="grid gap-4 lg:grid-cols-2">

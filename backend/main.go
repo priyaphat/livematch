@@ -47,6 +47,7 @@ type SessionState struct {
 	Theme            string            `json:"theme"`
 	Session          SessionInfo       `json:"session"`
 	Settings         Settings          `json:"settings"`
+	MemberTypes      []MemberType      `json:"memberTypes"`
 	Players          []Player          `json:"players"`
 	Couples          []Couple          `json:"couples"`
 	ReturnedShuttles []ReturnedShuttle `json:"returnedShuttles"`
@@ -60,21 +61,23 @@ type SessionState struct {
 }
 
 type SessionInfo struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Type           string `json:"type"`
-	AdminPasscode  string `json:"adminPasscode"`
-	Unlocked       bool   `json:"unlocked"`
-	CreatedAt      string `json:"createdAt"`
-	ExpiresAt      string `json:"expiresAt"`
-	Expired        bool   `json:"expired"`
-	ReadOnly       bool   `json:"readOnly"`
-	ReadOnlyReason string `json:"readOnlyReason"`
+	ID                   string `json:"id"`
+	Name                 string `json:"name"`
+	Type                 string `json:"type"`
+	AdminPasscode        string `json:"adminPasscode"`
+	Unlocked             bool   `json:"unlocked"`
+	CreatedAt            string `json:"createdAt"`
+	ExpiresAt            string `json:"expiresAt"`
+	Expired              bool   `json:"expired"`
+	ReadOnly             bool   `json:"readOnly"`
+	ReadOnlyReason       string `json:"readOnlyReason"`
+	AllowMatchGuestEntry bool   `json:"allowMatchGuestEntry"`
 }
 
 type Settings struct {
 	EntryFee                int            `json:"entryFee"`
 	ClubEntryFee            int            `json:"clubEntryFee"`
+	MemberEntryFees         map[string]int `json:"memberEntryFees"`
 	CourtFeePerHour         int            `json:"courtFeePerHour"`
 	ShuttleFee              int            `json:"shuttleFee"`
 	ShuttleBrands           []ShuttleBrand `json:"shuttleBrands"`
@@ -94,6 +97,9 @@ type Settings struct {
 	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
 	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
 	AnnouncementTemplate    string         `json:"announcementTemplate"`
+	AnnouncementBellKey     string         `json:"announcementBellKey,omitempty"`
+	AnnouncementBellName    string         `json:"announcementBellName,omitempty"`
+	AnnouncementBellMIME    string         `json:"announcementBellMime,omitempty"`
 	DashboardAnnouncements  []string       `json:"dashboardAnnouncements,omitempty"`
 }
 
@@ -110,9 +116,21 @@ type Player struct {
 	Level            string `json:"level"`
 	Coupon           bool   `json:"coupon"`
 	ClubMember       bool   `json:"clubMember"`
+	MemberTypeID     string `json:"memberTypeId,omitempty"`
+	MemberTypeName   string `json:"memberTypeName,omitempty"`
 	MemberID         string `json:"memberId,omitempty"`
 	BillingAccountID string `json:"billingAccountId,omitempty"`
 	WaitStartedAt    string `json:"waitStartedAt"`
+}
+
+type MemberType struct {
+	ID         string `json:"id"`
+	Code       string `json:"code,omitempty"`
+	Name       string `json:"name"`
+	System     bool   `json:"system"`
+	Active     bool   `json:"active"`
+	InUse      bool   `json:"inUse,omitempty"`
+	HasHistory bool   `json:"hasHistory,omitempty"`
 }
 
 type PlayerPaymentItem struct {
@@ -387,6 +405,7 @@ func (a *app) migrate(ctx context.Context) error {
 			session_id text primary key references sessions(id) on delete cascade,
 			entry_fee integer not null default 120,
 			club_entry_fee integer not null default 120,
+			member_entry_fees jsonb not null default '{}'::jsonb,
 			court_fee_per_hour integer not null default 150,
 			shuttle_fee integer not null default 85,
 			shuttle_brands jsonb not null default '[]'::jsonb,
@@ -407,10 +426,14 @@ func (a *app) migrate(ctx context.Context) error {
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
 {pause}
-คุณ{a} คุณ{b} คุณ{c} คุณ{d}'
+คุณ{a} คุณ{b} คุณ{c} คุณ{d}',
+			announcement_bell_key text not null default '',
+			announcement_bell_name text not null default '',
+			announcement_bell_mime text not null default ''
 		);
 		alter table session_settings add column if not exists random_priority text not null default 'level';
 		alter table session_settings add column if not exists club_entry_fee integer not null default 120;
+		alter table session_settings add column if not exists member_entry_fees jsonb not null default '{}'::jsonb;
 		alter table session_settings add column if not exists court_fee_per_hour integer not null default 150;
 		alter table session_settings add column if not exists shuttle_brands jsonb not null default '[]'::jsonb;
 		alter table session_settings add column if not exists show_payment_on_share boolean not null default true;
@@ -425,6 +448,9 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
 {pause}
 คุณ{a} คุณ{b} คุณ{c} คุณ{d}';
+		alter table session_settings add column if not exists announcement_bell_key text not null default '';
+		alter table session_settings add column if not exists announcement_bell_name text not null default '';
+		alter table session_settings add column if not exists announcement_bell_mime text not null default '';
 		create table if not exists players (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -447,6 +473,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players alter column coupon set default false;
 		alter table players add column if not exists club_member boolean not null default false;
 		alter table players add column if not exists member_id text;
+		alter table players add column if not exists member_type_id text;
 		alter table players add column if not exists wait_started_at timestamptz default now();
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
@@ -544,6 +571,20 @@ func (a *app) migrate(ctx context.Context) error {
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);
+		alter table admin_users add column if not exists allow_match_guest_entry boolean not null default true;
+		alter table admin_users alter column allow_match_guest_entry set default true;
+		create table if not exists app_migrations (
+			migration_key text primary key,
+			applied_at timestamptz not null default now()
+		);
+		with applied as (
+			insert into app_migrations(migration_key)
+			values ('match_guest_entry_default_true_v1')
+			on conflict do nothing
+			returning migration_key
+		)
+		update admin_users set allow_match_guest_entry=true
+		where exists(select 1 from applied);
 		alter table admin_users add column if not exists system_name text not null default '';
 		alter table admin_users add column if not exists logo_data text not null default '';
 		create table if not exists admin_default_settings (
@@ -794,7 +835,39 @@ func (a *app) migrate(ctx context.Context) error {
 			unique (admin_id, phone),
 			unique (admin_id, public_user_id)
 		);
+		create table if not exists member_types (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			code text not null default '',
+			name text not null,
+			system boolean not null default false,
+			active boolean not null default true,
+			deleted_at timestamptz,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_member_types_admin_code on member_types(admin_id,code) where code<>'' and deleted_at is null;
+		create unique index if not exists idx_member_types_admin_name on member_types(admin_id,lower(name)) where deleted_at is null;
+		insert into member_types (id,admin_id,code,name,system,active)
+		select 'member-type-'||md5(id||':general'),id,'general','สมาชิกทั่วไป',true,true from admin_users
+		on conflict do nothing;
+		insert into member_types (id,admin_id,code,name,system,active)
+		select 'member-type-'||md5(id||':club'),id,'club','สมาชิกชมรม',true,true from admin_users
+		on conflict do nothing;
 		alter table members add column if not exists profile_token text not null default '';
+		alter table members add column if not exists member_type_id text;
+		update members m set member_type_id=mt.id from member_types mt
+		where m.member_type_id is null and mt.admin_id=m.admin_id and mt.code=case when m.member_type='club' then 'club' else 'general' end and mt.deleted_at is null;
+		alter table members drop constraint if exists members_member_type_id_fkey;
+		alter table members add constraint members_member_type_id_fkey foreign key (member_type_id) references member_types(id) on delete restrict;
+		update players p set member_type_id=mt.id from sessions s,member_types mt
+		where p.session_id=s.id and p.member_type_id is null and mt.admin_id=s.admin_id and mt.code=case when p.club_member then 'club' else 'general' end and mt.deleted_at is null;
+		alter table players drop constraint if exists players_member_type_id_fkey;
+		alter table players add constraint players_member_type_id_fkey foreign key (member_type_id) references member_types(id) on delete restrict;
+		update session_settings ss set member_entry_fees=jsonb_build_object(
+			(select mt.id from member_types mt join sessions s on s.admin_id=mt.admin_id where s.id=ss.session_id and mt.code='general' and mt.deleted_at is null limit 1),ss.entry_fee,
+			(select mt.id from member_types mt join sessions s on s.admin_id=mt.admin_id where s.id=ss.session_id and mt.code='club' and mt.deleted_at is null limit 1),ss.club_entry_fee
+		) where member_entry_fees='{}'::jsonb and exists(select 1 from sessions s where s.id=ss.session_id and s.admin_id is not null);
 		alter table members drop constraint if exists members_admin_id_phone_key;
 		create unique index if not exists idx_members_admin_phone_active on members(admin_id, phone) where deleted_at is null;
 		alter table players drop constraint if exists players_member_id_fkey;
@@ -1426,13 +1499,13 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(sum(wins), 0) from players where active`).Scan(&summary.TotalWins)
 	_ = a.db.QueryRowContext(r.Context(), `select coalesce(avg(games), 0) from players where active`).Scan(&summary.AverageGames)
 	_ = a.db.QueryRowContext(r.Context(), `
-		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
+		select coalesce(sum(coalesce((ss.member_entry_fees->>p.member_type_id)::int,case when p.club_member then ss.club_entry_fee else ss.entry_fee end) + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 		from players p
 		join session_settings ss on ss.session_id = p.session_id
 		where p.active
 	`).Scan(&summary.TotalRevenue)
 	_ = a.db.QueryRowContext(r.Context(), `
-		select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
+		select coalesce(sum(coalesce((ss.member_entry_fees->>p.member_type_id)::int,case when p.club_member then ss.club_entry_fee else ss.entry_fee end) + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 		from players p
 		join session_settings ss on ss.session_id = p.session_id
 		where p.active and p.paid
@@ -1472,7 +1545,7 @@ func (a *app) handleSupervisorSummary(w http.ResponseWriter, r *http.Request) {
 			(select count(*) from matches m where m.session_id = s.id and m.phase = 'history' and m.status <> 'cancelled') as history_matches,
 			(select coalesce(sum(m.shuttles), 0) from matches m where m.session_id = s.id and (m.status <> 'cancelled' or not m.shuttle_returned)) as shuttles,
 			(
-				select coalesce(sum(ss.entry_fee + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
+				select coalesce(sum(coalesce((ss.member_entry_fees->>p.member_type_id)::int,case when p.club_member then ss.club_entry_fee else ss.entry_fee end) + p.shuttles * ss.shuttle_fee + ceiling(ss.session_fee::numeric / nullif((select count(*) from players ap where ap.session_id = p.session_id and ap.active), 0))::int), 0)
 				from players p
 				join session_settings ss on ss.session_id = p.session_id
 				where p.session_id = s.id and p.active
@@ -1712,6 +1785,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodPost && action == "announcement-audio":
 		a.handleAnnouncementAudio(w, r)
+	case r.Method == http.MethodGet && action == "announcement-bell":
+		a.serveAnnouncementBell(w, r, state.Settings)
 	case r.Method == http.MethodPost && action == "unlock":
 		writeJSON(w, http.StatusGone, map[string]string{"error": "passcode login removed"})
 	case r.Method == http.MethodGet && action == "state":
@@ -1795,11 +1870,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPost && action == "players":
 		var body struct {
-			Name       string `json:"name"`
-			Level      string `json:"level"`
-			Coupon     *bool  `json:"coupon"`
-			ClubMember bool   `json:"clubMember"`
-			MemberID   string `json:"memberId"`
+			Name         string `json:"name"`
+			Level        string `json:"level"`
+			Coupon       *bool  `json:"coupon"`
+			ClubMember   bool   `json:"clubMember"`
+			MemberID     string `json:"memberId"`
+			MemberTypeID string `json:"memberTypeId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Name) == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
@@ -1812,6 +1888,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		if body.Coupon != nil {
 			coupon = *body.Coupon
 		}
+		if body.MemberID == "" && !state.Session.AllowMatchGuestEntry {
+			writeJSON(w, http.StatusForbidden, map[string]string{"code": "match_guest_entry_disabled", "error": "ปิดการเพิ่มขาจร กรุณาเลือกสมาชิกจากระบบ"})
+			return
+		}
 		if body.MemberID != "" {
 			for _, existing := range state.Players {
 				if existing.Active && existing.MemberID == body.MemberID {
@@ -1819,30 +1899,53 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			}
-			var memberName, memberType string
+			var memberName, memberTypeCode, memberTypeID, memberTypeName string
 			user, _ := a.currentAdmin(r.Context(), r)
-			if err := a.db.QueryRowContext(r.Context(), `select name, member_type from members where id=$1 and admin_id=$2 and active and deleted_at is null`, body.MemberID, user.ID).Scan(&memberName, &memberType); err != nil {
+			if err := a.db.QueryRowContext(r.Context(), `select m.name,coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,'') from members m left join member_types mt on mt.id=m.member_type_id where m.id=$1 and m.admin_id=$2 and m.active and m.deleted_at is null`, body.MemberID, user.ID).Scan(&memberName, &memberTypeCode, &memberTypeID, &memberTypeName); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "member not found"})
 				return
 			}
 			body.Name = memberName
-			body.ClubMember = memberType == "club"
+			body.ClubMember = memberTypeCode == "club"
+			body.MemberTypeID = memberTypeID
+			state.NextIDs.Player++
+			player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember, MemberID: body.MemberID, MemberTypeID: memberTypeID, MemberTypeName: memberTypeName, WaitStartedAt: time.Now().UTC().Format(time.RFC3339)}
+			state.Players = append(state.Players, player)
+			a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon, "memberTypeId": player.MemberTypeID})
+			return
 		}
+		user, _ := a.currentAdmin(r.Context(), r)
+		typeID := strings.TrimSpace(body.MemberTypeID)
+		if typeID == "" {
+			for _, item := range state.MemberTypes {
+				if item.Code == "general" {
+					typeID = item.ID
+					break
+				}
+			}
+		}
+		typeItem, typeErr := a.memberTypeForWrite(r.Context(), user.ID, typeID)
+		if typeErr != nil {
+			writeJSON(w, 400, map[string]string{"error": typeErr.Error()})
+			return
+		}
+		body.ClubMember = typeItem.Code == "club"
 		state.NextIDs.Player++
-		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember, MemberID: body.MemberID, WaitStartedAt: time.Now().UTC().Format(time.RFC3339)}
+		player := Player{ID: state.NextIDs.Player, Name: body.Name, Active: true, Level: body.Level, Coupon: coupon, ClubMember: body.ClubMember, MemberID: body.MemberID, MemberTypeID: typeItem.ID, MemberTypeName: typeItem.Name, WaitStartedAt: time.Now().UTC().Format(time.RFC3339)}
 		state.Players = append(state.Players, player)
 		a.respondSavedWithActivity(w, r, state, "add_player", "player", strconv.Itoa(player.ID), map[string]any{"name": player.Name, "level": player.Level, "coupon": player.Coupon, "clubMember": player.ClubMember})
 	case r.Method == http.MethodPatch && action == "players" && len(parts) >= 3:
 		playerID, _ := strconv.Atoi(parts[2])
 		var body struct {
-			Name       *string `json:"name"`
-			Paid       *bool   `json:"paid"`
-			Level      *string `json:"level"`
-			Coupon     *bool   `json:"coupon"`
-			Active     *bool   `json:"active"`
-			ClubMember *bool   `json:"clubMember"`
-			MemberID   *string `json:"memberId"`
-			Method     string  `json:"method"`
+			Name         *string `json:"name"`
+			Paid         *bool   `json:"paid"`
+			Level        *string `json:"level"`
+			Coupon       *bool   `json:"coupon"`
+			Active       *bool   `json:"active"`
+			ClubMember   *bool   `json:"clubMember"`
+			MemberID     *string `json:"memberId"`
+			MemberTypeID *string `json:"memberTypeId"`
+			Method       string  `json:"method"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		logDetails := map[string]any{}
@@ -1896,16 +1999,29 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					memberID := strings.TrimSpace(*body.MemberID)
 					if memberID != "" {
 						user, _ := a.currentAdmin(r.Context(), r)
-						var memberName, memberType string
-						if err := a.db.QueryRowContext(r.Context(), `select name,member_type from members where id=$1 and admin_id=$2 and active and deleted_at is null`, memberID, user.ID).Scan(&memberName, &memberType); err != nil {
+						var memberName, memberTypeCode, memberTypeID, memberTypeName string
+						if err := a.db.QueryRowContext(r.Context(), `select m.name,coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,'') from members m left join member_types mt on mt.id=m.member_type_id where m.id=$1 and m.admin_id=$2 and m.active and m.deleted_at is null`, memberID, user.ID).Scan(&memberName, &memberTypeCode, &memberTypeID, &memberTypeName); err != nil {
 							writeJSON(w, http.StatusBadRequest, map[string]string{"error": "member not found"})
 							return
 						}
 						state.Players[i].Name = memberName
-						state.Players[i].ClubMember = memberType == "club"
+						state.Players[i].ClubMember = memberTypeCode == "club"
+						state.Players[i].MemberTypeID = memberTypeID
+						state.Players[i].MemberTypeName = memberTypeName
 					}
 					state.Players[i].MemberID = memberID
 					logDetails["memberId"] = memberID
+				}
+				if body.MemberTypeID != nil && state.Players[i].MemberID == "" {
+					user, _ := a.currentAdmin(r.Context(), r)
+					typeItem, typeErr := a.memberTypeForWrite(r.Context(), user.ID, *body.MemberTypeID)
+					if typeErr != nil {
+						writeJSON(w, 400, map[string]string{"error": typeErr.Error()})
+						return
+					}
+					state.Players[i].MemberTypeID = typeItem.ID
+					state.Players[i].MemberTypeName = typeItem.Name
+					state.Players[i].ClubMember = typeItem.Code == "club"
 				}
 				if body.Level != nil || body.Coupon != nil {
 					syncCoupledPlayerStatus(&state, state.Players[i].ID)
@@ -1944,7 +2060,12 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		settings := body.Settings
+		// Bell files are server-owned. Session settings may not point at arbitrary files.
+		settings.AnnouncementBellKey = state.Settings.AnnouncementBellKey
+		settings.AnnouncementBellName = state.Settings.AnnouncementBellName
+		settings.AnnouncementBellMIME = state.Settings.AnnouncementBellMIME
 		normalizeSettings(&settings)
+		mergeMemberEntryFees(&settings, state.MemberTypes)
 		if isLiveShare(state) {
 			settings.StartMatchWithShuttle = false
 		}
@@ -2224,6 +2345,10 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	if err != nil {
 		return err
 	}
+	memberEntryFees, err := json.Marshal(state.Settings.MemberEntryFees)
+	if err != nil {
+		return err
+	}
 
 	tx, err := a.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2246,12 +2371,13 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template
+			session_id, entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			club_entry_fee = excluded.club_entry_fee,
+			member_entry_fees = excluded.member_entry_fees,
 			court_fee_per_hour = excluded.court_fee_per_hour,
 			shuttle_fee = excluded.shuttle_fee,
 			shuttle_brands = excluded.shuttle_brands,
@@ -2270,8 +2396,11 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			show_wait_time_queue = excluded.show_wait_time_queue,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
-			announcement_template = excluded.announcement_template
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate); err != nil {
+			announcement_template = excluded.announcement_template,
+			announcement_bell_key = excluded.announcement_bell_key,
+			announcement_bell_name = excluded.announcement_bell_name,
+			announcement_bell_mime = excluded.announcement_bell_mime
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
 		return err
 	}
 
@@ -2306,9 +2435,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, billing_account_id, wait_started_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, '')::timestamptz)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.BillingAccountID, player.WaitStartedAt); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt); err != nil {
 			return err
 		}
 	}
@@ -2421,11 +2550,11 @@ func sessionUsageStarted(state SessionState) bool {
 }
 
 func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
-	var name, sessionTypeValue, passcode string
+	var name, sessionTypeValue, passcode, adminID string
 	var createdAt, updatedAt time.Time
 	if err := a.db.QueryRowContext(ctx, `
-		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at from sessions where id = $1
-	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt); err != nil {
+		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at, coalesce(admin_id,'') from sessions where id = $1
+	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt, &adminID); err != nil {
 		return SessionState{}, err
 	}
 
@@ -2433,16 +2562,21 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	state.Session.Type = normalizeSessionType(sessionTypeValue)
 	state.Session.Unlocked = true
 	state.UpdatedAt = updatedAt
+	if adminID != "" {
+		_ = a.db.QueryRowContext(ctx, `select allow_match_guest_entry from admin_users where id=$1`, adminID).Scan(&state.Session.AllowMatchGuestEntry)
+		state.MemberTypes, _ = a.memberTypesForAdmin(ctx, adminID, false)
+	}
 	applySessionValidity(&state, createdAt)
 
-	var courtNamesRaw, levelsRaw, shuttleBrandsRaw []byte
+	var courtNamesRaw, levelsRaw, shuttleBrandsRaw, memberEntryFeesRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, club_entry_fee, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template
+		select entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
 		&state.Settings.EntryFee,
 		&state.Settings.ClubEntryFee,
+		&memberEntryFeesRaw,
 		&state.Settings.CourtFeePerHour,
 		&state.Settings.ShuttleFee,
 		&shuttleBrandsRaw,
@@ -2462,6 +2596,9 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
+		&state.Settings.AnnouncementBellKey,
+		&state.Settings.AnnouncementBellName,
+		&state.Settings.AnnouncementBellMIME,
 	)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return SessionState{}, err
@@ -2475,14 +2612,19 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	if len(shuttleBrandsRaw) > 0 {
 		_ = json.Unmarshal(shuttleBrandsRaw, &state.Settings.ShuttleBrands)
 	}
+	if len(memberEntryFeesRaw) > 0 {
+		_ = json.Unmarshal(memberEntryFeesRaw, &state.Settings.MemberEntryFees)
+	}
 	normalizeSettings(&state.Settings)
+	mergeMemberEntryFees(&state.Settings, state.MemberTypes)
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, coalesce(member_id, ''), coalesce(billing_account_id, ''), wait_started_at
-		from players
-		where session_id = $1
-		order by id
+		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at
+		from players p
+		left join member_types mt on mt.id=p.member_type_id
+		where p.session_id = $1
+		order by p.id
 	`, id)
 	if err != nil {
 		return SessionState{}, err
@@ -2491,7 +2633,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var player Player
 		var waitStartedAt sql.NullTime
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.BillingAccountID, &waitStartedAt); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt); err != nil {
 			return SessionState{}, err
 		}
 		if waitStartedAt.Valid {
@@ -2665,6 +2807,7 @@ func defaultState(id, name, passcode string) SessionState {
 		Settings: Settings{
 			EntryFee:                120,
 			ClubEntryFee:            120,
+			MemberEntryFees:         map[string]int{},
 			CourtFeePerHour:         150,
 			ShuttleFee:              85,
 			ShuttleBrands:           []ShuttleBrand{{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: 85, Active: true}},
@@ -3691,6 +3834,11 @@ func (a *app) revenueTotalsExact(ctx context.Context, adminID string) (float64, 
 }
 
 func playerEntryFee(state SessionState, player Player) int {
+	if player.MemberTypeID != "" {
+		if fee, exists := state.Settings.MemberEntryFees[player.MemberTypeID]; exists {
+			return max(0, fee)
+		}
+	}
 	if player.ClubMember {
 		return state.Settings.ClubEntryFee
 	}
@@ -4450,6 +4598,14 @@ func normalizeSettings(settings *Settings) {
 	if settings.ClubEntryFee == 0 {
 		settings.ClubEntryFee = settings.EntryFee
 	}
+	if settings.MemberEntryFees == nil {
+		settings.MemberEntryFees = map[string]int{}
+	}
+	for id, fee := range settings.MemberEntryFees {
+		if fee < 0 {
+			settings.MemberEntryFees[id] = 0
+		}
+	}
 	if settings.CourtFeePerHour < 0 {
 		settings.CourtFeePerHour = 0
 	}
@@ -4497,6 +4653,28 @@ func normalizeSettings(settings *Settings) {
 	}
 	if strings.TrimSpace(settings.AnnouncementTemplate) == "" {
 		settings.AnnouncementTemplate = defaultAnnouncementTemplate
+	}
+}
+
+func mergeMemberEntryFees(settings *Settings, memberTypes []MemberType) {
+	if settings.MemberEntryFees == nil {
+		settings.MemberEntryFees = map[string]int{}
+	}
+	for _, memberType := range memberTypes {
+		if _, exists := settings.MemberEntryFees[memberType.ID]; !exists {
+			fee := 0
+			if memberType.Code == "general" {
+				fee = settings.EntryFee
+			} else if memberType.Code == "club" {
+				fee = settings.ClubEntryFee
+			}
+			settings.MemberEntryFees[memberType.ID] = fee
+		}
+		if memberType.Code == "general" {
+			settings.EntryFee = settings.MemberEntryFees[memberType.ID]
+		} else if memberType.Code == "club" {
+			settings.ClubEntryFee = settings.MemberEntryFees[memberType.ID]
+		}
 	}
 }
 

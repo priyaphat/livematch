@@ -1,6 +1,7 @@
 ﻿<script setup>
 import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { createAnnouncementAudioCache } from './utils/announcementAudioCache.js'
+import { playAudioUntilEnded } from './utils/audioPlayback.js'
 import { arrangeTeamsByTeammateHistory } from './utils/teamRotation.js'
 import { emptyMatchScores, validateMatchScores } from './matchScores.js'
 import {
@@ -118,6 +119,7 @@ function defaultSessionSettingsTemplate() {
   return {
     entryFee: 120,
     clubEntryFee: 120,
+    memberEntryFees: {},
     courtFeePerHour: 150,
     shuttleFee: 85,
     shuttleBrands: [{ id: 'default', name: 'ลูกแบดทั่วไป', price: 85, active: true }],
@@ -125,6 +127,9 @@ function defaultSessionSettingsTemplate() {
     courtNames: ['สนาม 1', 'สนาม 2', 'สนาม 3', 'สนาม 4'],
     levels: ['เบา', 'กลาง', 'หนัก'],
     announcementTemplate: defaultAnnouncementTemplate,
+    announcementBellKey: '',
+    announcementBellName: '',
+    announcementBellMime: '',
     dashboardAnnouncements: []
   }
 }
@@ -159,11 +164,13 @@ const state = reactive({
     expiresAt: '',
     expired: false,
     readOnly: false,
-    readOnlyReason: ''
+    readOnlyReason: '',
+    allowMatchGuestEntry: true
   },
   settings: {
     entryFee: 120,
     clubEntryFee: 100,
+    memberEntryFees: {},
     courtFeePerHour: 150,
     shuttleFee: 85,
     shuttleBrands: [{ id: 'default', name: 'ลูกแบดทั่วไป', price: 85, active: true }],
@@ -182,7 +189,10 @@ const state = reactive({
     showWaitTimeQueue: true,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
-    announcementTemplate: defaultAnnouncementTemplate
+    announcementTemplate: defaultAnnouncementTemplate,
+    announcementBellKey: '',
+    announcementBellName: '',
+    announcementBellMime: ''
   },
   players: [
     { id: 1, name: 'ต้น', games: 4, wins: 2, draws: 0, losses: 2, shuttles: 4, paid: true, active: true, level: 'กลาง', coupon: true, clubMember: true },
@@ -198,6 +208,7 @@ const state = reactive({
     { id: 11, name: 'ก้อง', games: 1, wins: 1, draws: 0, losses: 0, shuttles: 1, paid: false, active: true, level: 'light', coupon: true },
     { id: 12, name: 'พลอย', games: 1, wins: 1, draws: 0, losses: 0, shuttles: 1, paid: true, active: true, level: 'light', coupon: true }
   ],
+  memberTypes: [],
   couples: [{ id: 1, a: 1, b: 2 }],
   returnedShuttles: [],
   pending: [],
@@ -225,6 +236,7 @@ const forms = reactive({
   newPlayerName: '',
   newPlayerPhone: '',
   newPlayerMemberId: '',
+  newPlayerMemberTypeId: '',
   playerSearch: '',
   playerPaymentFilter: 'all',
   playerPage: 1,
@@ -405,6 +417,8 @@ const auth = reactive({
   subscriptionPackages: [],
   coinPaymentQrImage: '',
   defaultSettings: defaultSessionSettingsTemplate(),
+  memberTypes: [],
+  matchPolicy: { allowMatchGuestEntry: true },
   promptPayId: '',
   promptPayType: 'mobile',
   promptPayReceiverName: '',
@@ -517,11 +531,12 @@ async function api(path, options = {}) {
     const error = await response.json().catch(() => ({ error: 'request failed' }))
     const requestError = new Error(error.error || 'request failed')
     requestError.status = response.status
-		requestError.code = error.code || error.error || ''
-		requestError.payload = error
-		if (requestError.code === 'booking_blacklisted') {
-			window.dispatchEvent(new CustomEvent('livematch:booking-blocked', { detail: error }))
-		}
+    requestError.retryAfter = Number(response.headers?.get?.('Retry-After') || 0)
+    requestError.code = error.code || error.error || ''
+    requestError.payload = error
+    if (requestError.code === 'booking_blacklisted') {
+      window.dispatchEvent(new CustomEvent('livematch:booking-blocked', { detail: error }))
+    }
     if (terminalSessionCodes.has(requestError.code)) {
       window.dispatchEvent(new CustomEvent('livematch:session-ended', { detail: { code: requestError.code } }))
     }
@@ -559,6 +574,7 @@ function mergeSessionPatch(patch = {}) {
   if (Array.isArray(patch.history)) state.history = patch.history
   if (patch.liveShare) state.liveShare = patch.liveShare
   if (patch.settings) state.settings = patch.settings
+  if (Array.isArray(patch.memberTypes)) state.memberTypes = patch.memberTypes
   normalizeClientSettings()
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
@@ -584,6 +600,10 @@ function normalizeClientSettings() {
   state.settings.shuttleFee = Number(state.settings.shuttleBrands[0]?.price || state.settings.shuttleFee || 0)
   for (const player of state.players || []) {
     if (player.clubMember === undefined) player.clubMember = false
+  }
+  if (!state.settings.memberEntryFees || typeof state.settings.memberEntryFees !== 'object') state.settings.memberEntryFees = {}
+  for (const memberType of state.memberTypes || []) {
+    if (state.settings.memberEntryFees[memberType.id] === undefined) state.settings.memberEntryFees[memberType.id] = 0
   }
   const livePlayerIds = new Set((state.live || []).flatMap((match) => matchPlayers(match)))
   for (const player of state.players || []) {
@@ -1386,6 +1406,11 @@ function applyAdminPayload(payload) {
   auth.sessions = payload.sessions || []
   auth.coinLedger = payload.coinLedger || []
   auth.defaultSettings = normalizeSessionDefaults(payload.defaultSettings || auth.defaultSettings)
+  auth.memberTypes = payload.memberTypes || []
+  auth.matchPolicy = payload.matchPolicy || { allowMatchGuestEntry: true }
+  for (const memberType of auth.memberTypes) {
+    if (auth.defaultSettings.memberEntryFees[memberType.id] === undefined) auth.defaultSettings.memberEntryFees[memberType.id] = 0
+  }
   auth.branding = payload.branding || auth.branding || { systemName: '', logoData: '' }
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
@@ -1494,10 +1519,14 @@ async function restoreAdminAccount(restoreNavigation = false) {
         clearAdminNavigation()
       }
     }
-  } catch {
+  } catch (error) {
     auth.user = null
+    if (restoreNavigation && terminalSessionCodes.has(error?.code)) {
+      clearAdminNavigation()
+      showToast(sessionEndedMessage(error.code))
+    }
   } finally {
-		auth.ready = true
+    auth.ready = true
   }
 }
 
@@ -1700,6 +1729,9 @@ function playerCost(player) {
 }
 
 function playerEntryFee(player) {
+  if (player?.memberTypeId && state.settings.memberEntryFees?.[player.memberTypeId] !== undefined) {
+    return Math.max(0, Number(state.settings.memberEntryFees[player.memberTypeId]) || 0)
+  }
   return Number(player?.clubMember ? state.settings.clubEntryFee : state.settings.entryFee) || 0
 }
 
@@ -1921,7 +1953,8 @@ function addPlayer() {
   const name = forms.newPlayerName.trim()
   if (!name) return
   const id = Math.max(...state.players.map((player) => player.id), 0) + 1
-  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: forms.newPlayerClubMember, waitStartedAt: new Date().toISOString() })
+  const memberTypeId = forms.newPlayerMemberTypeId || state.memberTypes.find((item) => item.code === 'general')?.id || ''
+  state.players.push({ id, name, games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, level: state.settings.levels[0] || 'กลาง', coupon: false, clubMember: state.memberTypes.find((item) => item.id === memberTypeId)?.code === 'club', memberTypeId, waitStartedAt: new Date().toISOString() })
   forms.newPlayerName = ''
   forms.newPlayerClubMember = false
 }
@@ -1977,10 +2010,12 @@ function normalizeSessionDefaults(input = {}) {
     })).filter((brand) => brand.name) : base.shuttleBrands,
     dashboardAnnouncements: Array.isArray(input.dashboardAnnouncements)
       ? input.dashboardAnnouncements.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5)
-      : []
+      : [],
+    memberEntryFees: input.memberEntryFees && typeof input.memberEntryFees === 'object' ? { ...input.memberEntryFees } : {}
   }
   next.entryFee = Math.max(0, Number(next.entryFee || 0))
   next.clubEntryFee = Math.max(0, Number(next.clubEntryFee || next.entryFee || 0))
+  for (const [id, fee] of Object.entries(next.memberEntryFees)) next.memberEntryFees[id] = Math.max(0, Number(fee) || 0)
   next.courtFeePerHour = Math.max(0, Number(next.courtFeePerHour || 0))
   if (!next.courtNames.length) next.courtNames = [...base.courtNames]
   if (!next.levels.length) next.levels = [...base.levels]
@@ -2287,6 +2322,7 @@ function requestAddShuttle(match) {
 
 let activeSpeechUtterances = []
 let activeAnnouncementAudio = null
+let activeAnnouncementAudioStop = null
 let announcementRunId = 0
 let lastCloudTTSNoticeCode = ''
 const announcementAudioCache = createAnnouncementAudioCache(fetchCloudAnnouncementBlob)
@@ -2335,26 +2371,23 @@ function announcementParts(match, court = '') {
     .filter(Boolean)
 }
 
-async function playAnnouncementChime() {
+async function playAnnouncementChime(source = '') {
   try {
-    const bell = new Audio('/sounds/announcement-bell.mp3')
+    const bellPath = source || (state.settings.announcementBellKey
+      ? `/api/sessions/${encodeURIComponent(state.session.id)}/announcement-bell`
+      : '/sounds/announcement-bell.mp3')
+    const bell = new Audio(bellPath)
     bell.preload = 'auto'
     bell.volume = 0.85
-    await new Promise((resolve, reject) => {
-      const timeout = window.setTimeout(resolve, 2200)
-      bell.addEventListener('ended', () => {
-        window.clearTimeout(timeout)
-        resolve()
-      }, { once: true })
-      bell.addEventListener('error', () => {
-        window.clearTimeout(timeout)
-        reject(new Error('announcement bell failed'))
-      }, { once: true })
-      bell.play().catch((error) => {
-        window.clearTimeout(timeout)
-        reject(error)
-      })
-    })
+    const playback = playAudioUntilEnded(bell)
+    activeAnnouncementAudio = bell
+    activeAnnouncementAudioStop = playback.cancel
+    try {
+      await playback.promise
+    } finally {
+      if (activeAnnouncementAudio === bell) activeAnnouncementAudio = null
+      if (activeAnnouncementAudioStop === playback.cancel) activeAnnouncementAudioStop = null
+    }
     return
   } catch {
     // Fall back to a generated chime if the audio file is blocked or unavailable.
@@ -2454,10 +2487,14 @@ function closeDashboardAnnouncements() {
 
 function stopAnnouncementAudio() {
   if (!activeAnnouncementAudio) return
-  activeAnnouncementAudio.pause?.()
-  activeAnnouncementAudio.removeAttribute?.('src')
-  activeAnnouncementAudio.load?.()
+  const audio = activeAnnouncementAudio
+  const stop = activeAnnouncementAudioStop
   activeAnnouncementAudio = null
+  activeAnnouncementAudioStop = null
+  audio.pause?.()
+  audio.removeAttribute?.('src')
+  audio.load?.()
+  stop?.()
 }
 
 function playCloudAnnouncementAudio(url) {
@@ -2467,15 +2504,19 @@ function playCloudAnnouncementAudio(url) {
     activeAnnouncementAudio = audio
     const finish = () => {
       if (activeAnnouncementAudio === audio) activeAnnouncementAudio = null
+      if (activeAnnouncementAudioStop === finish) activeAnnouncementAudioStop = null
       resolve()
     }
+    activeAnnouncementAudioStop = finish
     audio.addEventListener('ended', finish, { once: true })
     audio.addEventListener('error', () => {
       if (activeAnnouncementAudio === audio) activeAnnouncementAudio = null
+      if (activeAnnouncementAudioStop === finish) activeAnnouncementAudioStop = null
       reject(new Error('ไม่สามารถเล่นไฟล์เสียง Google ได้'))
     }, { once: true })
     audio.play().catch((error) => {
       if (activeAnnouncementAudio === audio) activeAnnouncementAudio = null
+      if (activeAnnouncementAudioStop === finish) activeAnnouncementAudioStop = null
       reject(error)
     })
   })
@@ -2594,7 +2635,10 @@ async function announceDashboardAnnouncement(text, index) {
     primeSpeechForIOS()
   }
   try {
-    await playAnnouncementChime()
+    const bellSource = auth.defaultSettings?.announcementBellKey
+      ? `/api/admin/announcement-bell?t=${Date.now()}`
+      : '/sounds/announcement-bell.mp3'
+    await playAnnouncementChime(bellSource)
     const cloudResult = await cloudResultPromise
     if (runId !== announcementRunId) return
     if (cloudResult.url) {
@@ -2922,6 +2966,56 @@ async function saveAdminDefaultSettings() {
   }
 }
 
+async function uploadAdminAnnouncementBell(file) {
+  const formData = new FormData()
+  formData.append('bell', file)
+  try {
+    applyAdminPayload(await api('/api/admin/announcement-bell', { method: 'POST', body: formData }))
+    forms.adminDefaultSettingsStatus = 'อัปโหลดเสียงกริ่งแล้ว'
+    showToast('อัปโหลดเสียงกริ่งแล้ว', 'success')
+  } catch (error) {
+    forms.adminDefaultSettingsStatus = error.message || 'อัปโหลดเสียงกริ่งไม่สำเร็จ'
+    showToast(forms.adminDefaultSettingsStatus)
+    throw error
+  }
+}
+
+async function removeAdminAnnouncementBell() {
+  try {
+    applyAdminPayload(await api('/api/admin/announcement-bell', { method: 'DELETE' }))
+    forms.adminDefaultSettingsStatus = 'กลับไปใช้เสียงกริ่งเริ่มต้นแล้ว'
+    showToast('กลับไปใช้เสียงกริ่งเริ่มต้นแล้ว', 'success')
+  } catch (error) {
+    forms.adminDefaultSettingsStatus = error.message || 'ลบเสียงกริ่งไม่สำเร็จ'
+    showToast(forms.adminDefaultSettingsStatus)
+    throw error
+  }
+}
+
+async function previewAdminAnnouncementBell() {
+  const source = auth.defaultSettings?.announcementBellKey
+    ? `/api/admin/announcement-bell?t=${Date.now()}`
+    : '/sounds/announcement-bell.mp3'
+  const audio = new Audio(source)
+  audio.volume = 0.85
+  await audio.play()
+}
+
+async function saveAdminMatchPolicy() {
+  try {
+    applyAdminPayload(await api('/api/admin/match-policy', {
+      method: 'PUT',
+      body: JSON.stringify(auth.matchPolicy)
+    }))
+    forms.adminDefaultSettingsStatus = 'บันทึกสิทธิ์เพิ่มขาจรแล้ว'
+    showToast('บันทึกสิทธิ์เพิ่มขาจรแล้ว', 'success')
+  } catch (error) {
+    forms.adminDefaultSettingsStatus = error.message || 'บันทึกสิทธิ์เพิ่มขาจรไม่สำเร็จ'
+    showToast(forms.adminDefaultSettingsStatus)
+    throw error
+  }
+}
+
 async function saveAdminBranding() {
   forms.adminDefaultSettingsStatus = ''
   try {
@@ -3102,28 +3196,31 @@ async function addPlayerApi() {
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players`, {
       method: 'POST',
-      body: JSON.stringify({ name, memberId: forms.newPlayerMemberId, level: state.settings.levels[0] || 'กลาง', coupon: false })
+      body: JSON.stringify({ name, memberId: forms.newPlayerMemberId, memberTypeId: forms.newPlayerMemberTypeId, level: state.settings.levels[0] || 'กลาง', coupon: false })
     }))
     forms.newPlayerName = ''
     forms.newPlayerPhone = ''
     forms.newPlayerMemberId = ''
+    forms.newPlayerMemberTypeId = ''
   } catch (error) {
     showToast(error.message || 'เพิ่มผู้เล่นไม่สำเร็จ')
   }
 }
 
-async function renamePlayerApi(player, name, clubMember = player.clubMember, memberId = player.memberId) {
+async function renamePlayerApi(player, name, memberTypeId = player.memberTypeId, memberId = player.memberId) {
   if (!ensureSessionActive()) return
   const nextName = name.trim()
   if (!nextName) return
   try {
     applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}`, {
       method: 'PATCH',
-      body: JSON.stringify({ name: nextName, clubMember, memberId })
+      body: JSON.stringify({ name: nextName, memberTypeId, memberId })
     }))
   } catch {
     renamePlayer(player, nextName)
-    player.clubMember = clubMember
+    player.memberTypeId = memberTypeId
+    player.memberTypeName = state.memberTypes.find((item) => item.id === memberTypeId)?.name || player.memberTypeName
+    player.clubMember = state.memberTypes.find((item) => item.id === memberTypeId)?.code === 'club'
   }
 }
 
@@ -3514,6 +3611,10 @@ const pageProps = computed(() => ({
   addAdminDefaultLevel,
   removeAdminDefaultLevel,
   saveAdminDefaultSettings,
+  saveAdminMatchPolicy,
+  uploadAdminAnnouncementBell,
+  removeAdminAnnouncementBell,
+  previewAdminAnnouncementBell,
   saveAdminBranding,
   saveSettings: saveSettingsApi,
   saveLiveShareHours: saveLiveShareHoursApi,

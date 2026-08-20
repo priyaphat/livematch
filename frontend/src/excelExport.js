@@ -64,7 +64,7 @@ export function buildMembersExportData({ state, playerCost, playerLiveShareHours
   const headers = [
     'ID',
     'ชื่อ',
-    'สมาชิกชมรม',
+    'ประเภทสมาชิก',
     'ระดับมือ',
     ...(isLiveShare ? ['ชั่วโมงเล่น'] : []),
     'จำนวนเกม',
@@ -79,7 +79,7 @@ export function buildMembersExportData({ state, playerCost, playerLiveShareHours
   const rows = players.map((player) => [
     player.id,
     player.name,
-    player.clubMember ? 'ใช่' : 'ไม่ใช่',
+    player.memberTypeName || (player.clubMember ? 'สมาชิกชมรม' : 'สมาชิกทั่วไป'),
     levelLabel(player.level),
     ...(isLiveShare ? [numeric(playerLiveShareHours(player.id))] : []),
     numeric(player.games),
