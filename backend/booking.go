@@ -484,7 +484,14 @@ func (a *app) requireFeature(w http.ResponseWriter, r *http.Request, adminID, fe
 		enabled = f.POSEnabled
 	}
 	if !enabled {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature is not enabled"})
+		if feature == "pos" {
+			writeJSON(w, http.StatusForbidden, map[string]string{
+				"error": "บัญชีนี้ยังไม่ได้รับสิทธิ์ใช้งาน POS กรุณาติดต่อผู้ดูแลระบบ",
+				"code":  "pos_not_enabled",
+			})
+		} else {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature is not enabled"})
+		}
 	}
 	return enabled
 }
@@ -506,6 +513,12 @@ func (a *app) handleBackofficeAdminFeatures(w http.ResponseWriter, r *http.Reque
 	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, pos_enabled, updated_by) values ($1,$2,$3,$4,$5) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, pos_enabled=excluded.pos_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, body.POSEnabled, actor); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
+	}
+	if !body.POSEnabled {
+		if _, err = tx.ExecContext(r.Context(), `update pos_staff_sessions s set revoked_at=coalesce(s.revoked_at,now()) from pos_staff ps where ps.id=s.staff_id and ps.admin_id=$1`, adminID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled, "posEnabled": body.POSEnabled})
 	if err = tx.Commit(); err != nil {

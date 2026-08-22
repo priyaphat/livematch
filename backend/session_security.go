@@ -16,6 +16,7 @@ const (
 	adminSessionKind      authSessionKind = "admin"
 	backofficeSessionKind authSessionKind = "backoffice"
 	publicSessionKind     authSessionKind = "public"
+	posStaffSessionKind   authSessionKind = "pos_staff"
 	sessionRotateAfter                    = 30 * time.Minute
 	sessionPreviousGrace                  = 30 * time.Second
 )
@@ -36,6 +37,8 @@ func sessionConfig(kind authSessionKind) authSessionConfig {
 		return authSessionConfig{"backoffice_sessions", "username", backofficeCookieName, "__Host-livematch_backoffice_session", 30 * time.Minute, 12 * time.Hour, http.SameSiteStrictMode}
 	case publicSessionKind:
 		return authSessionConfig{"public_user_sessions", "public_user_id", publicCookieName, "__Host-livematch_public_session", 3 * 24 * time.Hour, 7 * 24 * time.Hour, http.SameSiteLaxMode}
+	case posStaffSessionKind:
+		return authSessionConfig{"pos_staff_sessions", "staff_id", posStaffCookieName, "__Host-livematch_pos_staff_session", 2 * time.Hour, 24 * time.Hour, http.SameSiteStrictMode}
 	default:
 		return authSessionConfig{"admin_sessions", "admin_id", adminCookieName, "__Host-livematch_admin_session", 2 * time.Hour, 24 * time.Hour, http.SameSiteStrictMode}
 	}
@@ -65,9 +68,17 @@ func readSessionCookie(r *http.Request, kind authSessionKind) (string, bool) {
 }
 
 func setSessionCookie(w http.ResponseWriter, r *http.Request, kind authSessionKind, token string) {
+	setSessionCookiePersistence(w, r, kind, token, true)
+}
+
+func setSessionCookiePersistence(w http.ResponseWriter, r *http.Request, kind authSessionKind, token string, persistent bool) {
 	cfg := sessionConfig(kind)
 	secure := r.TLS != nil || strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true")
-	http.SetCookie(w, &http.Cookie{Name: authCookieName(kind), Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: cfg.sameSite, MaxAge: int(cfg.absolute.Seconds())})
+	maxAge := 0
+	if persistent {
+		maxAge = int(cfg.absolute.Seconds())
+	}
+	http.SetCookie(w, &http.Cookie{Name: authCookieName(kind), Value: token, Path: "/", HttpOnly: true, Secure: secure, SameSite: cfg.sameSite, MaxAge: maxAge})
 }
 
 func clearSessionCookies(w http.ResponseWriter, r *http.Request, kind authSessionKind) {
@@ -91,19 +102,26 @@ func clearLegacySessionCookie(w http.ResponseWriter, r *http.Request, kind authS
 func insertAuthSession(ctx context.Context, q interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }, kind authSessionKind, ownerID, token string) error {
+	return insertAuthSessionWithPersistence(ctx, q, kind, ownerID, token, true)
+}
+
+func insertAuthSessionWithPersistence(ctx context.Context, q interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, kind authSessionKind, ownerID, token string, persistent bool) error {
 	cfg := sessionConfig(kind)
 	now := time.Now().UTC()
 	idleExpiry := now.Add(cfg.idle)
 	absoluteExpiry := now.Add(cfg.absolute)
-	_, err := q.ExecContext(ctx, fmt.Sprintf(`insert into %s (session_id,token_hash,%s,created_at,last_seen_at,idle_expires_at,absolute_expires_at,rotate_after,expires_at) values ($1,$2,$3,$4,$4,$5,$6,$7,$5)`, cfg.table, cfg.ownerColumn), "auth-"+randHex(12), tokenDigest(token), ownerID, now, idleExpiry, absoluteExpiry, now.Add(sessionRotateAfter))
+	_, err := q.ExecContext(ctx, fmt.Sprintf(`insert into %s (session_id,token_hash,%s,created_at,last_seen_at,idle_expires_at,absolute_expires_at,rotate_after,expires_at,persistent) values ($1,$2,$3,$4,$4,$5,$6,$7,$5,$8)`, cfg.table, cfg.ownerColumn), "auth-"+randHex(12), tokenDigest(token), ownerID, now, idleExpiry, absoluteExpiry, now.Add(sessionRotateAfter), persistent)
 	return err
 }
 
 type rotateResult struct {
-	newToken string
-	failure  string
-	ownerID  string
-	session  string
+	newToken   string
+	failure    string
+	ownerID    string
+	session    string
+	persistent bool
 }
 
 func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawToken string) rotateResult {
@@ -114,14 +132,15 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 	}
 	defer tx.Rollback()
 	hash := tokenDigest(rawToken)
-	query := fmt.Sprintf(`select session_id,%s,token_hash,previous_token_hash,previous_valid_until,idle_expires_at,absolute_expires_at,rotate_after,revoked_at from %s where token_hash=$1 or previous_token_hash=$1 for update`, cfg.ownerColumn, cfg.table)
+	query := fmt.Sprintf(`select session_id,%s,token_hash,previous_token_hash,previous_valid_until,idle_expires_at,absolute_expires_at,rotate_after,revoked_at,persistent from %s where token_hash=$1 or previous_token_hash=$1 for update`, cfg.ownerColumn, cfg.table)
 	var sessionID, ownerID, currentHash, previousHash string
 	var previousUntil, idleExpiry, absoluteExpiry, rotateAfter, revokedAt sql.NullTime
-	if err = tx.QueryRowContext(ctx, query, hash).Scan(&sessionID, &ownerID, &currentHash, &previousHash, &previousUntil, &idleExpiry, &absoluteExpiry, &rotateAfter, &revokedAt); err != nil {
+	var persistent bool
+	if err = tx.QueryRowContext(ctx, query, hash).Scan(&sessionID, &ownerID, &currentHash, &previousHash, &previousUntil, &idleExpiry, &absoluteExpiry, &rotateAfter, &revokedAt, &persistent); err != nil {
 		return rotateResult{}
 	}
 	now := time.Now().UTC()
-	result := rotateResult{ownerID: ownerID, session: sessionID}
+	result := rotateResult{ownerID: ownerID, session: sessionID, persistent: persistent}
 	if revokedAt.Valid {
 		result.failure = "session_revoked"
 		return result
@@ -131,6 +150,15 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 		if err = tx.QueryRowContext(ctx, `select active from backoffice_users where username=$1`, ownerID).Scan(&active); err != nil || !active {
 			result.failure = "session_revoked"
 			_, _ = tx.ExecContext(ctx, `update backoffice_sessions set revoked_at=coalesce(revoked_at,now()) where username=$1`, ownerID)
+			_ = tx.Commit()
+			return result
+		}
+	}
+	if kind == posStaffSessionKind {
+		var enabled bool
+		if err = tx.QueryRowContext(ctx, `select ps.active and coalesce(af.pos_enabled,false) from pos_staff ps left join admin_features af on af.admin_id=ps.admin_id where ps.id=$1`, ownerID).Scan(&enabled); err != nil || !enabled {
+			result.failure = "pos_not_enabled"
+			_, _ = tx.ExecContext(ctx, `update pos_staff_sessions set revoked_at=coalesce(revoked_at,now()) where staff_id=$1`, ownerID)
 			_ = tx.Commit()
 			return result
 		}
@@ -178,7 +206,7 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 
 func (a *app) refreshRequestSessions(w http.ResponseWriter, r *http.Request) *http.Request {
 	failures := authFailureMap{}
-	for _, kind := range []authSessionKind{adminSessionKind, backofficeSessionKind, publicSessionKind} {
+	for _, kind := range []authSessionKind{adminSessionKind, backofficeSessionKind, publicSessionKind, posStaffSessionKind} {
 		token, ok := readSessionCookie(r, kind)
 		if !ok {
 			continue
@@ -190,11 +218,11 @@ func (a *app) refreshRequestSessions(w http.ResponseWriter, r *http.Request) *ht
 			continue
 		}
 		if result.newToken != "" {
-			setSessionCookie(w, r, kind, result.newToken)
+			setSessionCookiePersistence(w, r, kind, result.newToken, result.persistent)
 			r.Header.Set("Cookie", replaceRequestCookie(r, kind, authCookieName(kind), result.newToken))
 		} else if productionCookies() && result.session != "" {
 			// Seamlessly migrate a valid legacy production cookie to the __Host- name.
-			setSessionCookie(w, r, kind, token)
+			setSessionCookiePersistence(w, r, kind, token, result.persistent)
 			r.Header.Set("Cookie", replaceRequestCookie(r, kind, authCookieName(kind), token))
 		}
 		if productionCookies() && result.session != "" {

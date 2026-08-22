@@ -587,6 +587,13 @@ func (a *app) migrate(ctx context.Context) error {
 		where exists(select 1 from applied);
 		alter table admin_users add column if not exists system_name text not null default '';
 		alter table admin_users add column if not exists logo_data text not null default '';
+		create sequence if not exists pos_admin_number_seq start with 1001;
+		alter table admin_users add column if not exists pos_admin_number bigint;
+		alter table admin_users alter column pos_admin_number set default nextval('pos_admin_number_seq');
+		update admin_users set pos_admin_number=nextval('pos_admin_number_seq') where pos_admin_number is null;
+		alter table admin_users alter column pos_admin_number set not null;
+		create unique index if not exists idx_admin_users_pos_admin_number on admin_users(pos_admin_number);
+		select setval('pos_admin_number_seq',greatest(coalesce((select max(pos_admin_number) from admin_users),1000),1000),true);
 		create table if not exists admin_default_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
 			settings jsonb not null,
@@ -778,6 +785,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table admin_sessions add column if not exists rotate_after timestamptz;
 		alter table admin_sessions add column if not exists revoked_at timestamptz;
 		alter table admin_sessions add column if not exists reuse_detected_at timestamptz;
+		alter table admin_sessions add column if not exists persistent boolean not null default true;
 		update admin_sessions set session_id='auth-'||substr(md5(token_hash||created_at::text),1,24) where session_id='';
 		update admin_sessions set idle_expires_at=least(expires_at,now()+interval '2 hours'),absolute_expires_at=least(expires_at,now()+interval '24 hours'),rotate_after=least(now()+interval '30 minutes',expires_at) where idle_expires_at is null or absolute_expires_at is null or rotate_after is null;
 		create unique index if not exists idx_admin_sessions_session_id on admin_sessions(session_id);
@@ -791,12 +799,14 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table backoffice_sessions add column if not exists rotate_after timestamptz;
 		alter table backoffice_sessions add column if not exists revoked_at timestamptz;
 		alter table backoffice_sessions add column if not exists reuse_detected_at timestamptz;
+		alter table backoffice_sessions add column if not exists persistent boolean not null default true;
 		update backoffice_sessions set session_id='auth-'||substr(md5(token_hash||created_at::text),1,24) where session_id='';
 		update backoffice_sessions set idle_expires_at=least(expires_at,now()+interval '30 minutes'),absolute_expires_at=least(expires_at,now()+interval '12 hours'),rotate_after=least(now()+interval '30 minutes',expires_at) where idle_expires_at is null or absolute_expires_at is null or rotate_after is null;
 		create unique index if not exists idx_backoffice_sessions_session_id on backoffice_sessions(session_id);
 		create unique index if not exists idx_backoffice_sessions_previous_token on backoffice_sessions(previous_token_hash) where previous_token_hash<>'';
 		alter table public_user_sessions add column if not exists session_id text not null default '';
 		alter table public_user_sessions add column if not exists previous_token_hash text not null default '';
+		alter table public_user_sessions add column if not exists persistent boolean not null default true;
 		alter table public_user_sessions add column if not exists previous_valid_until timestamptz;
 		alter table public_user_sessions add column if not exists last_seen_at timestamptz not null default now();
 		alter table public_user_sessions add column if not exists idle_expires_at timestamptz;
@@ -867,7 +877,9 @@ func (a *app) migrate(ctx context.Context) error {
 		update session_settings ss set member_entry_fees=jsonb_build_object(
 			(select mt.id from member_types mt join sessions s on s.admin_id=mt.admin_id where s.id=ss.session_id and mt.code='general' and mt.deleted_at is null limit 1),ss.entry_fee,
 			(select mt.id from member_types mt join sessions s on s.admin_id=mt.admin_id where s.id=ss.session_id and mt.code='club' and mt.deleted_at is null limit 1),ss.club_entry_fee
-		) where member_entry_fees='{}'::jsonb and exists(select 1 from sessions s where s.id=ss.session_id and s.admin_id is not null);
+		) where member_entry_fees='{}'::jsonb
+		and exists(select 1 from sessions s join member_types mt on mt.admin_id=s.admin_id and mt.code='general' and mt.deleted_at is null where s.id=ss.session_id)
+		and exists(select 1 from sessions s join member_types mt on mt.admin_id=s.admin_id and mt.code='club' and mt.deleted_at is null where s.id=ss.session_id);
 		alter table members drop constraint if exists members_admin_id_phone_key;
 		create unique index if not exists idx_members_admin_phone_active on members(admin_id, phone) where deleted_at is null;
 		alter table players drop constraint if exists players_member_id_fkey;
@@ -1080,6 +1092,48 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_settings add column if not exists language text not null default 'th';
 		alter table pos_settings add column if not exists tax_rate_percent integer not null default 0;
 		alter table pos_settings add column if not exists prices_include_tax boolean not null default true;
+		alter table pos_settings add column if not exists inherit_booking_promptpay boolean not null default true;
+		alter table pos_settings add column if not exists payment_qr_image text not null default '';
+		create table if not exists pos_staff (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			staff_number text not null unique,
+			name text not null,
+			email text not null default '',
+			role text not null check (role in ('manager','cashier')),
+			pin_hash text not null,
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create index if not exists idx_pos_staff_admin on pos_staff(admin_id,active,created_at);
+		drop index if exists idx_pos_staff_admin_email;
+		create unique index if not exists idx_pos_staff_email on pos_staff(lower(email)) where email<>'';
+		create table if not exists pos_role_permissions (
+			admin_id text not null references admin_users(id) on delete cascade,
+			role text not null check (role in ('manager','cashier')),
+			permissions jsonb not null default '{}',
+			updated_by text not null default '',
+			updated_at timestamptz not null default now(),
+			primary key (admin_id,role)
+		);
+		create table if not exists pos_staff_sessions (
+			session_id text not null unique,
+			token_hash text primary key,
+			staff_id text not null references pos_staff(id) on delete cascade,
+			previous_token_hash text not null default '',
+			previous_valid_until timestamptz,
+			last_seen_at timestamptz not null default now(),
+			idle_expires_at timestamptz not null,
+			absolute_expires_at timestamptz not null,
+			rotate_after timestamptz not null,
+			expires_at timestamptz not null,
+			revoked_at timestamptz,
+			reuse_detected_at timestamptz,
+			persistent boolean not null default true,
+			created_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_pos_staff_sessions_previous_token on pos_staff_sessions(previous_token_hash) where previous_token_hash<>'';
 		create table if not exists pos_categories (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1087,6 +1141,8 @@ func (a *app) migrate(ctx context.Context) error {
 			created_at timestamptz not null default now()
 		);
 		alter table pos_categories add column if not exists active boolean not null default true;
+		alter table pos_categories add column if not exists icon text not null default 'Package';
+		alter table pos_categories add column if not exists color text not null default '#EF4444';
 		create unique index if not exists idx_pos_categories_name on pos_categories(admin_id, lower(name));
 		create table if not exists pos_units (
 			id text primary key,
@@ -1108,20 +1164,31 @@ func (a *app) migrate(ctx context.Context) error {
 			stock_quantity integer not null default 0 check (stock_quantity >= 0),
 			low_stock_threshold integer not null default 5 check (low_stock_threshold >= 0),
 			active boolean not null default true,
+			deleted_at timestamptz,
 			created_at timestamptz not null default now(),
 			updated_at timestamptz not null default now()
 		);
-		create unique index if not exists idx_pos_products_sku on pos_products(admin_id, lower(sku)) where sku <> '';
+		alter table pos_products add column if not exists deleted_at timestamptz;
+		drop index if exists idx_pos_products_sku;
+		create unique index if not exists idx_pos_products_sku on pos_products(admin_id, lower(sku)) where sku <> '' and deleted_at is null;
 		create index if not exists idx_pos_products_admin on pos_products(admin_id, active, category, name);
 		alter table pos_products add column if not exists unit text not null default 'ชิ้น';
 		alter table pos_products add column if not exists image_data text not null default '';
+		alter table pos_products add column if not exists barcode text not null default '';
+		alter table pos_products add column if not exists description text not null default '';
+		alter table pos_products add column if not exists cost_satang bigint not null default 0 check (cost_satang >= 0);
+		alter table pos_products add column if not exists price_satang bigint not null default 0 check (price_satang >= 0);
+		update pos_products set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
+		update pos_products set price_satang=price_thb::bigint*100 where price_satang=0 and price_thb<>0;
+		drop index if exists idx_pos_products_barcode;
+		create unique index if not exists idx_pos_products_barcode on pos_products(admin_id,lower(barcode)) where barcode<>'' and deleted_at is null;
 		insert into pos_categories (id,admin_id,name)
 		select 'category-'||substr(md5(admin_id||':'||lower(category)),1,16),admin_id,category
-		from pos_products where category<>''
+		from pos_products where category<>'' and deleted_at is null
 		on conflict do nothing;
 		insert into pos_units (id,admin_id,name)
 		select 'unit-'||substr(md5(admin_id||':'||lower(unit)),1,16),admin_id,unit
-		from pos_products where unit<>''
+		from pos_products where unit<>'' and deleted_at is null
 		on conflict do nothing;
 		create table if not exists billing_payments (
 			id text primary key,
@@ -1136,6 +1203,18 @@ func (a *app) migrate(ctx context.Context) error {
 			voided_by text not null default ''
 		);
 		create index if not exists idx_billing_payments_admin on billing_payments(admin_id, created_at desc);
+		alter table billing_payments add column if not exists amount_satang bigint not null default 0 check (amount_satang >= 0);
+		alter table billing_payments add column if not exists cash_received_satang bigint not null default 0 check (cash_received_satang >= 0);
+		alter table billing_payments add column if not exists change_satang bigint not null default 0 check (change_satang >= 0);
+		alter table billing_payments add column if not exists reference_number text not null default '';
+		alter table billing_payments add column if not exists receiver_name text not null default '';
+		alter table billing_payments add column if not exists received_by_type text not null default 'admin';
+		alter table billing_payments add column if not exists received_by_name text not null default '';
+		alter table billing_payments add column if not exists origin_system text not null default 'match';
+		do $$ begin
+			alter table billing_payments add constraint billing_payments_origin_system_check check (origin_system in ('match','pos'));
+		exception when duplicate_object then null; end $$;
+		update billing_payments set amount_satang=amount_thb::bigint*100 where amount_satang=0 and amount_thb<>0;
 		create table if not exists pos_sales (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1153,6 +1232,22 @@ func (a *app) migrate(ctx context.Context) error {
 		);
 		create index if not exists idx_pos_sales_admin on pos_sales(admin_id, status, created_at desc);
 		create index if not exists idx_pos_sales_account on pos_sales(billing_account_id, status, created_at desc);
+		alter table pos_sales add column if not exists cost_satang bigint not null default 0 check (cost_satang >= 0);
+		alter table pos_sales add column if not exists created_by_type text not null default 'admin';
+		alter table pos_sales add column if not exists created_by_name text not null default '';
+		alter table pos_sales add column if not exists request_id text not null default '';
+		alter table pos_sales add column if not exists subtotal_satang bigint not null default 0 check (subtotal_satang >= 0);
+		alter table pos_sales add column if not exists discount_type text not null default 'amount' check (discount_type in ('amount','percent'));
+		alter table pos_sales add column if not exists discount_rate_bps integer not null default 0 check (discount_rate_bps between 0 and 10000);
+		alter table pos_sales add column if not exists discount_satang bigint not null default 0 check (discount_satang >= 0);
+		alter table pos_sales add column if not exists net_before_vat_satang bigint not null default 0 check (net_before_vat_satang >= 0);
+		alter table pos_sales add column if not exists vat_rate_bps integer not null default 0 check (vat_rate_bps between 0 and 10000);
+		alter table pos_sales add column if not exists vat_satang bigint not null default 0 check (vat_satang >= 0);
+		alter table pos_sales add column if not exists prices_include_tax boolean not null default true;
+		alter table pos_sales add column if not exists total_satang bigint not null default 0 check (total_satang >= 0);
+		update pos_sales set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
+		update pos_sales set subtotal_satang=total_thb::bigint*100,net_before_vat_satang=total_thb::bigint*100,total_satang=total_thb::bigint*100 where total_satang=0 and total_thb<>0;
+		create unique index if not exists idx_pos_sales_request on pos_sales(admin_id,request_id) where request_id<>'';
 		create table if not exists pos_sale_items (
 			id bigserial primary key,
 			sale_id text not null references pos_sales(id) on delete cascade,
@@ -1164,6 +1259,27 @@ func (a *app) migrate(ctx context.Context) error {
 			unit_cost_thb integer not null default 0 check (unit_cost_thb >= 0),
 			line_total_thb integer not null check (line_total_thb >= 0)
 		);
+		alter table pos_sale_items add column if not exists unit_cost_satang bigint not null default 0 check (unit_cost_satang >= 0);
+		alter table pos_sale_items add column if not exists unit_price_satang bigint not null default 0 check (unit_price_satang >= 0);
+		alter table pos_sale_items add column if not exists line_total_satang bigint not null default 0 check (line_total_satang >= 0);
+		alter table pos_sale_items add column if not exists note text not null default '';
+		update pos_sale_items set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
+		update pos_sale_items set unit_price_satang=unit_price_thb::bigint*100,line_total_satang=line_total_thb::bigint*100 where line_total_satang=0 and line_total_thb<>0;
+		create table if not exists pos_suppliers (
+			id text primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			code text not null,
+			name text not null,
+			contact_person text not null default '',
+			phone text not null default '',
+			email text not null default '',
+			address text not null default '',
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now()
+		);
+		create unique index if not exists idx_pos_suppliers_code on pos_suppliers(admin_id,lower(code));
+		create index if not exists idx_pos_suppliers_admin on pos_suppliers(admin_id,active,lower(name));
 		create table if not exists pos_stock_batches (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1175,6 +1291,17 @@ func (a *app) migrate(ctx context.Context) error {
 			created_at timestamptz not null default now()
 		);
 		create index if not exists idx_pos_stock_batches_admin on pos_stock_batches(admin_id, created_at desc);
+		alter table pos_stock_batches add column if not exists supplier_id text references pos_suppliers(id) on delete set null;
+		alter table pos_stock_batches add column if not exists supplier_name text not null default '';
+		alter table pos_stock_batches add column if not exists discount_type text not null default 'amount';
+		alter table pos_stock_batches add column if not exists discount_rate_bps integer not null default 0 check (discount_rate_bps >= 0 and discount_rate_bps <= 10000);
+		alter table pos_stock_batches add column if not exists gross_total_satang bigint not null default 0 check (gross_total_satang >= 0);
+		alter table pos_stock_batches add column if not exists discount_satang bigint not null default 0 check (discount_satang >= 0);
+		alter table pos_stock_batches add column if not exists net_total_satang bigint not null default 0 check (net_total_satang >= 0);
+		alter table pos_stock_batches add column if not exists total_cost_satang bigint not null default 0 check (total_cost_satang >= 0);
+		alter table pos_stock_batches add column if not exists actor_type text not null default 'admin';
+		alter table pos_stock_batches add column if not exists actor_name text not null default '';
+		update pos_stock_batches set total_cost_satang=total_cost_thb::bigint*100 where total_cost_satang=0 and total_cost_thb<>0;
 		create table if not exists pos_stock_movements (
 			id bigserial primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1192,6 +1319,19 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_movements add column if not exists total_cost_thb integer not null default 0 check (total_cost_thb >= 0);
 		alter table pos_stock_movements add column if not exists previous_cost_thb integer not null default 0 check (previous_cost_thb >= 0);
 		alter table pos_stock_movements add column if not exists resulting_cost_thb integer not null default 0 check (resulting_cost_thb >= 0);
+		alter table pos_stock_movements add column if not exists unit_cost_satang bigint not null default 0 check (unit_cost_satang >= 0);
+		alter table pos_stock_movements add column if not exists gross_total_satang bigint not null default 0 check (gross_total_satang >= 0);
+		alter table pos_stock_movements add column if not exists allocated_discount_satang bigint not null default 0 check (allocated_discount_satang >= 0);
+		alter table pos_stock_movements add column if not exists net_total_satang bigint not null default 0 check (net_total_satang >= 0);
+		alter table pos_stock_movements add column if not exists previous_cost_satang bigint not null default 0 check (previous_cost_satang >= 0);
+		alter table pos_stock_movements add column if not exists resulting_cost_satang bigint not null default 0 check (resulting_cost_satang >= 0);
+		alter table pos_stock_movements add column if not exists actor_type text not null default 'admin';
+		alter table pos_stock_movements add column if not exists actor_name text not null default '';
+		update pos_stock_movements set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
+		update pos_stock_movements set gross_total_satang=total_cost_thb::bigint*100 where gross_total_satang=0 and total_cost_thb<>0;
+		update pos_stock_movements set net_total_satang=total_cost_thb::bigint*100 where net_total_satang=0 and total_cost_thb<>0;
+		update pos_stock_movements set previous_cost_satang=previous_cost_thb::bigint*100 where previous_cost_satang=0 and previous_cost_thb<>0;
+		update pos_stock_movements set resulting_cost_satang=resulting_cost_thb::bigint*100 where resulting_cost_satang=0 and resulting_cost_thb<>0;
 		create index if not exists idx_pos_stock_product on pos_stock_movements(product_id, created_at desc);
 		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
 		create table if not exists billing_payment_allocations (
@@ -1204,6 +1344,12 @@ func (a *app) migrate(ctx context.Context) error {
 			unique (payment_id, source_type, source_id)
 		);
 		create index if not exists idx_billing_alloc_source on billing_payment_allocations(source_type, source_id);
+		alter table billing_payment_allocations add column if not exists amount_satang bigint not null default 0 check (amount_satang >= 0);
+		alter table billing_payment_allocations add column if not exists label text not null default '';
+		alter table billing_payment_allocations add column if not exists snapshot jsonb not null default '{}'::jsonb;
+		update billing_payment_allocations set amount_satang=amount_thb::bigint*100 where amount_satang=0 and amount_thb<>0;
+		update billing_payments bp set origin_system='pos' where bp.received_by_type='pos_staff' or (exists(select 1 from billing_payment_allocations a where a.payment_id=bp.id and a.source_type='pos') and not exists(select 1 from billing_payment_allocations a where a.payment_id=bp.id and a.source_type='match'));
+		alter table player_payment_events add column if not exists billing_payment_id text references billing_payments(id) on delete set null;
 		create index if not exists idx_sessions_admin on sessions(admin_id);
 		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
@@ -1794,40 +1940,9 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "dashboard":
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
-		rows, err := a.db.QueryContext(r.Context(), `
-			select e.id, e.player_id, coalesce(p.name, ''), e.paid, e.amount_thb, e.amount_satang, e.payment_method,
-			       to_char(e.created_at at time zone 'Asia/Bangkok', 'DD/MM/YYYY HH24:MI')
-			from player_payment_events e
-			left join players p on p.session_id=e.session_id and p.id=e.player_id
-			where e.session_id=$1
-			order by e.created_at desc, e.id desc
-		`, state.Session.ID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-		items := []map[string]any{}
-		for rows.Next() {
-			var eventID, amountSatang int64
-			var playerID, amount int
-			var playerName, createdAt, paymentMethod string
-			var paid bool
-			if err := rows.Scan(&eventID, &playerID, &playerName, &paid, &amount, &amountSatang, &paymentMethod, &createdAt); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-				return
-			}
-			if playerName == "" {
-				playerName = fmt.Sprintf("ผู้เล่น #%d", playerID)
-			}
-			items = append(items, map[string]any{"id": eventID, "playerId": playerID, "playerName": playerName, "paid": paid, "amount": thbFromSatang(amountSatang), "amountThb": thbFromSatang(amountSatang), "amountSatang": amountSatang, "paymentMethod": paymentMethod, "createdAt": createdAt})
-		}
-		if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
-			writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items), "page": 1, "pageSize": len(items)})
-			return
-		}
-		paged, page, pageSize := paginate(items, r)
-		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
+		a.writeSessionPaymentEvents(w, r, state)
+	case r.Method == http.MethodGet && action == "billing-sync":
+		a.writeSessionBillingSync(w, r, state)
 	case r.Method == http.MethodGet && action == "players" && len(parts) >= 4 && parts[3] == "payment-summary":
 		playerID, err := strconv.Atoi(parts[2])
 		if err != nil {
@@ -1964,6 +2079,14 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					state.Players[i].Name = name
 				}
 				if body.Paid != nil {
+					if !*body.Paid {
+						var centrallySettled bool
+						_ = a.db.QueryRowContext(r.Context(), `select exists(select 1 from player_payment_events where session_id=$1 and player_id=$2 and paid and billing_payment_id is not null)`, state.Session.ID, playerID).Scan(&centrallySettled)
+						if centrallySettled {
+							writeJSON(w, http.StatusConflict, map[string]string{"error": "รายการนี้ชำระผ่านบัญชีกลางแล้ว ไม่สามารถยกเลิกการชำระได้", "code": "billing_payment_immutable"})
+							return
+						}
+					}
 					method := strings.ToLower(strings.TrimSpace(body.Method))
 					if method != "cash" && method != "promptpay" {
 						method = "cash"
@@ -2402,6 +2525,26 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			announcement_bell_mime = excluded.announcement_bell_mime
 	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
 		return err
+	}
+
+	// A registered member gets a stable billing account as soon as they enter a
+	// session, so POS can see the dynamically calculated Match balance without
+	// waiting for either payment screen to be opened first.
+	var sessionAdminID sql.NullString
+	if err = tx.QueryRowContext(ctx, `select admin_id from sessions where id=$1`, state.Session.ID).Scan(&sessionAdminID); err != nil {
+		return err
+	}
+	if sessionAdminID.Valid && sessionAdminID.String != "" {
+		for index := range state.Players {
+			if state.Players[index].MemberID == "" {
+				continue
+			}
+			accountID, accountErr := ensureBillingAccountTx(ctx, tx, sessionAdminID.String, "member", state.Players[index].MemberID, "", "")
+			if accountErr != nil {
+				return accountErr
+			}
+			state.Players[index].BillingAccountID = accountID
+		}
 	}
 
 	// POS may link a session-local guest to a billing account while another admin tab still
@@ -4855,7 +4998,7 @@ func (a *app) withCORS(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", requestID)
 		origin := r.Header.Get("Origin")
 		allowed := origin == ""
-		for _, candidate := range strings.Split(os.Getenv("APP_ALLOWED_ORIGINS")+","+os.Getenv("APP_BASE_URL"), ",") {
+		for _, candidate := range strings.Split(os.Getenv("APP_ALLOWED_ORIGINS")+","+os.Getenv("APP_BASE_URL")+","+os.Getenv("POS_BASE_URL"), ",") {
 			if strings.TrimSpace(candidate) != "" && strings.EqualFold(strings.TrimRight(origin, "/"), strings.TrimRight(strings.TrimSpace(candidate), "/")) {
 				allowed = true
 				break
@@ -4897,7 +5040,8 @@ func (a *app) withCORS(next http.Handler) http.Handler {
 		_, hasAdminSession := readSessionCookie(r, adminSessionKind)
 		_, hasBackofficeSession := readSessionCookie(r, backofficeSessionKind)
 		_, hasPublicSession := readSessionCookie(r, publicSessionKind)
-		if unsafe && (hasAdminSession || hasBackofficeSession || hasPublicSession) && r.Header.Get("X-CSRF-Token") != csrfToken {
+		_, hasPOSStaffSession := readSessionCookie(r, posStaffSessionKind)
+		if unsafe && (hasAdminSession || hasBackofficeSession || hasPublicSession || hasPOSStaffSession) && r.Header.Get("X-CSRF-Token") != csrfToken {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid csrf token"})
 			return
 		}

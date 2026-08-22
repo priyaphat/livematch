@@ -50,14 +50,20 @@ describe('AdminSupervisorPage feature cards', () => {
   })
 
   it.each([
-    [{ memberEnabled: true, bookingEnabled: false, posEnabled: false }, ['grid-cols-1'], ['sm:grid-cols-2', 'lg:grid-cols-3']],
-    [{ memberEnabled: true, bookingEnabled: true, posEnabled: false }, ['sm:grid-cols-2'], ['lg:grid-cols-3']],
-    [{ memberEnabled: true, bookingEnabled: true, posEnabled: true }, ['sm:grid-cols-2', 'lg:grid-cols-3'], []]
+    [{ memberEnabled: true, bookingEnabled: false, posEnabled: false }, ['grid-cols-1'], ['sm:grid-cols-2']],
+    [{ memberEnabled: true, bookingEnabled: true, posEnabled: false }, ['sm:grid-cols-2'], ['grid-cols-1']],
+    [{ memberEnabled: true, bookingEnabled: true, posEnabled: true }, ['sm:grid-cols-2'], ['grid-cols-1']]
   ])('fills the feature grid for every visible-card count', (features, includedClasses, excludedClasses) => {
     const wrapper = mountDashboard(features)
     const gridClasses = wrapper.get('[data-testid="admin-feature-grid"]').classes()
     includedClasses.forEach((className) => expect(gridClasses).toContain(className))
     excludedClasses.forEach((className) => expect(gridClasses).not.toContain(className))
+  })
+
+  it('does not render the retired POS UI entry while preserving its feature flag', () => {
+    const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false, posEnabled: true })
+    expect(wrapper.text()).not.toContain('ระบบ POS')
+    expect(wrapper.find('[data-testid="admin-feature-grid"]').exists()).toBe(false)
   })
 
   it('opens the shared announcement modal from the dashboard header', async () => {

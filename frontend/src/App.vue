@@ -43,6 +43,7 @@ import {
 } from '@lucide/vue'
 import MatchSetupModal from './components/MatchSetupModal.vue'
 import ManualTeamModal from './components/ManualTeamModal.vue'
+import InstallPwaButton from './components/InstallPwaButton.vue'
 import AuthPage from './pages/AuthPage.vue'
 import BackofficePage from './pages/BackofficePage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
@@ -63,13 +64,12 @@ const SharedQueuePage = defineAsyncComponent(() => import('./pages/SharedQueuePa
 const VerifyEmailPage = defineAsyncComponent(() => import('./pages/VerifyEmailPage.vue'))
 const MemberAdminPage = defineAsyncComponent(() => import('./pages/MemberAdminPage.vue'))
 const BookingAdminPage = defineAsyncComponent(() => import('./pages/BookingAdminPage.vue'))
-const POSPage = defineAsyncComponent(() => import('./pages/POSPage.vue'))
 const PublicBookingPage = defineAsyncComponent(() => import('./pages/PublicBookingPage.vue'))
 const PublicProfilePage = defineAsyncComponent(() => import('./pages/PublicProfilePage.vue'))
 
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const routePath = window.location.pathname
-const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : routePath === '/admin/pos' ? 'pos' : ''
+const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : ''
 const publicBookingToken = routePath.startsWith('/booking/') ? routePath.slice('/booking/'.length).split('/')[0] : ''
 const publicProfileToken = routePath.startsWith('/p/') ? routePath.slice('/p/'.length).split('/')[0] : ''
 const isPublicBookingSurface = Boolean(publicBookingToken || publicProfileToken)
@@ -457,6 +457,7 @@ let toastTimer = null
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
 let bookingBlockTimer = null
+let billingSyncTimer = null
 const terminalSessionCodes = new Set([
   'session_idle_expired',
   'session_absolute_expired',
@@ -708,10 +709,36 @@ async function selectAdminTab(tabId) {
   }
 }
 
+async function refreshMatchBilling() {
+  if (!auth.user || !state.session.unlocked || !state.session.id || state.session.id === 'demo-session' || document.visibilityState !== 'visible') return
+  try {
+    const payload = await api(`/api/sessions/${state.session.id}/billing-sync`)
+    for (const item of payload.players || []) {
+      const player = state.players.find((candidate) => candidate.id === item.playerId)
+      if (!player) continue
+      player.paid = Boolean(item.paid)
+      player.billingAccountId = item.billingAccountId || player.billingAccountId
+      player.matchTotalSatang = Number(item.matchTotalSatang || 0)
+      player.posTotalSatang = Number(item.posTotalSatang || 0)
+      player.billingTotalSatang = Number(item.totalSatang || 0)
+    }
+    window.dispatchEvent(new CustomEvent('livematch:billing-sync', { detail: payload }))
+  } catch {
+    // A transient polling failure must not interrupt Match operations.
+  }
+}
+
+function refreshMatchBillingOnFocus() {
+  if (document.visibilityState === 'visible') void refreshMatchBilling()
+}
+
 onMounted(() => {
   window.addEventListener('keydown', handleDashboardAnnouncementKeydown)
 	window.addEventListener('livematch:session-ended', handleSessionEnded)
 	window.addEventListener('livematch:booking-blocked', handleBookingBlocked)
+	window.addEventListener('focus', refreshMatchBillingOnFocus)
+	document.addEventListener('visibilitychange', refreshMatchBillingOnFocus)
+	billingSyncTimer = window.setInterval(refreshMatchBillingOnFocus, 10_000)
 	try {
 		const saved = JSON.parse(localStorage.getItem(bookingBlockStorageKey()) || 'null')
 		if (isBookingBlockSurface() && Number(saved?.deadlineMs) > Date.now()) Object.assign(bookingBlock, saved, { surfaceToken: bookingBlockSurfaceToken() })
@@ -771,6 +798,9 @@ onUnmounted(() => {
   window.removeEventListener('keydown', handleDashboardAnnouncementKeydown)
 	window.removeEventListener('livematch:session-ended', handleSessionEnded)
 	window.removeEventListener('livematch:booking-blocked', handleBookingBlocked)
+	window.removeEventListener('focus', refreshMatchBillingOnFocus)
+	document.removeEventListener('visibilitychange', refreshMatchBillingOnFocus)
+	if (billingSyncTimer) window.clearInterval(billingSyncTimer)
 	if (bookingBlockTimer) window.clearInterval(bookingBlockTimer)
   stopSharedRefresh()
   stopAnnouncementAudio()
@@ -1422,7 +1452,8 @@ function applyAdminPayload(payload) {
 }
 
 function navigateAdminFeature(feature) {
-  window.location.href = feature === 'members' ? '/admin/members' : feature === 'booking' ? '/admin/booking' : '/admin/pos'
+  const paths = { members: '/admin/members', booking: '/admin/booking' }
+  if (paths[feature]) window.location.href = paths[feature]
 }
 
 async function saveBackofficeAdminFeatures(features) {
@@ -3249,7 +3280,7 @@ async function togglePaymentApi(player, paymentSummary = null, paymentMethod = '
     if (targetPaid && paymentSummary?.posEnabled && paymentSummary?.billingAccountId) {
       const result = await api(`/api/sessions/${state.session.id}/players/${player.id}/settle`, {
         method: 'POST',
-        body: JSON.stringify({ method: paymentMethod, expectedTotalThb: paymentSummary.totalThb })
+		body: JSON.stringify({ method: paymentMethod, expectedTotalSatang: Number(paymentSummary.totalSatang ?? Math.round(Number(paymentSummary.totalThb || 0) * 100)), cashReceivedSatang: paymentMethod === 'cash' ? Number(paymentSummary.totalSatang ?? Math.round(Number(paymentSummary.totalThb || 0) * 100)) : 0 })
       })
       applyServerState(result.state)
     } else {
@@ -3717,7 +3748,6 @@ const pageProps = computed(() => ({
     <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" :auth="auth" />
-    <POSPage v-else-if="adminFeaturePage === 'pos' && auth.user" :api-request="api" :auth="auth" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
 
     <SharedPlayersPage v-else-if="share.isPublic && share.view === 'players'" :state="state" :share="share" :money="money" :player-cost="playerCost" />
@@ -3737,6 +3767,7 @@ const pageProps = computed(() => ({
           </span>
         </button>
         <div class="flex min-w-0 items-center gap-1.5 sm:gap-2">
+          <InstallPwaButton />
           <button
             v-if="auth.user && !isAdmin"
             class="inline-flex h-9 max-w-[4rem] items-center justify-center gap-1 rounded-md border border-shuttle-500 bg-shuttle-400 px-1.5 text-xs font-black uppercase text-stone-950 shadow-[0_8px_24px_rgba(245,197,66,0.28)] transition hover:bg-shuttle-300 dark:border-shuttle-600 dark:bg-shuttle-400 dark:text-stone-950 sm:h-10 sm:max-w-none sm:gap-2 sm:px-3"

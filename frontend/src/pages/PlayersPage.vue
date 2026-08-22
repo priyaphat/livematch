@@ -146,6 +146,7 @@ function playerSortAria(key) {
 
 async function openPaymentModal(player) {
   if (props.isSessionReadOnly || paymentSaving.value) return
+  if (player.paid && player.memberId) return
   paymentPlayer.value = player
   paymentSummary.value = null
   paymentError.value = ''
@@ -182,6 +183,13 @@ async function confirmPaymentChange() {
     saved = true
   } catch (error) {
     paymentError.value = error.message || 'บันทึกสถานะชำระเงินไม่สำเร็จ'
+	if (error?.status === 409 && paymentPlayer.value && !paymentPlayer.value.paid) {
+	  try {
+		paymentSummary.value = await props.apiRequest(`/api/sessions/${props.state.session.id}/players/${paymentPlayer.value.id}/payment-summary`)
+		paymentQr.value = paymentSummary.value.promptPayPayload ? await QRCode.toDataURL(paymentSummary.value.promptPayPayload, { width: 260, margin: 1 }) : ''
+		paymentError.value = 'ยอดมีการเปลี่ยนแปลง ระบบคำนวณยอดล่าสุดแล้ว กรุณาตรวจสอบและกดยืนยันอีกครั้ง'
+	  } catch { /* Keep the settlement error visible. */ }
+	}
   } finally {
     paymentSaving.value = false
   }
@@ -569,11 +577,11 @@ async function exportExcel() {
           <button
             class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
             :class="player.paid ? 'border border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300' : 'bg-shuttle-400 text-stone-900'"
-            :disabled="isSessionReadOnly"
+            :disabled="isSessionReadOnly || (player.paid && player.memberId)"
             @click.stop="openPaymentModal(player)"
           >
             <Check v-if="player.paid" class="h-3.5 w-3.5" />
-            {{ player.paid ? 'ยกเลิกการชำระ' : 'ชำระเงิน' }}
+            {{ player.paid ? (player.memberId ? 'ชำระแล้ว' : 'ยกเลิกการชำระ') : 'ชำระเงิน' }}
           </button>
         </div>
       </article>

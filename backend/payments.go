@@ -354,7 +354,11 @@ func promptPayPayloadsForSubscriptionPackages(settings promptPaySettings, packag
 }
 
 func promptPayPayload(settings promptPaySettings, amountTHB int) (string, error) {
-	if amountTHB <= 0 {
+	return promptPayPayloadSatang(settings, int64(amountTHB)*100)
+}
+
+func promptPayPayloadSatang(settings promptPaySettings, amountSatang int64) (string, error) {
+	if amountSatang <= 0 {
 		return "", errors.New("amount must be positive")
 	}
 	target, tag, err := normalizePromptPayTarget(settings)
@@ -366,7 +370,7 @@ func promptPayPayload(settings promptPaySettings, amountTHB int) (string, error)
 		emv("01", "12") +
 		emv("29", merchantAccount) +
 		emv("53", "764") +
-		emv("54", fmt.Sprintf("%.2f", float64(amountTHB))) +
+		emv("54", fmt.Sprintf("%d.%02d", amountSatang/100, amountSatang%100)) +
 		emv("58", "TH")
 	return payload + "6304" + crc16CCITT(payload+"6304"), nil
 }

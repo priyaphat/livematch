@@ -1,0 +1,178 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  * {
+    font-family: 'Prompt', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+  
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background-color: #f8fafc;
+    color: #0f172a;
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
+  .dark body {
+    background-color: #020617;
+    color: #f8fafc;
+  }
+}
+
+/* Number fields use direct typing; hide native browser stepper arrows. */
+input[type='number'] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
+input[type='number']::-webkit-outer-spin-button,
+input[type='number']::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+/* POS readability: promote every on-screen type utility by one Tailwind size step. */
+@media screen {
+  .text-\[9px\] { font-size: 10px; }
+  .text-\[10px\] { font-size: 11px; }
+  .text-\[11px\] { font-size: 12px; }
+  .text-xs { font-size: 0.875rem; line-height: 1.25rem; }
+  .text-sm { font-size: 1rem; line-height: 1.5rem; }
+  .text-base { font-size: 1.125rem; line-height: 1.75rem; }
+  .text-lg { font-size: 1.25rem; line-height: 1.75rem; }
+  .text-xl { font-size: 1.5rem; line-height: 2rem; }
+  .text-2xl { font-size: 1.875rem; line-height: 2.25rem; }
+  .text-3xl { font-size: 2.25rem; line-height: 2.5rem; }
+  .text-4xl { font-size: 3rem; line-height: 1; }
+  .text-5xl { font-size: 3.75rem; line-height: 1; }
+}
+
+@media screen and (min-width: 40rem) {
+  .sm\:text-\[10px\] { font-size: 11px; }
+  .sm\:text-xs { font-size: 0.875rem; line-height: 1.25rem; }
+  .sm\:text-sm { font-size: 1rem; line-height: 1.5rem; }
+  .sm\:text-base { font-size: 1.125rem; line-height: 1.75rem; }
+  .sm\:text-lg { font-size: 1.25rem; line-height: 1.75rem; }
+  .sm\:text-xl { font-size: 1.5rem; line-height: 2rem; }
+  .sm\:text-2xl { font-size: 1.875rem; line-height: 2.25rem; }
+  .sm\:text-3xl { font-size: 2.25rem; line-height: 2.5rem; }
+  .sm\:text-4xl { font-size: 3rem; line-height: 1; }
+  .sm\:text-5xl { font-size: 3.75rem; line-height: 1; }
+}
+
+/* Custom modern scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(226, 232, 240, 0.6);
+}
+.dark ::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.6);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.8);
+  border-radius: 9999px;
+}
+.dark ::-webkit-scrollbar-thumb {
+  background: rgba(71, 85, 105, 0.6);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(220, 38, 38, 0.9);
+}
+
+/* Custom scrollbar utility */
+.custom-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.8) rgba(241, 245, 249, 0.8);
+}
+.dark .custom-scrollbar {
+  scrollbar-color: rgba(71, 85, 105, 0.7) rgba(15, 23, 42, 0.4);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(241, 245, 249, 0.8);
+  border-radius: 8px;
+}
+.dark .custom-scrollbar::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.4);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.8);
+  border-radius: 9999px;
+}
+.dark .custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(100, 116, 139, 0.6);
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(220, 38, 38, 0.9);
+}
+
+/* Thermal receipt printing styling */
+@media print {
+  html, body, #root, #receipt-modal-backdrop, #receipt-modal-container {
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    background: transparent !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  #printable-receipt,
+  #printable-receipt * {
+    visibility: visible;
+  }
+
+  #printable-receipt {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    margin: 0 auto !important;
+    padding: 10px !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    border: none !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: auto !important;
+    font-size: 11px !important;
+    page-break-after: auto;
+    page-break-inside: auto;
+  }
+
+  #printable-receipt.print-80mm {
+    max-width: 80mm !important;
+    width: 80mm !important;
+  }
+
+  #printable-receipt.print-58mm {
+    max-width: 58mm !important;
+    width: 58mm !important;
+  }
+}

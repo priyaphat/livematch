@@ -1,0 +1,6 @@
+{
+  "name": "Siam Pure POS - ระบบจัดการการขายหน้าร้าน",
+  "description": "ระบบ POS และจัดการสต็อกสินค้าครบวงจร สไตล์ Siam Pure POS รองรับการขาย ออกบิล พักยอด QR PromptPay/เงินสด รายงานยอดขาย สต็อกสินค้า และพิมพ์ใบเสร็จ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

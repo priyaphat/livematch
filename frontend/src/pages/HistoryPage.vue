@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { CreditCard, Download, Plus, Trophy, X } from '@lucide/vue'
 import { exportHistoryExcel, exportPaymentHistoryExcel } from '../excelExport'
 import { emptyMatchScores, matchScoreSummary, validateMatchScores } from '../matchScores.js'
@@ -22,6 +22,7 @@ const paymentEvents = ref([])
 const paymentLoading = ref(false)
 const paymentLoaded = ref(false)
 const paymentError = ref('')
+const selectedPayment = ref(null)
 const exportLoading = ref(false)
 const exportError = ref('')
 const editingMatch = ref(null)
@@ -114,6 +115,17 @@ async function loadPaymentEvents(force = false) {
   }
 }
 
+function handleBillingSync(event) {
+  const items = event?.detail?.paymentHistory
+  if (!Array.isArray(items)) return
+  paymentEvents.value = items
+  paymentLoaded.value = true
+  paymentError.value = ''
+}
+
+onMounted(() => window.addEventListener('livematch:billing-sync', handleBillingSync))
+onUnmounted(() => window.removeEventListener('livematch:billing-sync', handleBillingSync))
+
 function selectTab(tab) {
   activeTab.value = tab
   if (tab === 'payments') void loadPaymentEvents()
@@ -184,18 +196,28 @@ async function exportExcel() {
       <p v-else-if="paymentError" class="p-5 text-center text-sm font-bold text-rose-700 dark:text-rose-300">{{ paymentError }}</p>
       <p v-else-if="!paymentEvents.length" class="p-5 text-center text-sm font-bold text-stone-500">ยังไม่มีประวัติการชำระเงิน</p>
       <div v-else class="divide-y divide-stone-100 dark:divide-stone-800">
-        <article v-for="event in paymentEvents" :key="event.id" class="grid gap-2 p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5">
+		<article v-for="event in paymentEvents" :key="event.id" class="grid cursor-pointer gap-2 p-4 hover:bg-paper-50 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5 dark:hover:bg-stone-800/50" @click="selectedPayment = event">
           <div class="min-w-0">
             <p class="truncate font-black">{{ event.playerName }}</p>
             <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ event.createdAt }}</p>
-            <p class="mt-1 text-xs font-black text-stone-600 dark:text-stone-300">{{ event.paid ? (event.paymentMethod === 'promptpay' ? 'สแกน' : 'เงินสด') : '—' }}</p>
+			<p class="mt-1 text-xs font-black text-stone-600 dark:text-stone-300">{{ event.paid ? (event.paymentMethod === 'promptpay' ? 'สแกน' : 'เงินสด') : '—' }} <span v-if="event.originSystem" class="ml-1 rounded px-1.5 py-0.5" :class="event.originSystem === 'pos' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200' : 'bg-sky-100 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200'">รับที่ {{ event.originSystem === 'pos' ? 'POS' : 'Match' }}</span></p>
           </div>
           <span class="w-fit rounded-md px-2 py-1 text-xs font-black" :class="event.paid ? 'bg-court-500/10 text-court-700 dark:text-court-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'">
             {{ event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน' }}
           </span>
-          <p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ formatAmount(event.amount) }}</p>
-        </article>
-      </div>
+		  <div class="text-right"><p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ formatAmount(event.amount) }}</p><p v-if="event.matchTotalSatang !== undefined" class="mt-1 text-[10px] font-bold text-stone-400">Match ฿{{ formatAmount(Number(event.matchTotalSatang || 0) / 100) }} · POS ฿{{ formatAmount(Number(event.posTotalSatang || 0) / 100) }}</p></div>
+		</article>
+	</div>
+
+	<div v-if="selectedPayment" class="fixed inset-0 z-[70] grid place-items-end bg-stone-950/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" @click.self="selectedPayment = null">
+	  <div class="w-full max-w-lg overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+		<div class="flex items-start justify-between border-b border-stone-100 p-4 dark:border-stone-800"><div><p class="text-xs font-black text-court-600">{{ selectedPayment.paymentId || selectedPayment.id }}</p><h2 class="mt-1 text-lg font-black">รายละเอียดการชำระเงิน · {{ selectedPayment.playerName }}</h2></div><button class="grid h-9 w-9 place-items-center rounded-md hover:bg-stone-100 dark:hover:bg-stone-800" @click="selectedPayment = null"><X class="h-4 w-4" /></button></div>
+		<div class="max-h-[65vh] space-y-3 overflow-y-auto p-4">
+		  <div class="grid grid-cols-3 gap-2 text-center text-sm"><div class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">Match</p><b>฿{{ formatAmount(Number(selectedPayment.matchTotalSatang || 0) / 100) }}</b></div><div class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">POS</p><b>฿{{ formatAmount(Number(selectedPayment.posTotalSatang || 0) / 100) }}</b></div><div class="rounded-lg bg-court-500/10 p-3"><p class="text-xs font-bold text-stone-500">รวม</p><b class="text-court-700">฿{{ formatAmount(selectedPayment.amount) }}</b></div></div>
+		  <section v-for="line in (selectedPayment.lines || [])" :key="`${line.sourceType}-${line.sourceId}`" class="rounded-lg border border-stone-200 p-3 dark:border-stone-700"><div class="flex items-center justify-between gap-3"><div><span class="rounded px-1.5 py-0.5 text-[10px] font-black" :class="line.sourceType === 'pos' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-sky-800'">{{ line.sourceType.toUpperCase() }}</span><p class="mt-1 font-black">{{ line.label }}</p></div><b>฿{{ formatAmount(Number(line.amountSatang || 0) / 100) }}</b></div><div v-if="Array.isArray(line.snapshot?.items)" class="mt-2 grid gap-1 border-t border-stone-100 pt-2 text-xs dark:border-stone-800"><div v-for="(item, index) in line.snapshot.items" :key="index" class="flex justify-between gap-3"><span>{{ item.quantity || 1 }} × {{ item.name || item.productName || item.label || 'รายการ' }}</span><b>฿{{ formatAmount(Number(item.amountSatang ?? item.lineTotalSatang ?? 0) / 100) }}</b></div></div></section>
+		</div>
+	  </div>
+	</div>
     </div>
     <article
       v-for="match in sortedHistory"

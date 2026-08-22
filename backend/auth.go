@@ -25,6 +25,7 @@ import (
 const (
 	adminCookieName      = "livematch_admin_session"
 	backofficeCookieName = "livematch_backoffice_session"
+	posStaffCookieName   = "livematch_pos_staff_session"
 )
 
 var (
@@ -34,12 +35,18 @@ var (
 )
 
 type adminUser struct {
-	ID        string `json:"id"`
-	Email     string `json:"email"`
-	Name      string `json:"name"`
-	Verified  bool   `json:"verified"`
-	Coins     int    `json:"coins"`
-	CreatedAt string `json:"createdAt"`
+	ID             string          `json:"id"`
+	Email          string          `json:"email"`
+	Name           string          `json:"name"`
+	POSAdminNumber int64           `json:"posAdminNumber"`
+	Verified       bool            `json:"verified"`
+	Coins          int             `json:"coins"`
+	CreatedAt      string          `json:"createdAt"`
+	POSActorID     string          `json:"-"`
+	POSActorName   string          `json:"-"`
+	POSActorType   string          `json:"-"`
+	POSRole        string          `json:"-"`
+	POSPermissions map[string]bool `json:"-"`
 }
 
 type adminSessionItem struct {
@@ -157,10 +164,16 @@ func (a *app) handleAuthRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleAdminRegister(w, r)
 	case r.Method == http.MethodPost && action == "login":
 		a.handleAdminLogin(w, r)
+	case r.Method == http.MethodPost && action == "pos/login":
+		a.handlePOSAdminLogin(w, r)
+	case r.Method == http.MethodPost && action == "pos/logout":
+		a.handlePOSLogout(w, r)
 	case r.Method == http.MethodPost && action == "logout":
 		a.handleAdminLogout(w, r)
 	case r.Method == http.MethodGet && action == "me":
 		a.handleAdminMe(w, r)
+	case r.Method == http.MethodGet && action == "pos/me":
+		a.handlePOSAdminMe(w, r)
 	case r.Method == http.MethodGet && action == "verify-email":
 		a.handleVerifyEmail(w, r)
 	case r.Method == http.MethodPost && action == "forgot-password":
@@ -206,12 +219,25 @@ func (a *app) handleAdminRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(r.Context(), `select pg_advisory_xact_lock(hashtext($1))`, "pos-login-email:"+email); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	var emailInUse bool
+	if emailInUse, err = posLoginEmailInUse(r.Context(), tx, email, ""); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if emailInUse {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "อีเมลนี้ถูกใช้เข้าสู่ระบบแล้ว", "code": "email_in_use"})
+		return
+	}
 
 	if _, err = tx.ExecContext(r.Context(), `
 		insert into admin_users (id, email, name, password_hash)
 		values ($1, $2, $3, $4)
 	`, adminID, email, name, string(hash)); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "email already registered"})
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "อีเมลนี้ถูกใช้เข้าสู่ระบบแล้ว", "code": "email_in_use"})
 		return
 	}
 	if _, err = tx.ExecContext(r.Context(), `
@@ -233,9 +259,18 @@ func (a *app) handleAdminRegister(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
+	a.handleAdminLoginForFeature(w, r, "")
+}
+
+func (a *app) handlePOSAdminLogin(w http.ResponseWriter, r *http.Request) {
+	a.handlePOSLogin(w, r)
+}
+
+func (a *app) handleAdminLoginForFeature(w http.ResponseWriter, r *http.Request, requiredFeature string) {
 	var body struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
+		Remember *bool  `json:"remember,omitempty"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	user, passwordHash, err := a.adminByEmail(r.Context(), normalizeEmail(body.Email))
@@ -250,12 +285,23 @@ func (a *app) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "email not verified"})
 		return
 	}
+	if requiredFeature == "pos" && !a.features(r.Context(), user.ID).POSEnabled {
+		writeJSON(w, http.StatusForbidden, map[string]string{
+			"error": "บัญชีนี้ยังไม่ได้รับสิทธิ์ใช้งาน POS กรุณาติดต่อผู้ดูแลระบบ",
+			"code":  "pos_not_enabled",
+		})
+		return
+	}
 	token := randHex(24)
-	if err = insertAuthSession(r.Context(), a.db, adminSessionKind, user.ID, token); err != nil {
+	remember := true
+	if body.Remember != nil {
+		remember = *body.Remember
+	}
+	if err = insertAuthSessionWithPersistence(r.Context(), a.db, adminSessionKind, user.ID, token, remember); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	setAdminCookie(w, r, token)
+	setSessionCookiePersistence(w, r, adminSessionKind, token, remember)
 	a.writeAdminMe(w, r, user)
 }
 
@@ -274,6 +320,15 @@ func (a *app) handleAdminMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeAdminMe(w, r, user)
+}
+
+func (a *app) handlePOSAdminMe(w http.ResponseWriter, r *http.Request) {
+	principal, ok := a.currentPOSPrincipal(r.Context(), r)
+	if !ok {
+		a.writePOSAuthFailure(w, r)
+		return
+	}
+	a.writePOSMe(w, principal)
 }
 
 func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUser) {
@@ -499,12 +554,21 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	action := strings.TrimPrefix(r.URL.Path, "/api/admin/")
+	if strings.HasPrefix(action, "pos") {
+		principal, ok := a.currentPOSPrincipal(r.Context(), r)
+		if !ok {
+			a.writePOSAuthFailure(w, r)
+			return
+		}
+		a.handleAdminPOS(w, r, principal.User, action)
+		return
+	}
 	user, ok := a.currentAdmin(r.Context(), r)
 	if !ok {
 		writeAuthFailure(w, r, adminSessionKind)
 		return
 	}
-	action := strings.TrimPrefix(r.URL.Path, "/api/admin/")
 	switch {
 	case r.Method == http.MethodGet && action == "supervisor":
 		a.writeAdminMe(w, r, user)
@@ -544,8 +608,6 @@ func (a *app) handleAdminSupervisorRoutes(w http.ResponseWriter, r *http.Request
 		a.handleAdminMembers(w, r, user, action)
 	case strings.HasPrefix(action, "booking"):
 		a.handleAdminBooking(w, r, user, action)
-	case strings.HasPrefix(action, "pos"):
-		a.handleAdminPOS(w, r, user, action)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -1461,7 +1523,7 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	users := []map[string]any{}
 	rows, err := a.db.QueryContext(r.Context(), `
-		select u.id, u.email, u.name, u.verified_at is not null, u.coins,
+		select u.id, u.email, u.name, u.pos_admin_number, u.verified_at is not null, u.coins,
 			(select count(*) from sessions s where s.admin_id = u.id),
 			to_char(u.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')
 		from admin_users u
@@ -1474,14 +1536,15 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	for rows.Next() {
 		var id, email, name, createdAt string
+		var posAdminNumber int64
 		var verified bool
 		var coins, sessions int
-		if err := rows.Scan(&id, &email, &name, &verified, &coins, &sessions, &createdAt); err != nil {
+		if err := rows.Scan(&id, &email, &name, &posAdminNumber, &verified, &coins, &sessions, &createdAt); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		benefits, _ := a.adminBenefits(r.Context(), id, false)
-		users = append(users, map[string]any{"id": id, "email": email, "name": name, "verified": verified, "coins": coins, "sessions": sessions, "createdAt": createdAt, "discountPercent": benefits.DiscountPercent, "subscription": benefits.Subscription})
+		users = append(users, map[string]any{"id": id, "email": email, "name": name, "posAdminNumber": posAdminNumber, "verified": verified, "coins": coins, "sessions": sessions, "createdAt": createdAt, "discountPercent": benefits.DiscountPercent, "subscription": benefits.Subscription})
 	}
 	ledger, _ := a.coinLedger(r.Context(), "", 30)
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
@@ -1897,13 +1960,13 @@ func (a *app) currentAdmin(ctx context.Context, r *http.Request) (adminUser, boo
 	}
 	var user adminUser
 	err := a.db.QueryRowContext(ctx, `
-		select u.id, u.email, u.name, u.verified_at is not null, u.coins,
+		select u.id, u.email, u.name, u.pos_admin_number, u.verified_at is not null, u.coins,
 			to_char(u.created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')
 		from admin_sessions s
 		join admin_users u on u.id = s.admin_id
 		where (s.token_hash=$1 or (s.previous_token_hash=$1 and s.previous_valid_until>now()))
 			and s.revoked_at is null and s.idle_expires_at>now() and s.absolute_expires_at>now()
-	`, tokenDigest(token)).Scan(&user.ID, &user.Email, &user.Name, &user.Verified, &user.Coins, &user.CreatedAt)
+	`, tokenDigest(token)).Scan(&user.ID, &user.Email, &user.Name, &user.POSAdminNumber, &user.Verified, &user.Coins, &user.CreatedAt)
 	return user, err == nil
 }
 
@@ -1911,11 +1974,11 @@ func (a *app) adminByEmail(ctx context.Context, email string) (adminUser, string
 	var user adminUser
 	var passwordHash string
 	err := a.db.QueryRowContext(ctx, `
-		select id, email, name, password_hash, verified_at is not null, coins,
+		select id, email, name, pos_admin_number, password_hash, verified_at is not null, coins,
 			to_char(created_at at time zone 'Asia/Bangkok', 'YYYY-MM-DD HH24:MI')
 		from admin_users
 		where email = $1
-	`, email).Scan(&user.ID, &user.Email, &user.Name, &passwordHash, &user.Verified, &user.Coins, &user.CreatedAt)
+	`, email).Scan(&user.ID, &user.Email, &user.Name, &user.POSAdminNumber, &passwordHash, &user.Verified, &user.Coins, &user.CreatedAt)
 	return user, passwordHash, err
 }
 

@@ -41,6 +41,21 @@ func TestProductionSessionCookieUsesHostPrefix(t *testing.T) {
 	}
 }
 
+func TestSessionCookieCanFollowRememberPreference(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/api/auth/login", nil)
+	persistentRecorder := httptest.NewRecorder()
+	setSessionCookiePersistence(persistentRecorder, req, adminSessionKind, "remembered-token", true)
+	if cookie := persistentRecorder.Result().Cookies()[0]; cookie.MaxAge <= 0 {
+		t.Fatalf("remembered login must set a persistent cookie: %#v", cookie)
+	}
+
+	sessionRecorder := httptest.NewRecorder()
+	setSessionCookiePersistence(sessionRecorder, req, adminSessionKind, "session-token", false)
+	if cookie := sessionRecorder.Result().Cookies()[0]; cookie.MaxAge != 0 {
+		t.Fatalf("login without remember must set a browser-session cookie: %#v", cookie)
+	}
+}
+
 func TestLegacyCookieCanBeReadDuringMigration(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	req := httptest.NewRequest(http.MethodGet, "https://example.test/api/auth/me", nil)
@@ -73,6 +88,11 @@ func TestRotatingSessionIntegration(t *testing.T) {
 	raw := randHex(24)
 	if err = insertAuthSession(t.Context(), db, adminSessionKind, adminID, raw); err != nil {
 		t.Fatal(err)
+	}
+	authRequest := httptest.NewRequest(http.MethodGet, "http://localhost/api/auth/me", nil)
+	authRequest.AddCookie(&http.Cookie{Name: authCookieName(adminSessionKind), Value: raw})
+	if user, ok := a.currentAdmin(t.Context(), authRequest); !ok || user.ID != adminID || user.POSAdminNumber == 0 {
+		t.Fatalf("new admin session was not readable through currentAdmin: user=%#v ok=%v", user, ok)
 	}
 	if _, err = db.Exec(`update admin_sessions set rotate_after=now()-interval '1 second' where admin_id=$1`, adminID); err != nil {
 		t.Fatal(err)
