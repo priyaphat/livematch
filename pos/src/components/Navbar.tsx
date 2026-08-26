@@ -93,13 +93,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={() => setActiveTab("pos")}
             className="flex items-center gap-2.5 cursor-pointer group"
           >
-            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-red-600 via-red-500 to-yellow-500 flex items-center justify-center text-white shadow-lg shadow-red-600/30 group-hover:scale-105 transition-transform">
-              <Store className="w-5 h-5 text-white" />
+            <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-red-600 via-red-500 to-yellow-500 flex items-center justify-center text-white shadow-lg shadow-red-600/30 group-hover:scale-105 transition-transform overflow-hidden">
+              {settings.navbarIconData ? <img src={settings.navbarIconData} alt="ไอคอนระบบ" className="h-full w-full object-cover" /> : <Store className="w-5 h-5 text-white" />}
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <span className="font-extrabold text-base sm:text-lg text-slate-900 dark:text-white tracking-tight">
-                  {adminName || settings.storeName}
+                  {settings.navbarTitle || adminName || settings.storeName}
                 </span>
               </div>
               <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1">

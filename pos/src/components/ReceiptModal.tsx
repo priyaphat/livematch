@@ -20,7 +20,6 @@ export const ReceiptModal: React.FC = () => {
     const textLines = [
       `================================`,
       `${settings.storeName}`,
-      `${settings.branchName}`,
       order.vatRate > 0 ? `เลขประจำตัวผู้เสียภาษี: ${settings.taxId}` : '',
       `โทร: ${settings.phone}`,
       `--------------------------------`,
@@ -122,11 +121,12 @@ export const ReceiptModal: React.FC = () => {
           >
             {/* Store Header */}
             <div className="text-center space-y-1 pb-3 border-b border-dashed border-slate-300">
+              {settings.logoData ? <img src={settings.logoData} alt="โลโก้ร้าน" className="mx-auto mb-2 h-14 w-14 object-contain" /> : null}
               <div className="font-sans font-extrabold text-base text-slate-900 tracking-tight">
                 {settings.storeName}
               </div>
-              <div className="text-[11px] text-slate-600">{settings.branchName}</div>
               <div className="text-[10px] text-slate-500">{settings.address}</div>
+              {settings.email ? <div className="text-[10px] text-slate-500">{settings.email}</div> : null}
               <div className="text-[10px] text-slate-600 font-sans">
                 {order.vatRate > 0 && <>Tax ID: <span className="font-mono">{settings.taxId}</span> | </>}Tel:{' '}
                 <span className="font-mono">{settings.phone}</span>

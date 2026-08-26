@@ -119,7 +119,7 @@ export const LoginView: React.FC<LoginViewProps> = ({ onLogin }) => {
                     type={showPassword ? 'text' : 'password'}
                     autoComplete="current-password"
                     required
-                    placeholder="กรอกรหัสผ่าน หรือ PIN 4-6 หลัก"
+                    placeholder="กรอกรหัสผ่าน หรือ PIN"
                     className="h-13 w-full rounded-2xl border border-slate-200 bg-slate-50 py-3 pl-12 pr-12 text-sm font-semibold outline-none transition focus:border-red-500 focus:bg-white focus:ring-4 focus:ring-red-500/10 dark:border-slate-700 dark:bg-slate-800 dark:focus:border-amber-400 dark:focus:bg-slate-800 dark:focus:ring-amber-400/10"
                   />
                   <button

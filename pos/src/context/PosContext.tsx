@@ -138,7 +138,7 @@ interface PosContextType {
   mergeHeldOrdersIntoCart: (heldIds: string[]) => void;
   processBatchHeldPayment: (params: {
     heldIds: string[];
-    paymentMethod: 'cash' | 'promptpay' | 'card' | 'transfer';
+    paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
@@ -147,7 +147,7 @@ interface PosContextType {
   // Orders
   orders: Order[];
   processPayment: (params: {
-    paymentMethod: 'cash' | 'promptpay' | 'card' | 'transfer';
+    paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
@@ -237,13 +237,27 @@ const playAudioTone = (type: 'beep' | 'success' | 'alert' | 'info' = 'beep') => 
   }
 };
 
+const isPOSEditing = () => {
+  if (document.querySelector('[data-pos-editing="true"]')) return true;
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active.matches('input, textarea, select, [contenteditable="true"]');
+};
+
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings'>('pos');
   
   // Local storage synced states with fallback
   const [settings, setSettings] = useState<StoreSettings>(() => {
     const saved = localStorage.getItem('siampure_settings');
-    return saved ? { ...INITIAL_SETTINGS, ...JSON.parse(saved) } : INITIAL_SETTINGS;
+    const local = saved ? JSON.parse(saved) as Partial<StoreSettings> : {};
+    return {
+      ...INITIAL_SETTINGS,
+      printerType: local.printerType === 'thermal_58mm' ? 'thermal_58mm' : 'thermal_80mm',
+      autoPrintReceipt: local.autoPrintReceipt ?? INITIAL_SETTINGS.autoPrintReceipt,
+      enableSoundEffects: local.enableSoundEffects ?? INITIAL_SETTINGS.enableSoundEffects,
+      theme: local.theme === 'dark' ? 'dark' : 'light',
+      cashierName: '', currencySymbol: '฿', decimalPlaces: 2,
+    };
   });
 
   const [theme, setThemeState] = useState<'light' | 'dark'>(() => {
@@ -313,10 +327,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' | 'warning' } | null>(null);
   const checkoutRequestIDRef = useRef('');
   const holdRequestIDRef = useRef('');
+  const currentPOSActorNameRef = useRef('Admin');
 
   // Sync to local storage
   useEffect(() => {
-    localStorage.setItem('siampure_settings', JSON.stringify(settings));
+    localStorage.setItem('siampure_settings', JSON.stringify({ printerType: settings.printerType, autoPrintReceipt: settings.autoPrintReceipt, enableSoundEffects: settings.enableSoundEffects, theme: settings.theme }));
   }, [settings]);
 
   useEffect(() => {
@@ -512,9 +527,18 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     paymentId: sale.paymentId,
   });
 
-  const refreshPOSSales = async () => {
-    const [apiMembers, apiSales, apiSettings, apiReceivables, apiPayments] = await Promise.all([listPOSMembers(), listPOSSales(), getPOSSettings(), listPOSReceivables(), listPOSPaymentHistory()]);
-    setMembers(apiMembers);
+  const refreshPOSSales = async (options: { includeMembers?: boolean; includeSettings?: boolean; skipIfEditing?: boolean } = {}) => {
+    const includeMembers = options.includeMembers !== false;
+    const includeSettings = options.includeSettings !== false;
+    const [apiMembers, apiSales, apiSettings, apiReceivables, apiPayments] = await Promise.all([
+      includeMembers ? listPOSMembers() : Promise.resolve(null),
+      listPOSSales(),
+      includeSettings ? getPOSSettings() : Promise.resolve(null),
+      listPOSReceivables(),
+      listPOSPaymentHistory(),
+    ]);
+    if (options.skipIfEditing && isPOSEditing()) return;
+    if (apiMembers) setMembers(apiMembers);
     const openSales = apiSales.filter((sale) => sale.status === 'open');
     setHeldOrders(apiReceivables.map((receivable) => {
       const accountSales = openSales.filter((sale) => sale.billingAccountId === receivable.billingAccountId);
@@ -558,18 +582,36 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
       return { id: payment.paymentId, orderNumber: payment.paymentId, items, subtotal: payment.amountSatang / 100, discount: 0, discountType: 'amount' as const, vatAmount: 0, vatRate: 0, isVatIncluded: true, total: payment.amountSatang / 100, paymentMethod: payment.method, cashReceived: (payment.cashReceivedSatang || 0) / 100, change: (payment.changeSatang || 0) / 100, status: 'completed' as const, createdAt: payment.createdAt, cashierName: payment.receivedByName || 'Admin', customerNote: payment.displayName, referenceNumber: payment.referenceNumber, paymentId: payment.paymentId, originSystem: payment.originSystem, matchTotal: payment.matchTotalSatang / 100, posTotal: payment.posTotalSatang / 100, billingLines: payment.lines };
     }));
-    setSettings((current) => ({
+    if (apiSettings) setSettings((current) => ({
       ...current,
       promptPayId: apiSettings.promptPayId,
       promptPayType: (apiSettings.promptPayType || 'mobile') as StoreSettings['promptPayType'],
       promptPayReceiverName: apiSettings.promptPayReceiverName,
       inheritBookingPromptPay: apiSettings.inheritBookingPromptPay,
       paymentQrImage: apiSettings.paymentQrImage || '',
+      logoData: apiSettings.logoData || '',
+      navbarTitle: apiSettings.navbarTitle || '',
+      navbarIconData: apiSettings.navbarIconData || '',
+      customerDisplayTitle: apiSettings.customerDisplayTitle || 'พร้อมเสิร์ฟความอร่อย',
+      customerDisplayHighlight: apiSettings.customerDisplayHighlight || 'เครื่องดื่ม & เบเกอรี่สดใหม่',
+      customerDisplaySubtitle: apiSettings.customerDisplaySubtitle || 'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์',
+      customerDisplayCardText: apiSettings.customerDisplayCardText || 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด',
+      customerDisplayCtaText: apiSettings.customerDisplayCtaText || 'สั่งรายการได้ที่พนักงานแคชเชียร์',
+      defaultLowStock: apiSettings.defaultLowStock,
+      storeName: apiSettings.receiptHeader || current.storeName,
+      taxId: apiSettings.storeTaxId || '',
+      phone: apiSettings.storePhone || '',
+      email: apiSettings.storeEmail || '',
+      address: apiSettings.storeAddress || '',
+      effectivePromptPayType: apiSettings.effectivePromptPayType,
+      effectivePromptPayReceiverName: apiSettings.effectivePromptPayReceiverName,
+      effectivePromptPayIdMasked: apiSettings.effectivePromptPayIdMasked,
+      effectivePromptPaySource: apiSettings.effectivePromptPaySource,
+      effectivePromptPayAvailable: apiSettings.effectivePromptPayAvailable,
       vatEnabled: apiSettings.taxRatePercent > 0,
       vatRate: apiSettings.taxRatePercent || current.vatRate,
       vatType: apiSettings.pricesIncludeTax ? 'included' : 'excluded',
       receiptFooterMessage: apiSettings.receiptFooter || current.receiptFooterMessage,
-      theme: apiSettings.theme,
     }));
   };
 
@@ -703,7 +745,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     const refresh = (event: Event) => {
-      const permissions = (event as CustomEvent<{ permissions?: Record<string, boolean> }>).detail?.permissions;
+      const detail = (event as CustomEvent<{ permissions?: Record<string, boolean>; user?: { name?: string } }>).detail;
+      const permissions = detail?.permissions;
+      currentPOSActorNameRef.current = detail?.user?.name || 'Admin';
       const tasks: Array<Promise<void>> = [];
       if (!permissions || permissions.sales || permissions.products || permissions.stock) tasks.push(refreshPOSCatalog());
       if (!permissions || permissions.stock) tasks.push(refreshPOSStock());
@@ -724,7 +768,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
 	if (!isBillingPollingActive) return;
-	const refreshVisible = () => { if (document.visibilityState === 'visible') void refreshPOSSales().catch(() => undefined); };
+	const refreshVisible = () => {
+	  if (document.visibilityState === 'visible' && !isPOSEditing()) {
+		void refreshPOSSales({ includeMembers: false, includeSettings: false, skipIfEditing: true }).catch(() => undefined);
+	  }
+	};
 	const timer = window.setInterval(refreshVisible, 10_000);
 	document.addEventListener('visibilitychange', refreshVisible);
 	window.addEventListener('focus', refreshVisible);
@@ -744,11 +792,25 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const merged = { ...settings, ...newSettings };
       await savePOSSettings({
         promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
-        receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: '', defaultLowStock: 5,
+        receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
         theme: merged.theme || 'light', language: 'th', taxRatePercent: merged.vatEnabled ? merged.vatRate : 0,
         pricesIncludeTax: merged.vatType === 'included', inheritBookingPromptPay: merged.inheritBookingPromptPay !== false,
         paymentQrImage: merged.paymentQrImage || '',
+        storeTaxId: merged.taxId, storePhone: merged.phone, storeEmail: merged.email, storeAddress: merged.address,
+        navbarTitle: merged.navbarTitle, navbarIconData: merged.navbarIconData || '',
+        customerDisplayTitle: merged.customerDisplayTitle, customerDisplayHighlight: merged.customerDisplayHighlight,
+        customerDisplaySubtitle: merged.customerDisplaySubtitle, customerDisplayCardText: merged.customerDisplayCardText,
+        customerDisplayCtaText: merged.customerDisplayCtaText,
       });
+      const persisted = await getPOSSettings();
+      setSettings((current) => ({
+        ...current,
+        effectivePromptPayType: persisted.effectivePromptPayType,
+        effectivePromptPayReceiverName: persisted.effectivePromptPayReceiverName,
+        effectivePromptPayIdMasked: persisted.effectivePromptPayIdMasked,
+        effectivePromptPaySource: persisted.effectivePromptPaySource,
+        effectivePromptPayAvailable: persisted.effectivePromptPayAvailable,
+      }));
       showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
       return true;
     } catch (requestError) {
@@ -1293,7 +1355,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     customerNote,
   }: {
     heldIds: string[];
-    paymentMethod: 'cash' | 'promptpay' | 'card' | 'transfer';
+    paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
@@ -1304,22 +1366,39 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return null;
     }
 
-    const accountID = targets[0].billingAccountId;
-    if (!accountID || targets.some((item) => item.billingAccountId !== accountID)) {
-      showToast('กรุณาเลือกบิลพักยอดของสมาชิกคนเดียวกัน', 'warning');
+    const accountIDs: string[] = Array.from(new Set<string>(targets.flatMap((item) => item.billingAccountId ? [item.billingAccountId] : [])));
+    if (accountIDs.length === 0 || targets.some((item) => !item.billingAccountId)) {
+      showToast('ไม่พบบัญชีสมาชิกของรายการพักยอดที่เลือก', 'warning');
       return null;
     }
     try {
-      const summary = await getPOSBillingSummary(accountID);
+      const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
+      const totalSatang = summaries.reduce((sum, summary) => sum + summary.totalSatang, 0);
       const receivedSatang = Math.round((cashReceived || 0) * 100);
-      if (paymentMethod === 'cash' && receivedSatang < summary.totalSatang) {
+      if (paymentMethod === 'cash' && receivedSatang < totalSatang) {
         showToast('ยอดเงินสดไม่เพียงพอสำหรับยอดรวม Match และ POS', 'warning');
         return null;
       }
-      await settlePOSAccount({ billingAccountId: accountID, method: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', expectedTotalSatang: summary.totalSatang, cashReceivedSatang: receivedSatang, referenceNumber });
+      let allocatedCashSatang = 0;
+      for (let index = 0; index < summaries.length; index += 1) {
+        const summary = summaries[index];
+        const isLast = index === summaries.length - 1;
+        const accountCashSatang = paymentMethod === 'cash'
+          ? (isLast ? receivedSatang - allocatedCashSatang : summary.totalSatang)
+          : 0;
+        await settlePOSAccount({
+          billingAccountId: summary.billingAccountId,
+          method: paymentMethod === 'promptpay' ? 'promptpay' : 'cash',
+          expectedTotalSatang: summary.totalSatang,
+          cashReceivedSatang: accountCashSatang,
+          referenceNumber,
+        });
+        allocatedCashSatang += accountCashSatang;
+      }
       await refreshPOSSales();
-      showToast(`รับชำระยอดรวมของ ${summary.displayName} เรียบร้อยแล้ว`, 'success');
-      return { id: `payment-${Date.now()}`, orderNumber: `PAY-${Date.now()}`, items: [], subtotal: summary.totalSatang / 100, discount: 0, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: summary.totalSatang / 100, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived, change: Math.max(0, (cashReceived || 0) - summary.totalSatang / 100), status: 'completed', createdAt: new Date().toISOString(), cashierName: settings.cashierName, customerNote: `ชำระยอดรวม Match + POS · ${summary.displayName}`, referenceNumber };
+      const customerNames = summaries.map((summary) => summary.displayName).join(', ');
+      showToast(`รับชำระยอดรวม ${summaries.length} สมาชิกเรียบร้อยแล้ว`, 'success');
+      return { id: `payment-${Date.now()}`, orderNumber: `PAY-${Date.now()}`, items: [], subtotal: totalSatang / 100, discount: 0, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: totalSatang / 100, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived, change: Math.max(0, (cashReceived || 0) - totalSatang / 100), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || `ชำระยอดรวม Match + POS · ${customerNames}`, referenceNumber };
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'รับชำระยอดรวมไม่สำเร็จ', 'error');
       return null;
@@ -1401,7 +1480,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       change,
       status: 'completed',
       createdAt: new Date().toISOString(),
-      cashierName: settings.cashierName,
+      cashierName: currentPOSActorNameRef.current,
       customerNote: finalNote,
       referenceNumber: referenceNumber || (paymentMethod === 'promptpay' ? `PP-${Date.now().toString().slice(-8)}` : undefined),
     };
@@ -1457,7 +1536,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     referenceNumber,
     customerNote,
   }: {
-    paymentMethod: 'cash' | 'promptpay' | 'card' | 'transfer';
+    paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
@@ -1527,7 +1606,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       change,
       status: 'completed',
       createdAt: new Date().toISOString(),
-      cashierName: settings.cashierName,
+      cashierName: currentPOSActorNameRef.current,
       customerNote,
       referenceNumber: referenceNumber || (paymentMethod === 'promptpay' ? `PP-${Date.now().toString().slice(-8)}` : undefined),
     };

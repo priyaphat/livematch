@@ -21,8 +21,9 @@ import (
 )
 
 type app struct {
-	db  *sql.DB
-	tts *ttsService
+	db         *sql.DB
+	tts        *ttsService
+	monitoring *apiMonitoring
 }
 
 const defaultAnnouncementTemplate = "บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}"
@@ -304,7 +305,7 @@ func main() {
 	}
 	defer db.Close()
 
-	a := &app{db: db}
+	a := &app{db: db, monitoring: newAPIMonitoring()}
 	if err := a.migrate(context.Background()); err != nil {
 		log.Fatal(err)
 	}
@@ -1094,6 +1095,17 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_settings add column if not exists prices_include_tax boolean not null default true;
 		alter table pos_settings add column if not exists inherit_booking_promptpay boolean not null default true;
 		alter table pos_settings add column if not exists payment_qr_image text not null default '';
+		alter table pos_settings add column if not exists store_tax_id text not null default '';
+		alter table pos_settings add column if not exists store_phone text not null default '';
+		alter table pos_settings add column if not exists store_email text not null default '';
+		alter table pos_settings add column if not exists store_address text not null default '';
+		alter table pos_settings add column if not exists navbar_title text not null default '';
+		alter table pos_settings add column if not exists navbar_icon_data text not null default '';
+		alter table pos_settings add column if not exists customer_display_title text not null default 'พร้อมเสิร์ฟความอร่อย';
+		alter table pos_settings add column if not exists customer_display_highlight text not null default 'เครื่องดื่ม & เบเกอรี่สดใหม่';
+		alter table pos_settings add column if not exists customer_display_subtitle text not null default E'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์';
+		alter table pos_settings add column if not exists customer_display_card_text text not null default 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด';
+		alter table pos_settings add column if not exists customer_display_cta_text text not null default 'สั่งรายการได้ที่พนักงานแคชเชียร์';
 		create table if not exists pos_staff (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1109,6 +1121,9 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_pos_staff_admin on pos_staff(admin_id,active,created_at);
 		drop index if exists idx_pos_staff_admin_email;
 		create unique index if not exists idx_pos_staff_email on pos_staff(lower(email)) where email<>'';
+		alter table pos_staff add column if not exists last_login_at timestamptz;
+		alter table pos_staff add column if not exists failed_login_count integer not null default 0;
+		alter table pos_staff add column if not exists last_failed_login_at timestamptz;
 		create table if not exists pos_role_permissions (
 			admin_id text not null references admin_users(id) on delete cascade,
 			role text not null check (role in ('manager','cashier')),
@@ -4990,11 +5005,15 @@ func randHex(n int) string {
 
 func (a *app) withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		monitoredWriter := &monitoringResponseWriter{ResponseWriter: w}
+		w = monitoredWriter
 		requestID := randHex(12)
 		requestIP := clientIP(r)
 		ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
 		ctx = context.WithValue(ctx, requestIPContextKey, requestIP)
 		r = r.WithContext(ctx)
+		defer a.observeAPIRequest(r, monitoredWriter, startedAt)
 		w.Header().Set("X-Request-ID", requestID)
 		origin := r.Header.Get("Origin")
 		allowed := origin == ""

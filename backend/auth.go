@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"mime"
 	"net"
@@ -2255,9 +2256,7 @@ func (a *app) systemSetting(ctx context.Context, key string) (string, error) {
 }
 
 func (a *app) insertActivityLogTx(ctx context.Context, tx *sql.Tx, actorType, actorID, action, targetType, targetID string, details map[string]any) error {
-	if details == nil {
-		details = map[string]any{}
-	}
+	details = sanitizeActivityDetails(details)
 	if requestID, ok := ctx.Value(requestIDContextKey).(string); ok && requestID != "" {
 		details["requestId"] = requestID
 	}
@@ -2276,9 +2275,7 @@ func (a *app) insertActivityLogTx(ctx context.Context, tx *sql.Tx, actorType, ac
 }
 
 func (a *app) insertActivityLog(ctx context.Context, actorType, actorID, action, targetType, targetID string, details map[string]any) {
-	if details == nil {
-		details = map[string]any{}
-	}
+	details = sanitizeActivityDetails(details)
 	if requestID, ok := ctx.Value(requestIDContextKey).(string); ok && requestID != "" {
 		details["requestId"] = requestID
 	}
@@ -2287,12 +2284,50 @@ func (a *app) insertActivityLog(ctx context.Context, actorType, actorID, action,
 	}
 	rawDetails, err := json.Marshal(details)
 	if err != nil {
+		log.Printf("activity log marshal failed action=%s request_id=%v error=%v", action, ctx.Value(requestIDContextKey), err)
 		return
 	}
-	_, _ = a.db.ExecContext(ctx, `
+	if _, err = a.db.ExecContext(ctx, `
 		insert into activity_logs (actor_type, actor_id, action, target_type, target_id, details)
 		values ($1, $2, $3, $4, $5, $6)
-	`, actorType, actorID, action, targetType, targetID, string(rawDetails))
+	`, actorType, actorID, action, targetType, targetID, string(rawDetails)); err != nil {
+		log.Printf("activity log insert failed action=%s request_id=%v error=%v", action, ctx.Value(requestIDContextKey), err)
+	}
+}
+
+func sanitizeActivityDetails(details map[string]any) map[string]any {
+	result := map[string]any{}
+	for key, value := range details {
+		normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "_", ""), "-", ""))
+		switch normalized {
+		case "password", "passwordhash", "pin", "pinhash", "token", "tokenhash", "secret", "promptpayid", "paymentqrimage", "logodata", "imagedata", "navbaricondata":
+			result[key] = "[redacted]"
+			continue
+		}
+		switch nested := value.(type) {
+		case map[string]any:
+			result[key] = sanitizeActivityDetails(nested)
+		case []map[string]any:
+			items := make([]map[string]any, len(nested))
+			for index := range nested {
+				items[index] = sanitizeActivityDetails(nested[index])
+			}
+			result[key] = items
+		case []any:
+			items := make([]any, len(nested))
+			for index, item := range nested {
+				if itemMap, ok := item.(map[string]any); ok {
+					items[index] = sanitizeActivityDetails(itemMap)
+				} else {
+					items[index] = item
+				}
+			}
+			result[key] = items
+		default:
+			result[key] = value
+		}
+	}
+	return result
 }
 
 func (a *app) activityLogs(ctx context.Context, limit int) ([]activityLogItem, error) {

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/mail"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,19 +17,54 @@ import (
 )
 
 type posSettingsRecord struct {
-	PromptPayType           string `json:"promptPayType"`
-	PromptPayID             string `json:"promptPayId"`
-	PromptPayReceiverName   string `json:"promptPayReceiverName"`
-	ReceiptHeader           string `json:"receiptHeader"`
-	ReceiptFooter           string `json:"receiptFooter"`
-	LogoData                string `json:"logoData,omitempty"`
-	DefaultLowStock         int    `json:"defaultLowStock"`
-	Theme                   string `json:"theme"`
-	Language                string `json:"language"`
-	TaxRatePercent          int    `json:"taxRatePercent"`
-	PricesIncludeTax        bool   `json:"pricesIncludeTax"`
-	InheritBookingPromptPay bool   `json:"inheritBookingPromptPay"`
-	PaymentQRImage          string `json:"paymentQrImage,omitempty"`
+	PromptPayType               string `json:"promptPayType"`
+	PromptPayID                 string `json:"promptPayId"`
+	PromptPayReceiverName       string `json:"promptPayReceiverName"`
+	ReceiptHeader               string `json:"receiptHeader"`
+	ReceiptFooter               string `json:"receiptFooter"`
+	LogoData                    string `json:"logoData,omitempty"`
+	DefaultLowStock             int    `json:"defaultLowStock"`
+	Theme                       string `json:"theme"`
+	Language                    string `json:"language"`
+	TaxRatePercent              int    `json:"taxRatePercent"`
+	PricesIncludeTax            bool   `json:"pricesIncludeTax"`
+	InheritBookingPromptPay     bool   `json:"inheritBookingPromptPay"`
+	PaymentQRImage              string `json:"paymentQrImage,omitempty"`
+	StoreTaxID                  string `json:"storeTaxId"`
+	StorePhone                  string `json:"storePhone"`
+	StoreEmail                  string `json:"storeEmail"`
+	StoreAddress                string `json:"storeAddress"`
+	NavbarTitle                 string `json:"navbarTitle"`
+	NavbarIconData              string `json:"navbarIconData,omitempty"`
+	CustomerDisplayTitle        string `json:"customerDisplayTitle"`
+	CustomerDisplayHighlight    string `json:"customerDisplayHighlight"`
+	CustomerDisplaySubtitle     string `json:"customerDisplaySubtitle"`
+	CustomerDisplayCardText     string `json:"customerDisplayCardText"`
+	CustomerDisplayCTAText      string `json:"customerDisplayCtaText"`
+	EffectivePromptPayType      string `json:"effectivePromptPayType,omitempty"`
+	EffectiveReceiverName       string `json:"effectivePromptPayReceiverName,omitempty"`
+	EffectivePromptPayMask      string `json:"effectivePromptPayIdMasked,omitempty"`
+	EffectivePromptPaySource    string `json:"effectivePromptPaySource,omitempty"`
+	EffectivePromptPayAvailable bool   `json:"effectivePromptPayAvailable"`
+}
+
+func posSettingsAuditSnapshot(value posSettingsRecord) map[string]any {
+	return map[string]any{
+		"receiptHeader": value.ReceiptHeader, "receiptFooter": value.ReceiptFooter,
+		"defaultLowStock": value.DefaultLowStock, "theme": value.Theme, "language": value.Language,
+		"taxRatePercent": value.TaxRatePercent, "pricesIncludeTax": value.PricesIncludeTax,
+		"inheritBookingPromptPay": value.InheritBookingPromptPay, "promptPayType": value.PromptPayType,
+		"hasPromptPay": value.PromptPayID != "", "hasPaymentQR": value.PaymentQRImage != "",
+		"hasLogo": value.LogoData != "", "hasNavbarIcon": value.NavbarIconData != "",
+		"hasTaxId": value.StoreTaxID != "", "hasPhone": value.StorePhone != "",
+		"hasEmail": value.StoreEmail != "", "hasAddress": value.StoreAddress != "",
+		"navbarTitle": value.NavbarTitle, "customerDisplayTitle": value.CustomerDisplayTitle,
+		"customerDisplayHighlight": value.CustomerDisplayHighlight,
+	}
+}
+
+func posProductAuditSnapshot(value posProductRecord) map[string]any {
+	return map[string]any{"sku": value.SKU, "name": value.Name, "category": value.Category, "unit": value.Unit, "priceSatang": value.PriceSatang, "costSatang": value.CostSatang, "stockQuantity": value.StockQuantity, "lowStockThreshold": value.LowStockThreshold, "active": value.Active, "hasImage": value.ImageData != "", "hasBarcode": value.Barcode != ""}
 }
 
 type posProductRecord struct {
@@ -229,8 +266,8 @@ func (a *app) ensurePOSSettings(ctx context.Context, adminID string) (posSetting
 
 func (a *app) posSettings(ctx context.Context, adminID string) (posSettingsRecord, error) {
 	var s posSettingsRecord
-	err := a.db.QueryRowContext(ctx, `select promptpay_type,promptpay_id,promptpay_receiver_name,receipt_header,receipt_footer,logo_data,default_low_stock,theme,language,tax_rate_percent,prices_include_tax,inherit_booking_promptpay,payment_qr_image from pos_settings where admin_id=$1`, adminID).Scan(
-		&s.PromptPayType, &s.PromptPayID, &s.PromptPayReceiverName, &s.ReceiptHeader, &s.ReceiptFooter, &s.LogoData, &s.DefaultLowStock, &s.Theme, &s.Language, &s.TaxRatePercent, &s.PricesIncludeTax, &s.InheritBookingPromptPay, &s.PaymentQRImage,
+	err := a.db.QueryRowContext(ctx, `select promptpay_type,promptpay_id,promptpay_receiver_name,receipt_header,receipt_footer,logo_data,default_low_stock,theme,language,tax_rate_percent,prices_include_tax,inherit_booking_promptpay,payment_qr_image,store_tax_id,store_phone,store_email,store_address,navbar_title,navbar_icon_data,customer_display_title,customer_display_highlight,customer_display_subtitle,customer_display_card_text,customer_display_cta_text from pos_settings where admin_id=$1`, adminID).Scan(
+		&s.PromptPayType, &s.PromptPayID, &s.PromptPayReceiverName, &s.ReceiptHeader, &s.ReceiptFooter, &s.LogoData, &s.DefaultLowStock, &s.Theme, &s.Language, &s.TaxRatePercent, &s.PricesIncludeTax, &s.InheritBookingPromptPay, &s.PaymentQRImage, &s.StoreTaxID, &s.StorePhone, &s.StoreEmail, &s.StoreAddress, &s.NavbarTitle, &s.NavbarIconData, &s.CustomerDisplayTitle, &s.CustomerDisplayHighlight, &s.CustomerDisplaySubtitle, &s.CustomerDisplayCardText, &s.CustomerDisplayCTAText,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a.ensurePOSSettings(ctx, adminID)
@@ -249,7 +286,26 @@ func (a *app) effectivePOSPromptPay(ctx context.Context, adminID string, setting
 	return promptPaySettings{ID: settings.PromptPayID, Type: settings.PromptPayType, ReceiverName: settings.PromptPayReceiverName}, "pos"
 }
 
+func maskedPromptPayID(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) <= 4 {
+		return strings.Repeat("•", len(value))
+	}
+	return strings.Repeat("•", len(value)-4) + value[len(value)-4:]
+}
+
+func (a *app) settingsWithEffectivePromptPay(ctx context.Context, adminID string, settings posSettingsRecord) posSettingsRecord {
+	effective, source := a.effectivePOSPromptPay(ctx, adminID, settings)
+	settings.EffectivePromptPayType = effective.Type
+	settings.EffectiveReceiverName = effective.ReceiverName
+	settings.EffectivePromptPayMask = maskedPromptPayID(effective.ID)
+	settings.EffectivePromptPaySource = source
+	settings.EffectivePromptPayAvailable = strings.TrimSpace(effective.ID) != ""
+	return settings
+}
+
 func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminUser, action string) {
+	w.Header().Set("Cache-Control", "no-store")
 	path := strings.Trim(strings.TrimPrefix(action, "pos"), "/")
 	if !a.requireFeature(w, r, user.ID, "pos") {
 		return
@@ -258,8 +314,14 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 		return
 	}
 	switch {
+	case r.Method == http.MethodGet && path == "monitoring":
+		a.writePOSMonitoring(w, r, user)
 	case r.Method == http.MethodGet && path == "access":
 		a.writePOSAccessSettings(w, r, user)
+	case r.Method == http.MethodGet && path == "access/activity":
+		a.writePOSActivity(w, r, user)
+	case r.Method == http.MethodPatch && path == "access/owner":
+		a.updatePOSOwner(w, r, user)
 	case r.Method == http.MethodPost && path == "staff":
 		a.createPOSStaff(w, r, user)
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, "staff/") && !strings.HasSuffix(path, "/reset-pin"):
@@ -267,23 +329,33 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "staff/") && strings.HasSuffix(path, "/reset-pin"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "staff/"), "/reset-pin")
 		a.resetPOSStaffPIN(w, r, user, id)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "staff/") && strings.HasSuffix(path, "/logout"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "staff/"), "/logout")
+		a.forceLogoutPOSStaff(w, r, user, id)
 	case r.Method == http.MethodPut && path == "permissions":
 		a.savePOSPermissions(w, r, user)
 	case r.Method == http.MethodGet && (path == "" || path == "overview"):
 		a.writePOSOverview(w, r, user.ID)
+	case r.Method == http.MethodGet && path == "dashboard":
+		a.writePOSDashboard(w, r, user.ID)
+	case r.Method == http.MethodGet && path == "reports":
+		a.writePOSReports(w, r, user.ID)
+	case r.Method == http.MethodPost && path == "reports/export-authorize":
+		a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "export_pos_report", "pos_report", user.ID, nil)
+		writeJSON(w, http.StatusOK, map[string]bool{"allowed": true})
 	case r.Method == http.MethodGet && path == "products":
 		a.writePOSProducts(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "categories":
 		items, err := a.listPOSCategories(r.Context(), user.ID)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		writeJSON(w, 200, map[string]any{"items": items})
 	case r.Method == http.MethodGet && path == "units":
 		items, err := a.listPOSUnits(r.Context(), user.ID)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		writeJSON(w, 200, map[string]any{"items": items})
@@ -306,12 +378,44 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 	case r.Method == http.MethodGet && path == "settings":
 		settings, err := a.ensurePOSSettings(r.Context(), user.ID)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
-		writeJSON(w, 200, settings)
+		w.Header().Set("Cache-Control", "no-store")
+		if hasPOSPermission(user, "settings") {
+			writeJSON(w, 200, a.settingsWithEffectivePromptPay(r.Context(), user.ID, settings))
+			return
+		}
+		writeJSON(w, 200, map[string]any{
+			"promptPayType": "", "promptPayId": "", "promptPayReceiverName": "",
+			"receiptHeader": settings.ReceiptHeader, "receiptFooter": settings.ReceiptFooter,
+			"logoData": "", "defaultLowStock": settings.DefaultLowStock,
+			"theme": settings.Theme, "language": settings.Language,
+			"taxRatePercent": settings.TaxRatePercent, "pricesIncludeTax": settings.PricesIncludeTax,
+			"inheritBookingPromptPay": settings.InheritBookingPromptPay, "paymentQrImage": "",
+			"storeTaxId": "", "storePhone": "", "storeEmail": "", "storeAddress": "",
+			"navbarTitle": settings.NavbarTitle, "navbarIconData": settings.NavbarIconData,
+			"customerDisplayTitle": settings.CustomerDisplayTitle, "customerDisplayHighlight": settings.CustomerDisplayHighlight,
+			"customerDisplaySubtitle": settings.CustomerDisplaySubtitle, "customerDisplayCardText": settings.CustomerDisplayCardText,
+			"customerDisplayCtaText": settings.CustomerDisplayCTAText,
+		})
 	case r.Method == http.MethodGet && path == "members":
 		a.writePOSMembers(w, r, user.ID)
+	case r.Method == http.MethodPost && path == "members":
+		a.createPOSMember(w, r, user)
+	case r.Method == http.MethodGet && path == "member-types":
+		items, err := a.memberTypesForAdmin(r.Context(), user.ID, false)
+		if err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		activeItems := make([]MemberType, 0, len(items))
+		for _, item := range items {
+			if item.Active {
+				activeItems = append(activeItems, item)
+			}
+		}
+		writeJSON(w, 200, map[string]any{"items": activeItems})
 	case r.Method == http.MethodGet && path == "sales":
 		a.writePOSSales(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "receivables":
@@ -399,20 +503,20 @@ func (a *app) writePOSProducts(w http.ResponseWriter, r *http.Request, adminID s
 		and ($3='' or lower(category)=lower($3))
 		and ($4='all' or active=($4='active'))`
 	if err := a.db.QueryRowContext(r.Context(), `select count(*) from pos_products where `+filter, adminID, search, category, status).Scan(&total); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	items := []posProductRecord{}
 	rows, err := a.db.QueryContext(r.Context(), `select id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,barcode,description from pos_products where `+filter+` order by active desc,lower(name),id limit $5 offset $6`, adminID, search, category, status, pageSize, (page-1)*pageSize)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var p posProductRecord
 		if err = rows.Scan(&p.ID, &p.SKU, &p.Category, &p.Name, &p.PriceTHB, &p.PriceSatang, &p.CostTHB, &p.CostSatang, &p.StockQuantity, &p.LowStockThreshold, &p.Active, &p.Unit, &p.ImageData, &p.Barcode, &p.Description); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		p.LowStock = p.StockQuantity <= p.LowStockThreshold
@@ -485,12 +589,12 @@ func (a *app) writePOSSales(w http.ResponseWriter, r *http.Request, adminID stri
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	items, err := a.listPOSSales(r.Context(), adminID, status, pageSize, (page-1)*pageSize)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	var total int
 	if err = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1 and ($2='' or $2='all' or status=$2)`, adminID, status).Scan(&total); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	totalPages := (total + pageSize - 1) / pageSize
@@ -504,7 +608,7 @@ func (a *app) writePOSMembers(w http.ResponseWriter, r *http.Request, adminID st
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	rows, err := a.db.QueryContext(r.Context(), `select m.id,m.name,m.phone,coalesce(ba.id,'') from members m left join billing_accounts ba on ba.admin_id=m.admin_id and ba.member_id=m.id where m.admin_id=$1 and m.active and m.deleted_at is null and ($2='' or m.name ilike '%%'||$2||'%%' or m.phone ilike '%%'||$2||'%%') order by lower(m.name),m.id limit 100`, adminID, search)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -512,12 +616,38 @@ func (a *app) writePOSMembers(w http.ResponseWriter, r *http.Request, adminID st
 	for rows.Next() {
 		var id, name, phone, accountID string
 		if err = rows.Scan(&id, &name, &phone, &accountID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		items = append(items, map[string]any{"id": id, "name": name, "phone": displayPhone(phone), "billingAccountId": accountID})
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
+}
+
+func (a *app) createPOSMember(w http.ResponseWriter, r *http.Request, user adminUser) {
+	var body struct {
+		Name         string `json:"name"`
+		Phone        string `json:"phone"`
+		MemberTypeID string `json:"memberTypeId"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&body) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลสมาชิกไม่ถูกต้อง"})
+		return
+	}
+	member, err := a.createMember(r.Context(), user.ID, body.Name, body.Phone, body.MemberTypeID, posActorType(user), posActorID(user))
+	if err != nil {
+		message := err.Error()
+		if message == "กรุณากรอกชื่อและเบอร์โทรให้ถูกต้อง" || message == "ประเภทสมาชิกไม่ถูกต้องหรือปิดใช้งานแล้ว" || message == "เบอร์โทรนี้มีอยู่แล้ว" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": message})
+			return
+		}
+		writePOSInternalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id": member.ID, "name": member.Name, "phone": member.Phone,
+		"billingAccountId": "", "memberTypeId": member.MemberTypeID,
+	})
 }
 
 func (a *app) listPOSCustomers(ctx context.Context, adminID string) ([]map[string]any, error) {
@@ -627,7 +757,7 @@ func stockListLimit(r *http.Request) int {
 func (a *app) writePOSStockBatches(w http.ResponseWriter, r *http.Request, adminID string) {
 	items, err := a.listPOSStockBatches(r.Context(), adminID, stockListLimit(r))
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
@@ -636,7 +766,7 @@ func (a *app) writePOSStockBatches(w http.ResponseWriter, r *http.Request, admin
 func (a *app) writePOSStockMovements(w http.ResponseWriter, r *http.Request, adminID string) {
 	items, err := a.listPOSStockMovements(r.Context(), adminID, stockListLimit(r))
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items})
@@ -653,7 +783,7 @@ func (a *app) writePOSStockSummary(w http.ResponseWriter, r *http.Request, admin
 		err = a.db.QueryRowContext(r.Context(), `select (select count(*) from pos_stock_batches where admin_id=$1),(select count(*) from pos_stock_movements where admin_id=$1)`, adminID).Scan(&batchCount, &movementCount)
 	}
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"productCount": productCount, "totalUnits": totalUnits, "inventoryCostSatang": inventoryCostSatang, "inventoryRetailSatang": inventoryRetailSatang, "lowStockCount": lowStockCount, "outOfStockCount": outOfStockCount, "batchCount": batchCount, "movementCount": movementCount})
@@ -686,17 +816,17 @@ func (a *app) posReport(ctx context.Context, adminID string) (map[string]any, er
 func (a *app) writePOSOverview(w http.ResponseWriter, r *http.Request, adminID string) {
 	settings, err := a.ensurePOSSettings(r.Context(), adminID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	products, err := a.listPOSProducts(r.Context(), adminID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	sales, err := a.listPOSSales(r.Context(), adminID, "", 100, 0)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	customers, _ := a.listPOSCustomers(r.Context(), adminID)
@@ -706,6 +836,330 @@ func (a *app) writePOSOverview(w http.ResponseWriter, r *http.Request, adminID s
 	categories, _ := a.listPOSCategories(r.Context(), adminID)
 	units, _ := a.listPOSUnits(r.Context(), adminID)
 	writeJSON(w, 200, map[string]any{"enabled": a.features(r.Context(), adminID).POSEnabled, "settings": settings, "products": products, "categories": categories, "units": units, "sales": sales, "customers": customers, "stockMovements": movements, "stockBatches": stockBatches, "report": report})
+}
+
+func (a *app) writePOSDashboard(w http.ResponseWriter, r *http.Request, adminID string) {
+	rangeKey := strings.TrimSpace(r.URL.Query().Get("range"))
+	days := 1
+	if rangeKey == "1w" {
+		days = 7
+	} else if rangeKey == "1m" {
+		days = 30
+	} else {
+		rangeKey = "1d"
+	}
+	location, err := time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		location = time.FixedZone("Asia/Bangkok", 7*60*60)
+	}
+	now := time.Now().In(location)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
+	start := today.AddDate(0, 0, -(days - 1))
+	end := now
+	previousStart := start.AddDate(0, 0, -days)
+	previousEnd := previousStart.Add(end.Sub(start))
+
+	var salesSatang, previousSalesSatang, costSatang int64
+	var completedBills int
+	err = a.db.QueryRowContext(r.Context(), `
+		with scoped as (
+			select s.total_satang,s.cost_satang,coalesce(bp.created_at,s.updated_at,s.created_at) paid_at
+			from pos_sales s left join billing_payments bp on bp.id=s.payment_id
+			where s.admin_id=$1 and s.status='paid'
+		)
+		select coalesce(sum(total_satang) filter(where paid_at >= $2 and paid_at <= $3),0),
+			coalesce(sum(cost_satang) filter(where paid_at >= $2 and paid_at <= $3),0),
+			count(*) filter(where paid_at >= $2 and paid_at <= $3),
+			coalesce(sum(total_satang) filter(where paid_at >= $4 and paid_at < $5),0)
+		from scoped`, adminID, start, end, previousStart, previousEnd).Scan(&salesSatang, &costSatang, &completedBills, &previousSalesSatang)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+
+	var heldCount, lowStockCount int
+	err = a.db.QueryRowContext(r.Context(), `
+		select
+			(select count(*) from billing_accounts ba join members m on m.id=ba.member_id
+			 where ba.admin_id=$1 and ba.kind='member' and ba.active and m.active and m.deleted_at is null
+			 and (exists(select 1 from pos_sales ps where ps.billing_account_id=ba.id and ps.status='open')
+			 or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id)))),
+			(select count(*) from pos_products where admin_id=$1 and active and deleted_at is null and stock_quantity<=low_stock_threshold)`, adminID).Scan(&heldCount, &lowStockCount)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+
+	lowStockItems := []map[string]any{}
+	rows, err := a.db.QueryContext(r.Context(), `select id,name,sku,stock_quantity,low_stock_threshold,unit,image_data from pos_products where admin_id=$1 and active and deleted_at is null and stock_quantity<=low_stock_threshold order by stock_quantity,lower(name) limit 20`, adminID)
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var id, name, sku, unit, imageData string
+			var stock, threshold int
+			if rows.Scan(&id, &name, &sku, &stock, &threshold, &unit, &imageData) == nil {
+				lowStockItems = append(lowStockItems, map[string]any{"id": id, "name": name, "sku": sku, "stock": stock, "lowStockThreshold": threshold, "unit": unit, "imageData": imageData})
+			}
+		}
+	}
+
+	timelineCount, bucketHours := days, 24
+	if days == 1 {
+		timelineCount, bucketHours = 12, 2
+	}
+	timelineValues := make([]int64, timelineCount)
+	timelineRows, queryErr := a.db.QueryContext(r.Context(), `select coalesce(bp.created_at,s.updated_at,s.created_at),s.total_satang from pos_sales s left join billing_payments bp on bp.id=s.payment_id where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at) >= $2 and coalesce(bp.created_at,s.updated_at,s.created_at) <= $3 order by 1`, adminID, start, end)
+	if queryErr == nil {
+		defer timelineRows.Close()
+		for timelineRows.Next() {
+			var paidAt time.Time
+			var total int64
+			if timelineRows.Scan(&paidAt, &total) != nil {
+				continue
+			}
+			localPaidAt := paidAt.In(location)
+			index := int(localPaidAt.Sub(start).Hours()) / bucketHours
+			if days > 1 {
+				index = int(localPaidAt.Sub(start).Hours()) / 24
+			}
+			if index >= 0 && index < len(timelineValues) {
+				timelineValues[index] += total
+			}
+		}
+	}
+	timeline := make([]map[string]any, 0, timelineCount)
+	peakLabel, peakSatang := "-", int64(0)
+	for index, amount := range timelineValues {
+		point := start.Add(time.Duration(index*bucketHours) * time.Hour)
+		label := point.Format("15:04")
+		if days > 1 {
+			label = point.Format("02/01")
+		}
+		timeline = append(timeline, map[string]any{"label": label, "amountSatang": amount})
+		if amount > peakSatang {
+			peakSatang, peakLabel = amount, label
+		}
+	}
+
+	categories := []map[string]any{}
+	categoryRows, queryErr := a.db.QueryContext(r.Context(), `
+		select coalesce(nullif(c.name,''),nullif(p.category,''),'ไม่ระบุหมวดหมู่'),
+			coalesce(sum(round(i.line_total_satang::numeric*s.total_satang/nullif(s.subtotal_satang,0))),0)::bigint,
+			coalesce(sum(i.quantity),0)::bigint
+		from pos_sales s
+		join pos_sale_items i on i.sale_id=s.id
+		left join pos_products p on p.id=i.product_id
+		left join pos_categories c on c.admin_id=s.admin_id and (c.id=p.category or lower(c.name)=lower(p.category))
+		left join billing_payments bp on bp.id=s.payment_id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at) >= $2 and coalesce(bp.created_at,s.updated_at,s.created_at) <= $3
+		group by 1 order by 2 desc,1 limit 5`, adminID, start, end)
+	if queryErr == nil {
+		defer categoryRows.Close()
+		for categoryRows.Next() {
+			var name string
+			var total, quantity int64
+			if categoryRows.Scan(&name, &total, &quantity) == nil {
+				categories = append(categories, map[string]any{"name": name, "totalSatang": total, "quantity": quantity})
+			}
+		}
+	}
+
+	recentSales := []map[string]any{}
+	recentRows, queryErr := a.db.QueryContext(r.Context(), `
+		select s.id,coalesce(s.payment_id,''),s.buyer_name,s.total_satang,coalesce(bp.method,'cash'),s.created_by_name,
+			coalesce(sum(i.quantity),0)::bigint,to_char(coalesce(bp.created_at,s.updated_at,s.created_at) at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI')
+		from pos_sales s left join billing_payments bp on bp.id=s.payment_id left join pos_sale_items i on i.sale_id=s.id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at) >= $2 and coalesce(bp.created_at,s.updated_at,s.created_at) <= $3
+		group by s.id,bp.method,bp.created_at order by coalesce(bp.created_at,s.updated_at,s.created_at) desc,s.id desc limit 5`, adminID, start, end)
+	if queryErr == nil {
+		defer recentRows.Close()
+		for recentRows.Next() {
+			var id, paymentID, buyerName, method, actorName, createdAt string
+			var totalSatang, itemCount int64
+			if recentRows.Scan(&id, &paymentID, &buyerName, &totalSatang, &method, &actorName, &itemCount, &createdAt) == nil {
+				recentSales = append(recentSales, map[string]any{"id": id, "paymentId": paymentID, "buyerName": buyerName, "totalSatang": totalSatang, "method": method, "actorName": actorName, "itemCount": itemCount, "createdAt": createdAt})
+			}
+		}
+	}
+
+	changePercent := float64(0)
+	if previousSalesSatang > 0 {
+		changePercent = float64(salesSatang-previousSalesSatang) * 100 / float64(previousSalesSatang)
+	} else if salesSatang > 0 {
+		changePercent = 100
+	}
+	averageBillSatang := int64(0)
+	if completedBills > 0 {
+		averageBillSatang = salesSatang / int64(completedBills)
+	}
+	writeJSON(w, 200, map[string]any{
+		"range": rangeKey, "from": start.Format(time.RFC3339), "to": end.Format(time.RFC3339),
+		"salesSatang": salesSatang, "previousSalesSatang": previousSalesSatang, "salesChangePercent": changePercent,
+		"costSatang": costSatang, "grossProfitSatang": salesSatang - costSatang,
+		"completedBills": completedBills, "averageBillSatang": averageBillSatang,
+		"heldCount": heldCount, "lowStockCount": lowStockCount, "lowStockItems": lowStockItems,
+		"timeline": timeline, "peakLabel": peakLabel, "categories": categories, "recentSales": recentSales,
+	})
+}
+
+func posReportPeriod(values url.Values) (string, time.Time, time.Time, string, string, error) {
+	location, err := time.LoadLocation("Asia/Bangkok")
+	if err != nil {
+		location = time.FixedZone("Asia/Bangkok", 7*60*60)
+	}
+	now := time.Now().In(location)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, location)
+	rangeKey := strings.TrimSpace(values.Get("range"))
+	start, end := today, now
+	startDate, endDate := today.Format("2006-01-02"), today.Format("2006-01-02")
+	switch rangeKey {
+	case "week":
+		weekday := (int(today.Weekday()) + 6) % 7
+		start = today.AddDate(0, 0, -weekday)
+		startDate = start.Format("2006-01-02")
+	case "month":
+		start = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, location)
+		startDate = start.Format("2006-01-02")
+	case "custom":
+		startDate, endDate = strings.TrimSpace(values.Get("startDate")), strings.TrimSpace(values.Get("endDate"))
+		start, err = time.ParseInLocation("2006-01-02", startDate, location)
+		if err != nil {
+			return "", time.Time{}, time.Time{}, "", "", errors.New("วันที่เริ่มต้นไม่ถูกต้อง")
+		}
+		endDay, parseErr := time.ParseInLocation("2006-01-02", endDate, location)
+		if parseErr != nil {
+			return "", time.Time{}, time.Time{}, "", "", errors.New("วันที่สิ้นสุดไม่ถูกต้อง")
+		}
+		if endDay.Before(start) {
+			return "", time.Time{}, time.Time{}, "", "", errors.New("วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น")
+		}
+		end = endDay.AddDate(0, 0, 1)
+	default:
+		rangeKey = "day"
+	}
+	return rangeKey, start, end, startDate, endDate, nil
+}
+
+func (a *app) writePOSReports(w http.ResponseWriter, r *http.Request, adminID string) {
+	rangeKey, start, end, startDate, endDate, err := posReportPeriod(r.URL.Query())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	topPage, _ := strconv.Atoi(r.URL.Query().Get("topPage"))
+	vatPage, _ := strconv.Atoi(r.URL.Query().Get("vatPage"))
+	if topPage < 1 {
+		topPage = 1
+	}
+	if vatPage < 1 {
+		vatPage = 1
+	}
+	topPageSize, vatPageSize := 20, 25
+	if r.URL.Query().Get("exportAll") == "1" {
+		topPage, vatPage, topPageSize, vatPageSize = 1, 1, 1_000_000, 1_000_000
+	}
+	var totalSales, totalSubtotal, totalDiscount, totalVAT, totalCOGS int64
+	var completedBills int
+	err = a.db.QueryRowContext(r.Context(), `
+		select coalesce(sum(s.total_satang),0),coalesce(sum(s.subtotal_satang),0),coalesce(sum(s.discount_satang),0),
+			coalesce(sum(s.vat_satang),0),coalesce(sum(s.cost_satang),0),count(*)
+		from pos_sales s left join billing_payments bp on bp.id=s.payment_id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3`, adminID, start, end).Scan(&totalSales, &totalSubtotal, &totalDiscount, &totalVAT, &totalCOGS, &completedBills)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+
+	var topSellersTotal int
+	err = a.db.QueryRowContext(r.Context(), `select count(*) from (
+		select 1 from pos_sales s join pos_sale_items i on i.sale_id=s.id left join billing_payments bp on bp.id=s.payment_id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		group by i.product_id,i.product_name,i.sku) ranked`, adminID, start, end).Scan(&topSellersTotal)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	topSellers := []map[string]any{}
+	rows, err := a.db.QueryContext(r.Context(), `
+		select coalesce(i.product_id,''),i.product_name,i.sku,coalesce(sum(i.quantity),0)::bigint,
+			coalesce(sum(i.line_total_satang),0)::bigint,coalesce(sum(i.unit_cost_satang*i.quantity),0)::bigint
+		from pos_sales s join pos_sale_items i on i.sale_id=s.id left join billing_payments bp on bp.id=s.payment_id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		group by i.product_id,i.product_name,i.sku order by 4 desc,5 desc,lower(i.product_name) limit $4 offset $5`, adminID, start, end, topPageSize, (topPage-1)*topPageSize)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	for rows.Next() {
+		var id, name, sku string
+		var quantity, revenue, cost int64
+		if err = rows.Scan(&id, &name, &sku, &quantity, &revenue, &cost); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		topSellers = append(topSellers, map[string]any{"id": id, "name": name, "sku": sku, "quantity": quantity, "revenueSatang": revenue, "costSatang": cost, "profitSatang": revenue - cost})
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		writePOSInternalError(w, r, err)
+		return
+	}
+	rows.Close()
+
+	paymentStats := map[string]int64{"cashSatang": 0, "promptPaySatang": 0}
+	var cashSatang, promptPaySatang int64
+	err = a.db.QueryRowContext(r.Context(), `
+		select coalesce(sum(s.total_satang) filter(where coalesce(bp.method,'cash')='cash'),0),coalesce(sum(s.total_satang) filter(where bp.method='promptpay'),0)
+		from pos_sales s left join billing_payments bp on bp.id=s.payment_id
+		where s.admin_id=$1 and s.status='paid' and (bp.id is null or bp.status='paid') and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3`, adminID, start, end).Scan(&cashSatang, &promptPaySatang)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	paymentStats["cashSatang"], paymentStats["promptPaySatang"] = cashSatang, promptPaySatang
+
+	salesRows := []map[string]any{}
+	saleRows, err := a.db.QueryContext(r.Context(), `
+		select s.id,coalesce(s.payment_id,''),to_char(coalesce(bp.created_at,s.updated_at,s.created_at) at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			s.subtotal_satang,s.discount_satang,s.net_before_vat_satang,s.vat_satang,s.total_satang,s.vat_rate_bps,s.prices_include_tax,
+			coalesce(bp.method,'cash'),coalesce(sum(i.quantity),0)::bigint,s.created_by_name,s.buyer_name
+		from pos_sales s left join billing_payments bp on bp.id=s.payment_id left join pos_sale_items i on i.sale_id=s.id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		group by s.id,bp.created_at,bp.method order by coalesce(bp.created_at,s.updated_at,s.created_at),s.id limit $4 offset $5`, adminID, start, end, vatPageSize, (vatPage-1)*vatPageSize)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	for saleRows.Next() {
+		var id, paymentID, createdAt, method, actorName, buyerName string
+		var subtotal, discount, netBeforeVAT, vat, total, itemCount int64
+		var vatRateBPS int
+		var pricesIncludeTax bool
+		if err = saleRows.Scan(&id, &paymentID, &createdAt, &subtotal, &discount, &netBeforeVAT, &vat, &total, &vatRateBPS, &pricesIncludeTax, &method, &itemCount, &actorName, &buyerName); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		salesRows = append(salesRows, map[string]any{"id": id, "paymentId": paymentID, "createdAt": createdAt, "subtotalSatang": subtotal, "discountSatang": discount, "netBeforeVatSatang": netBeforeVAT, "vatSatang": vat, "totalSatang": total, "vatRateBps": vatRateBPS, "pricesIncludeTax": pricesIncludeTax, "method": method, "itemCount": itemCount, "actorName": actorName, "buyerName": buyerName})
+	}
+	if err = saleRows.Err(); err != nil {
+		saleRows.Close()
+		writePOSInternalError(w, r, err)
+		return
+	}
+	saleRows.Close()
+
+	averageBill := int64(0)
+	if completedBills > 0 {
+		averageBill = totalSales / int64(completedBills)
+	}
+	profit := totalSales - totalCOGS
+	writeJSON(w, 200, map[string]any{
+		"range": rangeKey, "startDate": startDate, "endDate": endDate,
+		"summary":    map[string]any{"totalSalesSatang": totalSales, "totalSubtotalSatang": totalSubtotal, "totalDiscountSatang": totalDiscount, "totalVatSatang": totalVAT, "totalCogsSatang": totalCOGS, "grossProfitSatang": profit, "completedBills": completedBills, "averageBillSatang": averageBill},
+		"topSellers": topSellers, "paymentStats": paymentStats, "sales": salesRows,
+		"topSellersPagination": map[string]any{"page": topPage, "pageSize": topPageSize, "total": topSellersTotal, "totalPages": (topSellersTotal + topPageSize - 1) / topPageSize},
+		"salesPagination":      map[string]any{"page": vatPage, "pageSize": vatPageSize, "total": completedBills, "totalPages": (completedBills + vatPageSize - 1) / vatPageSize},
+	})
 }
 
 func (a *app) listPOSCategories(ctx context.Context, adminID string) ([]posCatalogRecord, error) {
@@ -829,7 +1283,7 @@ func (a *app) patchPOSCatalog(w http.ResponseWriter, r *http.Request, user admin
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -902,7 +1356,7 @@ func (a *app) writePOSSuppliers(w http.ResponseWriter, r *http.Request, adminID 
 			(select count(distinct m.product_id) from pos_stock_batches b join pos_stock_movements m on m.batch_id=b.id where b.supplier_id=s.id)
 		from pos_suppliers s where s.admin_id=$1 and s.active order by lower(s.name),s.id`, adminID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -910,7 +1364,7 @@ func (a *app) writePOSSuppliers(w http.ResponseWriter, r *http.Request, adminID 
 	for rows.Next() {
 		var item posSupplierRecord
 		if err = rows.Scan(&item.ID, &item.Code, &item.Name, &item.ContactPerson, &item.Phone, &item.Email, &item.Address, &item.Active, &item.ProductsCount); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		items = append(items, item)
@@ -925,7 +1379,7 @@ func (a *app) createPOSSupplier(w http.ResponseWriter, r *http.Request, user adm
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -984,13 +1438,56 @@ func (a *app) deletePOSSupplier(w http.ResponseWriter, r *http.Request, user adm
 
 func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
 	var b posSettingsRecord
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 6<<20)).Decode(&b) != nil || b.DefaultLowStock < 0 || b.TaxRatePercent < 0 || b.TaxRatePercent > 100 || len(b.ReceiptHeader) > 500 || len(b.ReceiptFooter) > 500 || len(b.LogoData) > 2_800_000 || !validImageData(b.LogoData, true) || !posImageWithinLimit(b.PaymentQRImage, 2*1024*1024) || !validImageData(b.PaymentQRImage, true) {
-		writeJSON(w, 400, map[string]string{"error": "invalid POS settings"})
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 6<<20)).Decode(&b) != nil {
+		writeJSON(w, 400, map[string]string{"error": "ข้อมูลตั้งค่าไม่ถูกต้อง"})
+		return
+	}
+	b.ReceiptHeader, b.ReceiptFooter = strings.TrimSpace(b.ReceiptHeader), strings.TrimSpace(b.ReceiptFooter)
+	b.StoreTaxID, b.StorePhone, b.StoreEmail, b.StoreAddress = strings.TrimSpace(b.StoreTaxID), strings.TrimSpace(b.StorePhone), strings.ToLower(strings.TrimSpace(b.StoreEmail)), strings.TrimSpace(b.StoreAddress)
+	b.NavbarTitle = strings.TrimSpace(b.NavbarTitle)
+	b.CustomerDisplayTitle, b.CustomerDisplayHighlight = strings.TrimSpace(b.CustomerDisplayTitle), strings.TrimSpace(b.CustomerDisplayHighlight)
+	b.CustomerDisplaySubtitle, b.CustomerDisplayCardText, b.CustomerDisplayCTAText = strings.TrimSpace(b.CustomerDisplaySubtitle), strings.TrimSpace(b.CustomerDisplayCardText), strings.TrimSpace(b.CustomerDisplayCTAText)
+	if b.CustomerDisplayTitle == "" {
+		b.CustomerDisplayTitle = "พร้อมเสิร์ฟความอร่อย"
+	}
+	if b.CustomerDisplayHighlight == "" {
+		b.CustomerDisplayHighlight = "เครื่องดื่ม & เบเกอรี่สดใหม่"
+	}
+	if b.CustomerDisplaySubtitle == "" {
+		b.CustomerDisplaySubtitle = "เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์"
+	}
+	if b.CustomerDisplayCardText == "" {
+		b.CustomerDisplayCardText = "คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด"
+	}
+	if b.CustomerDisplayCTAText == "" {
+		b.CustomerDisplayCTAText = "สั่งรายการได้ที่พนักงานแคชเชียร์"
+	}
+	validEmail := true
+	if b.StoreEmail != "" {
+		parsed, err := mail.ParseAddress(b.StoreEmail)
+		validEmail = err == nil && strings.EqualFold(parsed.Address, b.StoreEmail)
+	}
+	validTaxID := b.StoreTaxID == ""
+	if len(b.StoreTaxID) == 13 {
+		validTaxID = true
+		for _, c := range b.StoreTaxID {
+			if c < '0' || c > '9' {
+				validTaxID = false
+				break
+			}
+		}
+	}
+	if b.ReceiptHeader == "" || b.DefaultLowStock < 0 || b.DefaultLowStock > 1_000_000 || b.TaxRatePercent < 0 || b.TaxRatePercent > 100 || len(b.ReceiptHeader) > 200 || len(b.NavbarTitle) > 80 || len(b.CustomerDisplayTitle) > 120 || len(b.CustomerDisplayHighlight) > 120 || len(b.CustomerDisplaySubtitle) > 300 || len(b.CustomerDisplayCardText) > 300 || len(b.CustomerDisplayCTAText) > 160 || len(b.ReceiptFooter) > 500 || len(b.PromptPayReceiverName) > 200 || len(b.StorePhone) > 30 || len(b.StoreEmail) > 254 || len(b.StoreAddress) > 500 || !validEmail || !validTaxID || !posImageWithinLimit(b.LogoData, 2*1024*1024) || !validImageData(b.LogoData, true) || !posImageWithinLimit(b.NavbarIconData, 2*1024*1024) || !validImageData(b.NavbarIconData, true) || !posImageWithinLimit(b.PaymentQRImage, 2*1024*1024) || !validImageData(b.PaymentQRImage, true) {
+		writeJSON(w, 400, map[string]string{"error": "กรุณาตรวจข้อมูลร้าน อีเมล เลขผู้เสียภาษี และรูปภาพอีกครั้ง"})
 		return
 	}
 	b.PromptPayType, b.PromptPayID, b.PromptPayReceiverName = strings.TrimSpace(b.PromptPayType), strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName)
 	if b.PromptPayType == "" {
 		b.PromptPayType = "mobile"
+	}
+	if b.PromptPayType != "mobile" && b.PromptPayType != "national_id" && b.PromptPayType != "ewallet" {
+		writeJSON(w, 400, map[string]string{"error": "ประเภท PromptPay ไม่ถูกต้อง"})
+		return
 	}
 	if b.PromptPayID != "" {
 		if _, _, err := normalizePromptPayTarget(promptPaySettings{ID: b.PromptPayID, Type: b.PromptPayType}); err != nil {
@@ -1004,13 +1501,28 @@ func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user admin
 	if b.Language != "en" {
 		b.Language = "th"
 	}
-	_, err := a.db.ExecContext(r.Context(), `insert into pos_settings (admin_id,promptpay_type,promptpay_id,promptpay_receiver_name,receipt_header,receipt_footer,logo_data,default_low_stock,theme,language,tax_rate_percent,prices_include_tax,inherit_booking_promptpay,payment_qr_image) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) on conflict (admin_id) do update set promptpay_type=excluded.promptpay_type,promptpay_id=excluded.promptpay_id,promptpay_receiver_name=excluded.promptpay_receiver_name,receipt_header=excluded.receipt_header,receipt_footer=excluded.receipt_footer,logo_data=excluded.logo_data,default_low_stock=excluded.default_low_stock,theme=excluded.theme,language=excluded.language,tax_rate_percent=excluded.tax_rate_percent,prices_include_tax=excluded.prices_include_tax,inherit_booking_promptpay=excluded.inherit_booking_promptpay,payment_qr_image=excluded.payment_qr_image,updated_at=now()`, user.ID, b.PromptPayType, b.PromptPayID, b.PromptPayReceiverName, strings.TrimSpace(b.ReceiptHeader), strings.TrimSpace(b.ReceiptFooter), b.LogoData, b.DefaultLowStock, b.Theme, b.Language, b.TaxRatePercent, b.PricesIncludeTax, b.InheritBookingPromptPay, b.PaymentQRImage)
+	previous, _ := a.ensurePOSSettings(r.Context(), user.ID)
+	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "update_pos_settings", "pos_settings", user.ID, map[string]any{"hasPromptPay": b.PromptPayID != ""})
-	a.writePOSOverview(w, r, user.ID)
+	defer tx.Rollback()
+	_, err = tx.ExecContext(r.Context(), `insert into pos_settings (admin_id,promptpay_type,promptpay_id,promptpay_receiver_name,receipt_header,receipt_footer,logo_data,default_low_stock,theme,language,tax_rate_percent,prices_include_tax,inherit_booking_promptpay,payment_qr_image,store_tax_id,store_phone,store_email,store_address,navbar_title,navbar_icon_data,customer_display_title,customer_display_highlight,customer_display_subtitle,customer_display_card_text,customer_display_cta_text) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) on conflict (admin_id) do update set promptpay_type=excluded.promptpay_type,promptpay_id=excluded.promptpay_id,promptpay_receiver_name=excluded.promptpay_receiver_name,receipt_header=excluded.receipt_header,receipt_footer=excluded.receipt_footer,logo_data=excluded.logo_data,default_low_stock=excluded.default_low_stock,theme=excluded.theme,language=excluded.language,tax_rate_percent=excluded.tax_rate_percent,prices_include_tax=excluded.prices_include_tax,inherit_booking_promptpay=excluded.inherit_booking_promptpay,payment_qr_image=excluded.payment_qr_image,store_tax_id=excluded.store_tax_id,store_phone=excluded.store_phone,store_email=excluded.store_email,store_address=excluded.store_address,navbar_title=excluded.navbar_title,navbar_icon_data=excluded.navbar_icon_data,customer_display_title=excluded.customer_display_title,customer_display_highlight=excluded.customer_display_highlight,customer_display_subtitle=excluded.customer_display_subtitle,customer_display_card_text=excluded.customer_display_card_text,customer_display_cta_text=excluded.customer_display_cta_text,updated_at=now()`, user.ID, b.PromptPayType, b.PromptPayID, b.PromptPayReceiverName, b.ReceiptHeader, b.ReceiptFooter, b.LogoData, b.DefaultLowStock, b.Theme, b.Language, b.TaxRatePercent, b.PricesIncludeTax, b.InheritBookingPromptPay, b.PaymentQRImage, b.StoreTaxID, b.StorePhone, b.StoreEmail, b.StoreAddress, b.NavbarTitle, b.NavbarIconData, b.CustomerDisplayTitle, b.CustomerDisplayHighlight, b.CustomerDisplaySubtitle, b.CustomerDisplayCardText, b.CustomerDisplayCTAText)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "update_pos_settings", "pos_settings", user.ID, map[string]any{"adminId": user.ID, "before": posSettingsAuditSnapshot(previous), "after": posSettingsAuditSnapshot(b)}); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, map[string]string{"status": "settings_updated"})
 }
 
 func decodePOSProduct(w http.ResponseWriter, r *http.Request) (posProductRecord, bool) {
@@ -1062,15 +1574,31 @@ func (a *app) createPOSProduct(w http.ResponseWriter, r *http.Request, user admi
 		p.LowStockThreshold = settings.DefaultLowStock
 	}
 	p.ID = "product-" + randHex(8)
-	_, err := a.db.ExecContext(r.Context(), `insert into pos_products (id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,barcode,description) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, p.ID, user.ID, p.SKU, p.Category, p.Name, p.PriceTHB, p.PriceSatang, p.CostTHB, p.CostSatang, p.StockQuantity, p.LowStockThreshold, p.Active, p.Unit, p.ImageData, p.Barcode, p.Description)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(r.Context(), `insert into pos_products (id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,barcode,description) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, p.ID, user.ID, p.SKU, p.Category, p.Name, p.PriceTHB, p.PriceSatang, p.CostTHB, p.CostSatang, p.StockQuantity, p.LowStockThreshold, p.Active, p.Unit, p.ImageData, p.Barcode, p.Description)
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": "SKU ซ้ำหรือข้อมูลสินค้าไม่ถูกต้อง"})
 		return
 	}
 	if p.StockQuantity > 0 {
-		_, _ = a.db.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,resulting_cost_satang) values ($1,$2,$3,$3,'restock','สต็อกเริ่มต้น',$4,$5,$6,$7,$8,0,$7,$9,$10,$10,$9)`, user.ID, p.ID, p.StockQuantity, posActorID(user), posActorType(user), posActorName(user), p.CostTHB, p.StockQuantity*p.CostTHB, p.CostSatang, int64(p.StockQuantity)*p.CostSatang)
+		if _, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,resulting_cost_satang) values ($1,$2,$3,$3,'restock','สต็อกเริ่มต้น',$4,$5,$6,$7,$8,0,$7,$9,$10,$10,$9)`, user.ID, p.ID, p.StockQuantity, posActorID(user), posActorType(user), posActorName(user), p.CostTHB, p.StockQuantity*p.CostTHB, p.CostSatang, int64(p.StockQuantity)*p.CostSatang); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "create_pos_product", "pos_product", p.ID, map[string]any{"adminId": user.ID, "sku": p.SKU})
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "create_pos_product", "pos_product", p.ID, map[string]any{"adminId": user.ID, "after": posProductAuditSnapshot(p)}); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
 	writeJSON(w, 201, p)
 }
 
@@ -1079,7 +1607,18 @@ func (a *app) patchPOSProduct(w http.ResponseWriter, r *http.Request, user admin
 	if !ok {
 		return
 	}
-	result, err := a.db.ExecContext(r.Context(), `update pos_products set category=$3,name=$4,price_thb=$5,price_satang=$6,cost_thb=$7,cost_satang=$8,low_stock_threshold=$9,active=$10,unit=$11,image_data=$12,barcode=$13,description=$14,updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null`, id, user.ID, p.Category, p.Name, p.PriceTHB, p.PriceSatang, p.CostTHB, p.CostSatang, p.LowStockThreshold, p.Active, p.Unit, p.ImageData, p.Barcode, p.Description)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	var previous posProductRecord
+	if err = tx.QueryRowContext(r.Context(), `select sku,category,name,price_satang,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,barcode from pos_products where id=$1 and admin_id=$2 and deleted_at is null for update`, id, user.ID).Scan(&previous.SKU, &previous.Category, &previous.Name, &previous.PriceSatang, &previous.CostSatang, &previous.StockQuantity, &previous.LowStockThreshold, &previous.Active, &previous.Unit, &previous.ImageData, &previous.Barcode); err != nil {
+		writeJSON(w, 404, map[string]string{"error": "product not found"})
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `update pos_products set category=$3,name=$4,price_thb=$5,price_satang=$6,cost_thb=$7,cost_satang=$8,low_stock_threshold=$9,active=$10,unit=$11,image_data=$12,barcode=$13,description=$14,updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null`, id, user.ID, p.Category, p.Name, p.PriceTHB, p.PriceSatang, p.CostTHB, p.CostSatang, p.LowStockThreshold, p.Active, p.Unit, p.ImageData, p.Barcode, p.Description)
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": "SKU ซ้ำหรือข้อมูลสินค้าไม่ถูกต้อง"})
 		return
@@ -1088,12 +1627,32 @@ func (a *app) patchPOSProduct(w http.ResponseWriter, r *http.Request, user admin
 		writeJSON(w, 404, map[string]string{"error": "product not found"})
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "update_pos_product", "pos_product", id, map[string]any{"adminId": user.ID})
-	a.writePOSOverview(w, r, user.ID)
+	p.SKU, p.StockQuantity = previous.SKU, previous.StockQuantity
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "update_pos_product", "pos_product", id, map[string]any{"adminId": user.ID, "before": posProductAuditSnapshot(previous), "after": posProductAuditSnapshot(p)}); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "product_updated"})
 }
 
 func (a *app) deletePOSProduct(w http.ResponseWriter, r *http.Request, user adminUser, id string) {
-	result, err := a.db.ExecContext(r.Context(), `update pos_products set active=false,deleted_at=now(),updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null`, id, user.ID)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	var name, sku string
+	var stock int
+	if err = tx.QueryRowContext(r.Context(), `select name,sku,stock_quantity from pos_products where id=$1 and admin_id=$2 and deleted_at is null for update`, id, user.ID).Scan(&name, &sku, &stock); err != nil {
+		writeJSON(w, 404, map[string]string{"error": "product not found"})
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `update pos_products set active=false,deleted_at=now(),updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null`, id, user.ID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "ปิดการขายสินค้าไม่สำเร็จ"})
 		return
@@ -1102,7 +1661,14 @@ func (a *app) deletePOSProduct(w http.ResponseWriter, r *http.Request, user admi
 		writeJSON(w, 404, map[string]string{"error": "product not found"})
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "disable_pos_product", "pos_product", id, map[string]any{"adminId": user.ID})
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "disable_pos_product", "pos_product", id, map[string]any{"adminId": user.ID, "name": name, "sku": sku, "stockQuantity": stock, "beforeActive": true, "afterActive": false}); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
 	writeJSON(w, 200, map[string]bool{"deleted": true})
 }
 
@@ -1127,10 +1693,16 @@ func (a *app) adjustPOSStock(w http.ResponseWriter, r *http.Request, user adminU
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
+	var previousBalance int
+	var previousCostSatang int64
+	if err = tx.QueryRowContext(r.Context(), `select stock_quantity,cost_satang from pos_products where id=$1 and admin_id=$2 and deleted_at is null for update`, id, user.ID).Scan(&previousBalance, &previousCostSatang); err != nil {
+		writeJSON(w, 404, map[string]string{"error": "product not found"})
+		return
+	}
 	var balance int
 	var costTHB *int
 	if b.CostSatang != nil {
@@ -1148,12 +1720,21 @@ func (a *app) adjustPOSStock(w http.ResponseWriter, r *http.Request, user adminU
 		}
 		_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, user.ID, id, b.Delta, balance, reason, strings.TrimSpace(b.Note), posActorID(user), posActorType(user), posActorName(user))
 	}
+	resultingCostSatang := previousCostSatang
+	if b.CostSatang != nil {
+		resultingCostSatang = *b.CostSatang
+	}
+	if err == nil {
+		err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "adjust_pos_stock", "pos_product", id, map[string]any{
+			"adminId": user.ID, "delta": b.Delta, "beforeQuantity": previousBalance, "afterQuantity": balance,
+			"beforeCostSatang": previousCostSatang, "afterCostSatang": resultingCostSatang, "hasNote": strings.TrimSpace(b.Note) != "",
+		})
+	}
 	if err != nil || tx.Commit() != nil {
 		writeJSON(w, 500, map[string]string{"error": "บันทึกสต็อกไม่สำเร็จ"})
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "adjust_pos_stock", "pos_product", id, map[string]any{"adminId": user.ID, "delta": b.Delta})
-	a.writePOSOverview(w, r, user.ID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "stock_adjusted"})
 }
 
 type posStockBatchRequest struct {
@@ -1311,7 +1892,7 @@ func (a *app) adjustPOSStockBatch(w http.ResponseWriter, r *http.Request, user a
 	sort.Strings(ids)
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -1374,6 +1955,7 @@ func (a *app) adjustPOSStockBatch(w http.ResponseWriter, r *http.Request, user a
 		return
 	}
 	var totalBatchCostSatang int64
+	auditItems := make([]map[string]any, 0, len(b.Items))
 	for index, item := range b.Items {
 		product := locked[item.ProductID]
 		current := product.stock
@@ -1405,6 +1987,7 @@ func (a *app) adjustPOSStockBatch(w http.ResponseWriter, r *http.Request, user a
 			resultingCostSatang = weightedAverageCostSatang(current, product.costSatang, item.Quantity, netLineSatang)
 		}
 		totalBatchCostSatang += netLineSatang
+		auditItems = append(auditItems, map[string]any{"productId": item.ProductID, "delta": delta, "beforeQuantity": current, "afterQuantity": balance, "beforeCostSatang": product.costSatang, "afterCostSatang": resultingCostSatang, "grossSatang": grossLineSatang, "discountSatang": allocatedDiscountSatang, "netSatang": netLineSatang})
 		if _, err = tx.ExecContext(r.Context(), `update pos_products set stock_quantity=$3,cost_satang=$4,cost_thb=$5,updated_at=now() where id=$1 and admin_id=$2`, item.ProductID, user.ID, balance, resultingCostSatang, roundedBaht(resultingCostSatang)); err != nil {
 			writeJSON(w, 500, map[string]string{"error": "บันทึกรายการสต็อกไม่สำเร็จ"})
 			return
@@ -1434,11 +2017,14 @@ func (a *app) adjustPOSStockBatch(w http.ResponseWriter, r *http.Request, user a
 		writeJSON(w, 500, map[string]string{"error": "สรุปต้นทุนเอกสารไม่สำเร็จ"})
 		return
 	}
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "adjust_pos_stock_batch", "pos_stock_batch", batchID, map[string]any{"adminId": user.ID, "mode": b.Mode, "name": b.Name, "supplierId": b.SupplierID, "items": auditItems, "grossTotalSatang": grossTotalSatang, "discountSatang": discountSatang, "netTotalSatang": totalBatchCostSatang}); err != nil {
+		writeJSON(w, 500, map[string]string{"error": "บันทึก audit สต็อกไม่สำเร็จ"})
+		return
+	}
 	if err = tx.Commit(); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "บันทึกรายการสต็อกไม่สำเร็จ"})
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "adjust_pos_stock_batch", "pos_stock_batch", batchID, map[string]any{"adminId": user.ID, "mode": b.Mode, "name": b.Name, "items": len(b.Items), "grossTotalSatang": grossTotalSatang, "discountSatang": discountSatang, "netTotalSatang": totalBatchCostSatang})
 	writeJSON(w, http.StatusCreated, map[string]any{"id": batchID, "grossTotalSatang": grossTotalSatang, "discountSatang": discountSatang, "netTotalSatang": totalBatchCostSatang})
 }
 
@@ -1478,7 +2064,7 @@ func (a *app) createPOSGuest(w http.ResponseWriter, r *http.Request, user adminU
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -1551,15 +2137,18 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		writeJSON(w, 400, map[string]string{"error": "ข้อมูลส่วนลดหรือการชำระเงินไม่ถูกต้อง"})
 		return
 	}
+	if (b.DiscountAmountSatang > 0 || b.DiscountRateBPS > 0) && !requirePOSPermission(w, user, "discounts") {
+		return
+	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
 	if b.RequestID != "" {
 		if _, err = tx.ExecContext(r.Context(), `select pg_advisory_xact_lock(hashtextextended($1,0))`, user.ID+":sale:"+b.RequestID); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		var existingID, existingStatus string
@@ -1666,13 +2255,13 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		_, err = tx.ExecContext(r.Context(), `insert into billing_payment_allocations (payment_id,source_type,source_id,amount_thb,amount_satang,label,snapshot) values ($1,'pos',$2,$3,$4,$5,$6)`, paymentID, saleID, roundedBaht(totalSatang), totalSatang, "สินค้า · "+saleID, snapshot)
 	}
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	for _, item := range items {
 		_, err = tx.ExecContext(r.Context(), `insert into pos_sale_items (sale_id,product_id,product_name,sku,quantity,unit_price_thb,unit_cost_thb,unit_cost_satang,line_total_thb,unit_price_satang,line_total_satang,note) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, saleID, item.ProductID, item.ProductName, item.SKU, item.Quantity, item.UnitPrice, roundedBaht(item.UnitCostSatang), item.UnitCostSatang, item.LineTotal, item.UnitPriceSatang, item.LineTotalSatang, item.Note)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		var balance int
@@ -1682,15 +2271,29 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 			_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,sale_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang) values ($1,$2,$3,$4,$5,'sale',$6,$7,$8,$9,$10,$11,$10,$10,$12,$13,$13,$12,$12)`, user.ID, item.ProductID, saleID, -item.Quantity, balance, "ขายสินค้า", posActorID(user), posActorType(user), posActorName(user), roundedBaht(item.UnitCostSatang), roundedBaht(lineCostSatang), item.UnitCostSatang, lineCostSatang)
 		}
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 	}
-	if err = tx.Commit(); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+	auditSaleItems := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		auditSaleItems = append(auditSaleItems, map[string]any{"productId": item.ProductID, "quantity": item.Quantity, "unitPriceSatang": item.UnitPriceSatang, "unitCostSatang": item.UnitCostSatang, "lineTotalSatang": item.LineTotalSatang})
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "create_pos_sale", "pos_sale", saleID, map[string]any{
+		"adminId": user.ID, "billingAccountId": accountID, "buyerType": b.BuyerType, "status": status,
+		"subtotalSatang": subtotalSatang, "discountType": b.DiscountType, "discountRateBps": b.DiscountRateBPS,
+		"discountSatang": discountSatang, "vatRateBps": vatRateBPS, "vatSatang": vatSatang,
+		"pricesIncludeTax": settings.PricesIncludeTax, "totalSatang": totalSatang, "costSatang": costSatang,
+		"paymentMethod": b.Method, "paymentId": paymentID, "cashReceivedSatang": b.CashReceivedSatang,
+		"hasReference": strings.TrimSpace(b.ReferenceNumber) != "", "items": auditSaleItems,
+	}); err != nil {
+		writePOSInternalError(w, r, err)
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "create_pos_sale", "pos_sale", saleID, map[string]any{"adminId": user.ID, "status": status, "totalSatang": totalSatang, "paymentId": paymentID})
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
 	writeJSON(w, 201, map[string]any{"saleId": saleID, "status": status, "totalThb": roundedBaht(totalSatang), "totalSatang": totalSatang, "paymentId": paymentID, "billingAccountId": accountID})
 }
 
@@ -1701,7 +2304,7 @@ func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser
 	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&b)
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer tx.Rollback()
@@ -1717,7 +2320,7 @@ func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser
 	}
 	rows, err := tx.QueryContext(r.Context(), `select product_id,quantity,unit_cost_satang from pos_sale_items where sale_id=$1 and product_id is not null for update`, saleID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	type returned struct {
@@ -1735,23 +2338,29 @@ func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser
 	for _, item := range returns {
 		var balance int
 		if err = tx.QueryRowContext(r.Context(), `update pos_products set stock_quantity=stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 returning stock_quantity`, item.id, user.ID, item.quantity).Scan(&balance); err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 		lineCostSatang := item.unitCostSatang * int64(item.quantity)
 		_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,sale_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang) values ($1,$2,$3,$4,$5,'void',$6,$7,$8,$9,$10,$11,$10,$10,$12,$13,$13,$12,$12)`, user.ID, item.id, saleID, item.quantity, balance, strings.TrimSpace(b.Note), posActorID(user), posActorType(user), posActorName(user), roundedBaht(item.unitCostSatang), roundedBaht(lineCostSatang), item.unitCostSatang, lineCostSatang)
 		if err != nil {
-			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			writePOSInternalError(w, r, err)
 			return
 		}
 	}
 	_, err = tx.ExecContext(r.Context(), `update pos_sales set status='void',note=case when $3='' then note else $3 end,voided_at=now(),updated_at=now() where id=$1 and admin_id=$2`, saleID, user.ID, strings.TrimSpace(b.Note))
+	returnItems := make([]map[string]any, 0, len(returns))
+	for _, item := range returns {
+		returnItems = append(returnItems, map[string]any{"productId": item.id, "quantityReturned": item.quantity, "unitCostSatang": item.unitCostSatang})
+	}
+	if err == nil {
+		err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "void_pos_sale", "pos_sale", saleID, map[string]any{"adminId": user.ID, "beforeStatus": status, "afterStatus": "void", "hasNote": strings.TrimSpace(b.Note) != "", "returnedItems": returnItems})
+	}
 	if err != nil || tx.Commit() != nil {
 		writeJSON(w, 500, map[string]string{"error": "ยกเลิกบิลไม่สำเร็จ"})
 		return
 	}
-	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "void_pos_sale", "pos_sale", saleID, map[string]any{"adminId": user.ID})
-	a.writePOSOverview(w, r, user.ID)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "sale_voided"})
 }
 
 func (a *app) billingAccountIdentity(ctx context.Context, adminID, accountID string) (string, string, string, error) {
@@ -1945,12 +2554,12 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 	filter := `ba.admin_id=$1 and ba.kind='member' and ba.active and m.active and m.deleted_at is null and ($2='' or ba.display_name ilike '%%'||$2||'%%' or m.phone ilike '%%'||$2||'%%') and (exists(select 1 from pos_sales ps where ps.billing_account_id=ba.id and ps.status='open') or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id)))`
 	var total int
 	if err := a.db.QueryRowContext(r.Context(), `select count(*) from billing_accounts ba join members m on m.id=ba.member_id where `+filter, adminID, search).Scan(&total); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	rows, err := a.db.QueryContext(r.Context(), `select ba.id,ba.member_id,ba.display_name,m.phone from billing_accounts ba join members m on m.id=ba.member_id where `+filter+` order by lower(ba.display_name),ba.id limit $3 offset $4`, adminID, search, pageSize, (page-1)*pageSize)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	defer rows.Close()
@@ -1969,7 +2578,7 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 		items = append(items, item)
 	}
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	totalPages := (total + pageSize - 1) / pageSize
@@ -1980,18 +2589,27 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 }
 
 func (a *app) listBillingPaymentHistory(ctx context.Context, adminID, sessionID string, page, pageSize int) ([]billingPaymentHistory, int, error) {
+	return a.listBillingPaymentHistoryFiltered(ctx, adminID, sessionID, "", "", page, pageSize)
+}
+
+func (a *app) listBillingPaymentHistoryFiltered(ctx context.Context, adminID, sessionID, search, method string, page, pageSize int) ([]billingPaymentHistory, int, error) {
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 50
 	}
-	filter := `bp.admin_id=$1 and bp.status='paid' and ($2='' or exists(select 1 from players sp where sp.session_id=$2 and sp.member_id=ba.member_id))`
+	search = strings.TrimSpace(strings.ToLower(search))
+	searchLike := "%" + search + "%"
+	if method != "cash" && method != "promptpay" {
+		method = ""
+	}
+	filter := `bp.admin_id=$1 and bp.status='paid' and ($2='' or exists(select 1 from players sp where sp.session_id=$2 and sp.member_id=ba.member_id)) and ($3='' or lower(bp.id) like $4 or lower(coalesce(ba.display_name,'')) like $4 or lower(coalesce(bp.received_by_name,'')) like $4 or lower(coalesce(bp.reference_number,'')) like $4 or exists(select 1 from billing_payment_allocations bpa where bpa.payment_id=bp.id and lower(coalesce(bpa.label,'')) like $4)) and ($5='' or bp.method=$5)`
 	var total int
-	if err := a.db.QueryRowContext(ctx, `select count(*) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id where `+filter, adminID, sessionID).Scan(&total); err != nil {
+	if err := a.db.QueryRowContext(ctx, `select count(*) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id where `+filter, adminID, sessionID, search, searchLike, method).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := a.db.QueryContext(ctx, `select bp.id,coalesce(bp.billing_account_id,''),coalesce(ba.member_id,''),coalesce(ba.display_name,'ลูกค้าหน้าร้าน'),bp.origin_system,bp.method,bp.amount_satang,bp.cash_received_satang,bp.change_satang,bp.reference_number,bp.received_by_type,bp.received_by_name,to_char(bp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),coalesce(sum(a.amount_satang) filter(where a.source_type='match'),0),coalesce(sum(a.amount_satang) filter(where a.source_type='pos'),0) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id left join billing_payment_allocations a on a.payment_id=bp.id where `+filter+` group by bp.id,ba.member_id,ba.display_name order by bp.created_at desc,bp.id desc limit $3 offset $4`, adminID, sessionID, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(ctx, `select bp.id,coalesce(bp.billing_account_id,''),coalesce(ba.member_id,''),coalesce(ba.display_name,'ลูกค้าหน้าร้าน'),bp.origin_system,bp.method,bp.amount_satang,bp.cash_received_satang,bp.change_satang,bp.reference_number,bp.received_by_type,bp.received_by_name,to_char(bp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),coalesce(sum(a.amount_satang) filter(where a.source_type='match'),0),coalesce(sum(a.amount_satang) filter(where a.source_type='pos'),0) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id left join billing_payment_allocations a on a.payment_id=bp.id where `+filter+` group by bp.id,ba.member_id,ba.display_name order by bp.created_at desc,bp.id desc limit $6 offset $7`, adminID, sessionID, search, searchLike, method, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2029,16 +2647,21 @@ func (a *app) listBillingPaymentHistory(ctx context.Context, adminID, sessionID 
 func (a *app) writePOSPaymentHistory(w http.ResponseWriter, r *http.Request, adminID string) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
-	items, total, err := a.listBillingPaymentHistory(r.Context(), adminID, "", page, pageSize)
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
-		return
-	}
 	if page < 1 {
 		page = 1
 	}
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 50
+	}
+	status := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("status")))
+	if status == "refunded" {
+		writeJSON(w, 200, map[string]any{"items": []billingPaymentHistory{}, "page": page, "pageSize": pageSize, "total": 0, "totalPages": 1})
+		return
+	}
+	items, total, err := a.listBillingPaymentHistoryFiltered(r.Context(), adminID, "", r.URL.Query().Get("search"), r.URL.Query().Get("method"), page, pageSize)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
 	}
 	writeJSON(w, 200, map[string]any{"items": items, "page": page, "pageSize": pageSize, "total": total, "totalPages": max(1, (total+pageSize-1)/pageSize)})
 }
@@ -2080,7 +2703,7 @@ func (a *app) sessionPaymentHistory(ctx context.Context, state SessionState) ([]
 func (a *app) writeSessionPaymentEvents(w http.ResponseWriter, r *http.Request, state SessionState) {
 	items, err := a.sessionPaymentHistory(r.Context(), state)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	if r.URL.Query().Get("all") == "1" || r.URL.Query().Get("all") == "true" {
@@ -2094,7 +2717,7 @@ func (a *app) writeSessionPaymentEvents(w http.ResponseWriter, r *http.Request, 
 func (a *app) writeSessionBillingSync(w http.ResponseWriter, r *http.Request, state SessionState) {
 	var adminID string
 	if err := a.db.QueryRowContext(r.Context(), `select coalesce(admin_id,'') from sessions where id=$1`, state.Session.ID).Scan(&adminID); err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	players := []map[string]any{}
@@ -2201,11 +2824,37 @@ func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountI
 			return summary, err
 		}
 	}
+	allocationSources := make([]map[string]any, 0, len(summary.Lines))
+	for _, line := range summary.Lines {
+		allocationSources = append(allocationSources, map[string]any{"sourceType": line.SourceType, "sourceId": line.SourceID, "amountSatang": line.AmountSatang})
+	}
+	if err = a.insertActivityLogTx(ctx, tx, posActorType(user), posActorID(user), "settle_combined_bill", "billing_payment", paymentID, map[string]any{
+		"adminId": user.ID, "billingAccountId": accountID, "amountSatang": summary.TotalSatang,
+		"method": method, "originSystem": originSystem, "matchSatang": summary.MatchTotalSatang,
+		"posSatang": summary.POSTotalSatang, "cashReceivedSatang": cashReceivedSatang,
+		"changeSatang": changeSatang, "hasReference": strings.TrimSpace(referenceNumber) != "", "allocations": allocationSources,
+	}); err != nil {
+		return summary, err
+	}
 	if err = tx.Commit(); err != nil {
 		return summary, err
 	}
-	a.insertActivityLog(ctx, posActorType(user), posActorID(user), "settle_combined_bill", "billing_payment", paymentID, map[string]any{"adminId": user.ID, "amountSatang": summary.TotalSatang, "method": method, "originSystem": originSystem, "matchSatang": summary.MatchTotalSatang, "posSatang": summary.POSTotalSatang})
 	return summary, nil
+}
+
+func writePOSSettlementError(w http.ResponseWriter, r *http.Request, summary billingSummary, err error) {
+	message := err.Error()
+	publicMessages := map[string]bool{
+		"invalid payment method": true, "invalid payment origin": true,
+		"ไม่มียอดค้างชำระ": true, "ยอด POS เปลี่ยนแปลง กรุณาลองใหม่": true,
+		"invalid match reference": true, "ยอด Match เปลี่ยนแปลง กรุณาลองใหม่": true,
+		"ยอดชำระเปลี่ยนแปลง กรุณาตรวจสอบยอดล่าสุด": true, "ยอดเงินสดไม่เพียงพอ": true,
+	}
+	if publicMessages[message] {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": message, "summary": summary})
+		return
+	}
+	writePOSInternalError(w, r, err)
 }
 
 func (a *app) handlePOSSettlement(w http.ResponseWriter, r *http.Request, user adminUser) {
@@ -2226,7 +2875,7 @@ func (a *app) handlePOSSettlement(w http.ResponseWriter, r *http.Request, user a
 	}
 	summary, err := a.settleBillingAccount(r.Context(), user, strings.TrimSpace(b.BillingAccountID), strings.TrimSpace(b.Method), b.ExpectedTotalSatang, b.CashReceivedSatang, b.ReferenceNumber, true, "pos")
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "summary": summary})
+		writePOSSettlementError(w, r, summary, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"status": "paid", "summary": summary})
@@ -2244,7 +2893,7 @@ func (a *app) writePOSQR(w http.ResponseWriter, r *http.Request, adminID string)
 	}
 	settings, err := a.ensurePOSSettings(r.Context(), adminID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	effective, source := a.effectivePOSPromptPay(r.Context(), adminID, settings)
@@ -2337,7 +2986,7 @@ func (a *app) settlePlayerCombinedBill(w http.ResponseWriter, r *http.Request, s
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	var accountID string
@@ -2353,7 +3002,7 @@ func (a *app) settlePlayerCombinedBill(w http.ResponseWriter, r *http.Request, s
 		_ = tx.Rollback()
 	}
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	if b.ExpectedTotalSatang == 0 {
@@ -2364,12 +3013,12 @@ func (a *app) settlePlayerCombinedBill(w http.ResponseWriter, r *http.Request, s
 	}
 	summary, err := a.settleBillingAccount(r.Context(), user, accountID, strings.TrimSpace(b.Method), b.ExpectedTotalSatang, b.CashReceivedSatang, b.ReferenceNumber, true, "match")
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "summary": summary})
+		writePOSSettlementError(w, r, summary, err)
 		return
 	}
 	nextState, err := a.loadState(r.Context(), state.Session.ID)
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		writePOSInternalError(w, r, err)
 		return
 	}
 	nextState.Session.Unlocked = true

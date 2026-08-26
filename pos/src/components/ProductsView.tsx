@@ -1383,18 +1383,20 @@ export const ProductsView: React.FC = () => {
       {/* ================= MODAL 2: CATEGORIES MANAGEMENT ================= */}
       {isCategoryModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scrollbar">
+          <div role="dialog" aria-modal="true" aria-labelledby="category-modal-title" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scrollbar">
             {/* Modal Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-center gap-2 text-red-600 dark:text-yellow-400 font-bold">
-                <FolderPlus className="w-5 h-5" />
-                <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="min-w-0 flex items-center gap-2 text-red-600 dark:text-yellow-400 font-bold">
+                <FolderPlus className="w-5 h-5 shrink-0" />
+                <h3 id="category-modal-title" className="min-w-0 text-base sm:text-lg font-black text-slate-900 dark:text-white">
                   จัดการหมวดหมู่สินค้า (Categories)
                 </h3>
               </div>
               <button
+                type="button"
+                aria-label="ปิดหน้าต่างจัดการหมวดหมู่"
                 onClick={() => setIsCategoryModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center justify-center transition-colors"
+                className="w-8 h-8 shrink-0 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center justify-center transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1405,19 +1407,19 @@ export const ProductsView: React.FC = () => {
               <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">
                 {editingCategory ? 'แก้ไขหมวดหมู่' : '+ เพิ่มหมวดหมู่ใหม่'}
               </span>
-              <div className="flex flex-col sm:flex-row gap-2">
+              <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,10rem)_auto]">
                 <input
                   type="text"
                   required
                   value={categoryForm.name}
                   onChange={(e) => setCategoryForm({ ...categoryForm, name: e.target.value })}
                   placeholder="ชื่อหมวดหมู่ เช่น อาหารจานด่วน, ขนมไทย"
-                  className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400"
+                  className="min-w-0 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400"
                 />
                 <select
                   value={categoryForm.icon}
                   onChange={(e) => setCategoryForm({ ...categoryForm, icon: e.target.value })}
-                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
+                  className="min-w-0 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none"
                 >
                   <option value="Coffee">ไอคอน กาแฟ</option>
                   <option value="Croissant">ไอคอน เบเกอรี่</option>
@@ -1448,12 +1450,12 @@ export const ProductsView: React.FC = () => {
                       key={c.id}
                       className="p-3 flex items-center justify-between bg-white dark:bg-slate-900 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
                     >
-                      <div className="flex items-center gap-2.5">
+                      <div className="min-w-0 flex items-center gap-2.5">
                         <div className="w-7 h-7 rounded-lg bg-red-50 dark:bg-red-500/10 text-red-600 dark:text-yellow-400 flex items-center justify-center">
                           {renderCategoryIcon(c.icon || c.id)}
                         </div>
-                        <div>
-                          <span className="font-bold text-xs text-slate-800 dark:text-slate-200 block">
+                        <div className="min-w-0">
+                          <span className="truncate font-bold text-xs text-slate-800 dark:text-slate-200 block">
                             {c.name}
                           </span>
                           <span className="text-[10px] text-slate-400">
@@ -1461,7 +1463,7 @@ export const ProductsView: React.FC = () => {
                           </span>
                         </div>
                       </div>
-                      <div className="flex items-center gap-1.5">
+                      <div className="shrink-0 flex items-center gap-1.5">
                         <button
                           type="button"
                           onClick={() => {
@@ -1494,18 +1496,20 @@ export const ProductsView: React.FC = () => {
       {/* ================= MODAL 3: UNITS MANAGEMENT ================= */}
       {isUnitModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scrollbar">
+          <div role="dialog" aria-modal="true" aria-labelledby="unit-modal-title" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scrollbar">
             {/* Modal Header */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div className="flex items-center gap-2 text-yellow-600 dark:text-yellow-400 font-bold">
-                <Scale className="w-5 h-5" />
-                <h3 className="text-base sm:text-lg font-black text-slate-900 dark:text-white">
+            <div className="flex items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
+              <div className="min-w-0 flex items-center gap-2 text-yellow-600 dark:text-yellow-400 font-bold">
+                <Scale className="w-5 h-5 shrink-0" />
+                <h3 id="unit-modal-title" className="min-w-0 text-base sm:text-lg font-black text-slate-900 dark:text-white">
                   จัดการหน่วยนับสินค้า (Units)
                 </h3>
               </div>
               <button
+                type="button"
+                aria-label="ปิดหน้าต่างจัดการหน่วยนับ"
                 onClick={() => setIsUnitModalOpen(false)}
-                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center justify-center transition-colors"
+                className="w-8 h-8 shrink-0 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center justify-center transition-colors"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1516,14 +1520,14 @@ export const ProductsView: React.FC = () => {
               <span className="text-xs font-bold text-slate-800 dark:text-slate-200 block">
                 {editingUnit ? 'แก้ไขหน่วยนับ' : '+ เพิ่มหน่วยนับใหม่'}
               </span>
-              <div className="flex gap-2">
+              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
                 <input
                   type="text"
                   required
                   value={unitFormName}
                   onChange={(e) => setUnitFormName(e.target.value)}
                   placeholder="พิมพ์ชื่อหน่วย เช่น จาน, ขวด, ถุง, ชุด, แพ็ค"
-                  className="flex-1 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500"
+                  className="min-w-0 w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500"
                 />
                 <button
                   type="submit"

@@ -1,9 +1,12 @@
 import React, { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
 import { usePos } from '../context/PosContext';
 import { StoreSettings } from '../types';
 import { AdminUser } from '../api/auth';
 import {
   createPOSStaff,
+  forceLogoutPOSStaff,
+  getPOSActivity,
   getPOSAccessSettings,
   POSPermissions,
   POSRole,
@@ -11,21 +14,33 @@ import {
   resetPOSStaffPIN,
   savePOSRolePermissions,
   updatePOSStaff,
+  updatePOSOwner,
+  POSActivityItem,
 } from '../api/posAccess';
+import { getPOSPaymentQR } from '../api/posSales';
+import { SystemSelect } from './SystemSelect';
 import {
   Settings,
   Store,
+  Monitor,
   Printer,
   DollarSign,
   Save,
+  LoaderCircle,
+  CircleCheck,
   ShieldCheck,
   Users,
   UserPlus,
   KeyRound,
   Power,
+  LogOut,
+  LockKeyhole,
+  History,
+  Image as ImageIcon,
+  TestTube2,
 } from 'lucide-react';
 
-type SettingsTab = 'store' | 'printer' | 'tax' | 'permissions' | 'members';
+type SettingsTab = 'store' | 'customer-display' | 'printer' | 'tax' | 'permissions' | 'members' | 'activity';
 type MemberRole = POSRole;
 
 const MAX_MEMBERS = 3;
@@ -36,13 +51,25 @@ const PERMISSION_LABELS = [
   ['stock', 'จัดการสต็อก'],
   ['reports', 'ดูรายงาน'],
   ['settings', 'ตั้งค่าระบบ'],
+  ['discounts', 'ให้ส่วนลด'],
+  ['void_sales', 'ยกเลิก / คืนบิล'],
+  ['stock_adjust', 'ปรับยอดสต็อก'],
+  ['product_pricing', 'แก้ไขราคาสินค้า'],
+  ['report_export', 'ส่งออกรายงาน'],
+  ['member_create', 'เพิ่มสมาชิกหลัก'],
 ] as const;
 
 const DEFAULT_PERMISSIONS: Record<MemberRole, POSPermissions> = {
-  owner: { sales: true, bills: true, products: true, stock: true, reports: true, settings: true },
-  manager: { sales: true, bills: true, products: true, stock: true, reports: true, settings: false },
-  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, settings: false },
+  owner: { sales: true, bills: true, products: true, stock: true, reports: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  manager: { sales: true, bills: true, products: true, stock: true, reports: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
 };
+
+const STAFF_ROLE_OPTIONS: Array<{ value: Exclude<MemberRole, 'owner'>; label: string }> = [
+  { value: 'manager', label: 'ผู้จัดการ' },
+  { value: 'cashier', label: 'แคชเชียร์' },
+];
+const OWNER_ROLE_OPTIONS: Array<{ value: MemberRole; label: string }> = [{ value: 'owner', label: 'เจ้าของระบบ' }];
 
 interface SettingsViewProps {
   currentUser: AdminUser;
@@ -73,21 +100,60 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const [maxMembers, setMaxMembers] = useState(MAX_MEMBERS);
   const [permissions, setPermissions] = useState<Record<MemberRole, POSPermissions>>(DEFAULT_PERMISSIONS);
   const [memberDraft, setMemberDraft] = useState({ name: '', email: '', pin: '', role: 'cashier' as Exclude<MemberRole, 'owner'> });
+  const [memberEdits, setMemberEdits] = useState<Record<string, { name: string; email: string }>>({});
+  const [memberSaveState, setMemberSaveState] = useState<Record<string, 'saving' | 'success'>>({});
+  const [activity, setActivity] = useState<POSActivityItem[]>([]);
+  const [testQR, setTestQR] = useState('');
+  const [isFormDirty, setIsFormDirty] = useState(false);
   const isOwner = currentUser.role === 'owner';
 
   const applyAccessSettings = (payload: Awaited<ReturnType<typeof getPOSAccessSettings>>) => {
     setMembers(payload.items);
     setMaxMembers(payload.maxMembers);
     setPermissions(payload.permissions);
+    setMemberEdits(Object.fromEntries(payload.items.map((item) => [item.id, { name: item.name, email: item.email }] )));
   };
 
   useEffect(() => {
+    if (!isOwner) return;
     void getPOSAccessSettings()
       .then(applyAccessSettings)
       .catch((error) => showToast(error instanceof Error ? error.message : 'โหลดสมาชิก POS ไม่สำเร็จ', 'error'));
-  }, []);
+  }, [isOwner]);
 
-  useEffect(() => setFormData({ ...settings }), [settings]);
+  useEffect(() => {
+    if (!isFormDirty) setFormData({ ...settings });
+  }, [settings, isFormDirty]);
+
+  useEffect(() => {
+    if (!isOwner || activeTab !== 'activity') return;
+    void getPOSActivity().then(setActivity).catch((error) => showToast(error instanceof Error ? error.message : 'โหลดประวัติไม่สำเร็จ', 'error'));
+  }, [activeTab, isOwner]);
+
+  const testPromptPay = async () => {
+    if (!(await updateSettings(formData))) return;
+    try {
+      const result = await getPOSPaymentQR(10000);
+      if (result.promptPayPayload) setTestQR(await QRCode.toDataURL(result.promptPayPayload, { width: 240, margin: 1 }));
+      else if (result.fallbackImage) setTestQR(result.fallbackImage);
+      else throw new Error('ยังไม่ได้ตั้งค่า PromptPay หรือ QR สำรอง');
+    } catch (error) { showToast(error instanceof Error ? error.message : 'ทดสอบ QR ไม่สำเร็จ', 'error'); }
+  };
+
+  const testPrint = () => {
+    const popup = window.open('', '_blank', 'width=420,height=600');
+    if (!popup) { showToast('กรุณาอนุญาต popup เพื่อทดสอบพิมพ์', 'warning'); return; }
+    const doc = popup.document; doc.title = 'POS Test Print';
+    const root = doc.createElement('main'); root.style.cssText = `width:${formData.printerType === 'thermal_58mm' ? '48mm' : '72mm'};margin:auto;font-family:Tahoma,sans-serif;text-align:center;color:#000`;
+    [formData.storeName, 'ทดสอบเครื่องพิมพ์ POS', new Date().toLocaleString('th-TH'), 'สกุลเงิน: บาท (฿) · 2 ตำแหน่ง', formData.receiptFooterMessage].forEach((value) => { const p = doc.createElement('p'); p.textContent = value || '-'; root.appendChild(p); });
+    doc.body.appendChild(root); popup.focus(); window.setTimeout(() => popup.print(), 250);
+  };
+
+  const forceLogout = async (member: POSStaffMember) => {
+    if (!window.confirm(`ให้ออกจากระบบทุกอุปกรณ์ของ ${member.name} ใช่ไหม`)) return;
+    try { await forceLogoutPOSStaff(member.id); showToast('ออกจากระบบทุกอุปกรณ์แล้ว', 'success'); }
+    catch (error) { showToast(error instanceof Error ? error.message : 'ออกจากระบบไม่สำเร็จ', 'error'); }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -100,6 +166,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
         return;
       }
     }
+    setIsFormDirty(false);
     playBeep('success');
     showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
   };
@@ -109,8 +176,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
       showToast('เพิ่มสมาชิกได้สูงสุด 3 คน', 'warning');
       return;
     }
-    if (!memberDraft.name.trim() || !/^\d{4,6}$/.test(memberDraft.pin)) {
-      showToast('กรุณากรอกชื่อและ PIN ตัวเลข 4-6 หลัก', 'warning');
+    if (!memberDraft.name.trim() || !/^\d{6}$/.test(memberDraft.pin)) {
+      showToast('กรุณากรอกชื่อและ PIN ตัวเลข 6 หลัก', 'warning');
       return;
     }
     if (memberDraft.email && members.some((member) => member.email.toLowerCase() === memberDraft.email.trim().toLowerCase())) {
@@ -126,19 +193,40 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     }
   };
 
-  const saveMember = async (member: POSStaffMember, changes: Partial<POSStaffMember>) => {
+  const saveMember = async (member: POSStaffMember, changes: Partial<POSStaffMember>, withButtonFeedback = false) => {
+    if (withButtonFeedback && memberSaveState[member.id]) return;
     const next = { ...member, ...changes };
-    if (next.role === 'owner') return;
+    if (withButtonFeedback) setMemberSaveState((current) => ({ ...current, [member.id]: 'saving' }));
     try {
-      applyAccessSettings(await updatePOSStaff(next.id, { name: next.name, email: next.email, role: next.role, active: next.active }));
-      showToast('อัปเดตสมาชิกแล้ว', 'success');
+      if (next.role === 'owner') {
+        applyAccessSettings(await updatePOSOwner({ name: next.name.trim(), email: next.email.trim() }));
+        window.dispatchEvent(new CustomEvent('livematch:pos-owner-updated', { detail: { name: next.name.trim(), email: next.email.trim() } }));
+        showToast('อัปเดตข้อมูลเจ้าของระบบแล้ว', 'success');
+      } else {
+        applyAccessSettings(await updatePOSStaff(next.id, { name: next.name, email: next.email, role: next.role, active: next.active }));
+        showToast('อัปเดตสมาชิกแล้ว', 'success');
+      }
+      if (withButtonFeedback) {
+        playBeep('success');
+        setMemberSaveState((current) => ({ ...current, [member.id]: 'success' }));
+        window.setTimeout(() => setMemberSaveState((current) => {
+          const updated = { ...current };
+          delete updated[member.id];
+          return updated;
+        }), 1400);
+      }
     } catch (error) {
+      if (withButtonFeedback) setMemberSaveState((current) => {
+        const updated = { ...current };
+        delete updated[member.id];
+        return updated;
+      });
       showToast(error instanceof Error ? error.message : 'อัปเดตสมาชิกไม่สำเร็จ', 'error');
     }
   };
 
   const resetMemberPIN = async (member: POSStaffMember) => {
-    const entered = window.prompt('กรอก PIN ใหม่ 4-6 หลัก หรือเว้นว่างเพื่อให้ระบบสร้างให้');
+    const entered = window.prompt('กรอก PIN ใหม่ 6 หลัก หรือเว้นว่างเพื่อให้ระบบสร้างให้');
     if (entered === null) return;
     try {
       const result = await resetPOSStaffPIN(member.id, entered.trim());
@@ -186,6 +274,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
         </button>
 
         <button
+          onClick={() => setActiveTab('customer-display')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${
+            activeTab === 'customer-display'
+              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+          }`}
+        >
+          <Monitor className="w-4 h-4" />
+          <span>จอลูกค้า</span>
+        </button>
+
+        <button
           onClick={() => setActiveTab('printer')}
           className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${
             activeTab === 'printer'
@@ -209,39 +309,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
           <span>ภาษี & การเงิน (VAT / Decimal)</span>
         </button>
 
-        <button
-          onClick={() => setActiveTab('permissions')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${
-            activeTab === 'permissions'
-              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-          }`}
-        >
-          <ShieldCheck className="w-4 h-4" />
-          <span>สิทธิ์การใช้งาน</span>
-        </button>
+        {isOwner && (
+          <>
+            <button
+              onClick={() => setActiveTab('permissions')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${
+                activeTab === 'permissions'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4" />
+              <span>สิทธิ์การใช้งาน</span>
+            </button>
 
-        <button
-          onClick={() => setActiveTab('members')}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${
-            activeTab === 'members'
-              ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
-              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-          }`}
-        >
-          <Users className="w-4 h-4" />
-          <span>เพิ่มสมาชิก ({members.length}/{MAX_MEMBERS})</span>
-        </button>
+            <button
+              onClick={() => setActiveTab('members')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${
+                activeTab === 'members'
+                  ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+              }`}
+            >
+              <Users className="w-4 h-4" />
+              <span>เพิ่มสมาชิก ({members.length}/{MAX_MEMBERS})</span>
+            </button>
+            <button
+              onClick={() => setActiveTab('activity')}
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${activeTab === 'activity' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+            >
+              <History className="w-4 h-4" />
+              <span>ประวัติความปลอดภัย</span>
+            </button>
+          </>
+        )}
       </div>
 
       {/* TAB CONTENTS */}
-      <form onSubmit={handleSave} className="space-y-6">
+      <form data-pos-editing={isFormDirty ? 'true' : 'false'} onSubmit={handleSave} onChangeCapture={() => setIsFormDirty(true)} onClickCapture={(event) => { if ((event.target as HTMLElement).closest('button[type="button"]')) setIsFormDirty(true); }} className="space-y-6">
         {/* TAB 1: STORE INFO */}
         {activeTab === 'store' && (
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 shadow-md space-y-4">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white border-b border-slate-200 dark:border-slate-800 pb-3 flex items-center gap-2">
               <Store className="w-4 h-4 text-emerald-500" />
-              <span>ข้อมูลประจำร้านค้า & สาขา</span>
+              <span>ข้อมูลประจำร้านค้า</span>
             </h3>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -256,6 +367,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                   onChange={(e) => setFormData({ ...formData, storeName: e.target.value })}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">ข้อความหัวระบบบน Navbar</label>
+                <input type="text" maxLength={80} value={formData.navbarTitle} onChange={(event) => setFormData({ ...formData, navbarTitle: event.target.value })} placeholder="เช่น REVIEW (เว้นว่างเพื่อใช้ชื่อ Admin)" className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500" />
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">ไอคอนหัวระบบบน Navbar (PNG/JPEG/WebP ไม่เกิน 2 MB)</label>
+                <div className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                  <div className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-2xl bg-gradient-to-tr from-red-600 via-red-500 to-yellow-500 text-white">
+                    {formData.navbarIconData ? <img src={formData.navbarIconData} alt="ไอคอนหัวระบบ" className="h-full w-full object-cover" /> : <Store className="h-5 w-5" />}
+                  </div>
+                  <input type="file" accept="image/png,image/jpeg,image/webp" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const navbarIconData = await resizeQRImage(file); setFormData((current) => ({ ...current, navbarIconData })); } catch (error) { showToast(error instanceof Error ? error.message : 'อัปโหลดไอคอนไม่สำเร็จ', 'error'); } event.target.value=''; }} className="min-w-0 flex-1 text-xs" />
+                  {formData.navbarIconData ? <button type="button" onClick={() => setFormData({ ...formData, navbarIconData: '' })} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-red-600">ใช้ไอคอนเดิม</button> : null}
+                </div>
               </div>
 
               <label className="flex items-center gap-2 text-xs font-bold text-slate-700 dark:text-slate-300">
@@ -283,12 +410,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  ชื่อสาขา (Branch Name)
+                  อีเมลร้านค้า
                 </label>
                 <input
-                  type="text"
-                  value={formData.branchName}
-                  onChange={(e) => setFormData({ ...formData, branchName: e.target.value })}
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -335,12 +462,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
 
               <div>
                 <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  ชื่อพนักงานแคชเชียร์ปัจจุบัน
+                  จำนวนแจ้งเตือนสต็อกต่ำเริ่มต้น
                 </label>
                 <input
-                  type="text"
-                  value={formData.cashierName}
-                  onChange={(e) => setFormData({ ...formData, cashierName: e.target.value })}
+                  type="number" min="0" step="1"
+                  value={formData.defaultLowStock}
+                  onChange={(e) => setFormData({ ...formData, defaultLowStock: Math.max(0, Number(e.target.value) || 0) })}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>
@@ -356,7 +483,66 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>
+
+              <div className="md:col-span-2">
+                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">โลโก้ร้านบนใบเสร็จ (ไม่เกิน 2 MB)</label>
+                <div className="flex items-center gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-700">
+                  {formData.logoData ? <img src={formData.logoData} alt="โลโก้ร้าน" className="h-20 w-20 rounded-lg object-contain" /> : <ImageIcon className="h-8 w-8 text-slate-400" />}
+                  <input type="file" accept="image/png,image/jpeg,image/webp" onChange={async (event) => { const file = event.target.files?.[0]; if (!file) return; try { const logoData = await resizeQRImage(file); setFormData((current) => ({ ...current, logoData })); } catch (error) { showToast(error instanceof Error ? error.message : 'อัปโหลดโลโก้ไม่สำเร็จ', 'error'); } event.target.value=''; }} className="min-w-0 flex-1 text-xs" />
+                  {formData.logoData ? <button type="button" onClick={() => setFormData({ ...formData, logoData: '' })} className="rounded-lg bg-red-50 px-3 py-2 text-xs font-bold text-red-600">ลบ</button> : null}
+                </div>
+              </div>
+
+              <div className="md:col-span-2 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-xs dark:border-emerald-500/20 dark:bg-emerald-500/10">
+                <div className="font-bold">PromptPay ที่ระบบจะใช้จริง</div>
+                <div className="mt-1 text-slate-600 dark:text-slate-300">แหล่งที่มา: {formData.effectivePromptPaySource === 'booking' ? 'ระบบจองสนาม' : 'POS'} · ผู้รับ: {formData.effectivePromptPayReceiverName || '-'} · ID: {formData.effectivePromptPayIdMasked || '-'}</div>
+                <button type="button" onClick={() => void testPromptPay()} className="mt-3 inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 font-bold text-slate-950"><TestTube2 className="h-4 w-4" />บันทึกและทดสอบ QR ฿100</button>
+                {testQR ? <img src={testQR} alt="QR ทดสอบ" className="mt-3 h-40 w-40 rounded-xl bg-white p-2" /> : null}
+              </div>
             </div>
+          </div>
+        )}
+
+        {activeTab === 'customer-display' && (
+          <div className="grid gap-5 xl:grid-cols-[1fr_1.1fr]">
+            <section className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-md dark:border-slate-800 dark:bg-slate-900">
+              <div className="border-b border-slate-200 pb-3 dark:border-slate-800">
+                <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white"><Monitor className="h-4 w-4 text-emerald-500" />ข้อความหน้า Index จอลูกค้า</h3>
+                <p className="mt-1 text-[11px] text-slate-500">แสดงบน <span className="font-mono">display=customer</span> เมื่อตะกร้ายังไม่มีสินค้า</p>
+              </div>
+              <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความหัวเรื่อง
+                <input maxLength={120} value={formData.customerDisplayTitle} onChange={(event) => setFormData({ ...formData, customerDisplayTitle: event.target.value })} className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความสีส้ม
+                <input maxLength={120} value={formData.customerDisplayHighlight} onChange={(event) => setFormData({ ...formData, customerDisplayHighlight: event.target.value })} className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความอธิบาย
+                <textarea rows={3} maxLength={300} value={formData.customerDisplaySubtitle} onChange={(event) => setFormData({ ...formData, customerDisplaySubtitle: event.target.value })} className="resize-y rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความใต้ชื่อร้านในการ์ด
+                <textarea rows={2} maxLength={300} value={formData.customerDisplayCardText} onChange={(event) => setFormData({ ...formData, customerDisplayCardText: event.target.value })} className="resize-y rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความปุ่มแนะนำด้านล่าง
+                <input maxLength={160} value={formData.customerDisplayCtaText} onChange={(event) => setFormData({ ...formData, customerDisplayCtaText: event.target.value })} className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
+              </label>
+            </section>
+
+            <section className="rounded-3xl border border-slate-200 bg-slate-50 p-5 shadow-md dark:border-slate-800 dark:bg-slate-950">
+              <div className="mb-4 flex items-center justify-between"><h3 className="text-sm font-black">ตัวอย่างหน้า Index</h3><span className="rounded-full bg-amber-100 px-2.5 py-1 text-[10px] font-bold text-amber-800">Live Preview</span></div>
+              <div className="grid min-h-[430px] gap-5 rounded-2xl border border-slate-200 bg-white p-6 lg:grid-cols-[1.2fr_.8fr] lg:items-center dark:border-slate-700 dark:bg-slate-900">
+                <div>
+                  <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-[10px] font-bold text-amber-800">✨ ยินดีต้อนรับสู่ {formData.storeName}</span>
+                  <h4 className="mt-5 whitespace-pre-line text-3xl font-black leading-tight text-slate-900 dark:text-white">{formData.customerDisplayTitle || 'พร้อมเสิร์ฟความอร่อย'}<br /><span className="text-amber-600">{formData.customerDisplayHighlight || 'เครื่องดื่ม & เบเกอรี่สดใหม่'}</span></h4>
+                  <p className="mt-4 whitespace-pre-line text-xs leading-relaxed text-slate-500">{formData.customerDisplaySubtitle}</p>
+                </div>
+                <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5 text-center dark:border-slate-700 dark:bg-slate-950">
+                  <div className="mx-auto grid h-14 w-14 place-items-center rounded-2xl border border-amber-300 bg-amber-50 text-amber-600"><Store className="h-7 w-7" /></div>
+                  <div className="mt-3 text-sm font-black">{formData.storeName}</div>
+                  <p className="mt-1 text-[10px] text-slate-500">{formData.customerDisplayCardText}</p>
+                  <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[10px] font-bold text-amber-800">✨ {formData.customerDisplayCtaText}</div>
+                </div>
+              </div>
+            </section>
           </div>
         )}
 
@@ -367,6 +553,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               <Printer className="w-4 h-4 text-emerald-500" />
               <span>เครื่องพิมพ์ความร้อน & ใบเสร็จ</span>
             </h3>
+            <p className="text-[11px] text-slate-500">ขนาดกระดาษและการเปิดใบเสร็จอัตโนมัติบันทึกเฉพาะ browser เครื่องนี้ ส่วนข้อความท้ายใบเสร็จบันทึกในบัญชีร้าน</p>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -444,6 +631,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 />
               </div>
+              <div className="md:col-span-2">
+                <button type="button" onClick={testPrint} className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"><Printer className="h-4 w-4" />ทดสอบพิมพ์จากเครื่องนี้</button>
+              </div>
             </div>
           </div>
         )}
@@ -519,43 +709,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  จำนวนตำแหน่งทศนิยมราคา (Decimal Places)
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[0, 2, 3].map((dec) => (
-                    <button
-                      key={dec}
-                      type="button"
-                      onClick={() => setFormData({ ...formData, decimalPlaces: dec })}
-                      className={`p-2.5 rounded-xl border text-xs font-bold transition-all ${
-                        formData.decimalPlaces === dec
-                          ? 'bg-emerald-50 dark:bg-emerald-500/20 border-emerald-500 text-emerald-700 dark:text-emerald-400 shadow-xs'
-                          : 'bg-slate-50 dark:bg-slate-950 border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-                      }`}
-                    >
-                      <div>{dec} ตำแหน่ง</div>
-                      <div className="text-[10px] font-mono text-slate-500 mt-0.5">
-                        {dec === 0 ? '฿120' : dec === 2 ? '฿120.00' : '฿120.000'}
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                  สัญลักษณ์สกุลเงิน (Currency Symbol)
-                </label>
-                <input
-                  type="text"
-                  value={formData.currencySymbol}
-                  onChange={(e) =>
-                    setFormData({ ...formData, currencySymbol: e.target.value })
-                  }
-                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white font-mono focus:outline-none focus:border-emerald-500"
-                />
+              <div className="md:col-span-2 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs dark:border-slate-800 dark:bg-slate-950">
+                ระบบใช้เงินบาท (฿) และคำนวณเป็นหน่วยสตางค์ 2 ตำแหน่งเสมอ เพื่อให้ยอดขาย ภาษี ต้นทุน และรายงานตรงกันทุกหน้า
               </div>
             </div>
           </div>
@@ -572,7 +727,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                 </h3>
                 <p className="mt-1 text-[11px] text-slate-500">กำหนดเมนูที่ผู้จัดการและแคชเชียร์สามารถเข้าใช้งานได้</p>
               </div>
-              <span className="rounded-full bg-amber-50 px-3 py-1 text-[10px] font-bold text-amber-700 dark:bg-amber-400/10 dark:text-amber-300">UI Preview</span>
+              <span className="rounded-full bg-emerald-50 px-3 py-1 text-[10px] font-bold text-emerald-700 dark:bg-emerald-400/10 dark:text-emerald-300">API Enforced</span>
             </div>
 
             <div className="grid gap-4 xl:grid-cols-3">
@@ -610,7 +765,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
 
         {/* TAB 5: MEMBERS */}
         {activeTab === 'members' && (
-          <div className="space-y-5 rounded-3xl border border-slate-200 bg-white p-6 shadow-md dark:border-slate-800 dark:bg-slate-900">
+          <div className="space-y-6 rounded-3xl border border-slate-200 bg-white p-5 shadow-md dark:border-slate-800 dark:bg-slate-900 sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-4 dark:border-slate-800">
               <div>
                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white">
@@ -624,90 +779,144 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               </span>
             </div>
 
-            <div className="grid gap-3">
-              {members.map((member) => (
-                <article key={member.id} className={`grid gap-3 rounded-2xl border p-4 dark:bg-slate-950 sm:grid-cols-[auto_1fr_auto] sm:items-center ${member.active ? 'border-slate-200 bg-slate-50 dark:border-slate-800' : 'border-rose-200 bg-rose-50/40 opacity-70 dark:border-rose-500/20'}`}>
-                  <span className="grid h-11 w-11 place-items-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-sm font-black text-slate-950">
-                    {member.name.trim().slice(0, 1).toUpperCase() || 'U'}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <h4 className="truncate text-sm font-bold">{member.name}</h4>
-                      {member.role === 'owner' && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[9px] font-black text-amber-700">OWNER</span>}
-                    </div>
-                    <p className="truncate text-[11px] text-slate-500">{member.email || 'ไม่ระบุอีเมล'} · <span className="font-mono font-bold">{member.staffNumber}</span></p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={member.role}
-                      disabled={member.role === 'owner' || !isOwner}
-                      onChange={(event) => void saveMember(member, { role: event.target.value as MemberRole })}
-                      className="h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold dark:border-slate-700 dark:bg-slate-900 disabled:opacity-60"
-                    >
-                      <option value="owner">เจ้าของระบบ</option>
-                      <option value="manager">ผู้จัดการ</option>
-                      <option value="cashier">แคชเชียร์</option>
-                    </select>
-                    {member.role !== 'owner' && isOwner && <>
-                      <button type="button" onClick={() => void resetMemberPIN(member)} className="grid h-9 w-9 place-items-center rounded-xl border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10" title="รีเซ็ต PIN">
-                        <KeyRound className="h-4 w-4" />
-                      </button>
-                      <button type="button" onClick={() => void saveMember(member, { active: !member.active })} className="grid h-9 w-9 place-items-center rounded-xl border border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 dark:border-rose-500/20 dark:bg-rose-500/10" title={member.active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}>
-                        <Power className="h-4 w-4" />
-                      </button>
-                    </>}
-                  </div>
-                </article>
-              ))}
-            </div>
-
             <section className={`rounded-2xl border border-dashed p-4 ${members.length >= maxMembers || !isOwner ? 'border-slate-300 bg-slate-100 opacity-60 dark:border-slate-700 dark:bg-slate-950' : 'border-emerald-300 bg-emerald-50/50 dark:border-emerald-500/30 dark:bg-emerald-500/5'}`}>
-              <h4 className="flex items-center gap-2 text-sm font-bold"><UserPlus className="h-4 w-4 text-emerald-500" />เพิ่มสมาชิกใหม่</h4>
-              <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.2fr_.7fr_.8fr_auto]">
-                <input
-                  value={memberDraft.name}
-                  disabled={members.length >= maxMembers || !isOwner}
-                  onChange={(event) => setMemberDraft({ ...memberDraft, name: event.target.value })}
-                  placeholder="ชื่อสมาชิก"
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900"
-                />
-                <input
-                  value={memberDraft.email}
-                  disabled={members.length >= maxMembers || !isOwner}
-                  onChange={(event) => setMemberDraft({ ...memberDraft, email: event.target.value })}
-                  type="email"
-                  placeholder="อีเมลเข้าสู่ระบบ"
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900"
-                />
-                <input
-                  value={memberDraft.pin}
-                  disabled={members.length >= maxMembers || !isOwner}
-                  onChange={(event) => setMemberDraft({ ...memberDraft, pin: event.target.value.replace(/\D/g, '').slice(0, 6) })}
-                  inputMode="numeric"
-                  placeholder="PIN 4-6 หลัก"
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-mono outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900"
-                />
-                <select
-                  value={memberDraft.role}
-                  disabled={members.length >= maxMembers || !isOwner}
-                  onChange={(event) => setMemberDraft({ ...memberDraft, role: event.target.value as Exclude<MemberRole, 'owner'> })}
-                  className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"
-                >
-                  <option value="manager">ผู้จัดการ</option>
-                  <option value="cashier">แคชเชียร์</option>
-                </select>
+              <div className="flex items-center justify-between gap-3"><div><h4 className="flex items-center gap-2 text-sm font-black"><UserPlus className="h-4 w-4 text-emerald-500" />เพิ่มสมาชิก Staff</h4><p className="mt-1 text-[10px] text-slate-500">อีเมลไม่บังคับ สมาชิกสามารถใช้ Staff Number และ PIN เข้าสู่ระบบได้</p></div></div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-[1fr_1.2fr_.7fr_.8fr_auto] xl:items-end">
+                <label className="grid gap-1.5 text-[10px] font-bold text-slate-500">ชื่อสมาชิก
+                  <input value={memberDraft.name} disabled={members.length >= maxMembers || !isOwner} onChange={(event) => setMemberDraft({ ...memberDraft, name: event.target.value })} placeholder="ชื่อสมาชิก" className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900" />
+                </label>
+                <label className="grid gap-1.5 text-[10px] font-bold text-slate-500">อีเมลเข้าสู่ระบบ
+                  <input value={memberDraft.email} disabled={members.length >= maxMembers || !isOwner} onChange={(event) => setMemberDraft({ ...memberDraft, email: event.target.value })} type="email" placeholder="อีเมลเข้าสู่ระบบ" className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900" />
+                </label>
+                <label className="grid gap-1.5 text-[10px] font-bold text-slate-500">PIN
+                  <input value={memberDraft.pin} disabled={members.length >= maxMembers || !isOwner} onChange={(event) => setMemberDraft({ ...memberDraft, pin: event.target.value.replace(/\D/g, '').slice(0, 6) })} inputMode="numeric" placeholder="PIN 6 หลัก" className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-mono outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900" />
+                </label>
+                <label className="grid gap-1.5 text-[10px] font-bold text-slate-500">บทบาท
+                  <SystemSelect value={memberDraft.role} options={STAFF_ROLE_OPTIONS} onChange={(role) => setMemberDraft({ ...memberDraft, role })} disabled={members.length >= maxMembers || !isOwner} className="h-10" ariaLabel="บทบาทสมาชิกใหม่" />
+                </label>
                 <button type="button" disabled={members.length >= maxMembers || !isOwner} onClick={() => void addMember()} className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-emerald-500 px-4 text-xs font-black text-slate-950 transition hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-slate-300">
-                  <UserPlus className="h-4 w-4" />
-                  เพิ่มสมาชิก
+                  <UserPlus className="h-4 w-4" /> เพิ่มสมาชิก
                 </button>
               </div>
               {members.length >= maxMembers && <p className="mt-3 text-[11px] font-bold text-rose-600">ครบจำนวนสูงสุด 3 คนแล้ว สามารถปิดใช้งานสมาชิกเดิมได้ แต่จำนวนบัญชียังคงนับรวม</p>}
             </section>
+
+            {members.filter((member) => member.role === 'owner').map((member) => (
+              <section key={member.id} className="overflow-hidden rounded-2xl border border-amber-200 bg-amber-50/40 dark:border-amber-500/20 dark:bg-amber-500/5">
+                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200/70 px-4 py-4 dark:border-amber-500/20 sm:px-5">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-amber-300 to-orange-500 text-base font-black text-slate-950 shadow-sm">
+                      {member.name.trim().slice(0, 1).toUpperCase() || 'A'}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="truncate text-sm font-black text-slate-900 dark:text-white">Root Admin</h4>
+                        <span className="rounded-full bg-amber-200 px-2 py-0.5 text-[9px] font-black text-amber-900 dark:bg-amber-400/20 dark:text-amber-200">เจ้าของระบบ</span>
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-slate-500">บัญชีหลักของร้าน · Admin No. <span className="font-mono font-bold text-slate-700 dark:text-slate-300">{member.staffNumber}</span></p>
+                    </div>
+                  </div>
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-100 px-3 py-1 text-[10px] font-black text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500" /> เปิดใช้งาน
+                  </span>
+                </div>
+
+                <div className="grid gap-4 p-4 sm:grid-cols-2 sm:p-5 xl:grid-cols-[1fr_1.25fr_.75fr_auto] xl:items-end">
+                  <label className="grid gap-1.5 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                    ชื่อที่แสดง
+                    <input value={memberEdits[member.id]?.name ?? member.name} disabled={!isOwner} onChange={(event) => setMemberEdits((current) => ({ ...current, [member.id]: { name: event.target.value, email: member.email } }))} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/10 disabled:cursor-not-allowed disabled:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:disabled:bg-slate-950" />
+                  </label>
+                  <label className="grid gap-1.5 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                    อีเมลเข้าสู่ระบบ
+                    <span className="relative">
+                      <input type="email" value={member.email} disabled className="h-10 w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-100 px-3 pr-9 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950" aria-label="อีเมล Root Admin (แก้ไขไม่ได้)" />
+                      <LockKeyhole className="absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                    </span>
+                  </label>
+                  <label className="grid gap-1.5 text-[11px] font-bold text-slate-600 dark:text-slate-300">
+                    บทบาท
+                    <SystemSelect value="owner" options={OWNER_ROLE_OPTIONS} onChange={() => undefined} disabled className="h-10" ariaLabel="บทบาทเจ้าของระบบ" />
+                  </label>
+                  {isOwner ? <button type="button" disabled={Boolean(memberSaveState[member.id])} onClick={() => void saveMember(member, { name: memberEdits[member.id]?.name ?? member.name, email: member.email }, true)} className={`inline-flex h-10 min-w-32 items-center justify-center gap-2 rounded-xl px-4 text-xs font-black shadow-sm transition active:scale-[.98] disabled:cursor-wait ${memberSaveState[member.id] === 'success' ? 'bg-emerald-600 text-white' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'}`}>
+                    {memberSaveState[member.id] === 'saving' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : memberSaveState[member.id] === 'success' ? <CircleCheck className="h-4 w-4" /> : <Save className="h-4 w-4" />}
+                    {memberSaveState[member.id] === 'saving' ? 'กำลังบันทึก...' : memberSaveState[member.id] === 'success' ? 'บันทึกสำเร็จ' : 'บันทึกชื่อ'}
+                  </button> : null}
+                </div>
+                <div className="border-t border-amber-200/70 px-4 py-3 text-[10px] text-slate-500 dark:border-amber-500/20 sm:px-5">
+                  อีเมล Admin หลักถูกล็อกและเปลี่ยนจากระบบ POS ไม่ได้ · เข้าใช้ล่าสุด: {member.lastLoginAt || 'ยังไม่เคย'}
+                </div>
+              </section>
+            ))}
+
+            <section className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h4 className="text-sm font-black text-slate-900 dark:text-white">สมาชิก Staff</h4>
+                  <p className="mt-0.5 text-[10px] text-slate-500">จัดการข้อมูล บทบาท PIN และสถานะการเข้าใช้งาน</p>
+                </div>
+                <span className="text-[10px] font-bold text-slate-500">{members.filter((member) => member.role !== 'owner').length} บัญชี</span>
+              </div>
+              <div className="grid gap-4 xl:grid-cols-2">
+                {members.filter((member) => member.role !== 'owner').map((member) => (
+                  <article key={member.id} className={`overflow-hidden rounded-2xl border ${member.active ? 'border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950' : 'border-rose-200 bg-rose-50/50 dark:border-rose-500/20 dark:bg-rose-500/5'}`}>
+                    <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-4 py-4 dark:border-slate-800">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-emerald-400 to-cyan-500 text-sm font-black text-slate-950">{member.name.trim().slice(0, 1).toUpperCase() || 'U'}</span>
+                        <div className="min-w-0">
+                          <h5 className="truncate text-sm font-black">{member.name}</h5>
+                          <p className="truncate font-mono text-[10px] font-bold text-slate-500">{member.staffNumber}</p>
+                        </div>
+                      </div>
+                      <span className={`rounded-full px-2.5 py-1 text-[9px] font-black ${member.active ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'}`}>{member.active ? 'เปิดใช้งาน' : 'ปิดใช้งาน'}</span>
+                    </div>
+                    <div className="grid gap-3 p-4 sm:grid-cols-2">
+                      <label className="grid gap-1.5 text-[10px] font-bold text-slate-500">ชื่อสมาชิก
+                        <input value={memberEdits[member.id]?.name ?? member.name} disabled={!isOwner} onChange={(event) => setMemberEdits((current) => ({ ...current, [member.id]: { name: event.target.value, email: current[member.id]?.email ?? member.email } }))} className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900" />
+                      </label>
+                      <label className="grid gap-1.5 text-[10px] font-bold text-slate-500">อีเมลเข้าสู่ระบบ
+                        <input type="email" value={memberEdits[member.id]?.email ?? member.email} disabled={!isOwner} onChange={(event) => setMemberEdits((current) => ({ ...current, [member.id]: { name: current[member.id]?.name ?? member.name, email: event.target.value } }))} placeholder="ไม่บังคับ" className="h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900" />
+                      </label>
+                      <label className="grid gap-1.5 text-[10px] font-bold text-slate-500 sm:col-span-2">บทบาท
+                        <SystemSelect value={member.role} options={STAFF_ROLE_OPTIONS} onChange={(role) => void saveMember(member, { role })} disabled={!isOwner} className="h-10" ariaLabel="บทบาทสมาชิก" />
+                      </label>
+                    </div>
+                    <div className="border-t border-slate-200 px-4 py-3 text-[10px] text-slate-500 dark:border-slate-800">เข้าใช้ล่าสุด: {member.lastLoginAt || 'ยังไม่เคย'} · เข้าผิดสะสม: <span className={member.failedLoginCount ? 'font-black text-rose-600' : 'font-bold'}>{member.failedLoginCount || 0}</span></div>
+                    {isOwner ? <div className="grid grid-cols-2 gap-2 border-t border-slate-200 p-3 dark:border-slate-800 sm:grid-cols-4">
+                      <button type="button" disabled={Boolean(memberSaveState[member.id])} onClick={() => void saveMember(member, memberEdits[member.id] || {}, true)} className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-xl px-3 text-[10px] font-black transition disabled:cursor-wait ${memberSaveState[member.id] === 'success' ? 'bg-emerald-600 text-white' : 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'}`}>
+                        {memberSaveState[member.id] === 'saving' ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : memberSaveState[member.id] === 'success' ? <CircleCheck className="h-3.5 w-3.5" /> : <Save className="h-3.5 w-3.5" />}
+                        {memberSaveState[member.id] === 'saving' ? 'กำลังบันทึก' : memberSaveState[member.id] === 'success' ? 'สำเร็จ' : 'บันทึก'}
+                      </button>
+                      <button type="button" onClick={() => void resetMemberPIN(member)} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 text-[10px] font-black text-amber-700 transition hover:bg-amber-100 dark:border-amber-500/20 dark:bg-amber-500/10 dark:text-amber-300"><KeyRound className="h-3.5 w-3.5" />รีเซ็ต PIN</button>
+                      <button type="button" onClick={() => void forceLogout(member)} className="inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border border-sky-200 bg-sky-50 px-3 text-[10px] font-black text-sky-700 transition hover:bg-sky-100 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-300"><LogOut className="h-3.5 w-3.5" />ออกระบบ</button>
+                      <button type="button" onClick={() => void saveMember(member, { active: !member.active })} className={`inline-flex h-9 items-center justify-center gap-1.5 rounded-xl border px-3 text-[10px] font-black transition ${member.active ? 'border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100 dark:border-rose-500/20 dark:bg-rose-500/10' : 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-500/20 dark:bg-emerald-500/10'}`}><Power className="h-3.5 w-3.5" />{member.active ? 'ปิดใช้งาน' : 'เปิดใช้งาน'}</button>
+                    </div> : null}
+                  </article>
+                ))}
+                {!members.some((member) => member.role !== 'owner') ? <div className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-xs text-slate-500 dark:border-slate-700 xl:col-span-2">ยังไม่มีสมาชิก Staff</div> : null}
+              </div>
+            </section>
+
+          </div>
+        )}
+
+        {activeTab === 'activity' && isOwner && (
+          <div className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-md dark:border-slate-800 dark:bg-slate-900">
+            <div className="border-b border-slate-200 pb-4 dark:border-slate-800">
+              <h3 className="flex items-center gap-2 text-sm font-bold"><History className="h-4 w-4 text-emerald-500" />ประวัติการใช้งานและความปลอดภัย</h3>
+              <p className="mt-1 text-[11px] text-slate-500">แสดงผู้ทำรายการ เวลา และการเปลี่ยนแปลงล่าสุดของบัญชีร้านนี้</p>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800">
+              <table className="w-full min-w-[700px] text-left text-xs">
+                <thead className="bg-slate-50 text-slate-500 dark:bg-slate-950"><tr><th className="p-3">เวลา</th><th className="p-3">ผู้ทำรายการ</th><th className="p-3">เหตุการณ์</th><th className="p-3">เป้าหมาย</th></tr></thead>
+                <tbody>{activity.map((item) => <tr key={item.id} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3 whitespace-nowrap">{item.createdAt}</td><td className="p-3 font-bold">{item.actorName || item.actorType}</td><td className="p-3">{item.action.replaceAll('_', ' ')}</td><td className="p-3 font-mono text-[10px]">{item.targetType}{item.targetId ? ` · ${item.targetId}` : ''}</td></tr>)}</tbody>
+              </table>
+              {!activity.length ? <div className="p-8 text-center text-xs text-slate-500">ยังไม่มีประวัติ</div> : null}
+            </div>
           </div>
         )}
 
         {/* Save Button Bar */}
-        <div className="flex justify-end gap-3 pt-2">
+        {activeTab !== 'members' && activeTab !== 'activity' ? <div className="flex justify-end gap-3 pt-2">
           <button
             type="submit"
             id="save-settings-btn"
@@ -716,7 +925,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
             <Save className="w-4 h-4" />
             <span>บันทึกการตั้งค่า (Save Settings)</span>
           </button>
-        </div>
+        </div> : null}
       </form>
     </div>
   );

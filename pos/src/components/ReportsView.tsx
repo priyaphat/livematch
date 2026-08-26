@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateShort } from '../utils/formatters';
+import { authorizePOSReportExport, getPOSReports, POSReportData, POSReportRange } from '../api/posReports';
 import {
   BarChart3,
   Calendar,
@@ -16,88 +17,299 @@ import {
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const { orders, products, settings, showToast } = usePos();
+  const { settings, showToast } = usePos();
 
-  const [dateRange, setDateRange] = useState<'today' | 'week' | 'month' | 'all'>('month');
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+  const [dateRange, setDateRange] = useState<POSReportRange>('month');
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState(today);
   const [reportType, setReportType] = useState<'overview' | 'top_sellers' | 'vat' | 'payments'>('overview');
+  const [report, setReport] = useState<POSReportData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [topPage, setTopPage] = useState(1);
+  const [vatPage, setVatPage] = useState(1);
 
-  // Filter completed orders
-  const completedOrders = orders.filter((o) => o.status === 'completed');
+  useEffect(() => { setTopPage(1); setVatPage(1); }, [dateRange, startDate, endDate]);
 
-  // Calculate Aggregates
-  const totalSales = completedOrders.reduce((sum, o) => sum + o.total, 0);
-  const totalSubtotal = completedOrders.reduce((sum, o) => sum + o.subtotal, 0);
-  const totalDiscounts = completedOrders.reduce((sum, o) => sum + o.discount, 0);
-  const totalVat = completedOrders.reduce((sum, o) => sum + o.vatAmount, 0);
-
-  // Approximate COGS from completed order items
-  let totalCogs = 0;
-  completedOrders.forEach((o) => {
-    o.items.forEach((item) => {
-      totalCogs += item.cost * item.quantity;
+  useEffect(() => {
+    if (dateRange === 'custom' && (!startDate || !endDate || startDate > endDate)) {
+      setLoadError(startDate > endDate ? 'วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น' : 'กรุณาเลือกวันที่เริ่มต้นและวันที่สิ้นสุด');
+      setIsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoading(true);
+    setLoadError('');
+    void getPOSReports(dateRange, startDate, endDate, topPage, vatPage).then((result) => {
+      if (!cancelled) setReport(result);
+    }).catch((error) => {
+      if (!cancelled) setLoadError(error instanceof Error ? error.message : 'โหลดรายงานไม่สำเร็จ');
+    }).finally(() => {
+      if (!cancelled) setIsLoading(false);
     });
-  });
+    return () => { cancelled = true; };
+  }, [dateRange, startDate, endDate, topPage, vatPage]);
 
-  const grossProfit = Math.max(0, totalSales - totalCogs);
+  const summary = report?.summary;
+  const totalSales = (summary?.totalSalesSatang || 0) / 100;
+  const totalSubtotal = (summary?.totalSubtotalSatang || 0) / 100;
+  const totalDiscounts = (summary?.totalDiscountSatang || 0) / 100;
+  const totalVat = (summary?.totalVatSatang || 0) / 100;
+  const totalCogs = (summary?.totalCogsSatang || 0) / 100;
+  const grossProfit = (summary?.grossProfitSatang || 0) / 100;
   const profitMarginPercent = totalSales > 0 ? Math.round((grossProfit / totalSales) * 100) : 0;
-  const avgOrderValue = completedOrders.length > 0 ? totalSales / completedOrders.length : 0;
+  const avgOrderValue = (summary?.averageBillSatang || 0) / 100;
+  const topSellers = (report?.topSellers || []).map((item) => ({ id: item.id || `${item.sku}:${item.name}`, name: item.name, sku: item.sku, qty: item.quantity, revenue: item.revenueSatang / 100, cost: item.costSatang / 100 }));
+  const completedOrders = report?.sales || [];
+  const topPagination = report?.topSellersPagination || { page: 1, pageSize: 20, total: 0, totalPages: 0 };
+  const vatPagination = report?.salesPagination || { page: 1, pageSize: 25, total: 0, totalPages: 0 };
+  const paymentStats = { promptpay: (report?.paymentStats.promptPaySatang || 0) / 100, cash: (report?.paymentStats.cashSatang || 0) / 100, card: 0, transfer: 0 };
 
-  // Best Selling Items aggregation
-  const productSalesMap: Record<
-    string,
-    { id: string; name: string; sku: string; qty: number; revenue: number; cost: number }
-  > = {};
+  const reportNames = {
+    overview: 'สรุปภาพรวมรายได้',
+    top_sellers: 'อันดับสินค้าขายดี',
+    vat: 'รายงานภาษีขาย',
+    payments: 'สัดส่วนช่องทางชำระเงิน',
+  } as const;
 
-  completedOrders.forEach((o) => {
-    o.items.forEach((item) => {
-      if (!productSalesMap[item.productId]) {
-        productSalesMap[item.productId] = {
-          id: item.productId,
-          name: item.name,
-          sku: item.sku,
-          qty: 0,
-          revenue: 0,
-          cost: 0,
-        };
-      }
-      productSalesMap[item.productId].qty += item.quantity;
-      productSalesMap[item.productId].revenue += item.total;
-      productSalesMap[item.productId].cost += item.cost * item.quantity;
-    });
-  });
+  const formatCSVDate = (value: string) => new Intl.DateTimeFormat('th-TH', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Asia/Bangkok',
+  }).format(new Date(`${value}T00:00:00+07:00`));
 
-  const topSellers = Object.values(productSalesMap).sort((a, b) => b.qty - a.qty);
-
-  // Payment Breakdown
-  const paymentStats = {
-    promptpay: completedOrders.filter((o) => o.paymentMethod === 'promptpay').reduce((s, o) => s + o.total, 0),
-    cash: completedOrders.filter((o) => o.paymentMethod === 'cash').reduce((s, o) => s + o.total, 0),
-    card: completedOrders.filter((o) => o.paymentMethod === 'card').reduce((s, o) => s + o.total, 0),
-    transfer: completedOrders.filter((o) => o.paymentMethod === 'transfer').reduce((s, o) => s + o.total, 0),
+  const formatCSVDateTime = (value: string) => {
+    const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}:00+07:00`;
+    return new Intl.DateTimeFormat('th-TH', {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+      timeZone: 'Asia/Bangkok',
+    }).format(new Date(normalized));
   };
 
-  const handleExportCSV = () => {
-    const headers = ['Order Number', 'Date', 'Items Count', 'Payment Method', 'Subtotal', 'Discount', 'VAT', 'Total'];
-    const rows = completedOrders.map((o) => [
-      o.orderNumber,
-      o.createdAt,
-      o.items.reduce((s, it) => s + it.quantity, 0),
-      o.paymentMethod,
-      o.subtotal,
-      o.discount,
-      o.vatAmount,
-      o.total,
-    ]);
+  const paymentName = (method: string) => method === 'promptpay' ? 'พร้อมเพย์ QR' : 'เงินสด';
 
-    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const encodedUri = encodeURI(csvContent);
-    const link = document.createElement('a');
-    link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `sales-report-${dateRange}-${new Date().toISOString().slice(0, 10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    showToast('ดาวน์โหลดรายงาน CSV สำเร็จ', 'success');
+  const shortBillNumber = (id: string) => {
+    const value = id.replace(/^sale-/i, '').replace(/[^a-z0-9]/gi, '').toUpperCase();
+    return `POS-${value.slice(-8) || id}`;
+  };
+
+  const paginationBar = (page: number, totalPages: number, total: number, onChange: (page: number) => void) => (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-xs dark:border-slate-800">
+      <span className="text-slate-500">ทั้งหมด {total.toLocaleString('th-TH')} รายการ · หน้า {totalPages > 0 ? page : 0}/{totalPages}</span>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={page <= 1 || isLoading} onClick={() => onChange(page - 1)} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">ก่อนหน้า</button>
+        <button type="button" disabled={page >= totalPages || totalPages === 0 || isLoading} onClick={() => onChange(page + 1)} className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">ถัดไป</button>
+      </div>
+    </div>
+  );
+
+  const handleExportCSV = async () => {
+    if (isExporting) return;
+    if (!report) {
+      showToast('ยังไม่มีข้อมูลรายงานสำหรับส่งออก', 'warning');
+      return;
+    }
+
+    setIsExporting(true);
+
+    try {
+      await authorizePOSReportExport();
+    } catch (error) {
+      setIsExporting(false);
+      showToast(error instanceof Error ? error.message : 'ไม่มีสิทธิ์ส่งออกรายงาน', 'error');
+      return;
+    }
+
+    let exportReport: POSReportData;
+    try {
+      exportReport = await getPOSReports(dateRange, startDate, endDate, 1, 1, true);
+    } catch (error) {
+      setIsExporting(false);
+      showToast(error instanceof Error ? error.message : 'โหลดข้อมูลทั้งหมดสำหรับ Excel ไม่สำเร็จ', 'error');
+      return;
+    }
+
+    const exportTopSellers = exportReport.topSellers.map((item) => ({ name: item.name, sku: item.sku, qty: item.quantity, revenue: item.revenueSatang / 100, cost: item.costSatang / 100 }));
+    const exportCompletedOrders = exportReport.sales;
+    const exportTotalSales = exportReport.summary.totalSalesSatang / 100;
+    const exportPaymentStats = { cash: exportReport.paymentStats.cashSatang / 100, promptpay: exportReport.paymentStats.promptPaySatang / 100 };
+
+    let ExcelJS: typeof import('exceljs');
+    try {
+      ExcelJS = await import('exceljs');
+    } catch {
+      setIsExporting(false);
+      showToast('ไม่สามารถเปิดระบบสร้างไฟล์ Excel ได้', 'error');
+      return;
+    }
+
+    let headers: Array<string | number> = [];
+    let rows: Array<Array<string | number>> = [];
+
+    if (reportType === 'overview') {
+      headers = ['หัวข้อ', 'จำนวนเงิน (บาท)', 'รายละเอียด'];
+      rows = [
+        ['ยอดขายก่อนหักส่วนลด', totalSubtotal, 'ยอดรวมราคาสินค้าก่อนส่วนลด'],
+        ['ส่วนลดทั้งหมด', totalDiscounts, 'ส่วนลดที่มอบให้ลูกค้า'],
+        ['ภาษีมูลค่าเพิ่ม', totalVat, `VAT ${settings.vatRate}%`],
+        ['ยอดขายสุทธิ', totalSales, `${summary?.completedBills || 0} บิล`],
+        ['ต้นทุนขายรวม', totalCogs, 'ต้นทุนสินค้าที่ขายจริง'],
+        ['กำไรขั้นต้น', grossProfit, `อัตรากำไร ${profitMarginPercent}%`],
+        ['ยอดขายเฉลี่ยต่อบิล', avgOrderValue, 'ค่าเฉลี่ยจากบิลที่สำเร็จ'],
+      ];
+    } else if (reportType === 'top_sellers') {
+      headers = ['อันดับ', 'สินค้า', 'SKU', 'จำนวนขาย', 'ยอดขาย (บาท)', 'ต้นทุน (บาท)', 'กำไร (บาท)'];
+      rows = exportTopSellers.map((item, index) => [index + 1, item.name, item.sku || '-', item.qty, item.revenue, item.cost, item.revenue - item.cost]);
+    } else if (reportType === 'vat') {
+      headers = ['ลำดับ', 'เลขบิล', 'วันที่ชำระ', 'ลูกค้า', 'ราคาสินค้า (บาท)', 'ส่วนลด (บาท)', 'หลังส่วนลด (บาท)', 'VAT (บาท)', 'ยอดสุทธิ (บาท)', 'วิธีชำระ'];
+      rows = exportCompletedOrders.map((sale, index) => [
+        index + 1,
+        shortBillNumber(sale.id),
+        formatCSVDateTime(sale.createdAt),
+        sale.buyerName || 'ลูกค้าหน้าร้าน',
+        sale.subtotalSatang / 100,
+        sale.discountSatang / 100,
+        sale.netBeforeVatSatang / 100,
+        sale.vatSatang / 100,
+        sale.totalSatang / 100,
+        paymentName(sale.method),
+      ]);
+    } else {
+      const paymentRows = [
+        { name: 'เงินสด', method: 'cash', amount: exportPaymentStats.cash },
+        { name: 'พร้อมเพย์ QR', method: 'promptpay', amount: exportPaymentStats.promptpay },
+      ];
+      headers = ['วิธีชำระ', 'จำนวนบิล', 'ยอดรวม (บาท)', 'สัดส่วน'];
+      rows = paymentRows.map((item) => {
+        const billCount = exportCompletedOrders.filter((sale) => sale.method === item.method).length;
+        const percent = exportTotalSales > 0 ? (item.amount / exportTotalSales) * 100 : 0;
+        return [item.name, billCount, item.amount, `${percent.toFixed(1)}%`];
+      });
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'LiveMatch POS';
+    workbook.created = new Date();
+    const worksheet = workbook.addWorksheet(reportNames[reportType], {
+      views: [{ state: 'frozen', ySplit: 5 }],
+      pageSetup: { orientation: headers.length > 6 ? 'landscape' : 'portrait', fitToPage: true, fitToWidth: 1 },
+    });
+    const columnCount = Math.max(1, headers.length);
+    worksheet.mergeCells(1, 1, 1, columnCount);
+    worksheet.getCell(1, 1).value = `รายงาน POS — ${reportNames[reportType]}`;
+    worksheet.getCell(1, 1).font = { name: 'Tahoma', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
+    worksheet.getCell(1, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
+    worksheet.getCell(1, 1).alignment = { horizontal: 'left', vertical: 'middle' };
+    worksheet.getRow(1).height = 30;
+
+    worksheet.mergeCells(2, 1, 2, columnCount);
+    worksheet.getCell(2, 1).value = `ช่วงข้อมูล: ${formatCSVDate(report.startDate)} ถึง ${formatCSVDate(report.endDate)}`;
+    worksheet.mergeCells(3, 1, 3, columnCount);
+    worksheet.getCell(3, 1).value = `วันที่จัดทำ: ${new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' }).format(new Date())}`;
+    [2, 3].forEach((rowNumber) => {
+      const cell = worksheet.getCell(rowNumber, 1);
+      cell.font = { name: 'Tahoma', size: 11, bold: rowNumber === 2, color: { argb: 'FF334155' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0FDF4' } };
+      cell.alignment = { vertical: 'middle' };
+      worksheet.getRow(rowNumber).height = 21;
+    });
+
+    const headerRow = worksheet.getRow(5);
+    headerRow.values = headers;
+    headerRow.height = 25;
+    headerRow.eachCell((cell) => {
+      cell.font = { name: 'Tahoma', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
+      cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      cell.border = { top: { style: 'thin', color: { argb: 'FFCBD5E1' } }, bottom: { style: 'thin', color: { argb: 'FFCBD5E1' } }, left: { style: 'thin', color: { argb: 'FFCBD5E1' } }, right: { style: 'thin', color: { argb: 'FFCBD5E1' } } };
+    });
+
+    rows.forEach((values, index) => {
+      const row = worksheet.addRow(values);
+      row.height = 21;
+      row.eachCell((cell) => {
+        cell.font = { name: 'Tahoma', size: 10, color: { argb: 'FF1E293B' } };
+        cell.alignment = { vertical: 'middle', wrapText: true };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: index % 2 === 0 ? 'FFFFFFFF' : 'FFF8FAFC' } };
+        cell.border = { bottom: { style: 'hair', color: { argb: 'FFE2E8F0' } } };
+      });
+    });
+
+    const integerColumns: number[] = [];
+    const moneyColumns: number[] = [];
+    if (reportType === 'overview') moneyColumns.push(2);
+    if (reportType === 'top_sellers') { integerColumns.push(1, 4); moneyColumns.push(5, 6, 7); }
+    if (reportType === 'vat') { integerColumns.push(1); moneyColumns.push(5, 6, 7, 8, 9); }
+    if (reportType === 'payments') { integerColumns.push(2); moneyColumns.push(3); }
+    for (let rowNumber = 6; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      integerColumns.forEach((column) => { worksheet.getCell(rowNumber, column).numFmt = '#,##0'; });
+      moneyColumns.forEach((column) => { worksheet.getCell(rowNumber, column).numFmt = '#,##0.00'; });
+    }
+    worksheet.columns.forEach((column, columnIndex) => {
+      let width = String(headers[columnIndex] || '').length + 4;
+      rows.forEach((row) => { width = Math.max(width, String(row[columnIndex] ?? '').length + 2); });
+      column.width = Math.min(36, Math.max(12, width));
+    });
+    if (rows.length > 0) worksheet.autoFilter = { from: { row: 5, column: 1 }, to: { row: 5, column: columnCount } };
+
+    let workbookBuffer: Awaited<ReturnType<typeof workbook.xlsx.writeBuffer>>;
+    try {
+      workbookBuffer = await workbook.xlsx.writeBuffer();
+    } catch {
+      setIsExporting(false);
+      showToast('ไม่สามารถสร้างไฟล์ Excel ได้', 'error');
+      return;
+    }
+    const fileName = `pos-${reportType}-${report.startDate}-${report.endDate}.xlsx`;
+    const blob = new Blob([workbookBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const fallbackDownload = () => {
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = fileName;
+      link.rel = 'noopener';
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+    };
+
+    try {
+      const pickerWindow = window as Window & {
+        showSaveFilePicker?: (options: {
+          suggestedName: string;
+          types: Array<{ description: string; accept: Record<string, string[]> }>;
+        }) => Promise<{ createWritable: () => Promise<{ write: (data: Blob) => Promise<void>; close: () => Promise<void> }> }>;
+      };
+      if (pickerWindow.showSaveFilePicker) {
+        try {
+          const fileHandle = await pickerWindow.showSaveFilePicker({
+            suggestedName: fileName,
+            types: [{ description: 'ไฟล์รายงาน Excel', accept: { 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'] } }],
+          });
+          const writable = await fileHandle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+        } catch (pickerError) {
+          if (pickerError instanceof DOMException && pickerError.name === 'AbortError') return;
+          fallbackDownload();
+        }
+      } else {
+        fallbackDownload();
+      }
+      showToast(`บันทึก Excel: ${reportNames[reportType]} สำเร็จ`, 'success');
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        showToast(error instanceof Error ? error.message : 'ไม่สามารถบันทึกไฟล์ Excel ได้', 'error');
+      }
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   return (
@@ -118,9 +330,9 @@ export const ReportsView: React.FC = () => {
           {/* Date tabs */}
           <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shadow-xs">
             <button
-              onClick={() => setDateRange('today')}
+              onClick={() => setDateRange('day')}
               className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
-                dateRange === 'today'
+                dateRange === 'day'
                   ? 'bg-emerald-500 text-slate-950 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
@@ -148,27 +360,44 @@ export const ReportsView: React.FC = () => {
               เดือนนี้
             </button>
             <button
-              onClick={() => setDateRange('all')}
+              onClick={() => setDateRange('custom')}
               className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
-                dateRange === 'all'
+                dateRange === 'custom'
                   ? 'bg-emerald-500 text-slate-950 shadow-xs'
                   : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
               }`}
             >
-              ทั้งหมด
+              กำหนดเอง
             </button>
           </div>
+
+          {dateRange === 'custom' && (
+            <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 text-xs shadow-xs dark:border-slate-800 dark:bg-slate-900">
+              <label className="flex items-center gap-1.5 px-1 font-semibold text-slate-500 dark:text-slate-400">
+                <span>เริ่ม</span>
+                <input type="date" value={startDate} max={endDate || undefined} onChange={(event) => setStartDate(event.target.value)} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-800 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200" />
+              </label>
+              <span className="text-slate-300 dark:text-slate-700">–</span>
+              <label className="flex items-center gap-1.5 px-1 font-semibold text-slate-500 dark:text-slate-400">
+                <span>สิ้นสุด</span>
+                <input type="date" value={endDate} min={startDate || undefined} onChange={(event) => setEndDate(event.target.value)} className="rounded-xl border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-800 outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200" />
+              </label>
+            </div>
+          )}
 
           <button
             id="export-csv-btn"
             onClick={handleExportCSV}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 text-xs font-semibold transition-all shadow-xs"
+            disabled={isLoading || isExporting || !report}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 text-xs font-semibold transition-all shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Download className="w-4 h-4 text-emerald-600 dark:text-cyan-400" />
-            <span>ส่งออก CSV</span>
+            <span>{isExporting ? 'กำลังสร้าง Excel...' : 'ส่งออกแท็บนี้ Excel'}</span>
           </button>
         </div>
       </div>
+
+      {loadError && <div className="rounded-2xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">{loadError}</div>}
 
       {/* KPI Cards (High Precision) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -178,7 +407,7 @@ export const ReportsView: React.FC = () => {
             {formatCurrency(totalSales, settings.currencySymbol, settings.decimalPlaces)}
           </div>
           <div className="flex items-center gap-1 text-[11px] text-slate-400 dark:text-slate-500 mt-1">
-            <span>{completedOrders.length} บิลที่สำเร็จ</span>
+            <span>{summary?.completedBills || 0} บิลที่สำเร็จ</span>
           </div>
         </div>
 
@@ -234,7 +463,7 @@ export const ReportsView: React.FC = () => {
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
-          อันดับสินค้าขายดี ({topSellers.length})
+          อันดับสินค้าขายดี ({topPagination.total})
         </button>
         <button
           onClick={() => setReportType('vat')}
@@ -244,7 +473,7 @@ export const ReportsView: React.FC = () => {
               : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
           }`}
         >
-          รายงานภาษีขาย (VAT 7%)
+          รายงานภาษีขาย (VAT {settings.vatRate}%)
         </button>
         <button
           onClick={() => setReportType('payments')}
@@ -384,7 +613,7 @@ export const ReportsView: React.FC = () => {
                             : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
                         }`}
                       >
-                        {idx + 1}
+                        {(topPagination.page - 1) * topPagination.pageSize + idx + 1}
                       </span>
                     </td>
                     <td className="p-4 font-semibold text-slate-900 dark:text-white">{item.name}</td>
@@ -406,6 +635,7 @@ export const ReportsView: React.FC = () => {
               })}
             </tbody>
           </table>
+          {paginationBar(topPagination.page, topPagination.totalPages, topPagination.total, setTopPage)}
         </div>
       )}
 
@@ -444,23 +674,24 @@ export const ReportsView: React.FC = () => {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
               {completedOrders.map((o) => (
                 <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
-                  <td className="p-3 font-bold text-slate-900 dark:text-white">{o.orderNumber}</td>
+                  <td className="p-3 font-bold text-slate-900 dark:text-white">{o.id}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">{formatThaiDateShort(o.createdAt)}</td>
-                  <td className="p-3 text-right">{formatCurrency(o.subtotal, '', settings.decimalPlaces)}</td>
+                  <td className="p-3 text-right">{formatCurrency(o.subtotalSatang / 100, '', settings.decimalPlaces)}</td>
                   <td className="p-3 text-right text-rose-600 dark:text-rose-400">
-                    {o.discount > 0 ? `-${formatCurrency(o.discount, '', settings.decimalPlaces)}` : '0.00'}
+                    {o.discountSatang > 0 ? `-${formatCurrency(o.discountSatang / 100, '', settings.decimalPlaces)}` : '0.00'}
                   </td>
-                  <td className="p-3 text-right">{formatCurrency(o.subtotal - o.discount, '', settings.decimalPlaces)}</td>
+                  <td className="p-3 text-right">{formatCurrency(o.netBeforeVatSatang / 100, '', settings.decimalPlaces)}</td>
                   <td className="p-3 text-right text-emerald-600 dark:text-emerald-400 font-bold">
-                    {formatCurrency(o.vatAmount, '', settings.decimalPlaces)}
+                    {formatCurrency(o.vatSatang / 100, '', settings.decimalPlaces)}
                   </td>
                   <td className="p-3 text-right font-bold text-slate-900 dark:text-white">
-                    {formatCurrency(o.total, '', settings.decimalPlaces)}
+                    {formatCurrency(o.totalSatang / 100, '', settings.decimalPlaces)}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          {paginationBar(vatPagination.page, vatPagination.totalPages, vatPagination.total, setVatPage)}
         </div>
       )}
 

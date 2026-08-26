@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { usePos } from '../context/PosContext';
-import { formatCurrency, formatThaiDateTime, formatThaiTime } from '../utils/formatters';
+import { formatCurrency, formatThaiTime } from '../utils/formatters';
+import { getPOSDashboard, POSDashboardData, POSDashboardRange } from '../api/posDashboard';
+import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
 import {
   TrendingUp,
   ShoppingBag,
@@ -8,69 +10,45 @@ import {
   AlertTriangle,
   ArrowUpRight,
   Receipt,
-  Package,
-  Calendar,
   Clock,
-  ExternalLink,
-  PlusCircle,
   CheckCircle2,
 } from 'lucide-react';
 
 export const DashboardView: React.FC = () => {
   const {
     orders,
-    heldOrders,
-    products,
     settings,
     setActiveTab,
     setSelectedOrderForReceipt,
   } = usePos();
 
-  // Calculate today's metrics
-  const completedOrders = orders.filter((o) => o.status === 'completed');
-  const todayTotalSales = completedOrders.reduce((sum, o) => sum + o.total, 0);
-  const totalBillsCount = completedOrders.length;
-  const lowStockProducts = products.filter((p) => p.stock <= p.minStockAlert);
+  const [range, setRange] = useState<POSDashboardRange>('1d');
+  const [dashboard, setDashboard] = useState<POSDashboardData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
 
-  // Category sales breakdown
-  const categorySalesMap: Record<string, { name: string; total: number; count: number }> = {
-    coffee: { name: 'กาแฟ & เครื่องดื่ม', total: 0, count: 0 },
-    bakery: { name: 'เบเกอรี่ & เค้ก', total: 0, count: 0 },
-    food: { name: 'อาหารจานเดียว', total: 0, count: 0 },
-    snack: { name: 'ของทานเล่น', total: 0, count: 0 },
-    dessert: { name: 'ของหวาน', total: 0, count: 0 },
-  };
-
-  completedOrders.forEach((order) => {
-    order.items.forEach((item) => {
-      const prod = products.find((p) => p.id === item.productId);
-      const catKey = prod?.category || 'coffee';
-      if (categorySalesMap[catKey]) {
-        categorySalesMap[catKey].total += item.total;
-        categorySalesMap[catKey].count += item.quantity;
-      }
+  useEffect(() => {
+    let cancelled = false;
+    setIsLoading(true);
+    setLoadError('');
+    void getPOSDashboard(range).then((result) => {
+      if (!cancelled) setDashboard(result);
+    }).catch((error) => {
+      if (!cancelled) setLoadError(error instanceof Error ? error.message : 'โหลด Dashboard ไม่สำเร็จ');
+    }).finally(() => {
+      if (!cancelled) setIsLoading(false);
     });
-  });
+    return () => { cancelled = true; };
+  }, [range]);
 
-  const categoryList = Object.values(categorySalesMap).sort((a, b) => b.total - a.total);
-  const totalCatSales = categoryList.reduce((sum, c) => sum + c.total, 0) || 1;
-
-  // Hourly simulated sales for visual chart
-  const hourlyData = [
-    { hour: '08:00', amount: 1850 },
-    { hour: '09:00', amount: 3400 },
-    { hour: '10:00', amount: 5120 },
-    { hour: '11:00', amount: 7200 },
-    { hour: '12:00', amount: 9800 },
-    { hour: '13:00', amount: 8400 },
-    { hour: '14:00', amount: 4900 },
-    { hour: '15:00', amount: 3800 },
-    { hour: '16:00', amount: 4200 },
-    { hour: '17:00', amount: 6100 },
-    { hour: '18:00', amount: 5500 },
-    { hour: '19:00', amount: 3200 },
-  ];
-  const maxHourly = Math.max(...hourlyData.map((d) => d.amount));
+  const rangeText = range === '1d' ? 'วันนี้' : range === '1w' ? '7 วันล่าสุด' : '30 วันล่าสุด';
+  const salesTotal = (dashboard?.salesSatang || 0) / 100;
+  const totalBillsCount = dashboard?.completedBills || 0;
+  const lowStockProducts = dashboard?.lowStockItems || [];
+  const categoryList = useMemo(() => (dashboard?.categories || []).map((item) => ({ name: item.name, total: item.totalSatang / 100, count: item.quantity })), [dashboard]);
+  const totalCatSales = categoryList.reduce((sum, category) => sum + category.total, 0);
+  const timelineData = (dashboard?.timeline || []).map((item) => ({ label: item.label, amount: item.amountSatang / 100 }));
+  const maxTimeline = Math.max(1, ...timelineData.map((item) => item.amount));
 
   return (
     <div className="flex-1 w-full p-4 sm:p-6 space-y-6 pb-24 overflow-y-auto bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
@@ -78,24 +56,28 @@ export const DashboardView: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight flex items-center gap-2.5">
-            <span>ภาพรวมการขายวันนี้</span>
-            <span className="text-xs font-medium px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-semibold">
-              Live Real-Time
-            </span>
+            <span>ภาพรวมการขาย {rangeText}</span>
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-            สรุปยอดขาย กิจกรรม และความเคลื่อนไหวสต็อกประจำวัน
+            สรุปยอดขาย กิจกรรม และความเคลื่อนไหวสต็อกตามช่วงเวลา
           </p>
+          {loadError && <p className="mt-1 text-xs font-bold text-rose-500">{loadError}</p>}
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setActiveTab('pos')}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg shadow-emerald-600/20 transition-all cursor-pointer"
-          >
-            <ShoppingBag className="w-4 h-4" />
-            <span>ไปที่หน้าการขาย (POS)</span>
-          </button>
+          <div className="flex items-center rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-1 shadow-sm">
+            {(['1d', '1w', '1m'] as POSDashboardRange[]).map((item) => (
+              <button
+                key={item}
+                type="button"
+                onClick={() => setRange(item)}
+                disabled={isLoading && item === range}
+                className={`min-w-10 rounded-lg px-2.5 py-1.5 text-xs font-black transition-colors ${range === item ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'}`}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -104,18 +86,18 @@ export const DashboardView: React.FC = () => {
         {/* Card 1: Today Sales */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 sm:p-5 flex flex-col justify-between shadow-sm dark:shadow-xl">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">ยอดขายวันนี้</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">ยอดขาย {rangeText}</span>
             <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
               <TrendingUp className="w-5 h-5" />
             </div>
           </div>
           <div className="mt-3">
             <div className="text-xl sm:text-2xl font-extrabold text-emerald-600 dark:text-emerald-400">
-              {formatCurrency(todayTotalSales, settings.currencySymbol, settings.decimalPlaces)}
+              {formatCurrency(salesTotal, settings.currencySymbol, settings.decimalPlaces)}
             </div>
             <div className="flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 font-medium">
-              <ArrowUpRight className="w-3.5 h-3.5" />
-              <span>+12.8% จากเมื่อวาน</span>
+              <ArrowUpRight className={`w-3.5 h-3.5 ${(dashboard?.salesChangePercent || 0) < 0 ? 'rotate-90' : ''}`} />
+              <span>{(dashboard?.salesChangePercent || 0) >= 0 ? '+' : ''}{(dashboard?.salesChangePercent || 0).toFixed(1)}% จากช่วงก่อนหน้า</span>
             </div>
           </div>
         </div>
@@ -136,7 +118,7 @@ export const DashboardView: React.FC = () => {
             <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
               เฉลี่ย{' '}
               {formatCurrency(
-                totalBillsCount > 0 ? todayTotalSales / totalBillsCount : 0,
+                (dashboard?.averageBillSatang || 0) / 100,
                 settings.currencySymbol,
                 0
               )}
@@ -158,7 +140,7 @@ export const DashboardView: React.FC = () => {
           </div>
           <div className="mt-3">
             <div className="text-xl sm:text-2xl font-extrabold text-amber-600 dark:text-amber-400">
-              {heldOrders.length}{' '}
+              {dashboard?.heldCount || 0}{' '}
               <span className="text-sm font-normal text-slate-500 dark:text-slate-400">รายการ</span>
             </div>
             <p className="text-[11px] text-amber-600 dark:text-amber-400/80 mt-1 flex items-center gap-1 group-hover:underline">
@@ -181,7 +163,7 @@ export const DashboardView: React.FC = () => {
           </div>
           <div className="mt-3">
             <div className="text-xl sm:text-2xl font-extrabold text-rose-600 dark:text-rose-400">
-              {lowStockProducts.length}{' '}
+              {dashboard?.lowStockCount || 0}{' '}
               <span className="text-sm font-normal text-slate-500 dark:text-slate-400">รายการ</span>
             </div>
             <p className="text-[11px] text-rose-600 dark:text-rose-400/80 mt-1 flex items-center gap-1 group-hover:underline">
@@ -200,21 +182,21 @@ export const DashboardView: React.FC = () => {
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <Clock className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                <span>กราฟแนวโน้มยอดขายรายชั่วโมง</span>
+                <span>กราฟแนวโน้มยอดขาย</span>
               </h2>
               <span className="text-xs text-slate-500 dark:text-slate-400">
-                ข้อมูลการขายของวันนี้ แยกตามช่วงเวลา
+                ข้อมูลจริงของ {rangeText} แยกตามช่วงเวลา
               </span>
             </div>
             <span className="text-xs font-mono px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
-              ยอดพีค: 12:00 น.
+              ยอดพีค: {dashboard?.peakLabel || '-'}{range === '1d' && dashboard?.peakLabel !== '-' ? ' น.' : ''}
             </span>
           </div>
 
           {/* Bar Chart Visualizer */}
           <div className="h-56 flex items-end justify-between gap-1.5 sm:gap-2 pt-6 px-1">
-            {hourlyData.map((item, idx) => {
-              const heightPercent = Math.max(12, (item.amount / maxHourly) * 100);
+            {timelineData.map((item, idx) => {
+              const heightPercent = item.amount > 0 ? Math.max(4, (item.amount / maxTimeline) * 100) : 0;
               return (
                 <div
                   key={idx}
@@ -230,7 +212,7 @@ export const DashboardView: React.FC = () => {
                     <div
                       style={{ height: `${heightPercent}%` }}
                       className={`w-full rounded-t-lg transition-all duration-500 group-hover:brightness-110 ${
-                        item.amount === maxHourly
+                        item.amount === maxTimeline && item.amount > 0
                           ? 'bg-gradient-to-t from-emerald-600 to-emerald-400 shadow-lg shadow-emerald-500/20'
                           : 'bg-gradient-to-t from-slate-400 dark:from-slate-700 to-teal-500/80'
                       }`}
@@ -239,7 +221,9 @@ export const DashboardView: React.FC = () => {
 
                   {/* X Axis Label */}
                   <span className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 font-mono">
-                    {item.hour.slice(0, 2)}
+                    {range === '1m' && idx % 5 !== 0 && idx !== timelineData.length - 1
+                      ? ''
+                      : range === '1d' ? item.label.slice(0, 2) : item.label}
                   </span>
                 </div>
               );
@@ -259,7 +243,7 @@ export const DashboardView: React.FC = () => {
 
           <div className="space-y-3.5 my-auto">
             {categoryList.map((cat, index) => {
-              const percent = Math.round((cat.total / totalCatSales) * 100);
+              const percent = totalCatSales > 0 ? Math.round((cat.total / totalCatSales) * 100) : 0;
               const colorClasses = [
                 'bg-emerald-500',
                 'bg-cyan-500',
@@ -308,7 +292,7 @@ export const DashboardView: React.FC = () => {
             <div>
               <h2 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
                 <AlertTriangle className="w-4 h-4 text-rose-500 dark:text-rose-400" />
-                <span>รายการสินค้าสต็อกใกล้หมด ({lowStockProducts.length})</span>
+                <span>รายการสินค้าสต็อกใกล้หมด ({dashboard?.lowStockCount || 0})</span>
               </h2>
               <span className="text-xs text-slate-500 dark:text-slate-400">
                 สินค้าที่จำนวนเหลือน้อยกว่าเกณฑ์แจ้งเตือน
@@ -336,7 +320,7 @@ export const DashboardView: React.FC = () => {
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <img
-                      src={prod.image}
+                      src={prod.imageData || DEFAULT_PRODUCT_IMAGE}
                       alt={prod.name}
                       referrerPolicy="no-referrer"
                       className="w-11 h-11 rounded-xl object-cover bg-slate-200 dark:bg-slate-900 shrink-0"
@@ -356,7 +340,7 @@ export const DashboardView: React.FC = () => {
                       เหลือ {prod.stock} {prod.unit}
                     </span>
                     <span className="block text-[10px] text-slate-500 mt-0.5">
-                      เตือนที่ {prod.minStockAlert}
+                      เตือนที่ {prod.lowStockThreshold}
                     </span>
                   </div>
                 </div>
@@ -384,52 +368,48 @@ export const DashboardView: React.FC = () => {
           </div>
 
           <div className="space-y-2.5 max-h-72 overflow-y-auto">
-            {orders.slice(0, 5).map((order) => (
+            {(dashboard?.recentSales || []).map((sale) => {
+              const order = orders.find((item) => item.paymentId === sale.paymentId);
+              return (
               <div
-                key={order.id}
-                onClick={() => setSelectedOrderForReceipt(order)}
-                className="bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 hover:border-slate-400 dark:hover:border-slate-700 rounded-2xl p-3 flex items-center justify-between gap-3 cursor-pointer transition-colors"
+                key={sale.id}
+                onClick={() => order && setSelectedOrderForReceipt(order)}
+                className={`bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 hover:border-slate-400 dark:hover:border-slate-700 rounded-2xl p-3 flex items-center justify-between gap-3 transition-colors ${order ? 'cursor-pointer' : ''}`}
               >
                 <div>
                   <div className="flex items-center gap-2">
                     <span className="font-mono font-bold text-xs text-slate-900 dark:text-white">
-                      {order.orderNumber}
+                      {sale.id}
                     </span>
                     <span
                       className={`text-[10px] px-2 py-0.2 rounded-md font-bold ${
-                        order.status === 'completed'
-                          ? 'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
-                          : 'bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-500/30'
+                        'bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
                       }`}
                     >
-                      {order.status === 'completed' ? 'สำเร็จ' : 'คืนเงินแล้ว'}
+                      สำเร็จ
                     </span>
                   </div>
                   <div className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                    <span>{formatThaiTime(order.createdAt)} น.</span>
+                    <span>{formatThaiTime(sale.createdAt)} น.</span>
                     <span className="mx-1">•</span>
-                    <span>{order.items.length} รายการ</span>
+                    <span>{sale.itemCount} ชิ้น</span>
                     <span className="mx-1">•</span>
                     <span className="capitalize">
-                      {order.paymentMethod === 'promptpay'
-                        ? 'PromptPay'
-                        : order.paymentMethod === 'cash'
-                        ? 'เงินสด'
-                        : 'บัตรเครดิต'}
+                      {sale.method === 'promptpay' ? 'PromptPay' : 'เงินสด'}
                     </span>
                   </div>
                 </div>
 
                 <div className="text-right">
                   <span className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400 font-mono">
-                    {formatCurrency(order.total, settings.currencySymbol, settings.decimalPlaces)}
+                    {formatCurrency(sale.totalSatang / 100, settings.currencySymbol, settings.decimalPlaces)}
                   </span>
                   <span className="block text-[10px] text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
-                    ดูใบเสร็จ ↗
+                    {order ? 'ดูใบเสร็จ ↗' : sale.actorName}
                   </span>
                 </div>
               </div>
-            ))}
+            );})}
           </div>
         </div>
       </div>

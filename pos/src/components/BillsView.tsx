@@ -1,7 +1,12 @@
-import React, { useState } from 'react';
-import { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { getPOSBillingSummary, getPOSPaymentQR, POSBillingSummary } from '../api/posSales';
+import {
+  getPOSBillingSummary,
+  getPOSPaymentQR,
+  listPOSPaymentHistoryPage,
+  POSBillingSummary,
+  POSPaymentHistory,
+} from '../api/posSales';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import {
@@ -21,15 +26,68 @@ import {
   CheckSquare,
   Square,
   Zap,
-  CreditCard,
   Banknote,
   QrCode,
   Layers,
   ArrowRight,
   X,
-  Sparkles,
   Check,
+  Eye,
 } from 'lucide-react';
+import type { Order } from '../types';
+
+const HISTORY_PAGE_SIZE = 20;
+
+const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
+  const items: Order['items'] = [];
+  payment.lines.forEach((line) => {
+    const snapshot = line.snapshot || {};
+    const snapshotItems = Array.isArray(snapshot.items) ? snapshot.items : [];
+    if (snapshotItems.length === 0) {
+      items.push({ productId: line.sourceId, name: line.label, sku: '', price: line.amountSatang / 100, cost: 0, quantity: 1, total: line.amountSatang / 100 });
+      return;
+    }
+    snapshotItems.forEach((entry: Record<string, unknown>, index: number) => {
+      const quantity = Number(entry.quantity || 1);
+      const amountSatang = Number(entry.amountSatang ?? entry.lineTotalSatang ?? 0);
+      items.push({
+        productId: String(entry.productId || `${line.sourceId}-${index}`),
+        name: String(entry.name || entry.productName || entry.label || line.label),
+        sku: String(entry.sku || ''),
+        price: Number(entry.unitPriceSatang ?? entry.unitAmountSatang ?? (quantity > 0 ? amountSatang / quantity : amountSatang)) / 100,
+        cost: Number(entry.unitCostSatang || 0) / 100,
+        quantity,
+        total: amountSatang / 100,
+        note: entry.note ? String(entry.note) : undefined,
+      });
+    });
+  });
+  return {
+    id: payment.paymentId,
+    orderNumber: payment.paymentId,
+    items,
+    subtotal: payment.amountSatang / 100,
+    discount: 0,
+    discountType: 'amount',
+    vatAmount: 0,
+    vatRate: 0,
+    isVatIncluded: true,
+    total: payment.amountSatang / 100,
+    paymentMethod: payment.method,
+    cashReceived: (payment.cashReceivedSatang || 0) / 100,
+    change: (payment.changeSatang || 0) / 100,
+    status: 'completed',
+    createdAt: payment.createdAt,
+    cashierName: payment.receivedByName || 'Admin',
+    customerNote: payment.displayName,
+    referenceNumber: payment.referenceNumber,
+    paymentId: payment.paymentId,
+    originSystem: payment.originSystem,
+    matchTotal: payment.matchTotalSatang / 100,
+    posTotal: payment.posTotalSatang / 100,
+    billingLines: payment.lines,
+  };
+};
 
 export const BillsView: React.FC = () => {
   const {
@@ -44,39 +102,38 @@ export const BillsView: React.FC = () => {
     cancelOrder,
     setSelectedOrderForReceipt,
     settings,
+    broadcastCustomerDisplay,
   } = usePos();
 
   const [activeSegment, setActiveSegment] = useState<'held' | 'history'>('held');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [heldSearchQuery, setHeldSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'refunded'>('all');
-  const [paymentFilter, setPaymentFilter] = useState<'all' | 'cash' | 'promptpay' | 'card'>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'cash' | 'promptpay'>('all');
   const [selectedOrderForRefund, setSelectedOrderForRefund] = useState<string | null>(null);
+  const [selectedHistoryDetail, setSelectedHistoryDetail] = useState<Order | null>(null);
   const [refundReason, setRefundReason] = useState<string>('');
+  const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyBadgeTotal, setHistoryBadgeTotal] = useState(0);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState('');
 
   // Multi-selection state for Held Orders
   const [selectedHeldIds, setSelectedHeldIds] = useState<string[]>([]);
   const [isBatchPayModalOpen, setIsBatchPayModalOpen] = useState<boolean>(false);
-  const [batchPayMethod, setBatchPayMethod] = useState<'cash' | 'promptpay' | 'card' | 'transfer'>('cash');
+  const [isBatchPaying, setIsBatchPaying] = useState(false);
+  const [batchPayMethod, setBatchPayMethod] = useState<'cash' | 'promptpay'>('cash');
   const [batchCashInput, setBatchCashInput] = useState<string>('');
   const [batchRefNumber, setBatchRefNumber] = useState<string>('');
   const [batchCustomerNote, setBatchCustomerNote] = useState<string>('');
   const [billingSummary, setBillingSummary] = useState<POSBillingSummary | null>(null);
+  const [batchLiveTotal, setBatchLiveTotal] = useState<number | null>(null);
   const [batchQrDataUrl, setBatchQrDataUrl] = useState('');
 
-  // Filter sales history
-  const filteredOrders = orders.filter((o) => {
-    const matchSearch =
-      o.orderNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      o.cashierName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (o.customerNote && o.customerNote.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (o.referenceNumber && o.referenceNumber.toLowerCase().includes(searchQuery.toLowerCase()));
-
-    const matchStatus = statusFilter === 'all' || o.status === statusFilter;
-    const matchPayment = paymentFilter === 'all' || o.paymentMethod === paymentFilter;
-
-    return matchSearch && matchStatus && matchPayment;
-  });
+  const filteredOrders = historyOrders;
 
   // Filter held orders
   const filteredHeldOrders = heldOrders.filter((h) => {
@@ -109,11 +166,59 @@ export const BillsView: React.FC = () => {
   // Selected held orders objects & calculations
   const selectedHeldObjects = heldOrders.filter((h) => selectedHeldIds.includes(h.id));
   const selectedTotalAmount = selectedHeldObjects.reduce((sum, h) => sum + h.total, 0);
-  const paymentTotal = billingSummary ? billingSummary.totalSatang / 100 : selectedTotalAmount;
+  const paymentTotal = batchLiveTotal ?? (billingSummary ? billingSummary.totalSatang / 100 : selectedTotalAmount);
   const selectedTotalItemsCount = selectedHeldObjects.reduce(
     (sum, h) => sum + h.items.reduce((s, it) => s + it.quantity, 0),
     0
   );
+
+  useEffect(() => {
+    if (!selectedHistoryDetail) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedHistoryDetail(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedHistoryDetail]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setIsHistoryLoading(true);
+      setHistoryLoadError('');
+      try {
+        const result = await listPOSPaymentHistoryPage({
+          page: historyPage,
+          pageSize: HISTORY_PAGE_SIZE,
+          search: searchQuery,
+          status: statusFilter,
+          method: paymentFilter,
+        });
+        if (cancelled) return;
+        if (historyPage > result.totalPages) {
+          setHistoryPage(Math.max(1, result.totalPages));
+          return;
+        }
+        setHistoryOrders(result.items.map(paymentHistoryToOrder));
+        setHistoryTotal(result.total);
+        setHistoryTotalPages(Math.max(1, result.totalPages));
+        if (!searchQuery.trim() && statusFilter === 'all' && paymentFilter === 'all') {
+          setHistoryBadgeTotal(result.total);
+        }
+      } catch {
+        if (!cancelled) {
+          setHistoryOrders([]);
+          setHistoryLoadError('โหลดประวัติการขายไม่สำเร็จ กรุณาลองใหม่');
+        }
+      } finally {
+        if (!cancelled) setIsHistoryLoading(false);
+      }
+    }, searchQuery.trim() ? 350 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeSegment, historyPage, searchQuery, statusFilter, paymentFilter, orders.length, orders[0]?.paymentId]);
 
   // Open Batch Pay Modal
   const handleOpenBatchPay = async (idsToPay?: string[]) => {
@@ -127,23 +232,39 @@ export const BillsView: React.FC = () => {
     setBatchRefNumber('');
     setBatchCustomerNote('');
     setBillingSummary(null);
+    setBatchLiveTotal(null);
     const targets = heldOrders.filter((item) => targetIds.includes(item.id));
-    const accountID = targets[0]?.billingAccountId;
-    if (accountID && targets.every((item) => item.billingAccountId === accountID)) {
-      try { setBillingSummary(await getPOSBillingSummary(accountID)); } catch { setBillingSummary(null); }
+    const accountIDs: string[] = Array.from(new Set<string>(targets.flatMap((item) => item.billingAccountId ? [item.billingAccountId] : [])));
+    if (accountIDs.length > 0) {
+      try {
+        const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
+        setBatchLiveTotal(summaries.reduce((sum, item) => sum + item.totalSatang, 0) / 100);
+        setBillingSummary(summaries.length === 1 ? summaries[0] : null);
+      } catch {
+        setBillingSummary(null);
+        setBatchLiveTotal(null);
+      }
     }
     setIsBatchPayModalOpen(true);
   };
 
+  const closeBatchPayModal = () => {
+    setIsBatchPayModalOpen(false);
+    const closedPaymentState = { isOpen: false, method: 'cash' as const, totalDue: 0 };
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(closedPaymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: closedPaymentState });
+  };
+
   // Execute Batch Payment
   const handleConfirmBatchPayment = async () => {
-    if (selectedHeldIds.length === 0) return;
+    if (selectedHeldIds.length === 0 || isBatchPaying) return;
 
     const cashGiven = parseFloat(batchCashInput) || 0;
     if (batchPayMethod === 'cash' && cashGiven < paymentTotal) {
       return;
     }
 
+    setIsBatchPaying(true);
     const completed = await processBatchHeldPayment({
       heldIds: selectedHeldIds,
       paymentMethod: batchPayMethod,
@@ -151,16 +272,21 @@ export const BillsView: React.FC = () => {
       referenceNumber: batchRefNumber || undefined,
       customerNote: batchCustomerNote || undefined,
     });
+    setIsBatchPaying(false);
 
-	if (!completed) {
-	  const accountID = selectedHeldObjects[0]?.billingAccountId;
-	  if (accountID) {
-		try { setBillingSummary(await getPOSBillingSummary(accountID)); } catch { /* Keep the payment modal open with the last visible total. */ }
-	  }
-	  return;
-	}
+    if (!completed) {
+      const accountIDs: string[] = Array.from(new Set<string>(selectedHeldObjects.flatMap((item) => item.billingAccountId ? [item.billingAccountId] : [])));
+      if (accountIDs.length > 0) {
+        try {
+          const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
+          setBatchLiveTotal(summaries.reduce((sum, item) => sum + item.totalSatang, 0) / 100);
+          setBillingSummary(summaries.length === 1 ? summaries[0] : null);
+        } catch { /* Keep the payment modal open with the last visible total. */ }
+      }
+      return;
+    }
 
-    setIsBatchPayModalOpen(false);
+    closeBatchPayModal();
     setSelectedHeldIds([]);
   };
 
@@ -201,6 +327,31 @@ export const BillsView: React.FC = () => {
     }).catch(() => { if (!cancelled) setBatchQrDataUrl(''); });
     return () => { cancelled = true; };
   }, [isBatchPayModalOpen, batchPayMethod, paymentTotal]);
+
+  useEffect(() => {
+    if (!isBatchPayModalOpen) return;
+
+    const billCart = selectedHeldObjects.flatMap((held) => held.items);
+    const paymentState = {
+      isOpen: true,
+      method: batchPayMethod,
+      totalDue: paymentTotal,
+      cashReceived: batchPayMethod === 'cash' ? batchCashGiven : undefined,
+      change: batchPayMethod === 'cash' ? batchChange : undefined,
+      items: billCart,
+      totals: {
+        itemCount: selectedTotalItemsCount,
+        subtotal: paymentTotal,
+        discountAmount: 0,
+        netBeforeVat: paymentTotal,
+        vatAmount: 0,
+        total: paymentTotal,
+      },
+    };
+
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
+  }, [isBatchPayModalOpen, batchPayMethod, batchCashGiven, batchChange, paymentTotal, heldOrders, selectedHeldIds]);
 
   return (
     <div className="flex-1 w-full p-4 sm:p-6 space-y-6 pb-44 sm:pb-48 overflow-y-auto bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
@@ -259,7 +410,7 @@ export const BillsView: React.FC = () => {
                   : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
               }`}
             >
-              {orders.length}
+              {historyBadgeTotal}
             </span>
           </button>
         </div>
@@ -526,7 +677,10 @@ export const BillsView: React.FC = () => {
                 <input
                   type="text"
                   value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setHistoryPage(1);
+                  }}
                   placeholder="ค้นหาตามเลขที่บิล, แคชเชียร์, หมายเหตุ..."
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-10 pr-4 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                 />
@@ -536,7 +690,10 @@ export const BillsView: React.FC = () => {
               <div className="md:col-span-3">
                 <select
                   value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value as 'all' | 'completed' | 'refunded')}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value as 'all' | 'completed' | 'refunded');
+                    setHistoryPage(1);
+                  }}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 >
                   <option value="all">สถานะบิลทั้งหมด</option>
@@ -549,13 +706,15 @@ export const BillsView: React.FC = () => {
               <div className="md:col-span-3">
                 <select
                   value={paymentFilter}
-                  onChange={(e) => setPaymentFilter(e.target.value as 'all' | 'cash' | 'promptpay' | 'card')}
+                  onChange={(e) => {
+                    setPaymentFilter(e.target.value as 'all' | 'cash' | 'promptpay');
+                    setHistoryPage(1);
+                  }}
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
                 >
                   <option value="all">วิธีชำระทั้งหมด</option>
                   <option value="cash">เงินสด (Cash)</option>
                   <option value="promptpay">PromptPay QR</option>
-                  <option value="card">บัตรเครดิต</option>
                 </select>
               </div>
             </div>
@@ -580,7 +739,7 @@ export const BillsView: React.FC = () => {
                   {filteredOrders.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="p-8 text-center text-slate-400 dark:text-slate-500">
-                        ไม่พบประวัติการขายที่ตรงกับเงื่อนไข
+                        {isHistoryLoading ? 'กำลังโหลดประวัติการขาย...' : historyLoadError || 'ไม่พบประวัติการขายที่ตรงกับเงื่อนไข'}
                       </td>
                     </tr>
                   ) : (
@@ -614,13 +773,7 @@ export const BillsView: React.FC = () => {
                         </td>
                         <td className="p-4">
                           <span className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-                            {order.paymentMethod === 'promptpay'
-                              ? 'PromptPay QR'
-                              : order.paymentMethod === 'cash'
-                              ? 'เงินสด'
-                              : order.paymentMethod === 'card'
-                              ? 'บัตรเครดิต'
-                              : 'โอนเงิน'}
+                            {order.paymentMethod === 'promptpay' ? 'PromptPay QR' : 'เงินสด'}
                           </span>
                         </td>
                         <td className="p-4 text-right font-mono font-bold text-sm text-emerald-600 dark:text-emerald-400">
@@ -647,6 +800,16 @@ export const BillsView: React.FC = () => {
                         <td className="p-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <button
+                              type="button"
+                              onClick={() => setSelectedHistoryDetail(order)}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
+                              title="ดูรายละเอียดการชำระเงิน"
+                              aria-label={`ดูรายละเอียดบิล ${order.orderNumber}`}
+                            >
+                              <Eye className="h-4 w-4" />
+                              <span>ดูรายละเอียด</span>
+                            </button>
+                            <button
                               onClick={() => setSelectedOrderForReceipt(order)}
                               className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-slate-700 transition-colors"
                               title="ดูและพิมพ์ใบเสร็จ"
@@ -671,6 +834,223 @@ export const BillsView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-xs dark:border-slate-800">
+              <span className="text-slate-500 dark:text-slate-400">
+                {historyTotal > 0
+                  ? `แสดง ${(historyPage - 1) * HISTORY_PAGE_SIZE + 1}–${Math.min(historyPage * HISTORY_PAGE_SIZE, historyTotal)} จากทั้งหมด ${historyTotal.toLocaleString('th-TH')} รายการ · หน้า ${historyPage}/${historyTotalPages}`
+                  : `ทั้งหมด 0 รายการ · หน้า 1/${historyTotalPages}`}
+                {isHistoryLoading && <span className="ml-2 font-bold text-amber-600 dark:text-amber-400">กำลังโหลด...</span>}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={historyPage <= 1 || isHistoryLoading}
+                  onClick={() => setHistoryPage((page) => Math.max(1, page - 1))}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  ก่อนหน้า
+                </button>
+                <button
+                  type="button"
+                  disabled={historyPage >= historyTotalPages || isHistoryLoading || historyTotal === 0}
+                  onClick={() => setHistoryPage((page) => Math.min(historyTotalPages, page + 1))}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  ถัดไป
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PAYMENT HISTORY DETAIL MODAL */}
+      {selectedHistoryDetail && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/75 p-3 backdrop-blur-xs sm:p-4"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setSelectedHistoryDetail(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-history-detail-title"
+            className="flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
+              <div className="min-w-0">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                    Payment Detail
+                  </span>
+                  <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-black ${selectedHistoryDetail.originSystem === 'match' ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'}`}>
+                    รับชำระที่ {selectedHistoryDetail.originSystem === 'match' ? 'Match' : 'POS'}
+                  </span>
+                </div>
+                <h2 id="payment-history-detail-title" className="text-lg font-black text-slate-900 dark:text-white sm:text-xl">
+                  รายละเอียดการชำระเงิน
+                </h2>
+                <p className="mt-1 break-all font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                  เลขที่บิล {selectedHistoryDetail.orderNumber}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedHistoryDetail(null)}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:text-white"
+                aria-label="ปิดรายละเอียดการชำระเงิน"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-5 overflow-y-auto p-5 sm:p-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">ลูกค้า / สมาชิก</p>
+                  <p className="mt-1 truncate text-sm font-black text-slate-900 dark:text-white">{selectedHistoryDetail.customerNote || 'ลูกค้าทั่วไป'}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">วันและเวลา</p>
+                  <p className="mt-1 text-sm font-black text-slate-900 dark:text-white">{formatThaiDateTime(selectedHistoryDetail.createdAt)}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">ผู้รับชำระ</p>
+                  <p className="mt-1 truncate text-sm font-black text-slate-900 dark:text-white">{selectedHistoryDetail.cashierName || 'Admin'}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">ช่องทางชำระ</p>
+                  <p className="mt-1 text-sm font-black text-slate-900 dark:text-white">{selectedHistoryDetail.paymentMethod === 'promptpay' ? 'PromptPay QR' : 'เงินสด'}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-500/25 dark:bg-sky-500/10">
+                  <p className="text-[11px] font-bold text-sky-700 dark:text-sky-300">ยอดจาก Match</p>
+                  <p className="mt-1 font-mono text-xl font-black text-sky-800 dark:text-sky-200">{formatCurrency(selectedHistoryDetail.matchTotal || 0, settings.currencySymbol, 2)}</p>
+                </div>
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/25 dark:bg-amber-500/10">
+                  <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">ยอดจาก POS</p>
+                  <p className="mt-1 font-mono text-xl font-black text-amber-800 dark:text-amber-200">{formatCurrency(selectedHistoryDetail.posTotal ?? selectedHistoryDetail.total, settings.currencySymbol, 2)}</p>
+                </div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-500/25 dark:bg-emerald-500/10">
+                  <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">ยอดชำระรวม</p>
+                  <p className="mt-1 font-mono text-xl font-black text-emerald-700 dark:text-emerald-300">{formatCurrency(selectedHistoryDetail.total, settings.currencySymbol, 2)}</p>
+                </div>
+              </div>
+
+              <section>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h3 className="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                    <Layers className="h-4 w-4 text-amber-500" />
+                    รายการที่ชำระ
+                  </h3>
+                  <span className="text-[11px] font-semibold text-slate-400">{selectedHistoryDetail.items.reduce((sum, item) => sum + item.quantity, 0)} รายการสินค้า</span>
+                </div>
+
+                <div className="space-y-3">
+                  {selectedHistoryDetail.billingLines && selectedHistoryDetail.billingLines.length > 0 ? (
+                    selectedHistoryDetail.billingLines.map((line, lineIndex) => {
+                      const snapshotItems = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+                      return (
+                        <article key={`${line.sourceType}-${line.sourceId}-${lineIndex}`} className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700">
+                          <div className="flex items-start justify-between gap-3 bg-slate-50 px-4 py-3 dark:bg-slate-800/70">
+                            <div className="min-w-0">
+                              <span className={`mr-2 inline-flex rounded-md px-2 py-0.5 text-[10px] font-black ${line.sourceType === 'match' ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'}`}>
+                                {line.sourceType === 'match' ? 'MATCH' : 'POS'}
+                              </span>
+                              <span className="text-xs font-bold text-slate-900 dark:text-white">{line.label}</span>
+                            </div>
+                            <span className="shrink-0 font-mono text-sm font-black text-slate-900 dark:text-white">{formatCurrency(line.amountSatang / 100, settings.currencySymbol, 2)}</span>
+                          </div>
+                          {snapshotItems.length > 0 && (
+                            <div className="divide-y divide-slate-100 px-4 dark:divide-slate-800">
+                              {snapshotItems.map((item: Record<string, unknown>, itemIndex: number) => {
+                                const quantity = Number(item.quantity || 1);
+                                const lineTotalSatang = Number(item.amountSatang ?? item.lineTotalSatang ?? 0);
+                                const unitPriceSatang = Number(item.unitPriceSatang ?? item.unitAmountSatang ?? (quantity > 0 ? lineTotalSatang / quantity : lineTotalSatang));
+                                return (
+                                  <div key={`${line.sourceId}-item-${itemIndex}`} className="grid grid-cols-[1fr_auto] gap-3 py-2.5 text-xs">
+                                    <div className="min-w-0">
+                                      <p className="font-bold text-slate-800 dark:text-slate-200">{String(item.name || item.productName || item.label || line.label)}</p>
+                                      <p className="mt-0.5 text-[10px] text-slate-400">{quantity} × {formatCurrency(unitPriceSatang / 100, settings.currencySymbol, 2)}</p>
+                                    </div>
+                                    <p className="self-center font-mono font-bold text-slate-700 dark:text-slate-300">{formatCurrency(lineTotalSatang / 100, settings.currencySymbol, 2)}</p>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 px-4 dark:divide-slate-800 dark:border-slate-700">
+                      {selectedHistoryDetail.items.map((item, itemIndex) => (
+                        <div key={`${item.productId}-${itemIndex}`} className="grid grid-cols-[1fr_auto] gap-3 py-3 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 dark:text-white">{item.name}</p>
+                            <p className="mt-0.5 text-[10px] text-slate-400">{item.quantity} × {formatCurrency(item.price, settings.currencySymbol, 2)}{item.sku ? ` · SKU ${item.sku}` : ''}</p>
+                          </div>
+                          <p className="self-center font-mono font-black text-slate-800 dark:text-slate-200">{formatCurrency(item.total, settings.currencySymbol, 2)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                    {selectedHistoryDetail.paymentMethod === 'promptpay' ? <QrCode className="h-4 w-4 text-sky-500" /> : <Banknote className="h-4 w-4 text-emerald-500" />}
+                    รายละเอียดรับชำระ
+                  </h3>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between gap-3"><span className="text-slate-500">ช่องทาง</span><span className="font-bold text-slate-900 dark:text-white">{selectedHistoryDetail.paymentMethod === 'promptpay' ? 'PromptPay QR' : 'เงินสด'}</span></div>
+                    {selectedHistoryDetail.paymentMethod === 'cash' && (
+                      <>
+                        <div className="flex justify-between gap-3"><span className="text-slate-500">รับเงินมา</span><span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(selectedHistoryDetail.cashReceived || 0, settings.currencySymbol, 2)}</span></div>
+                        <div className="flex justify-between gap-3"><span className="text-slate-500">เงินทอน</span><span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(selectedHistoryDetail.change || 0, settings.currencySymbol, 2)}</span></div>
+                      </>
+                    )}
+                    {selectedHistoryDetail.referenceNumber && <div className="flex justify-between gap-3"><span className="text-slate-500">เลขอ้างอิง</span><span className="break-all text-right font-mono font-bold text-slate-900 dark:text-white">{selectedHistoryDetail.referenceNumber}</span></div>}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+                  <h3 className="mb-3 text-sm font-black text-slate-900 dark:text-white">สรุปยอดบิล</h3>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between gap-3"><span className="text-slate-500">ยอดก่อนส่วนลด</span><span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(selectedHistoryDetail.subtotal, settings.currencySymbol, 2)}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-500">ส่วนลด</span><span className="font-mono font-bold text-rose-600 dark:text-rose-400">{selectedHistoryDetail.discount > 0 ? '-' : ''}{formatCurrency(selectedHistoryDetail.discount, settings.currencySymbol, 2)}</span></div>
+                    {selectedHistoryDetail.vatAmount > 0 && <div className="flex justify-between gap-3"><span className="text-slate-500">VAT {selectedHistoryDetail.vatRate}%</span><span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(selectedHistoryDetail.vatAmount, settings.currencySymbol, 2)}</span></div>}
+                    <div className="mt-2 flex justify-between gap-3 border-t border-slate-200 pt-2 dark:border-slate-700"><span className="font-black text-slate-900 dark:text-white">ยอดสุทธิ</span><span className="font-mono text-lg font-black text-emerald-600 dark:text-emerald-400">{formatCurrency(selectedHistoryDetail.total, settings.currencySymbol, 2)}</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/50 sm:px-6">
+              <button
+                type="button"
+                onClick={() => setSelectedHistoryDetail(null)}
+                className="rounded-xl bg-slate-200 px-4 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              >
+                ปิด
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedOrderForReceipt(selectedHistoryDetail);
+                  setSelectedHistoryDetail(null);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-4 py-2 text-xs font-black text-slate-950 shadow-lg shadow-amber-500/20 transition-colors hover:bg-amber-400"
+              >
+                <Printer className="h-4 w-4" />
+                ดูใบเสร็จ / พิมพ์
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -690,7 +1070,7 @@ export const BillsView: React.FC = () => {
                 </h2>
               </div>
               <button
-                onClick={() => setIsBatchPayModalOpen(false)}
+                onClick={closeBatchPayModal}
                 className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white"
               >
                 <X className="w-4 h-4" />
@@ -743,7 +1123,7 @@ export const BillsView: React.FC = () => {
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
                   เลือกช่องทางการชำระเงิน
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => setBatchPayMethod('cash')}
@@ -770,31 +1150,6 @@ export const BillsView: React.FC = () => {
                     <span className="text-xs">PromptPay QR</span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setBatchPayMethod('card')}
-                    className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
-                      batchPayMethod === 'card'
-                        ? 'bg-purple-500/10 border-purple-500 text-purple-600 dark:text-purple-400 font-bold shadow-xs'
-                        : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300'
-                    }`}
-                  >
-                    <CreditCard className="w-5 h-5" />
-                    <span className="text-xs">บัตรเครดิต</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setBatchPayMethod('transfer')}
-                    className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
-                      batchPayMethod === 'transfer'
-                        ? 'bg-indigo-500/10 border-indigo-500 text-indigo-600 dark:text-indigo-400 font-bold shadow-xs'
-                        : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300'
-                    }`}
-                  >
-                    <Sparkles className="w-5 h-5" />
-                    <span className="text-xs">โอนเงิน</span>
-                  </button>
                 </div>
               </div>
 
@@ -901,36 +1256,6 @@ export const BillsView: React.FC = () => {
                 </div>
               )}
 
-              {batchPayMethod === 'card' && (
-                <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                    เลขอ้างอิง EDC / Approval Code
-                  </label>
-                  <input
-                    type="text"
-                    value={batchRefNumber}
-                    onChange={(e) => setBatchRefNumber(e.target.value)}
-                    placeholder="เช่น APPROVAL-8910"
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white"
-                  />
-                </div>
-              )}
-
-              {batchPayMethod === 'transfer' && (
-                <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-2">
-                  <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                    บันทึกการโอนเงิน / หมายเลขอ้างอิงสลิป
-                  </label>
-                  <input
-                    type="text"
-                    value={batchRefNumber}
-                    onChange={(e) => setBatchRefNumber(e.target.value)}
-                    placeholder="เช่น โอนเข้า ธ.กสิกรไทย 123-xxx"
-                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white"
-                  />
-                </div>
-              )}
-
               {/* Extra Note */}
               <div>
                 <input
@@ -947,7 +1272,7 @@ export const BillsView: React.FC = () => {
             <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
               <button
                 type="button"
-                onClick={() => setIsBatchPayModalOpen(false)}
+                onClick={closeBatchPayModal}
                 className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300"
               >
                 ยกเลิก
@@ -955,17 +1280,17 @@ export const BillsView: React.FC = () => {
 
               <button
                 type="button"
-                disabled={batchPayMethod === 'cash' && !isBatchCashSufficient}
+                disabled={isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient)}
                 onClick={handleConfirmBatchPayment}
                 className={`flex-1 flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black shadow-lg transition-all ${
-                  batchPayMethod === 'cash' && !isBatchCashSufficient
+                  isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient)
                     ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
                     : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/25'
                 }`}
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>
-                  ยืนยันชำระเงินรวม ({formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)})
+                  {isBatchPaying ? 'กำลังบันทึกการชำระ...' : `ยืนยันชำระเงินรวม (${formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)})`}
                 </span>
               </button>
             </div>

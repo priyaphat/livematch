@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency } from '../utils/formatters';
 import QRCode from 'qrcode';
@@ -30,6 +30,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
   const [qrError, setQrError] = useState<string>('');
   const [qrReceiverName, setQrReceiverName] = useState<string>('');
   const [isCompleting, setIsCompleting] = useState(false);
+  const wasOpenRef = useRef(false);
 
   const totalDue = cartTotals.total;
   const cashGiven = parseFloat(cashInput) || 0;
@@ -38,7 +39,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
 
   // Initialize cash input with exact total on open
   useEffect(() => {
-    if (isOpen) {
+    if (isOpen && !wasOpenRef.current) {
       setCashInput('');
       setReferenceNumber('');
       setCustomerNote('');
@@ -64,7 +65,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
         type: 'PAYMENT_MODAL_STATE',
         payload: modalPayload,
       });
-    } else {
+    } else if (!isOpen && wasOpenRef.current) {
       const closedPayload = {
         isOpen: false,
         method: 'cash',
@@ -82,7 +83,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
         payload: closedPayload,
       });
     }
-  }, [isOpen, totalDue]);
+    wasOpenRef.current = isOpen;
+  }, [isOpen]);
 
   // Sync method change and cash input to customer display
   useEffect(() => {

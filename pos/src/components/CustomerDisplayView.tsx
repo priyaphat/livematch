@@ -138,6 +138,15 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
     totalDue: number;
     cashReceived?: number;
     change?: number;
+    items?: CartItem[];
+    totals?: {
+      itemCount: number;
+      subtotal: number;
+      discountAmount: number;
+      netBeforeVat: number;
+      vatAmount: number;
+      total: number;
+    };
   }>(() => {
     try {
       const saved = localStorage.getItem('siampure_active_payment_modal');
@@ -209,6 +218,8 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
         totalDue: Number(modalState.totalDue) || 0,
         cashReceived: modalState.cashReceived ? Number(modalState.cashReceived) : undefined,
         change: modalState.change ? Number(modalState.change) : undefined,
+        items: Array.isArray(modalState.items) ? modalState.items : undefined,
+        totals: modalState.totals && typeof modalState.totals === 'object' ? modalState.totals : undefined,
       });
     }
   };
@@ -399,6 +410,10 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
   const currentTotalDue = activePaymentModal.isOpen
     ? activePaymentModal.totalDue
     : displayTotals.total;
+  const paymentCart = Array.isArray(activePaymentModal.items)
+    ? activePaymentModal.items
+    : displayCart;
+  const paymentTotals = activePaymentModal.totals || displayTotals;
 
   useEffect(() => {
     if (!isPromptPayModalActive) {
@@ -487,13 +502,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               <h1 className="text-lg font-black tracking-tight text-slate-900">
                 {settings.storeName}
               </h1>
-              <span className="text-[11px] font-bold tracking-wide px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300">
-                จอแสดงผลลูกค้า
-              </span>
             </div>
-            <p className="text-xs text-slate-500 font-medium mt-0.5">
-              {settings.branchName} • แคชเชียร์: {settings.cashierName}
-            </p>
           </div>
         </div>
 
@@ -544,7 +553,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
       {/* 2. MAIN DISPLAY BODY */}
       <div className="flex-1 flex flex-col lg:flex-row min-h-0 overflow-hidden relative">
         {/* CASE A: IDLE / WELCOME STATE (Cart is empty & no active payment) */}
-        {displayCart.length === 0 && !showThankYouBanner && (
+        {paymentCart.length === 0 && !showThankYouBanner && (
           <div className="flex-1 flex flex-col lg:flex-row items-center justify-between p-6 sm:p-12 overflow-y-auto gap-8 bg-slate-50">
             {/* Left Hero Welcome */}
             <div className="flex-1 space-y-6 max-w-xl text-center lg:text-left">
@@ -553,16 +562,15 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                 <span>ยินดีต้อนรับสู่ {settings.storeName}</span>
               </div>
 
-              <h2 className="text-3xl sm:text-5xl font-black text-slate-900 tracking-tight leading-tight">
-                พร้อมเสิร์ฟความอร่อย <br />
+              <h2 className="whitespace-pre-line text-3xl sm:text-5xl font-black text-slate-900 tracking-tight leading-tight">
+                {settings.customerDisplayTitle || 'พร้อมเสิร์ฟความอร่อย'} <br />
                 <span className="text-amber-600">
-                  เครื่องดื่ม & เบเกอรี่สดใหม่
+                  {settings.customerDisplayHighlight || 'เครื่องดื่ม & เบเกอรี่สดใหม่'}
                 </span>
               </h2>
 
-              <p className="text-slate-600 text-sm sm:text-base leading-relaxed">
-                เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์ <br className="hidden sm:inline" />
-                หน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์
+              <p className="whitespace-pre-line text-slate-600 text-sm sm:text-base leading-relaxed">
+                {settings.customerDisplaySubtitle || 'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์'}
               </p>
 
               {/* Store Service Badges */}
@@ -595,7 +603,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                   {settings.storeName}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {settings.storeAddress || 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด'}
+                  {settings.customerDisplayCardText || 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด'}
                 </p>
               </div>
 
@@ -615,14 +623,14 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               </div>
 
               <div className="text-xs text-amber-800 bg-amber-50/80 px-4 py-2 rounded-xl border border-amber-200/80 font-medium">
-                ✨ สั่งรายการได้ที่พนักงานแคชเชียร์
+                ✨ {settings.customerDisplayCtaText || 'สั่งรายการได้ที่พนักงานแคชเชียร์'}
               </div>
             </div>
           </div>
         )}
 
         {/* CASE B: ACTIVE CART (Items in cart) */}
-        {displayCart.length > 0 && (
+        {paymentCart.length > 0 && (
           <>
             {/* Left Pane: Items List - Clean White Cards */}
             <div className="flex-1 flex flex-col min-h-0 bg-slate-50 border-r border-slate-200">
@@ -630,7 +638,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               <div className="px-6 py-3.5 bg-white border-b border-slate-200 flex items-center justify-between text-xs font-bold text-slate-600 uppercase tracking-wider shadow-2xs">
                 <div className="flex items-center gap-2 text-slate-900">
                   <ShoppingBag className="w-4 h-4 text-amber-600" />
-                  <span>รายการสินค้า ({displayTotals.itemCount} ชิ้น)</span>
+                  <span>รายการสินค้า ({paymentTotals.itemCount} ชิ้น)</span>
                 </div>
                 <div className="grid grid-cols-12 gap-4 text-right w-1/2">
                   <span className="col-span-4">ราคา/หน่วย</span>
@@ -641,7 +649,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
 
               {/* Items List Scroll */}
               <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-3 custom-scrollbar">
-                {displayCart.map((item, idx) => (
+                {paymentCart.map((item, idx) => (
                   <div
                     key={`${item.product.id}-${idx}`}
                     className="flex items-center justify-between p-3.5 sm:p-4 rounded-2xl bg-white hover:border-slate-300 border border-slate-200/90 transition-all shadow-xs"
@@ -699,18 +707,15 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               <div className="space-y-5">
                 <div className="border-b border-slate-200 pb-3 flex items-center justify-between">
                   <h2 className="text-base font-black text-slate-900 tracking-tight">สรุปยอดคำสั่งซื้อ</h2>
-                  <span className="text-xs text-amber-900 font-bold bg-amber-100 px-2.5 py-0.5 rounded-full border border-amber-300">
-                    Live Calculation
-                  </span>
                 </div>
 
                 {/* Subtotals & Discounts Breakdown */}
                 <div className="space-y-3 bg-slate-50 p-4 rounded-2xl border border-slate-200 text-sm">
                   {/* 1. Subtotal */}
                   <div className="flex justify-between items-center text-slate-700">
-                    <span className="font-medium">ยอดรวมสินค้า ({displayTotals.itemCount} ชิ้น):</span>
+                    <span className="font-medium">ยอดรวมสินค้า ({paymentTotals.itemCount} ชิ้น):</span>
                     <span className="font-mono text-slate-900 font-bold text-base">
-                      {formatCurrency(displayTotals.subtotal, settings.currencySymbol, settings.decimalPlaces)}
+                      {formatCurrency(paymentTotals.subtotal, settings.currencySymbol, settings.decimalPlaces)}
                     </span>
                   </div>
 
@@ -719,9 +724,9 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                     <span className="font-medium text-slate-700 flex items-center gap-1.5">
                       <span>ส่วนลด / คูปอง:</span>
                     </span>
-                    {displayTotals.discountAmount > 0 ? (
+                    {paymentTotals.discountAmount > 0 ? (
                       <span className="font-mono font-bold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-lg border border-emerald-300 flex items-center gap-1">
-                        <span>-{formatCurrency(displayTotals.discountAmount, settings.currencySymbol, settings.decimalPlaces)}</span>
+                        <span>-{formatCurrency(paymentTotals.discountAmount, settings.currencySymbol, settings.decimalPlaces)}</span>
                         <span className="text-xs text-emerald-700 font-normal">
                           ({displayDiscountType === 'percent' ? `${displayDiscount}%` : 'ส่วนลดเงินสด'})
                         </span>
@@ -739,7 +744,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                       ภาษีมูลค่าเพิ่ม (VAT {settings.vatRate}% {settings.vatType === 'included' ? 'รวมในราคา' : 'คิดแยกนอก'}):
                     </span>
                     <span className="font-mono text-slate-700 font-semibold">
-                      {formatCurrency(displayTotals.vatAmount, settings.currencySymbol, settings.decimalPlaces)}
+                      {formatCurrency(paymentTotals.vatAmount, settings.currencySymbol, settings.decimalPlaces)}
                     </span>
                   </div>}
                 </div>
@@ -751,40 +756,66 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                       ยอดชำระสุทธิ (Net Total)
                     </span>
                     <span className="text-[11px] font-bold bg-white/30 px-2.5 py-0.5 rounded-full text-slate-950">
-                      {displayTotals.itemCount} ชิ้น
+                      {paymentTotals.itemCount} ชิ้น
                     </span>
                   </div>
                   <div className="text-3xl sm:text-4xl font-black tracking-tight font-mono">
-                    {formatCurrency(displayTotals.total, settings.currencySymbol, settings.decimalPlaces)}
+                    {formatCurrency(currentTotalDue, settings.currencySymbol, settings.decimalPlaces)}
                   </div>
+                  {activePaymentModal.isOpen && activePaymentModal.method === 'cash' && (
+                    <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-950/20 pt-3">
+                      <div>
+                        <span className="block text-[11px] font-bold text-slate-900/70">รับเงินสดมา</span>
+                        <span className="font-mono text-lg font-black">
+                          {formatCurrency(activePaymentModal.cashReceived || 0, settings.currencySymbol, settings.decimalPlaces)}
+                        </span>
+                      </div>
+                      <div className="border-l border-slate-950/20 pl-3">
+                        <span className="block text-[11px] font-bold text-slate-900/70">เงินทอน</span>
+                        <span className="font-mono text-lg font-black text-emerald-950">
+                          {formatCurrency(activePaymentModal.change || 0, settings.currencySymbol, settings.decimalPlaces)}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                {/* Status Box: Awaiting Cashier Payment Selection (NO QR CODE HERE) */}
-                <div className="bg-slate-50 border border-slate-200 rounded-3xl p-5 text-center space-y-3.5 shadow-xs">
-                  <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto border border-amber-300">
-                    <CreditCard className="w-6 h-6" />
+                {/* Shared payment area: keep every payment state inside the orange customer display. */}
+                {!activePaymentModal.isOpen ? (
+                  <div className="bg-slate-50 border border-slate-200 rounded-3xl p-5 text-center space-y-3.5 shadow-xs">
+                    <div className="w-12 h-12 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mx-auto border border-amber-300">
+                      <CreditCard className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h3 className="text-sm font-black text-slate-900">รอแคชเชียร์เลือกวิธีชำระเงิน</h3>
+                      <p className="text-xs text-slate-500 leading-relaxed max-w-xs mx-auto">กรุณาตรวจสอบรายการและยอดเงินให้ถูกต้อง</p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 pt-1">
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold"><Banknote className="w-3.5 h-3.5 text-emerald-600" />เงินสด</span>
+                      <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold"><QrCode className="w-3.5 h-3.5 text-blue-600" />PromptPay QR</span>
+                    </div>
                   </div>
-
-                  <div className="space-y-1">
-                    <h3 className="text-sm font-black text-slate-900">
-                      รอแคชเชียร์เลือกวิธีชำระเงิน
-                    </h3>
-                    <p className="text-xs text-slate-500 leading-relaxed max-w-xs mx-auto">
-                      กรุณาตรวจสอบรายการสินค้าและยอดเงินให้ถูกต้อง เมื่อแคชเชียร์เริ่มรับชำระ หน้าจอจะแสดง QR Code หรือสรุปการรับเงินสดโดยอัตโนมัติ
-                    </p>
+                ) : activePaymentModal.method === 'promptpay' ? (
+                  <div className="rounded-3xl border-2 border-amber-400 bg-amber-50 p-3 text-center shadow-xs">
+                    <div className="mb-2 flex items-center justify-between gap-3">
+                      <div className="flex items-center gap-2 text-left">
+                        <div className="grid h-10 w-10 place-items-center rounded-xl border border-amber-300 bg-amber-100 text-amber-700"><QrCode className="h-5 w-5" /></div>
+                        <div><h3 className="text-sm font-black text-slate-900">PromptPay QR</h3><p className="text-[11px] font-semibold text-slate-500">สแกนเพื่อชำระยอด {formatCurrency(currentTotalDue, settings.currencySymbol, settings.decimalPlaces)}</p></div>
+                      </div>
+                      <span className="rounded-full bg-amber-200 px-2.5 py-1 font-mono text-[11px] font-black text-amber-950">{countdown}s</span>
+                    </div>
+                    <div className="mx-auto w-fit rounded-2xl border-2 border-slate-900 bg-white p-2 shadow-sm">
+                      {qrDataUrl ? <img src={qrDataUrl} alt="PromptPay QR Code" className="h-28 w-28 object-contain" /> : <div className="grid h-28 w-28 place-items-center text-slate-400"><QrCode className="h-12 w-12 animate-pulse" /></div>}
+                    </div>
+                    <p className="mt-1 text-[11px] font-semibold text-slate-600">ผู้รับ: {settings.promptPayReceiverName || settings.storeName}</p>
                   </div>
-
-                  <div className="flex items-center justify-center gap-2 pt-1">
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold">
-                      <Banknote className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>เงินสด</span>
-                    </span>
-                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs font-semibold">
-                      <QrCode className="w-3.5 h-3.5 text-blue-600" />
-                      <span>PromptPay QR</span>
-                    </span>
+                ) : (
+                  <div className="rounded-3xl border-2 border-amber-400 bg-amber-50 p-5 text-center shadow-xs">
+                    <div className="mx-auto grid h-12 w-12 place-items-center rounded-2xl border border-amber-300 bg-amber-100 text-amber-700"><Banknote className="h-6 w-6" /></div>
+                    <h3 className="mt-3 text-sm font-black text-slate-900">กำลังชำระด้วยเงินสด</h3>
+                    <p className="mt-1 text-xs font-semibold text-slate-500">กรุณารับเงินทอนตามยอดที่แสดงในการ์ดสีส้มด้านบน</p>
                   </div>
-                </div>
+                )}
               </div>
 
               {/* Footer Note */}
@@ -796,8 +827,8 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
         )}
       </div>
 
-      {/* 3. PROMPTPAY QR CODE MODAL - APPEARS ONLY WHEN CASHIER CHOOSES PROMPTPAY */}
-      {isPromptPayModalActive && (
+      {/* Legacy overlay is intentionally disabled; payment stays in the orange display. */}
+      {false && isPromptPayModalActive && (
         <div
           id="customer-promptpay-modal"
           className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in"
@@ -821,13 +852,13 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                 <div className="flex items-center justify-between border-b border-slate-200 pb-2">
                   <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
                     <ShoppingBag className="w-4 h-4 text-amber-600" />
-                    <span>รายการสินค้าในบิล ({displayTotals.itemCount} ชิ้น)</span>
+                    <span>รายการสินค้าในบิล ({paymentTotals.itemCount} ชิ้น)</span>
                   </span>
                 </div>
 
                 {/* Items scroll */}
                 <div className="flex-1 overflow-y-auto space-y-2 max-h-52 md:max-h-64 pr-1 custom-scrollbar">
-                  {displayCart.map((item, idx) => (
+                  {paymentCart.map((item, idx) => (
                     <div
                       key={`modal-item-${item.product.id}-${idx}`}
                       className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200 text-xs shadow-2xs"
@@ -863,15 +894,15 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                   <div className="flex justify-between text-slate-600">
                     <span>ยอดรวมสินค้า:</span>
                     <span className="font-mono text-slate-900 font-bold">
-                      {formatCurrency(displayTotals.subtotal, settings.currencySymbol, settings.decimalPlaces)}
+                      {formatCurrency(paymentTotals.subtotal, settings.currencySymbol, settings.decimalPlaces)}
                     </span>
                   </div>
 
                   <div className="flex justify-between items-center py-1 border-t border-b border-slate-200">
                     <span className="text-slate-600">ส่วนลด / คูปอง:</span>
-                    {displayTotals.discountAmount > 0 ? (
+                    {paymentTotals.discountAmount > 0 ? (
                       <span className="font-mono font-bold text-emerald-700">
-                        -{formatCurrency(displayTotals.discountAmount, settings.currencySymbol, settings.decimalPlaces)}
+                        -{formatCurrency(paymentTotals.discountAmount, settings.currencySymbol, settings.decimalPlaces)}
                       </span>
                     ) : (
                       <span className="text-slate-500 text-[11px] bg-white px-2 py-0.5 rounded border border-slate-200">
@@ -883,7 +914,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                   {settings.vatEnabled && <div className="flex justify-between text-slate-500 text-[11px]">
                     <span>ภาษีมูลค่าเพิ่ม (VAT {settings.vatRate}% {settings.vatType === 'included' ? 'รวมในราคา' : 'คิดแยกนอก'}):</span>
                     <span className="font-mono text-slate-700">
-                      {formatCurrency(displayTotals.vatAmount, settings.currencySymbol, settings.decimalPlaces)}
+                      {formatCurrency(paymentTotals.vatAmount, settings.currencySymbol, settings.decimalPlaces)}
                     </span>
                   </div>}
                 </div>
@@ -936,8 +967,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
         </div>
       )}
 
-      {/* 4. CASH PAYMENT MODAL - APPEARS WHEN CASHIER RECEIVES CASH */}
-      {activePaymentModal.isOpen && activePaymentModal.method === 'cash' && (
+      {false && activePaymentModal.isOpen && activePaymentModal.method === 'cash' && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 animate-in fade-in">
           <div className="bg-white border-2 border-emerald-500 rounded-3xl max-w-3xl w-full p-4 sm:p-6 shadow-2xl flex flex-col max-h-[92vh] overflow-hidden text-slate-900">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3 mb-4">
@@ -956,11 +986,11 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               {/* Left Column: Order Items Summary */}
               <div className="flex-1 bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3 min-h-0 flex flex-col">
                 <span className="text-xs font-bold text-slate-800">
-                  รายการสินค้าในบิล ({displayTotals.itemCount} ชิ้น)
+                  รายการสินค้าในบิล ({paymentTotals.itemCount} ชิ้น)
                 </span>
 
                 <div className="flex-1 overflow-y-auto space-y-2 max-h-48 md:max-h-56 pr-1 custom-scrollbar">
-                  {displayCart.map((item, idx) => (
+                  {paymentCart.map((item, idx) => (
                     <div
                       key={`cash-item-${item.product.id}-${idx}`}
                       className="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200 text-xs shadow-2xs"
@@ -993,14 +1023,14 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                   <div className="flex justify-between text-slate-600">
                     <span>ยอดรวมสินค้า:</span>
                     <span className="font-mono text-slate-900 font-bold">
-                      {formatCurrency(displayTotals.subtotal, settings.currencySymbol, settings.decimalPlaces)}
+                      {formatCurrency(paymentTotals.subtotal, settings.currencySymbol, settings.decimalPlaces)}
                     </span>
                   </div>
                   <div className="flex justify-between text-slate-600">
                     <span>ส่วนลด / คูปอง:</span>
-                    {displayTotals.discountAmount > 0 ? (
+                    {paymentTotals.discountAmount > 0 ? (
                       <span className="font-mono font-bold text-emerald-700">
-                        -{formatCurrency(displayTotals.discountAmount, settings.currencySymbol, settings.decimalPlaces)}
+                        -{formatCurrency(paymentTotals.discountAmount, settings.currencySymbol, settings.decimalPlaces)}
                       </span>
                     ) : (
                       <span className="text-slate-500">ไม่มีส่วนลด</span>
@@ -1009,7 +1039,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                   {settings.vatEnabled && <div className="flex justify-between text-slate-500 text-[11px]">
                     <span>ภาษีมูลค่าเพิ่ม (VAT {settings.vatRate}% {settings.vatType === 'included' ? 'รวมในราคา' : 'คิดแยกนอก'}):</span>
                     <span className="font-mono text-slate-700">
-                      {formatCurrency(displayTotals.vatAmount, settings.currencySymbol, settings.decimalPlaces)}
+                      {formatCurrency(paymentTotals.vatAmount, settings.currencySymbol, settings.decimalPlaces)}
                     </span>
                   </div>}
                 </div>

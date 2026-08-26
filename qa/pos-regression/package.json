@@ -1,0 +1,17 @@
+{
+  "name": "livematch-pos-regression",
+  "private": true,
+  "type": "module",
+  "scripts": {
+	"load:polling": "node load/polling-load.mjs",
+    "test": "playwright test",
+    "test:smoke": "playwright test --project=chromium-desktop --grep @smoke",
+    "test:cross-system": "playwright test --project=chromium-desktop --grep @cross-system",
+    "test:full": "playwright test",
+    "validate:cases": "node tools/validate-case-ids.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "typescript": "^5.9.3"
+  }
+}

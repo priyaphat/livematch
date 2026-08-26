@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
+import '@fontsource/dseg7/700.css'
 import { Activity, Clock3, ListOrdered, Medal, UsersRound } from '@lucide/vue'
 
 const props = defineProps([
@@ -46,6 +47,14 @@ const tvDensityClass = computed(() => {
   return 'shared-queue-page--comfortable'
 })
 const now = ref(new Date())
+const queueClockFormatter = new Intl.DateTimeFormat('th-TH-u-nu-latn', {
+  timeZone: 'Asia/Bangkok',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false
+})
+const queueNavbarClock = computed(() => queueClockFormatter.format(now.value))
 const queueQrDataUrl = ref('')
 let elapsedTimer = null
 let fadeTimer = null
@@ -72,7 +81,7 @@ watch(() => props.shareLink, async (link) => {
 onMounted(() => {
   elapsedTimer = window.setInterval(() => {
     now.value = new Date()
-  }, 30000)
+  }, 1000)
   fadeTimer = window.setInterval(() => {
     if (props.state.settings.showWaitingOnQueueShare && waitingPlayers.value.length) {
       showWaitingSlide.value = !showWaitingSlide.value
@@ -160,13 +169,17 @@ function tvContentStyle() {
 <template>
   <section :class="['shared-queue-page min-h-screen bg-paper-50 px-3 py-4 dark:bg-paper-900 sm:px-4', tvDensityClass]">
     <div class="shared-flight-board mx-auto hidden min-h-[calc(100dvh-2rem)] w-full max-w-[1600px] flex-col overflow-hidden rounded-xl border border-stone-700 bg-[#171a18] text-white shadow-2xl md:flex">
-      <header class="shared-flight-header flex min-h-[4.25rem] shrink-0 items-center justify-between gap-5 border-b border-white/10 bg-[#222725] px-4 py-2.5">
+      <header class="shared-flight-header grid min-h-[4.25rem] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-b border-white/10 bg-[#222725] px-4 py-2.5">
         <div class="flex min-w-0 items-center gap-3">
-          <h1 class="shrink-0 text-lg font-black lg:text-xl">{{ state.session.name }}</h1>
+          <h1 class="truncate text-lg font-black lg:text-xl">{{ state.session.name }}</h1>
           <span class="text-stone-300">•</span>
           <p class="truncate text-xs font-semibold text-white/55 lg:text-sm">ลำดับคิวลงสนามและเกมที่กำลังแข่งขัน</p>
         </div>
-        <div class="shared-flight-summary-slot grid h-13 w-[28rem] shrink-0 place-items-center">
+        <div data-testid="shared-queue-navbar-clock" class="shared-navbar-clock grid h-13 min-w-[12rem] place-items-center px-2 lg:min-w-[13.25rem]">
+          <span aria-hidden="true" class="shared-navbar-clock-segments">88:88:88</span>
+          <time class="shared-navbar-clock-time tabular-nums" :datetime="now.toISOString()">{{ queueNavbarClock }}</time>
+        </div>
+        <div class="shared-flight-summary-slot grid h-13 w-[22rem] shrink-0 place-items-center justify-self-end lg:w-[28rem]">
         <Transition name="queue-fade" mode="out-in">
         <div v-if="showWaitingSlide" key="waiting-summary" class="shared-flight-waiting-summary flex h-12 w-full min-w-0 flex-col justify-center text-right">
           <p class="text-[10px] font-black uppercase tracking-[0.12em] text-court-700">Waiting list</p>
@@ -414,6 +427,32 @@ function tvContentStyle() {
 .shared-flight-board { border-color: #d6d3d1 !important; border-radius: 0.75rem !important; background: #fbfaf4 !important; color: #1c1917 !important; box-shadow: 0 14px 35px rgb(41 37 36 / 10%) !important; }
 .shared-flight-header { border-color: #d6d3d1 !important; background: #ffffff !important; color: #1c1917 !important; }
 .shared-flight-header p { color: #57534e !important; }
+.shared-navbar-clock {
+  overflow: hidden;
+  border: 1px solid #111;
+  border-radius: 0.125rem;
+  background: #030303;
+  box-shadow: inset 0 0 10px rgb(0 0 0 / 95%);
+}
+.shared-navbar-clock-segments,
+.shared-navbar-clock-time {
+  grid-area: 1 / 1;
+  font-family: 'DSEG7', monospace;
+  font-size: clamp(2rem, 3vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  line-height: 1;
+  white-space: nowrap;
+}
+.shared-navbar-clock-segments {
+  color: #250000;
+  opacity: 0.8;
+}
+.shared-navbar-clock-time {
+  position: relative;
+  color: #f10808;
+  text-shadow: 0 0 2px rgb(241 8 8 / 35%);
+}
 .shared-flight-stats { border-color: #e7e5e4 !important; background: #f5f5f4 !important; }
 .shared-flight-waiting-summary p { color: #287565 !important; }
 .shared-flight-waiting-summary h2 { color: #1c1917 !important; font-size: 1.25rem !important; }

@@ -170,7 +170,6 @@ export interface Supplier {
 
 export interface StoreSettings {
   storeName: string;
-  branchName: string;
   taxId: string;
   phone: string;
   email: string;
@@ -180,6 +179,20 @@ export interface StoreSettings {
   promptPayReceiverName?: string;
   inheritBookingPromptPay?: boolean;
   paymentQrImage?: string;
+  logoData?: string;
+  navbarTitle: string;
+  navbarIconData?: string;
+  customerDisplayTitle: string;
+  customerDisplayHighlight: string;
+  customerDisplaySubtitle: string;
+  customerDisplayCardText: string;
+  customerDisplayCtaText: string;
+  defaultLowStock: number;
+  effectivePromptPayType?: string;
+  effectivePromptPayReceiverName?: string;
+  effectivePromptPayIdMasked?: string;
+  effectivePromptPaySource?: string;
+  effectivePromptPayAvailable?: boolean;
   currencySymbol: string;
   decimalPlaces: number; // 0, 2, 3
   vatEnabled: boolean;

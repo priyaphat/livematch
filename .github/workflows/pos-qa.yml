@@ -1,0 +1,99 @@
+name: POS QA Regression
+
+on:
+  pull_request:
+    paths:
+      - 'backend/**'
+      - 'frontend/**'
+      - 'pos/**'
+      - 'qa/**'
+      - '.github/workflows/pos-qa.yml'
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Regression suite
+        required: true
+        default: full
+        type: choice
+        options: [smoke, cross-system, full]
+  schedule:
+    - cron: '15 19 * * *'
+
+concurrency:
+  group: pos-qa-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pull-request-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            pos/package-lock.json
+            qa/pos-regression/package-lock.json
+      - name: Install Playwright browsers
+        working-directory: qa/pos-regression
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium webkit
+      - name: Run isolated smoke suite
+        shell: pwsh
+        run: ./qa/pos-regression/run.ps1 -Suite smoke -CI
+      - name: Upload QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pos-qa-smoke-${{ github.run_id }}
+          if-no-files-found: warn
+          path: |
+            qa/pos-regression/artifacts/
+            qa/pos-regression/results/latest.md
+
+  scheduled-or-manual:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            pos/package-lock.json
+            qa/pos-regression/package-lock.json
+      - name: Install Playwright browsers
+        working-directory: qa/pos-regression
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium webkit
+      - name: Run isolated regression
+        shell: pwsh
+        run: ./qa/pos-regression/run.ps1 -Suite ${{ github.event.inputs.suite || 'full' }} -CI
+      - name: Upload QA evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pos-qa-${{ github.event.inputs.suite || 'full' }}-${{ github.run_id }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            qa/pos-regression/artifacts/
+            qa/pos-regression/results/latest.md
+

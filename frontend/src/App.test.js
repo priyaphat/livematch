@@ -2135,6 +2135,8 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('กำลังแข่ง')
     expect(wrapper.text()).toContain('ตีมาแล้ว 17 นาที')
     expect(wrapper.text()).toContain('เริ่ม 10:00')
+    expect(wrapper.get('[data-testid="shared-queue-navbar-clock"]').classes()).toContain('shared-navbar-clock')
+    expect(wrapper.get('[data-testid="shared-queue-navbar-clock"]').text()).toContain('10:17:00')
     wrapper.unmount()
     vi.useRealTimers()
   })

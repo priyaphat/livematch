@@ -29,6 +29,12 @@ const ALL_POS_PERMISSIONS: POSPermissions = {
   stock: true,
   reports: true,
   settings: true,
+  discounts: true,
+  void_sales: true,
+  stock_adjust: true,
+  product_pricing: true,
+  report_export: true,
+  member_create: true,
 };
 
 const PosAppContent: React.FC = () => {
@@ -85,7 +91,7 @@ const PosAppContent: React.FC = () => {
         if (active) {
           setAuthUser(payload.user);
           setPermissions(payload.permissions || ALL_POS_PERMISSIONS);
-          window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS } }));
+          window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS, user: payload.user } }));
         }
       })
       .catch(() => {
@@ -103,7 +109,7 @@ const PosAppContent: React.FC = () => {
     const payload = await loginAdmin(credentials);
     setAuthUser(payload.user);
     setPermissions(payload.permissions || ALL_POS_PERMISSIONS);
-    window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS } }));
+    window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS, user: payload.user } }));
   };
 
   const handleLogout = async () => {
@@ -117,8 +123,13 @@ const PosAppContent: React.FC = () => {
 
   useEffect(() => {
 	const handleUnauthorized = () => { setAuthUser(null); window.dispatchEvent(new Event('livematch:pos-logged-out')); };
+	const handleOwnerUpdated = (event: Event) => {
+	  const detail = (event as CustomEvent<{ name?: string; email?: string }>).detail;
+	  setAuthUser((current) => current ? { ...current, name: detail?.name || current.name, email: detail?.email || current.email } : current);
+	};
     window.addEventListener('livematch:pos-unauthorized', handleUnauthorized);
-    return () => window.removeEventListener('livematch:pos-unauthorized', handleUnauthorized);
+	window.addEventListener('livematch:pos-owner-updated', handleOwnerUpdated);
+    return () => { window.removeEventListener('livematch:pos-unauthorized', handleUnauthorized); window.removeEventListener('livematch:pos-owner-updated', handleOwnerUpdated); };
   }, []);
 
   // If in dedicated standalone customer display mode (e.g. secondary monitor / window)

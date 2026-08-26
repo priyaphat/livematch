@@ -5,7 +5,7 @@ import { INITIAL_CATEGORIES } from "../data/mockData";
 import { formatCurrency } from "../utils/formatters";
 import { PaymentModal } from "./PaymentModal";
 import { CustomerCombobox, CustomerSuggestion } from "./CustomerCombobox";
-import { listPOSMembers } from "../api/posSales";
+import { createPOSMember, listPOSMembers, listPOSMemberTypes, POSMemberType } from "../api/posSales";
 import {
   Search,
   Plus,
@@ -14,7 +14,6 @@ import {
   PauseCircle,
   CreditCard,
   Tag,
-  MessageSquare,
   ShoppingBag,
   Coffee,
   Croissant,
@@ -29,6 +28,7 @@ import {
   Calculator,
   Hash,
   Delete,
+  UserPlus,
 } from "lucide-react";
 
 export const PosView: React.FC = () => {
@@ -37,7 +37,6 @@ export const PosView: React.FC = () => {
     cart,
     addToCart,
     updateCartQuantity,
-    updateCartItemNote,
     removeFromCart,
     clearCart,
     discount,
@@ -47,7 +46,6 @@ export const PosView: React.FC = () => {
     holdCurrentCart,
     members,
     categories,
-    noteOptions,
     settings,
     openCustomerDisplayWindow,
   } = usePos();
@@ -61,11 +59,14 @@ export const PosView: React.FC = () => {
   const [holdMemberId, setHoldMemberId] = useState<string>("");
   const [holdMemberSuggestions, setHoldMemberSuggestions] = useState<CustomerSuggestion[]>([]);
   const [isHoldMemberLoading, setIsHoldMemberLoading] = useState(false);
+  const [isCreateHoldMemberOpen, setIsCreateHoldMemberOpen] = useState(false);
+  const [newHoldMemberName, setNewHoldMemberName] = useState("");
+  const [newHoldMemberPhone, setNewHoldMemberPhone] = useState("");
+  const [newHoldMemberTypeId, setNewHoldMemberTypeId] = useState("");
+  const [holdMemberTypes, setHoldMemberTypes] = useState<POSMemberType[]>([]);
+  const [isCreatingHoldMember, setIsCreatingHoldMember] = useState(false);
+  const [createHoldMemberError, setCreateHoldMemberError] = useState("");
   const holdMemberRequestRef = useRef(0);
-  const [activeNoteProductId, setActiveNoteProductId] = useState<string | null>(
-    null,
-  );
-  const [tempNoteText, setTempNoteText] = useState<string>("");
   const [isDiscountModalOpen, setIsDiscountModalOpen] =
     useState<boolean>(false);
   const [tempDiscountVal, setTempDiscountVal] = useState<number>(0);
@@ -105,18 +106,6 @@ export const PosView: React.FC = () => {
       return matchCat && matchSearch;
     });
   }, [products, selectedCategory, searchQuery]);
-
-  // Quick note presets
-  const notePresets = [
-    "หวานน้อย 50%",
-    "ไม่ใส่น้ำตาล 0%",
-    "หวาน 100%",
-    "ไม่ใส่ถั่วงอก",
-    "เผ็ดน้อย",
-    "แยกน้ำแข็ง",
-    "เพิ่มช็อตกาแฟ (+15฿)",
-    "อุ่นร้อน",
-  ];
 
   const handleOpenQuantityModal = (
     product: Product,
@@ -173,18 +162,6 @@ export const PosView: React.FC = () => {
     setTempQuantityStr(String(qty));
   };
 
-  const handleOpenNoteModal = (productId: string, currentNote = "") => {
-    setActiveNoteProductId(productId);
-    setTempNoteText(currentNote || "");
-  };
-
-  const handleSaveNote = () => {
-    if (activeNoteProductId) {
-      updateCartItemNote(activeNoteProductId, tempNoteText);
-      setActiveNoteProductId(null);
-    }
-  };
-
   const handleOpenDiscountModal = () => {
     setTempDiscountVal(discount);
     setTempDiscountType(discountType);
@@ -225,6 +202,57 @@ export const PosView: React.FC = () => {
       if (requestId === holdMemberRequestRef.current) setIsHoldMemberLoading(false);
     }
   }, []);
+
+  const openCreateHoldMember = async () => {
+    setNewHoldMemberName(holdCustomerName.trim());
+    setNewHoldMemberPhone("");
+    setCreateHoldMemberError("");
+    setIsCreateHoldMemberOpen(true);
+    try {
+      const types = await listPOSMemberTypes();
+      setHoldMemberTypes(types);
+      setNewHoldMemberTypeId((current) => current || types[0]?.id || "");
+    } catch (requestError) {
+      setCreateHoldMemberError(requestError instanceof Error ? requestError.message : "โหลดประเภทสมาชิกไม่สำเร็จ");
+    }
+  };
+
+  const handleCreateHoldMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const phoneDigits = newHoldMemberPhone.replace(/\D/g, "");
+    if (phoneDigits.length !== 10) {
+      setCreateHoldMemberError("กรุณากรอกเบอร์โทรให้ครบ 10 หลัก");
+      return;
+    }
+    if (!newHoldMemberTypeId) {
+      setCreateHoldMemberError("กรุณาเลือกประเภทสมาชิก");
+      return;
+    }
+    setIsCreatingHoldMember(true);
+    setCreateHoldMemberError("");
+    try {
+      const member = await createPOSMember({
+        name: newHoldMemberName.trim(),
+        phone: phoneDigits,
+        memberTypeId: newHoldMemberTypeId,
+      });
+      const suggestion: CustomerSuggestion = {
+        id: member.id,
+        name: member.name,
+        category: "member",
+        categoryLabel: "สมาชิก",
+        detail: member.phone || "สมาชิกของระบบ",
+      };
+      setHoldMemberSuggestions((current) => [suggestion, ...current.filter((item) => item.id !== member.id)]);
+      setHoldMemberId(member.id);
+      setHoldCustomerName(member.name);
+      setIsCreateHoldMemberOpen(false);
+    } catch (requestError) {
+      setCreateHoldMemberError(requestError instanceof Error ? requestError.message : "เพิ่มสมาชิกไม่สำเร็จ");
+    } finally {
+      setIsCreatingHoldMember(false);
+    }
+  };
 
   useEffect(() => {
     if (!isHoldModalOpen) return;
@@ -394,7 +422,7 @@ export const PosView: React.FC = () => {
                 </p>
               </div>
             ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-4">
+              <div id="pos-product-grid" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 sm:gap-3 pb-4">
                 {filteredProducts.map((product) => {
                   const isOutOfStock = product.stock <= 0;
                   const isLowStock =
@@ -408,14 +436,14 @@ export const PosView: React.FC = () => {
                       key={product.id}
                       id={`pos-product-${product.id}`}
                       onClick={() => !isOutOfStock && addToCart(product)}
-                      className={`group relative bg-white dark:bg-slate-900 border rounded-2xl p-3 flex flex-col justify-between transition-all select-none shadow-xs ${
+                      className={`group relative bg-white dark:bg-slate-900 border rounded-2xl p-2.5 flex flex-col justify-between transition-all select-none shadow-xs ${
                         isOutOfStock
                           ? "opacity-50 border-slate-200 dark:border-slate-800 cursor-not-allowed"
                           : "border-slate-200 dark:border-slate-800/90 hover:border-red-500 dark:hover:border-yellow-500/60 hover:shadow-lg cursor-pointer active:scale-[0.98]"
                       }`}
                     >
                       {/* Top Image & Badges */}
-                      <div className="relative aspect-4/3 w-full rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-950 mb-2.5">
+                      <div className="relative aspect-4/3 w-full rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-950 mb-2">
                         <img
                           src={product.image}
                           alt={product.name}
@@ -453,9 +481,8 @@ export const PosView: React.FC = () => {
                       {/* Product Info */}
                       <div className="flex-1 flex flex-col justify-between">
                         <div>
-                          <div className="flex items-center justify-between text-[10px] text-slate-400 mb-0.5">
-                            <span className="font-mono">{product.sku}</span>
-                            <span className="capitalize">
+                          <div className="flex items-center justify-end text-[10px] text-slate-400 mb-0.5">
+                            <span className="max-w-full truncate capitalize">
                               {categories.find((category) => category.id === product.category)?.name || product.category}
                             </span>
                           </div>
@@ -465,7 +492,7 @@ export const PosView: React.FC = () => {
                         </div>
 
                         {/* Price & Action */}
-                        <div className="mt-3 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-1">
+                        <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-1">
                           <div className="min-w-0">
                             <span className="text-[10px] text-slate-400 block">
                               ราคาขาย
@@ -500,7 +527,7 @@ export const PosView: React.FC = () => {
                               }`}
                             >
                               <Hash className="w-3.5 h-3.5" />
-                              <span className="hidden xl:inline text-[10px]">
+                              <span className="hidden 2xl:inline text-[10px]">
                                 ระบุจำนวน
                               </span>
                             </button>
@@ -648,33 +675,8 @@ export const PosView: React.FC = () => {
                       </button>
                     </div>
 
-                    {/* Item Note Display */}
-                    {item.note && (
-                      <div className="text-[10px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 px-2 py-1 rounded-lg flex items-center justify-between">
-                        <span>* {item.note}</span>
-                        <button
-                          onClick={() =>
-                            handleOpenNoteModal(item.product.id, item.note)
-                          }
-                          className="text-amber-800 dark:text-amber-300 font-bold hover:underline"
-                        >
-                          แก้ไข
-                        </button>
-                      </div>
-                    )}
-
                     {/* Quantity Controls & Line Total */}
-                    <div className="flex items-center justify-between pt-1 border-t border-slate-100 dark:border-slate-900">
-                      <button
-                        onClick={() =>
-                          handleOpenNoteModal(item.product.id, item.note)
-                        }
-                        className="text-[11px] text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200 flex items-center gap-1 hover:underline"
-                      >
-                        <MessageSquare className="w-3 h-3 text-slate-400" />
-                        <span>{item.note ? "แก้โน้ต" : "เพิ่มโน้ต"}</span>
-                      </button>
-
+                    <div className="flex items-center justify-end pt-1 border-t border-slate-100 dark:border-slate-900">
                       <div className="flex items-center gap-1.5 sm:gap-2">
                         {/* Stepper with Direct Editable Input */}
                         <div className="flex items-center bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl p-0.5 shadow-2xs">
@@ -923,6 +925,14 @@ export const PosView: React.FC = () => {
                   allowCustom={false}
                   placeholder="พิมพ์ชื่อหรือเบอร์โทรสมาชิก..."
                 />
+                <button
+                  type="button"
+                  onClick={openCreateHoldMember}
+                  className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-yellow-400/70 bg-yellow-50 dark:bg-yellow-500/10 px-3 py-2.5 text-xs font-black text-yellow-700 dark:text-yellow-400 hover:bg-yellow-100 dark:hover:bg-yellow-500/15 transition-colors"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  เพิ่มสมาชิกใหม่
+                </button>
               </div>
 
               <div className="pt-2 flex justify-end gap-2 border-t border-slate-100 dark:border-slate-800">
@@ -946,168 +956,46 @@ export const PosView: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL 3: ITEM NOTE MODAL */}
-      {activeNoteProductId &&
-        (() => {
-          const activeProduct =
-            products.find((p) => p.id === activeNoteProductId) ||
-            cart.find((i) => i.product.id === activeNoteProductId)?.product;
-          const boundOptionIds = activeProduct?.noteOptionIds || [];
-          const boundOptions = noteOptions.filter((n) =>
-            boundOptionIds.includes(n.id),
-          );
-          const otherOptions = noteOptions.filter(
-            (n) => !boundOptionIds.includes(n.id),
-          );
-
-          const appendOrToggleNote = (text: string) => {
-            if (!tempNoteText.trim()) {
-              setTempNoteText(text);
-            } else {
-              const currentParts = tempNoteText.split(",").map((s) => s.trim());
-              if (currentParts.includes(text)) {
-                const remaining = currentParts.filter((s) => s !== text);
-                setTempNoteText(remaining.join(", "));
-              } else {
-                setTempNoteText(`${tempNoteText}, ${text}`);
-              }
-            }
-          };
-
-          return (
-            <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
-              <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-lg w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto custom-scrollbar">
-                <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-red-600 dark:text-yellow-400" />
-                    <div>
-                      <h3 className="text-base font-black text-slate-900 dark:text-white">
-                        โน้ต & ตัวเลือกเสริม:{" "}
-                        {activeProduct?.name || "รายการสินค้า"}
-                      </h3>
-                      <p className="text-[11px] text-slate-400">
-                        เลือกตัวเลือกที่ผูกไว้กับสินค้า หรือพิมพ์ระบุเพิ่มเติม
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setActiveNoteProductId(null)}
-                    className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
-                  >
-                    ✕
-                  </button>
-                </div>
-
+      {isCreateHoldMemberOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <form onSubmit={handleCreateHoldMember} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"><UserPlus className="w-5 h-5" /></div>
                 <div>
-                  <div className="flex items-center justify-between mb-1.5">
-                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300">
-                      ข้อความโน้ตคำสั่งซื้อ
-                    </label>
-                    {tempNoteText && (
-                      <button
-                        type="button"
-                        onClick={() => setTempNoteText("")}
-                        className="text-[11px] text-red-500 hover:underline font-bold"
-                      >
-                        ล้างข้อความ
-                      </button>
-                    )}
-                  </div>
-                  <input
-                    type="text"
-                    value={tempNoteText}
-                    onChange={(e) => setTempNoteText(e.target.value)}
-                    placeholder="พิมพ์ข้อความโน้ต หรือกดเลือกจากปุ่มด้านล่าง..."
-                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400"
-                  />
-                </div>
-
-                {/* Bound Options for this specific product */}
-                {boundOptions.length > 0 && (
-                  <div className="p-3 bg-red-50/60 dark:bg-yellow-500/10 rounded-2xl border border-red-200 dark:border-yellow-500/30 space-y-1.5">
-                    <span className="text-xs font-black text-red-700 dark:text-yellow-400 flex items-center gap-1.5">
-                      <span>
-                        ★ ตัวเลือกที่ผูกกับสินค้านี้ ({boundOptions.length})
-                      </span>
-                    </span>
-                    <div className="flex flex-wrap gap-1.5">
-                      {boundOptions.map((opt) => {
-                        const labelText =
-                          opt.priceAdjustment && opt.priceAdjustment > 0
-                            ? `${opt.name} (+${opt.priceAdjustment}฿)`
-                            : opt.name;
-                        const isApplied = tempNoteText.includes(opt.name);
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => appendOrToggleNote(labelText)}
-                            className={`text-xs px-3 py-1.5 rounded-xl border font-bold transition-all ${
-                              isApplied
-                                ? "bg-red-600 dark:bg-yellow-500 text-white dark:text-slate-950 border-transparent shadow-xs"
-                                : "bg-white dark:bg-slate-900 border-red-200 dark:border-yellow-500/40 text-slate-800 dark:text-slate-200 hover:border-red-400"
-                            }`}
-                          >
-                            {labelText}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                {/* Other System Note Options */}
-                {otherOptions.length > 0 && (
-                  <div className="space-y-1.5">
-                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block">
-                      ตัวเลือกอื่นๆ ในระบบ:
-                    </span>
-                    <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-                      {otherOptions.map((opt) => {
-                        const labelText =
-                          opt.priceAdjustment && opt.priceAdjustment > 0
-                            ? `${opt.name} (+${opt.priceAdjustment}฿)`
-                            : opt.name;
-                        const isApplied = tempNoteText.includes(opt.name);
-                        return (
-                          <button
-                            key={opt.id}
-                            type="button"
-                            onClick={() => appendOrToggleNote(labelText)}
-                            className={`text-[11px] px-2.5 py-1 rounded-lg border transition-all ${
-                              isApplied
-                                ? "bg-slate-800 text-white border-slate-700 font-bold"
-                                : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
-                            }`}
-                          >
-                            {labelText}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
-
-                <div className="pt-2 flex justify-end gap-2 border-t border-slate-100 dark:border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => setActiveNoteProductId(null)}
-                    className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300"
-                  >
-                    ยกเลิก
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveNote}
-                    className="px-6 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black shadow-md shadow-red-600/30"
-                  >
-                    บันทึกโน้ต
-                  </button>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">เพิ่มสมาชิกใหม่</h3>
+                  <p className="text-[11px] text-slate-400">เพิ่มเข้าระบบสมาชิกของร้านและเลือกให้ทันที</p>
                 </div>
               </div>
+              <button type="button" onClick={() => setIsCreateHoldMemberOpen(false)} className="p-1 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white">✕</button>
             </div>
-          );
-        })()}
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">ชื่อสมาชิก *</label>
+                <input required autoFocus value={newHoldMemberName} onChange={(e) => setNewHoldMemberName(e.target.value)} placeholder="ชื่อ" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500" />
+                <p className="mt-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 px-2.5 py-1.5 text-[11px] font-bold text-amber-700 dark:text-amber-300">ชื่อซ้ำจะมีผลตอนเรียกชื่อ</p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">เบอร์โทร *</label>
+                <input required inputMode="tel" autoComplete="tel" maxLength={10} value={newHoldMemberPhone} onChange={(e) => setNewHoldMemberPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="เบอร์โทร 10 หลัก" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500" />
+                <p className={`mt-1 text-[11px] font-semibold ${newHoldMemberPhone.length > 0 && newHoldMemberPhone.length !== 10 ? "text-red-500" : "text-slate-400"}`}>กรอกเบอร์โทรให้ครบ 10 หลัก</p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">ประเภทสมาชิก *</label>
+                <select required value={newHoldMemberTypeId} onChange={(e) => setNewHoldMemberTypeId(e.target.value)} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500">
+                  <option value="">เลือกประเภทสมาชิก</option>
+                  {holdMemberTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}
+                </select>
+              </div>
+              {createHoldMemberError && <p className="rounded-xl bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs font-bold text-red-600 dark:text-red-300">{createHoldMemberError}</p>}
+            </div>
+            <div className="pt-2 grid grid-cols-2 gap-2 border-t border-slate-100 dark:border-slate-800">
+              <button type="button" disabled={isCreatingHoldMember} onClick={() => setIsCreateHoldMemberOpen(false)} className="py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 disabled:opacity-50">ยกเลิก</button>
+              <button type="submit" disabled={isCreatingHoldMember || !newHoldMemberName.trim() || newHoldMemberPhone.length !== 10 || !newHoldMemberTypeId} className="py-2.5 rounded-xl bg-yellow-500 hover:bg-yellow-600 text-slate-950 text-xs font-black disabled:opacity-50 disabled:cursor-not-allowed">{isCreatingHoldMember ? "กำลังเพิ่ม..." : "เพิ่มสมาชิก"}</button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* MODAL 4: DISCOUNT MODAL */}
       {isDiscountModalOpen && (

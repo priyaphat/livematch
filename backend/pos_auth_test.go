@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,7 +15,7 @@ import (
 )
 
 func TestValidPOSPIN(t *testing.T) {
-	tests := map[string]bool{"1234": true, "123456": true, "123": false, "1234567": false, "12a4": false, "": false}
+	tests := map[string]bool{"123456": true, "1234": false, "123": false, "1234567": false, "12a456": false, "": false}
 	for pin, expected := range tests {
 		if actual := validPOSPIN(pin); actual != expected {
 			t.Fatalf("validPOSPIN(%q)=%v, want %v", pin, actual, expected)
@@ -30,6 +31,17 @@ func TestPOSPermissionsEnforceRole(t *testing.T) {
 	if hasPOSPermission(cashier, "stock") {
 		t.Fatal("cashier should not be allowed to manage stock by default")
 	}
+	for _, permission := range []string{"discounts", "void_sales", "stock_adjust", "product_pricing", "report_export"} {
+		if hasPOSPermission(cashier, permission) {
+			t.Fatalf("cashier should not receive %s by default", permission)
+		}
+	}
+	if !hasPOSPermission(cashier, "member_create") {
+		t.Fatal("cashier should be able to add a core member by default")
+	}
+	if hasPOSPermission(adminUser{}, "sales") {
+		t.Fatal("an empty POS role must never inherit owner permissions")
+	}
 
 	response := httptest.NewRecorder()
 	if authorizePOSPath(response, cashier, http.MethodPost, "stock/batch") {
@@ -38,10 +50,53 @@ func TestPOSPermissionsEnforceRole(t *testing.T) {
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", response.Code)
 	}
+	for _, path := range []string{"dashboard", "reports"} {
+		response = httptest.NewRecorder()
+		if authorizePOSPath(response, cashier, http.MethodGet, path) {
+			t.Fatalf("cashier sales permission must not grant %s access", path)
+		}
+	}
+	manager := adminUser{POSRole: "manager", POSPermissions: map[string]bool{"settings": true}}
+	for _, path := range []string{"access", "permissions", "staff/pos-staff-other/reset-pin"} {
+		response = httptest.NewRecorder()
+		if authorizePOSPath(response, manager, http.MethodGet, path) {
+			t.Fatalf("non-owner must not manage POS access through %s", path)
+		}
+	}
 
 	owner := adminUser{POSRole: "owner", POSPermissions: allPOSPermissions()}
 	if !authorizePOSPath(httptest.NewRecorder(), owner, http.MethodPut, "permissions") {
 		t.Fatal("owner should be allowed to update permissions")
+	}
+	manager = adminUser{POSRole: "manager", POSPermissions: defaultPOSPermissions("manager")}
+	for _, request := range []struct{ method, path string }{{http.MethodPost, "stock/batch"}, {http.MethodPatch, "products/product-1"}, {http.MethodPost, "reports/export-authorize"}, {http.MethodPost, "sales/sale-1/void"}} {
+		if !authorizePOSPath(httptest.NewRecorder(), manager, request.method, request.path) {
+			t.Fatalf("manager default permissions should allow %s %s", request.method, request.path)
+		}
+	}
+}
+
+func TestPOSAccessHandlerRequiresOwnerBeforeDatabase(t *testing.T) {
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/admin/pos/access", nil)
+	(&app{}).writePOSAccessSettings(response, request, adminUser{POSRole: "manager"})
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 before any database access, got %d", response.Code)
+	}
+}
+
+func TestPOSSettlementErrorDoesNotLeakDatabaseDetails(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/pos/settlements", nil)
+	response := httptest.NewRecorder()
+	writePOSSettlementError(response, request, billingSummary{}, errors.New("sql: private schema detail"))
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "private schema") {
+		t.Fatalf("internal settlement error leaked: status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	response = httptest.NewRecorder()
+	writePOSSettlementError(response, request, billingSummary{}, errors.New("ยอดเงินสดไม่เพียงพอ"))
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "ยอดเงินสดไม่เพียงพอ") {
+		t.Fatalf("safe business error was not returned: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
 
@@ -84,7 +139,7 @@ func TestPOSStaffIntegration(t *testing.T) {
 	owner := adminUser{ID: adminID, Email: email, Name: "POS Staff Test", POSAdminNumber: adminNumber, POSRole: "owner", POSActorID: adminID, POSActorName: "POS Staff Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
 
 	staffEmail := adminID + "-cashier@example.invalid"
-	createBody, _ := json.Marshal(map[string]any{"name": "Cashier One", "email": staffEmail, "role": "cashier", "pin": "2468"})
+	createBody, _ := json.Marshal(map[string]any{"name": "Cashier One", "email": staffEmail, "role": "cashier", "pin": "246824"})
 	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/pos/staff", bytes.NewReader(createBody))
 	createRecorder := httptest.NewRecorder()
 	a.createPOSStaff(createRecorder, createReq, owner)
@@ -106,15 +161,15 @@ func TestPOSStaffIntegration(t *testing.T) {
 		a.handlePOSLogin(loginRecorder, loginReq)
 		return loginRecorder
 	}
-	loginRecorder := login(staffNumber, "2468")
+	loginRecorder := login(staffNumber, "246824")
 	if loginRecorder.Code != http.StatusOK {
 		t.Fatalf("staff number login status=%d body=%s", loginRecorder.Code, loginRecorder.Body.String())
 	}
-	emailLoginRecorder := login(strings.ToUpper(staffEmail), "2468")
+	emailLoginRecorder := login(strings.ToUpper(staffEmail), "246824")
 	if emailLoginRecorder.Code != http.StatusOK {
 		t.Fatalf("staff email login status=%d body=%s", emailLoginRecorder.Code, emailLoginRecorder.Body.String())
 	}
-	wrongPINRecorder := login(staffEmail, "0000")
+	wrongPINRecorder := login(staffEmail, "000000")
 	if wrongPINRecorder.Code != http.StatusUnauthorized {
 		t.Fatalf("wrong PIN status=%d body=%s", wrongPINRecorder.Code, wrongPINRecorder.Body.String())
 	}
@@ -152,7 +207,7 @@ func TestPOSStaffIntegration(t *testing.T) {
 	}
 	secondOwner := adminUser{ID: secondAdminID, Email: secondAdminEmail, Name: "Second POS Owner", POSAdminNumber: secondAdminNumber, POSRole: "owner", POSActorID: secondAdminID, POSActorName: "Second POS Owner", POSActorType: "admin", POSPermissions: allPOSPermissions()}
 
-	duplicateBody, _ := json.Marshal(map[string]any{"name": "Duplicate Email", "email": strings.ToUpper(staffEmail), "role": "cashier", "pin": "1357"})
+	duplicateBody, _ := json.Marshal(map[string]any{"name": "Duplicate Email", "email": strings.ToUpper(staffEmail), "role": "cashier", "pin": "135713"})
 	duplicateReq := httptest.NewRequest(http.MethodPost, "/api/admin/pos/staff", bytes.NewReader(duplicateBody))
 	duplicateRecorder := httptest.NewRecorder()
 	a.createPOSStaff(duplicateRecorder, duplicateReq, secondOwner)
@@ -160,7 +215,7 @@ func TestPOSStaffIntegration(t *testing.T) {
 		t.Fatalf("cross-admin duplicate staff email status=%d body=%s", duplicateRecorder.Code, duplicateRecorder.Body.String())
 	}
 
-	ownerCollisionBody, _ := json.Marshal(map[string]any{"name": "Owner Collision", "email": strings.ToUpper(secondAdminEmail), "role": "manager", "pin": "1357"})
+	ownerCollisionBody, _ := json.Marshal(map[string]any{"name": "Owner Collision", "email": strings.ToUpper(secondAdminEmail), "role": "manager", "pin": "135713"})
 	ownerCollisionReq := httptest.NewRequest(http.MethodPost, "/api/admin/pos/staff", bytes.NewReader(ownerCollisionBody))
 	ownerCollisionRecorder := httptest.NewRecorder()
 	a.createPOSStaff(ownerCollisionRecorder, ownerCollisionReq, owner)
@@ -176,7 +231,7 @@ func TestPOSStaffIntegration(t *testing.T) {
 		t.Fatalf("owner registration with staff email status=%d body=%s", registerRecorder.Code, registerRecorder.Body.String())
 	}
 
-	blankEmailBody, _ := json.Marshal(map[string]any{"name": "Manager Without Email", "email": "", "role": "manager", "pin": "8642"})
+	blankEmailBody, _ := json.Marshal(map[string]any{"name": "Manager Without Email", "email": "", "role": "manager", "pin": "864286"})
 	blankEmailReq := httptest.NewRequest(http.MethodPost, "/api/admin/pos/staff", bytes.NewReader(blankEmailBody))
 	blankEmailRecorder := httptest.NewRecorder()
 	a.createPOSStaff(blankEmailRecorder, blankEmailReq, owner)
@@ -187,7 +242,7 @@ func TestPOSStaffIntegration(t *testing.T) {
 	if err = db.QueryRow(`select staff_number from pos_staff where admin_id=$1 and email=''`, adminID).Scan(&blankEmailStaffNumber); err != nil {
 		t.Fatal(err)
 	}
-	if recorder := login(blankEmailStaffNumber, "8642"); recorder.Code != http.StatusOK {
+	if recorder := login(blankEmailStaffNumber, "864286"); recorder.Code != http.StatusOK {
 		t.Fatalf("blank email staff number login status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 
@@ -358,6 +413,16 @@ func TestPOSSaleIntegration(t *testing.T) {
 	if originSystem != "pos" || allocationLabel == "" || !json.Valid([]byte(allocationSnapshot)) {
 		t.Fatalf("payment audit origin=%q label=%q snapshot=%q", originSystem, allocationLabel, allocationSnapshot)
 	}
+	var activityDetails string
+	if err = db.QueryRow(`select details::text from activity_logs where action='settle_combined_bill' and target_id=$1`, paymentID).Scan(&activityDetails); err != nil {
+		t.Fatalf("POS-AUDIT-001 settlement activity missing: %v", err)
+	}
+	if !strings.Contains(activityDetails, `"cashReceivedSatang": 4000`) || !strings.Contains(activityDetails, `"changeSatang": 897`) || !strings.Contains(activityDetails, `"allocations"`) {
+		t.Fatalf("POS-AUDIT-001 settlement details incomplete: %s", activityDetails)
+	}
+	if strings.Contains(activityDetails, "CASH-TEST") {
+		t.Fatalf("POS-AUDIT-002 payment reference leaked into activity details: %s", activityDetails)
+	}
 	if _, err = a.settleBillingAccount(t.Context(), owner, accountID, "cash", 3103, 4000, "CASH-RETRY", true, "pos"); err == nil {
 		t.Fatal("settled billing account must not be paid twice")
 	}
@@ -367,6 +432,14 @@ func TestPOSSaleIntegration(t *testing.T) {
 	}
 	if historyTotal != 1 || len(history) != 1 || history[0].PaymentID != paymentID || history[0].OriginSystem != "pos" || history[0].POSTotalSatang != 3103 {
 		t.Fatalf("history total=%d items=%#v", historyTotal, history)
+	}
+	filteredHistory, filteredTotal, err := a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "cash", 1, 20)
+	if err != nil || filteredTotal != 1 || len(filteredHistory) != 1 || filteredHistory[0].PaymentID != paymentID {
+		t.Fatalf("filtered history total=%d items=%#v err=%v", filteredTotal, filteredHistory, err)
+	}
+	filteredHistory, filteredTotal, err = a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "promptpay", 1, 20)
+	if err != nil || filteredTotal != 0 || len(filteredHistory) != 0 {
+		t.Fatalf("payment method filter total=%d items=%#v err=%v", filteredTotal, filteredHistory, err)
 	}
 
 	insufficient := requestSale(map[string]any{"requestId": "sale-request-" + randHex(8), "action": "pay", "buyerType": "anonymous", "method": "cash", "discountType": "amount", "expectedTotalSatang": 10700, "cashReceivedSatang": 10700, "items": []map[string]any{{"productId": productID, "quantity": 10}}})
