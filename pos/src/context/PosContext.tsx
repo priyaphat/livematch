@@ -1191,14 +1191,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
 
       if (existingIndex > -1) {
-        const updated = [...prevCart];
-        const newQty = updated[existingIndex].quantity + quantity;
+        const newQty = prevCart[existingIndex].quantity + quantity;
         if (newQty > product.stock) {
           showToast(`สินค้าในสต็อกมีเพียง ${product.stock} ${product.unit}`, 'warning');
           return prevCart;
         }
-        updated[existingIndex].quantity = newQty;
-        return updated;
+        return prevCart.map((item, index) => index === existingIndex ? { ...item, quantity: newQty } : item);
       } else {
         return [...prevCart, { product, quantity, note }];
       }

@@ -125,11 +125,11 @@ func main() {
 		('qa-unit-b','qa-admin-b','กล่อง',true)
 	`)
 	mustExec(ctx, tx, `
-		insert into pos_products(id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,description) values
-		('qa-product-coffee-a','qa-admin-a','QA-COFFEE-001','qa-category-drink-a','กาแฟ QA',45,4500,20,2000,40,5,true,'แก้ว','','สินค้าทดสอบ QA'),
-		('qa-product-cake-a','qa-admin-a','QA-CAKE-001','qa-category-snack-a','เค้ก QA',60,6000,30,3000,2,5,true,'ชิ้น','','สินค้าสต็อกต่ำ QA'),
-		('qa-product-inactive-a','qa-admin-a','QA-OFF-001','qa-category-snack-a','สินค้าปิด QA',10,1000,5,500,10,5,false,'ชิ้น','',''),
-		('qa-product-b','qa-admin-b','QA-B-001','qa-category-b','สินค้า Tenant B',99,9900,50,5000,99,5,true,'กล่อง','','')
+		insert into pos_products(id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,barcode,description) values
+		('qa-product-coffee-a','qa-admin-a','QA-COFFEE-001','qa-category-drink-a','กาแฟ QA',45,4500,20,2000,40,5,true,'แก้ว','','8850000000001','สินค้าทดสอบ QA'),
+		('qa-product-cake-a','qa-admin-a','QA-CAKE-001','qa-category-snack-a','เค้ก QA',60,6000,30,3000,2,5,true,'ชิ้น','','8850000000002','สินค้าสต็อกต่ำ QA'),
+		('qa-product-inactive-a','qa-admin-a','QA-OFF-001','qa-category-snack-a','สินค้าปิด QA',10,1000,5,500,10,5,false,'ชิ้น','','8850000000003',''),
+		('qa-product-b','qa-admin-b','QA-B-001','qa-category-b','สินค้า Tenant B',99,9900,50,5000,99,5,true,'กล่อง','','8850000000004','')
 	`)
 	mustExec(ctx, tx, `
 		insert into pos_suppliers(id,admin_id,code,name,contact_person,phone,email,address,active)

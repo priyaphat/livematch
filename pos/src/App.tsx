@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { PosProvider, usePos } from './context/PosContext';
 import { Navbar } from './components/Navbar';
 import { BottomNav } from './components/BottomNav';
@@ -84,26 +84,31 @@ const PosAppContent: React.FC = () => {
     if (!permissionByTab[activeTab] && allowedTabs[0]) setActiveTab(allowedTabs[0]);
   }, [activeTab, authUser, permissions, setActiveTab]);
 
-  useEffect(() => {
-    let active = true;
-    getCurrentAdmin()
-      .then((payload) => {
-        if (active) {
-          setAuthUser(payload.user);
-          setPermissions(payload.permissions || ALL_POS_PERMISSIONS);
-          window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS, user: payload.user } }));
-        }
-      })
-      .catch(() => {
-        if (active) setAuthUser(null);
-      })
-      .finally(() => {
-        if (active) setIsCheckingAuth(false);
-      });
-    return () => {
-      active = false;
-    };
+  const restorePOSSession = useCallback(async (showCheckingState = true) => {
+    if (showCheckingState) setIsCheckingAuth(true);
+    try {
+      const payload = await getCurrentAdmin();
+      setAuthUser(payload.user);
+      setPermissions(payload.permissions || ALL_POS_PERMISSIONS);
+      window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS, user: payload.user } }));
+    } catch {
+      setAuthUser(null);
+    } finally {
+      if (showCheckingState) setIsCheckingAuth(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void restorePOSSession();
+  }, [restorePOSSession]);
+
+  useEffect(() => {
+    const restoreFromBackForwardCache = (event: PageTransitionEvent) => {
+      if (event.persisted) void restorePOSSession(false);
+    };
+    window.addEventListener('pageshow', restoreFromBackForwardCache);
+    return () => window.removeEventListener('pageshow', restoreFromBackForwardCache);
+  }, [restorePOSSession]);
 
   const handleLogin = async (credentials: LoginCredentials) => {
     const payload = await loginAdmin(credentials);

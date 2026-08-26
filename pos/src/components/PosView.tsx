@@ -48,6 +48,8 @@ export const PosView: React.FC = () => {
     categories,
     settings,
     openCustomerDisplayWindow,
+    playBeep,
+    showToast,
   } = usePos();
 
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
@@ -84,6 +86,8 @@ export const PosView: React.FC = () => {
 
   const cartListEndRef = useRef<HTMLDivElement>(null);
   const prevCartLengthRef = useRef<number>(cart.length);
+  const barcodeBufferRef = useRef("");
+  const barcodeLastKeyAtRef = useRef(0);
 
   // Auto-scroll cart when new item is added
   useEffect(() => {
@@ -92,6 +96,67 @@ export const PosView: React.FC = () => {
     }
     prevCartLengthRef.current = cart.length;
   }, [cart.length]);
+
+  useEffect(() => {
+    const resetBarcodeBuffer = () => {
+      barcodeBufferRef.current = "";
+      barcodeLastKeyAtRef.current = 0;
+    };
+
+    const handleBarcodeKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+      if (isPaymentModalOpen || isHoldModalOpen || isCreateHoldMemberOpen || isDiscountModalOpen || quantityModalItem) {
+        resetBarcodeBuffer();
+        return;
+      }
+
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const isEditable = Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'));
+      const isSaleSearch = target?.id === "pos-search-input";
+      if (isEditable && !isSaleSearch) {
+        resetBarcodeBuffer();
+        return;
+      }
+
+      const now = performance.now();
+      if (event.key === "Enter" || event.key === "Tab") {
+        const barcode = barcodeBufferRef.current.trim();
+        const completedQuickly = barcode.length >= 4 && now - barcodeLastKeyAtRef.current <= 150;
+        resetBarcodeBuffer();
+        if (!completedQuickly) return;
+
+        const matches = products.filter(
+          (product) => product.status === "active" && product.barcode?.trim().toLowerCase() === barcode.toLowerCase(),
+        );
+        event.preventDefault();
+        setSearchQuery("");
+        if (matches.length === 0) {
+          playBeep("alert");
+          showToast(`ไม่พบสินค้าบาร์โค้ด ${barcode}`, "warning");
+          return;
+        }
+        if (matches.length > 1) {
+          playBeep("alert");
+          showToast(`บาร์โค้ด ${barcode} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, "error");
+          return;
+        }
+        addToCart(matches[0]);
+        return;
+      }
+
+      if (event.key.length !== 1 || !/^[0-9A-Za-z._-]$/.test(event.key)) {
+        resetBarcodeBuffer();
+        return;
+      }
+      barcodeBufferRef.current = now - barcodeLastKeyAtRef.current <= 120
+        ? barcodeBufferRef.current + event.key
+        : event.key;
+      barcodeLastKeyAtRef.current = now;
+    };
+
+    window.addEventListener("keydown", handleBarcodeKeyDown, true);
+    return () => window.removeEventListener("keydown", handleBarcodeKeyDown, true);
+  }, [addToCart, isCreateHoldMemberOpen, isDiscountModalOpen, isHoldModalOpen, isPaymentModalOpen, playBeep, products, quantityModalItem, showToast]);
 
   // Filter products by category and search
   const filteredProducts = useMemo(() => {
@@ -106,6 +171,28 @@ export const PosView: React.FC = () => {
       return matchCat && matchSearch;
     });
   }, [products, selectedCategory, searchQuery]);
+
+  const handleSearchBarcodeEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.defaultPrevented || event.isComposing || event.key !== "Enter") return;
+
+    const barcode = searchQuery.trim().toLowerCase();
+    if (!barcode) return;
+
+    const matches = products.filter(
+      (product) => product.status === "active" && product.barcode?.trim().toLowerCase() === barcode,
+    );
+    if (matches.length === 0) return;
+
+    event.preventDefault();
+    if (matches.length > 1) {
+      playBeep("alert");
+      showToast(`บาร์โค้ด ${searchQuery.trim()} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, "error");
+      return;
+    }
+
+    addToCart(matches[0]);
+    setSearchQuery("");
+  };
 
   const handleOpenQuantityModal = (
     product: Product,
@@ -335,7 +422,8 @@ export const PosView: React.FC = () => {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="ค้นหาสินค้า (พิมพ์ชื่อ, รหัส SKU, หรือเลือกหมวดหมู่)..."
+                  onKeyDown={handleSearchBarcodeEnter}
+                  placeholder="ค้นหาสินค้า หรือยิงบาร์โค้ด..."
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-10 pr-10 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-red-500 transition-colors font-medium shadow-xs"
                 />
                 {searchQuery && (
@@ -480,15 +568,13 @@ export const PosView: React.FC = () => {
 
                       {/* Product Info */}
                       <div className="flex-1 flex flex-col justify-between">
-                        <div>
-                          <div className="flex items-center justify-end text-[10px] text-slate-400 mb-0.5">
-                            <span className="max-w-full truncate capitalize">
-                              {categories.find((category) => category.id === product.category)?.name || product.category}
-                            </span>
-                          </div>
-                          <h3 className="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 line-clamp-2 leading-snug">
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <h3 className="min-w-0 truncate text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 leading-snug">
                             {product.name}
                           </h3>
+                          <span className="max-w-[45%] shrink-0 truncate text-[10px] text-slate-400 capitalize">
+                            {categories.find((category) => category.id === product.category)?.name || product.category}
+                          </span>
                         </div>
 
                         {/* Price & Action */}

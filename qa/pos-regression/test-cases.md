@@ -11,6 +11,7 @@
 | POS-AUTH-005 | P1 | Session active | Backoffice ปิด `pos_enabled` | Owner/Staff เข้าไม่ได้และ session เดิมถูกปฏิเสธทันที | Go | API |
 | POS-AUTH-006 | P2 | Admin A มี Staff 3 คน | เพิ่มคนที่ 4 | API ปฏิเสธตาม limit | Go | API |
 | POS-AUTH-007 | P0 | Admin A/B | ใช้อีเมล Staff ซ้ำและแก้ root email | API ปฏิเสธทั้งข้าม tenant และ root email | Go | API |
+| POS-AUTH-008 | P1 | มี POS session token ที่ยังไม่หมดอายุ | เปิดหรือ reload หน้า Login | เรียก `/api/auth/pos/me` แล้วเข้าสู่หน้าขายอัตโนมัติโดยไม่ต้องกรอกรหัสอีก | Playwright | Chromium |
 | POS-SEC-001 | P0 | Login Admin A/B | A อ่าน/แก้ resource ของ B | ตอบ 404/403 และข้อมูล B ไม่เปลี่ยน | Playwright | API |
 | POS-SEC-002 | P1 | Authenticated | Mutation ไม่มี/ผิด CSRF | API ปฏิเสธ | Playwright | API |
 | POS-SEC-003 | P2 | Authenticated | อ่าน auth/settings/catalog | มี `Cache-Control: no-store` และ error ไม่รั่ว SQL | Playwright | API |
@@ -21,6 +22,7 @@
 | POS-CAT-004 | P2 | Product exists | Upload PNG/JPEG/WebP เกินต้นฉบับ 2 MB | browser resize และ backend รับไม่เกิน limit | Manual | Chromium |
 | POS-CAT-005 | P1 | Product created | แก้ SKU/สต็อกเริ่มต้น | ช่องและ API ถูกล็อกตามกติกา | Manual | Chromium/API |
 | POS-CAT-006 | P2 | Owner เปิดหน้าจัดการสินค้า | เปิด modal หมวดหมู่และหน่วยนับที่ความกว้าง 700/390 px | input, select และปุ่มอยู่ภายในกรอบ ไม่มีส่วนใดล้น modal | Playwright | Chromium Desktop/Mobile |
+| POS-CAT-007 | P1 | เปิด modal เพิ่มหรือแก้ไขสินค้าและกรอกข้อมูลพร้อมแล้ว | Focus ช่อง barcode แล้วยิง scanner ที่มี suffix Enter | ค่า barcode ถูกแทนที่ครบ แต่ Enter ไม่ submit และ modal ยังเปิดจนกดปุ่มบันทึกเอง | Playwright | Chromium |
 | POS-STOCK-001 | P0 | Stock seed | รับเข้าหลายรายการ ส่วนลดบาท/เปอร์เซ็นต์ | กระจายครบทุกสตางค์ ไม่มีต้นทุนติดลบ | Playwright | API |
 | POS-STOCK-002 | P0 | Stock 10@100 | รับ 10@80 ลด 100 บาท | weighted average = 85 บาท | Playwright | API |
 | POS-STOCK-003 | P0 | Stock จำกัด | จ่ายออกเกินคงเหลือ | rollback ทั้งเอกสาร สต็อกไม่ติดลบ | Playwright | API |
@@ -43,6 +45,7 @@
 | POS-SALE-005 | P1 | PromptPay setting | ขอ QR ตามยอด inherited/override/fallback | payload, amount, receiver และ precedence ถูก ไม่โอนเงินจริง | Playwright | API |
 | POS-SALE-006 | P0 | Sale request | ส่ง request ซ้ำ/ยอดหรือ stock เปลี่ยน | ไม่ตัด stock ซ้ำ, stale total ได้ 409, rollback | Playwright | API |
 | POS-SALE-007 | P2 | หน้าการขาย Desktop | เปิดรายการสินค้า viewport 1440px | การ์ดแสดง 5 คอลัมน์ ไม่แสดง SKU และข้อมูลภายในการ์ดไม่ล้น | Playwright | Chromium |
+| POS-SALE-008 | P1 | สินค้า active มี barcode และ stock | ยิง barcode พร้อม Enter จากพื้นที่หน้าขายและช่องค้นหา | พบสินค้าตรงตัว เพิ่มตะกร้าครั้งละ 1, ยิงซ้ำเพิ่มจำนวน และไม่เกิน stock | Playwright | Chromium |
 | POS-HOLD-001 | P1 | Members exist | ค้น member ใน Hold | debounce 500 ms, เลือกสมาชิกจริง, เพิ่มสมาชิกได้ | Manual | Chromium |
 | POS-HOLD-002 | P1 | Same member | Hold หลาย sale | การ์ดเดียว แต่ source documents ครบ | Go | API |
 | POS-PAY-001 | P1 | Receivables 2+ members | เลือกหลายคน จ่าย cash/QR | settlement สำเร็จครบและยอดถูก | Manual | Chromium |

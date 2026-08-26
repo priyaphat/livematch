@@ -11,6 +11,14 @@ test('POS-AUTH-001 @smoke @webkit Owner login ด้วยอีเมลเข�
   await expect(page).toHaveURL(/\/$/);
 });
 
+test('POS-AUTH-008 @smoke token ที่ยังไม่หมดอายุเข้า POS อัตโนมัติโดยไม่เห็นหน้า Login', async ({ page }) => {
+  const meResponse = page.waitForResponse((response) => response.url().includes('/api/auth/pos/me'));
+  await page.goto('/');
+  expect((await meResponse).ok()).toBeTruthy();
+  await expect(page.locator('#pos-search-input')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'เข้าสู่ระบบ' })).toHaveCount(0);
+});
+
 test('POS-SEC-001 @smoke Admin A แก้สินค้า Admin B ไม่ได้', async () => {
   const api = await ownerApi('a');
   const headers = await csrfHeaders(api);

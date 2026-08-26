@@ -34,6 +34,36 @@ test('POS-SALE-003 @smoke ไม่มีปุ่มหรือ modal เพ�
   await expect(page.getByText(/เพิ่มโน้ต|เพิ่มโน๊ต/)).toHaveCount(0);
 });
 
+test('POS-SALE-008 @smoke ยิงบาร์โค้ดเพิ่มสินค้าลงตะกร้าและยิงซ้ำเพิ่มจำนวน', async ({ page }) => {
+  await page.goto('/');
+	await expect(page.locator('#pos-product-qa-product-coffee-a')).toBeVisible();
+  const search = page.locator('#pos-search-input');
+  await search.fill('8850000000001');
+  await search.press('Enter');
+  const item = page.locator('#cart-item-qa-product-coffee-a');
+  await expect(item).toBeVisible();
+  await expect(item.locator('input[type="number"]')).toHaveValue('1');
+  await search.focus();
+  await page.keyboard.type('8850000000001', { delay: 10 });
+  await page.keyboard.press('Enter');
+  await expect(item.locator('input[type="number"]')).toHaveValue('2');
+  await expect(search).toHaveValue('');
+});
+
+test('POS-CAT-007 @smoke Enter จากเครื่องยิง barcode ใน modal สินค้าไม่ submit form', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'จัดการสินค้า' }).click();
+  await page.locator('#add-product-btn').click();
+  await page.getByPlaceholder('เช่น ชาเขียวมัทฉะลาเต้เย็น, เค้กเรดเวลเวท').fill('สินค้าทดสอบ Scanner');
+  const barcode = page.locator('#product-barcode-input');
+  await barcode.focus();
+  await page.keyboard.type('8859999999999', { delay: 10 });
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'เพิ่มสินค้าใหม่' })).toBeVisible();
+  await expect(barcode).toHaveValue('8859999999999');
+  await expect(page.getByRole('button', { name: 'ยืนยันเพิ่มสินค้า' })).toBeVisible();
+});
+
 test('POS-SALE-005 @smoke PromptPay API คืน payload ยอด receiver และ POS override ถูก', async () => {
   const api = await ownerApi();
   const response = await api.get('/api/admin/pos/qr?amountSatang=12345');
