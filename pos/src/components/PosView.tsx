@@ -173,7 +173,7 @@ export const PosView: React.FC = () => {
   }, [products, selectedCategory, searchQuery]);
 
   const handleSearchBarcodeEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.defaultPrevented || event.isComposing || event.key !== "Enter") return;
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.key !== "Enter") return;
 
     const barcode = searchQuery.trim().toLowerCase();
     if (!barcode) return;

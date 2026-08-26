@@ -48,6 +48,15 @@ func main() {
 	defer tx.Rollback()
 
 	// Deleting QA owners cascades every prior QA run without touching non-QA rows.
+	if _, err = tx.ExecContext(ctx, `delete from sessions where admin_id in ('qa-admin-a','qa-admin-b')`); err != nil {
+		log.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `delete from billing_accounts where admin_id in ('qa-admin-a','qa-admin-b')`); err != nil {
+		log.Fatal(err)
+	}
+	if _, err = tx.ExecContext(ctx, `delete from members where admin_id in ('qa-admin-a','qa-admin-b')`); err != nil {
+		log.Fatal(err)
+	}
 	if _, err = tx.ExecContext(ctx, `delete from admin_users where id in ('qa-admin-a','qa-admin-b')`); err != nil {
 		log.Fatal(err)
 	}
@@ -98,11 +107,15 @@ func main() {
 
 	mustExec(ctx, tx, `
 		insert into sessions(id,name,session_type,admin_passcode,state,admin_id,usage_started_at)
-		values ('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',now())
+		values
+		('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '9 hour') at time zone 'Asia/Bangkok'),
+		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '10 hour') at time zone 'Asia/Bangkok')
 	`)
 	mustExec(ctx, tx, `
 		insert into session_settings(session_id,entry_fee,club_entry_fee,member_entry_fees,shuttle_fee,shuttle_brands,court_count,court_names)
-		values ('qa-session-a',120,100,'{"qa-member-type-a-general":120,"qa-member-type-a-club":100}'::jsonb,50,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,2,'["สนาม 1","สนาม 2"]'::jsonb)
+		values
+		('qa-session-a',120,100,'{"qa-member-type-a-general":120,"qa-member-type-a-club":100}'::jsonb,50,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,2,'["สนาม 1","สนาม 2"]'::jsonb),
+		('qa-session-a-2',80,70,'{"qa-member-type-a-general":80,"qa-member-type-a-club":70}'::jsonb,55,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,1,'["สนาม 1"]'::jsonb)
 	`)
 	mustExec(ctx, tx, `
 		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon,member_id,member_type_id,billing_account_id) values
@@ -110,6 +123,15 @@ func main() {
 		('qa-session-a',2,'สมาชิก QA Match POS',1,1,false,true,'middle',true,'qa-member-a-2','qa-member-type-a-club','qa-billing-a-2'),
 		('qa-session-a',3,'สมาชิก QA คนที่สาม',1,0,false,true,'middle',true,'qa-member-a-3','qa-member-type-a-general','qa-billing-a-3'),
 		('qa-session-a',4,'ผู้เล่นขาจร QA',1,1,false,true,'middle',true,null,null,null)
+	`)
+	mustExec(ctx, tx, `
+		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon,member_id,member_type_id,billing_account_id) values
+		('qa-session-a-2',1,'สมาชิก QA คนที่สาม',1,1,false,false,'middle',true,'qa-member-a-3','qa-member-type-a-general','qa-billing-a-3')
+	`)
+	mustExec(ctx, tx, `
+		insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,shuttle_pricing_mode,shuttle_price_snapshot,legacy_shuttle_fee) values
+		('qa-session-a',1,'history','สนาม 1','middle',1,2,3,4,2,'[{"brandId":"qa-shuttle","number":1},{"brandId":"qa-shuttle","number":2}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,50),
+		('qa-session-a-2',1,'history','สนาม 1','middle',1,1,1,1,1,'[{"brandId":"qa-shuttle","number":1}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,55)
 	`)
 
 	mustExec(ctx, tx, `
@@ -125,11 +147,11 @@ func main() {
 		('qa-unit-b','qa-admin-b','กล่อง',true)
 	`)
 	mustExec(ctx, tx, `
-		insert into pos_products(id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,image_data,barcode,description) values
-		('qa-product-coffee-a','qa-admin-a','QA-COFFEE-001','qa-category-drink-a','กาแฟ QA',45,4500,20,2000,40,5,true,'แก้ว','','8850000000001','สินค้าทดสอบ QA'),
-		('qa-product-cake-a','qa-admin-a','QA-CAKE-001','qa-category-snack-a','เค้ก QA',60,6000,30,3000,2,5,true,'ชิ้น','','8850000000002','สินค้าสต็อกต่ำ QA'),
-		('qa-product-inactive-a','qa-admin-a','QA-OFF-001','qa-category-snack-a','สินค้าปิด QA',10,1000,5,500,10,5,false,'ชิ้น','','8850000000003',''),
-		('qa-product-b','qa-admin-b','QA-B-001','qa-category-b','สินค้า Tenant B',99,9900,50,5000,99,5,true,'กล่อง','','8850000000004','')
+		insert into pos_products(id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,low_stock_threshold,active,unit,units_per_pack,image_data,barcode,description) values
+		('qa-product-coffee-a','qa-admin-a','QA-COFFEE-001','qa-category-drink-a','กาแฟ QA',45,4500,20,2000,40,5,true,'แก้ว',12,'','8850000000001','สินค้าทดสอบ QA'),
+		('qa-product-cake-a','qa-admin-a','QA-CAKE-001','qa-category-snack-a','เค้ก QA',60,6000,30,3000,2,5,true,'ชิ้น',0,'','8850000000002','สินค้าสต็อกต่ำ QA'),
+		('qa-product-inactive-a','qa-admin-a','QA-OFF-001','qa-category-snack-a','สินค้าปิด QA',10,1000,5,500,10,5,false,'ชิ้น',5,'','8850000000003',''),
+		('qa-product-b','qa-admin-b','QA-B-001','qa-category-b','สินค้า Tenant B',99,9900,50,5000,99,5,true,'กล่อง',10,'','8850000000004','')
 	`)
 	mustExec(ctx, tx, `
 		insert into pos_suppliers(id,admin_id,code,name,contact_person,phone,email,address,active)
@@ -143,7 +165,7 @@ func main() {
 	if err = tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 session=1")
+	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=2")
 }
 
 func mustHash(value string) string {

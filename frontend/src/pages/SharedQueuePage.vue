@@ -429,10 +429,9 @@ function tvContentStyle() {
 .shared-flight-header p { color: #57534e !important; }
 .shared-navbar-clock {
   overflow: hidden;
-  border: 1px solid #111;
-  border-radius: 0.125rem;
-  background: #030303;
-  box-shadow: inset 0 0 10px rgb(0 0 0 / 95%);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 .shared-navbar-clock-segments,
 .shared-navbar-clock-time {
@@ -445,13 +444,13 @@ function tvContentStyle() {
   white-space: nowrap;
 }
 .shared-navbar-clock-segments {
-  color: #250000;
-  opacity: 0.8;
+  color: #dbeafe;
+  opacity: 0.7;
 }
 .shared-navbar-clock-time {
   position: relative;
-  color: #f10808;
-  text-shadow: 0 0 2px rgb(241 8 8 / 35%);
+  color: #2563eb;
+  text-shadow: 0 0 2px rgb(37 99 235 / 30%);
 }
 .shared-flight-stats { border-color: #e7e5e4 !important; background: #f5f5f4 !important; }
 .shared-flight-waiting-summary p { color: #287565 !important; }

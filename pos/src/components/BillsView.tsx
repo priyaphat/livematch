@@ -1058,7 +1058,7 @@ export const BillsView: React.FC = () => {
       {/* BATCH PAYMENT MODAL */}
       {isBatchPayModalOpen && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-2xl w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[92vh] flex flex-col">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-5xl w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[94vh] flex flex-col">
             {/* Header */}
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
               <div>
@@ -1077,9 +1077,11 @@ export const BillsView: React.FC = () => {
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-4 pr-1 custom-scrollbar">
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] gap-4 lg:gap-5">
+                <div className="space-y-4 min-w-0">
               {/* Selected Held Bills Summary */}
-              <div className="bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 rounded-2xl p-3.5 space-y-2">
+              <div className="bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 rounded-2xl p-3.5 space-y-3">
                 <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-300">
                   <span className="flex items-center gap-1.5">
                     <Layers className="w-4 h-4 text-amber-500" />
@@ -1088,23 +1090,44 @@ export const BillsView: React.FC = () => {
                   <span className="font-mono text-slate-500">รวม {selectedTotalItemsCount} ชิ้น</span>
                 </div>
 
-                <div className="divide-y divide-slate-200/60 dark:divide-slate-800/60 max-h-32 overflow-y-auto custom-scrollbar">
+                <div className="divide-y divide-slate-200/60 dark:divide-slate-800/60 max-h-[54vh] overflow-y-auto custom-scrollbar pr-1">
                   {selectedHeldObjects.map((held) => (
-                    <div key={held.id} className="py-1.5 flex items-center justify-between text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
-                          {held.heldNumber}
+                    <div key={held.id} className="py-3 first:pt-1 last:pb-1 text-xs space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono font-bold text-amber-600 dark:text-amber-400">{held.heldNumber}</span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">{held.customerName || 'ไม่ระบุชื่อ'}</span>
+                          </div>
+                          <p className="mt-0.5 text-[10px] text-slate-400">
+                            Match {formatCurrency(held.matchTotal || 0, settings.currencySymbol, 2)} · POS {formatCurrency(held.posTotal ?? held.items.reduce((sum, item) => sum + item.product.price * item.quantity, 0), settings.currencySymbol, 2)}
+                          </p>
+                        </div>
+                        <span className="shrink-0 font-mono font-bold text-slate-900 dark:text-white">
+                          {formatCurrency(held.total, settings.currencySymbol, settings.decimalPlaces)}
                         </span>
-                        <span className="text-slate-600 dark:text-slate-400">
-                          {held.customerName || 'ไม่ระบุชื่อ'}
-                        </span>
-                        {held.note && (
-                          <span className="text-[10px] text-slate-400 italic">({held.note})</span>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-200 bg-white/80 px-2.5 py-1.5 dark:border-slate-800 dark:bg-slate-900/70">
+                        {held.matchTotal != null && held.matchTotal > 0 && (
+                          <div className="flex items-center justify-between gap-3 py-1 text-[11px]">
+                            <span className="text-slate-600 dark:text-slate-400">ค่าใช้จ่าย LiveMatch</span>
+                            <span className="font-mono font-semibold">{formatCurrency(held.matchTotal, settings.currencySymbol, 2)}</span>
+                          </div>
+                        )}
+                        {held.items.map((item, index) => (
+                          <div key={`${held.id}:${item.product.id}:${index}`} className="flex items-start justify-between gap-3 border-t border-slate-100 py-1.5 first:border-t-0 dark:border-slate-800/70">
+                            <div className="min-w-0">
+                              <p className="truncate font-semibold text-slate-700 dark:text-slate-300">{item.product.name}</p>
+                              <p className="text-[10px] text-slate-400">{item.quantity} {item.product.unit} × {formatCurrency(item.product.price, settings.currencySymbol, 2)}</p>
+                            </div>
+                            <span className="shrink-0 font-mono font-semibold text-slate-800 dark:text-slate-200">{formatCurrency(item.product.price * item.quantity, settings.currencySymbol, 2)}</span>
+                          </div>
+                        ))}
+                        {held.items.length === 0 && (!held.matchTotal || held.matchTotal <= 0) && (
+                          <p className="py-1 text-[11px] text-slate-400">ไม่มีรายละเอียดสินค้าในบิลนี้</p>
                         )}
                       </div>
-                      <span className="font-mono font-semibold text-slate-900 dark:text-white">
-                        {formatCurrency(held.total, settings.currencySymbol, settings.decimalPlaces)}
-                      </span>
                     </div>
                   ))}
                 </div>
@@ -1117,6 +1140,9 @@ export const BillsView: React.FC = () => {
                 </div>
                 {billingSummary && billingSummary.matchTotalSatang > 0 && <p className="text-[11px] font-semibold text-slate-500">POS {formatCurrency(billingSummary.posTotalSatang / 100, settings.currencySymbol, 2)} + Match {formatCurrency(billingSummary.matchTotalSatang / 100, settings.currencySymbol, 2)}</p>}
               </div>
+                </div>
+
+                <div className="space-y-4 min-w-0 lg:border-l lg:border-slate-200 lg:pl-5 dark:lg:border-slate-800">
 
               {/* Payment Methods */}
               <div>
@@ -1265,6 +1291,8 @@ export const BillsView: React.FC = () => {
                   placeholder="หมายเหตุเพิ่มเติมในใบเสร็จ (ถ้ามี)..."
                   className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white"
                 />
+              </div>
+                </div>
               </div>
             </div>
 

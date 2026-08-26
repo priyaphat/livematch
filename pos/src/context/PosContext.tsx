@@ -168,12 +168,14 @@ interface PosContextType {
       productId: string;
       quantity: number; // for adjust: target stock count, for in/out: quantity delta
       cost?: number;
+      totalValue?: number;
       note?: string;
     }>;
     supplierName?: string;
     supplierId?: string;
     reason: string;
     referenceNo?: string;
+    externalReferenceNo?: string;
     discountType?: 'none' | 'amount' | 'percent';
     discountAmountSatang?: number;
     discountRateBps?: number;
@@ -450,6 +452,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     cost: item.costSatang / 100,
     stock: item.stockQuantity,
     minStockAlert: item.lowStockThreshold,
+    unitsPerPack: item.unitsPerPack || 0,
     image: item.imageData || DEFAULT_PRODUCT_IMAGE,
     description: item.description || '',
     unit: item.unit,
@@ -468,6 +471,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     costSatang: Math.round(item.cost * 100),
     stockQuantity: item.stock,
     lowStockThreshold: item.minStockAlert,
+    unitsPerPack: item.unitsPerPack || 0,
     active: item.status === 'active',
     unit: item.unit,
     imageData: item.image.startsWith('data:image/') ? item.image : '',
@@ -709,6 +713,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       discountRate: item.discountRateBps / 100,
       reason: item.note || 'ทำรายการสต็อก',
       supplierName: item.supplierName,
+      externalReferenceNo: item.externalReferenceNo,
       performedBy: item.actorName || 'Admin',
       createdAt: item.createdAt,
       items: movements,
@@ -1693,7 +1698,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Stock In / Out / Adjust
   const stockIn = (productId: string, quantity: number, supplierName: string, reason: string, cost?: number) => {
     const supplierId = suppliers.find((supplier) => supplier.name === supplierName)?.id;
-    void batchStockOperation({ type: 'in', items: [{ productId, quantity, cost }], supplierId, supplierName, reason });
+    void batchStockOperation({ type: 'in', items: [{ productId, quantity, cost, totalValue: quantity * (cost || 0) }], supplierId, supplierName, reason });
   };
 
   const stockOut = (productId: string, quantity: number, reason: string) => {
@@ -1712,6 +1717,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     supplierId,
     reason,
     referenceNo,
+    externalReferenceNo,
     discountType = 'amount',
     discountAmountSatang = 0,
     discountRateBps = 0,
@@ -1721,12 +1727,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       productId: string;
       quantity: number;
       cost?: number;
+      totalValue?: number;
       note?: string;
     }>;
     supplierName?: string;
     supplierId?: string;
     reason: string;
     referenceNo?: string;
+    externalReferenceNo?: string;
     discountType?: 'none' | 'amount' | 'percent';
     discountAmountSatang?: number;
     discountRateBps?: number;
@@ -1741,6 +1749,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       mode: type,
       note: reason,
       supplierId: type === 'in' ? (supplierId || suppliers.find((supplier) => supplier.name === supplierName)?.id) : undefined,
+      externalReferenceNo: type === 'in' ? externalReferenceNo : undefined,
       discountType: discountType === 'none' ? 'amount' : discountType,
       discountAmountSatang: type === 'in' ? discountAmountSatang : 0,
       discountRateBps: type === 'in' ? discountRateBps : 0,
@@ -1748,7 +1757,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         productId: item.productId,
         quantity: type === 'adjust' ? 0 : item.quantity,
         targetQuantity: type === 'adjust' ? item.quantity : undefined,
-        costSatang: type === 'in' ? Math.round((item.cost || 0) * 100) : undefined,
+        totalValueSatang: type === 'in' ? Math.round((item.totalValue ?? (item.cost || 0) * item.quantity) * 100) : undefined,
         note: item.note,
       })),
     };

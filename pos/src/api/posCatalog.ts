@@ -22,6 +22,7 @@ export interface POSProductRecord {
   active: boolean;
   lowStock: boolean;
   unit: string;
+  unitsPerPack: number;
   imageData?: string;
   description?: string;
 }

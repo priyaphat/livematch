@@ -23,8 +23,10 @@
 | POS-CAT-005 | P1 | Product created | แก้ SKU/สต็อกเริ่มต้น | ช่องและ API ถูกล็อกตามกติกา | Manual | Chromium/API |
 | POS-CAT-006 | P2 | Owner เปิดหน้าจัดการสินค้า | เปิด modal หมวดหมู่และหน่วยนับที่ความกว้าง 700/390 px | input, select และปุ่มอยู่ภายในกรอบ ไม่มีส่วนใดล้น modal | Playwright | Chromium Desktop/Mobile |
 | POS-CAT-007 | P1 | เปิด modal เพิ่มหรือแก้ไขสินค้าและกรอกข้อมูลพร้อมแล้ว | Focus ช่อง barcode แล้วยิง scanner ที่มี suffix Enter | ค่า barcode ถูกแทนที่ครบ แต่ Enter ไม่ submit และ modal ยังเปิดจนกดปุ่มบันทึกเอง | Playwright | Chromium |
+| POS-CAT-008 | P2 | Owner เปิด modal เพิ่ม/แก้ไขสินค้า | กรอกจำนวนในแพ็ค 0, 1, 12, ค่าติดลบ, ทศนิยม และเกิน 1,000,000 | รับเฉพาะจำนวนเต็ม 0–1,000,000, ไม่มีศูนย์นำหน้า/spinner และบันทึก Activity Log ก่อน/หลัง | Playwright | API/Chromium |
 | POS-STOCK-001 | P0 | Stock seed | รับเข้าหลายรายการ ส่วนลดบาท/เปอร์เซ็นต์ | กระจายครบทุกสตางค์ ไม่มีต้นทุนติดลบ | Playwright | API |
-| POS-STOCK-002 | P0 | Stock 10@100 | รับ 10@80 ลด 100 บาท | weighted average = 85 บาท | Playwright | API |
+| POS-STOCK-002 | P0 | Stock 10@100 | รับ 10 ชิ้น กรอกมูลค่ารวม 800 บาท เลขบิล และลด 100 บาท | ระบบคำนวณต้นทุนรับเข้า 80 บาท/หน่วย, weighted average = 85 บาท และเก็บเลขบิลครบ | Playwright | API |
+| POS-STOCK-016 | P1 | เปิด modal รับเข้า/จ่ายออก/ปรับยอดและสินค้ามี barcode | Focus ช่องค้นหาแล้วยิง barcode พร้อม suffix Enter | เลือกสินค้าตรงตัวเข้าเอกสาร, ล้างช่องค้นหา และไม่ submit modal | Playwright | Chromium |
 | POS-STOCK-003 | P0 | Stock จำกัด | จ่ายออกเกินคงเหลือ | rollback ทั้งเอกสาร สต็อกไม่ติดลบ | Playwright | API |
 | POS-STOCK-004 | P1 | Product exists | ปรับยอดเพิ่ม/ลด | เก็บ qty/value ก่อน หลัง และผลต่าง | Playwright | API |
 | POS-STOCK-005 | P2 | Supplier exists | CRUD + เปิดรับเข้า + แก้ชื่อภายหลัง | เลือก supplier อัตโนมัติและเอกสารเก็บ snapshot | Manual | Chromium |
@@ -75,6 +77,10 @@
 | POS-DASH-006 | P3 | Dashboard loaded | ใช้ Tab/Enter กับการ์ดและบิลล่าสุด | ทุกส่วนที่คลิกได้มี button/link semantics และ keyboard focus | Playwright | Chromium |
 | POS-RPT-001 | P2 | Seed reports | วัน/สัปดาห์/เดือน/custom + paginate | ยอด VAT top products payment methods ตรง DB | Playwright | API |
 | POS-RPT-002 | P2 | Report selected | Export `.xlsx` | ตรง tab/range ภาษาไทยอ่านได้ ไม่มี technical code/permission error | Manual | Chromium/Excel |
+| POS-RPT-003 | P2 | มี paid/hold/void sales หลายวัน | เปิดรายงานสินค้าที่ขายช่วง day/week/month/custom และเปลี่ยนหน้า | รวมเฉพาะ paid ตามเวลารับชำระ Asia/Bangkok พร้อมจำนวนขาย จำนวนบิลและยอดขายหลังส่วนลด/VAT | Playwright | API/Chromium |
+| POS-RPT-004 | P2 | สินค้าคงเหลือ 101 ชิ้น กำหนด 12 ชิ้น/แพ็ค | เปิดรายงานสินค้าคงเหลือและใช้ทุก filter | แสดง 8 แพ็ค + เศษ 5 ชิ้น, สินค้า active/inactive, มูลค่าทุน/ขาย และ pagination ถูกต้อง | Playwright | API/Chromium |
+| POS-RPT-005 | P1 | มี LiveMatch 2 Session วันเดียวกัน พร้อมผู้เล่นหลายประเภทและลูกแบดคืน/ไม่คืน | เปิดรายงาน POS + LiveMatch | แยก 2 Session, นับผู้เล่นทุกคน, นับลูกจริงครั้งเดียว, ไม่นับลูกที่คืน และรวมยอดตาม snapshot ถูกต้อง | Playwright | API/Chromium |
+| POS-RPT-006 | P1 | Staff มี/ไม่มี reports และ report_export; Admin A/B | เรียก report APIs และส่งออกทุก tab พร้อม filter | บังคับสิทธิ์และ tenant isolation, export ทั้งผลลัพธ์ที่ตรง filter โดยไม่แสดง code เทคนิค | Go/Playwright | API/Chromium/Excel |
 | POS-NF-001 | P2 | Desktop/Mobile | เปิด critical pages/modals | ไม่มี overflow/modal หลุด/nav ทับ action | Playwright | Chromium Desktop/Mobile |
 | POS-NF-002 | P2 | QA local | วัด API read และ sale/settlement | read <1s, transaction <2s ไม่มี external delay | Playwright | API |
 | POS-PWA-001 | P2 | POS served | ตรวจ manifest/service worker/installability | manifest/icon/start URL ถูก | Playwright | Chromium |

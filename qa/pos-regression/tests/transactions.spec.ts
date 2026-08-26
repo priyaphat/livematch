@@ -40,6 +40,7 @@ async function createProduct(input: {
       costSatang: input.costSatang,
       stockQuantity: input.stockQuantity,
       lowStockThreshold: 1,
+      unitsPerPack: 0,
       active: true,
       unit: 'ชิ้น',
       imageData: '',
@@ -143,18 +144,31 @@ test('POS-STOCK-001 รับเข้าหลายรายการ กร�
   expect(batch.items.every((item: { netTotalSatang: number }) => item.netTotalSatang >= 0)).toBeTruthy();
 });
 
-test('POS-STOCK-002 รับ 10 ชิ้นทุน 80 ลด 100 บาทแล้ว weighted average เท่ากับ 85 บาท', async () => {
+test('POS-STOCK-002 รับ 10 ชิ้นมูลค่ารวม 800 บาท ลด 100 บาทแล้ว weighted average เท่ากับ 85 บาท', async () => {
   const response = await api.post('/api/admin/pos/stock/batch', {
     headers,
     data: {
-      name: 'QA-STOCK-WEIGHTED-001', mode: 'in', note: 'ตรวจต้นทุนเฉลี่ย',
+      name: 'QA-STOCK-WEIGHTED-001', mode: 'in', note: 'ตรวจต้นทุนเฉลี่ย', externalReferenceNo: 'INV-QA-0002',
       discountType: 'amount', discountAmountSatang: 10000,
-      items: [{ productId: weightedProductId, quantity: 10, costSatang: 8000 }],
+      items: [{ productId: weightedProductId, quantity: 10, totalValueSatang: 80000 }],
     },
   });
   expect(response.status(), await response.text()).toBe(201);
   expect(await response.json()).toMatchObject({ grossTotalSatang: 80000, discountSatang: 10000, netTotalSatang: 70000 });
   expect(await product(weightedProductId)).toMatchObject({ stockQuantity: 20, costSatang: 8500 });
+  const batches = await api.get('/api/admin/pos/stock/batches?limit=200');
+  const batch = (await batches.json()).items.find((item: { name: string }) => item.name === 'QA-STOCK-WEIGHTED-001');
+  expect(batch).toMatchObject({ externalReferenceNo: 'INV-QA-0002', grossTotalSatang: 80000 });
+  expect(batch.items[0]).toMatchObject({
+    delta: 10,
+    balance: 20,
+    unitCostSatang: 8000,
+    grossTotalSatang: 80000,
+    allocatedDiscountSatang: 10000,
+    netTotalSatang: 70000,
+    previousCostSatang: 10000,
+    resultingCostSatang: 8500,
+  });
 });
 
 test('POS-STOCK-003 จ่ายออกเกินคงเหลือ rollback ทั้งเอกสารและทุกสินค้า', async () => {
@@ -509,6 +523,65 @@ test('POS-RPT-001 รายงานวัน/สัปดาห์/เดือ
   }
 });
 
+test('POS-CAT-008 จำนวนในแพ็ครับเฉพาะจำนวนเต็มในขอบเขตและคืนค่าจาก API', async () => {
+  const valid = await api.post('/api/admin/pos/products', {
+    headers,
+    data: {
+      sku: 'QA-PACK-VALID', barcode: '', category: 'qa-category-snack-a', name: 'QA แพ็ค 12',
+      priceThb: 10, priceSatang: 1000, costThb: 5, costSatang: 500, stockQuantity: 101,
+      lowStockThreshold: 5, unitsPerPack: 12, active: true, unit: 'ชิ้น', imageData: '', description: '',
+    },
+  });
+  expect(valid.status(), await valid.text()).toBe(201);
+  const created = await valid.json();
+  expect(created.unitsPerPack).toBe(12);
+  expect(await product(created.id)).toMatchObject({ stockQuantity: 101 });
+
+  for (const unitsPerPack of [-1, 1_000_001, 1.5]) {
+    const invalid = await api.post('/api/admin/pos/products', {
+      headers,
+      data: { sku: `QA-PACK-BAD-${String(unitsPerPack)}`, barcode: '', category: 'ของว่าง', name: 'QA แพ็คผิด', priceSatang: 100, costSatang: 0, stockQuantity: 0, lowStockThreshold: 0, unitsPerPack, active: true, unit: 'ชิ้น', imageData: '', description: '' },
+    });
+    expect(invalid.status()).toBe(400);
+  }
+});
+
+test('POS-RPT-003 สินค้าที่ขายแสดงเฉพาะ paid พร้อม pagination', async () => {
+  await saveSettings({ taxRatePercent: 7, pricesIncludeTax: true });
+  const paid = await api.post('/api/admin/pos/sales', {
+    headers,
+    data: { requestId: 'qa-report-paid-product', action: 'pay', buyerType: 'anonymous', method: 'promptpay', discountType: 'amount', discountAmountSatang: 0, discountRateBps: 0, expectedTotalSatang: 10000, items: [{ productId: saleProductId, quantity: 1 }] },
+  });
+  expect([200, 201]).toContain(paid.status());
+  const response = await api.get('/api/admin/pos/reports/sold-products?range=day&page=1&pageSize=5');
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const report = await response.json();
+  expect(report.pagination.pageSize).toBe(5);
+  expect(report.items.every((item: { name: string; quantity: number; billCount: number }) => item.name && item.quantity > 0 && item.billCount > 0)).toBeTruthy();
+  expect(report.summary.totalQuantity).toBeGreaterThan(0);
+  expect(report.summary.totalRevenueSatang).toBeGreaterThan(0);
+});
+
+test('POS-RPT-004 สินค้าคงเหลือคำนวณแพ็ค เศษ filter และไม่แสดง category code', async () => {
+  const response = await api.get('/api/admin/pos/reports/inventory?page=1&pageSize=100&packStatus=configured&status=all&stockStatus=all');
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const report = await response.json();
+  const coffee = report.items.find((item: { productId: string }) => item.productId === 'qa-product-coffee-a');
+  expect(coffee).toMatchObject({ category: 'เครื่องดื่ม', unitsPerPack: 12, fullPacks: 3, remainderUnits: 4 });
+  expect(report.items.some((item: { productId: string }) => item.productId === 'qa-product-b')).toBeFalsy();
+});
+
+test('POS-RPT-005 Special แยก LiveMatch Session วันเดียวกันและนับลูกจริง', async () => {
+  const response = await api.get('/api/admin/pos/reports/special?range=day&posPage=1&sessionPage=1&exportAll=1');
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const report = await response.json();
+  expect(report.summary.sessionCount).toBe(2);
+  expect(report.sessions.map((session: { name: string }) => session.name).sort()).toEqual(['QA Cross-system Session', 'QA Same-day Session 2'].sort());
+  expect(report.sessions.find((session: { id: string }) => session.id === 'qa-session-a').shuttleQuantity).toBe(2);
+  expect(report.sessions.find((session: { id: string }) => session.id === 'qa-session-a-2').playerCount).toBe(1);
+  expect(report.summary.totalSatang).toBe(report.summary.posRevenueSatang + report.summary.matchEntryFeeSatang + report.summary.matchShuttleSatang);
+});
+
 test('POS-STOCK-006 ประวัติใช้สีรับเข้าเขียว จ่ายออกแดง และปรับยอดส้ม', async ({ page }) => {
   test.fail(true, 'Known P2: stock movement badge colors do not match the approved mapping');
   await page.goto('/');
@@ -518,4 +591,23 @@ test('POS-STOCK-006 ประวัติใช้สีรับเข้าเ
   expect(await classes('รับเข้า')).toMatch(/green|emerald/);
   expect(await classes('จ่ายออก')).toMatch(/red/);
   expect(await classes('ปรับยอด')).toMatch(/orange|amber/);
+});
+
+test('POS-STOCK-016 @smoke ยิงบาร์โค้ดเลือกสินค้าใน modal รับเข้า จ่ายออก และปรับยอด', async ({ page }) => {
+  const modes = [
+    { button: '#stock-in-batch-btn', heading: 'บันทึกรับสินค้าเข้าสต็อก (แบบรวมหลายรายการ)' },
+    { button: '#stock-out-batch-btn', heading: 'บันทึกจ่ายสินค้าออกจากคลัง (แบบรวมหลายรายการ)' },
+    { button: '#adjust-stock-batch-btn', heading: 'บันทึกตรวจนับและปรับปรุงยอดสต็อกจริง' },
+  ];
+  for (const mode of modes) {
+    await page.goto('/');
+    await page.getByRole('button', { name: /จัดการสต็อก/ }).click();
+    await page.locator(mode.button).click();
+    const search = page.locator('#stock-batch-product-search');
+    await search.fill('8850000000001');
+    await search.press('Enter');
+    await expect(search).toHaveValue('');
+    await expect(page.getByRole('heading', { name: mode.heading })).toBeVisible();
+    await expect(page.getByText('กาแฟ QA', { exact: true }).last()).toBeVisible();
+  }
 });

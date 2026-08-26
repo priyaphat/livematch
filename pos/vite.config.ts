@@ -20,6 +20,10 @@ export default defineConfig(() => {
           changeOrigin: true,
         },
       },
+       allowedHosts: [
+      'pos.badmintonphrae.club',
+      'badminton-pos.vibestudio.work'
+    ],
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',

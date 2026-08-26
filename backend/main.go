@@ -1193,6 +1193,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_products add column if not exists description text not null default '';
 		alter table pos_products add column if not exists cost_satang bigint not null default 0 check (cost_satang >= 0);
 		alter table pos_products add column if not exists price_satang bigint not null default 0 check (price_satang >= 0);
+		alter table pos_products add column if not exists units_per_pack integer not null default 0 check (units_per_pack between 0 and 1000000);
 		update pos_products set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
 		update pos_products set price_satang=price_thb::bigint*100 where price_satang=0 and price_thb<>0;
 		drop index if exists idx_pos_products_barcode;
@@ -1308,6 +1309,7 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_pos_stock_batches_admin on pos_stock_batches(admin_id, created_at desc);
 		alter table pos_stock_batches add column if not exists supplier_id text references pos_suppliers(id) on delete set null;
 		alter table pos_stock_batches add column if not exists supplier_name text not null default '';
+		alter table pos_stock_batches add column if not exists external_reference_no text not null default '';
 		alter table pos_stock_batches add column if not exists discount_type text not null default 'amount';
 		alter table pos_stock_batches add column if not exists discount_rate_bps integer not null default 0 check (discount_rate_bps >= 0 and discount_rate_bps <= 10000);
 		alter table pos_stock_batches add column if not exists gross_total_satang bigint not null default 0 check (gross_total_satang >= 0);

@@ -158,6 +158,7 @@ export const ProductsView: React.FC = () => {
   const [costInput, setCostInput] = useState('30');
   const [stockInput, setStockInput] = useState('20');
   const [minStockInput, setMinStockInput] = useState('10');
+  const [unitsPerPackInput, setUnitsPerPackInput] = useState('0');
 
   // File upload ref
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -172,6 +173,7 @@ export const ProductsView: React.FC = () => {
     cost: 30,
     stock: 20,
     minStockAlert: 10,
+    unitsPerPack: 0,
     unit: units[0]?.name || 'แก้ว',
     status: 'active',
     image: DEFAULT_PRODUCT_IMAGE,
@@ -273,6 +275,7 @@ export const ProductsView: React.FC = () => {
       cost: 25,
       stock: 30,
       minStockAlert: 10,
+      unitsPerPack: 0,
       unit: units[0]?.name || 'แก้ว',
       status: 'active',
       image: DEFAULT_PRODUCT_IMAGE,
@@ -284,6 +287,7 @@ export const ProductsView: React.FC = () => {
     setCostInput('25');
     setStockInput('30');
     setMinStockInput('10');
+    setUnitsPerPackInput('0');
     setShowInlineAddCategory(false);
     setShowInlineAddUnit(false);
     setShowInlineAddNote(false);
@@ -302,6 +306,7 @@ export const ProductsView: React.FC = () => {
       cost: p.cost,
       stock: p.stock,
       minStockAlert: p.minStockAlert,
+      unitsPerPack: p.unitsPerPack || 0,
       unit: p.unit,
       status: p.status,
       image: p.image,
@@ -315,6 +320,7 @@ export const ProductsView: React.FC = () => {
     setCostInput(String(p.cost));
     setStockInput(String(p.stock));
     setMinStockInput(String(p.minStockAlert));
+    setUnitsPerPackInput(String(p.unitsPerPack || 0));
     setIsAddProductModalOpen(true);
   };
 
@@ -326,6 +332,7 @@ export const ProductsView: React.FC = () => {
       cost: Number(costInput) || 0,
       stock: Number.parseInt(stockInput, 10) || 0,
       minStockAlert: Number.parseInt(minStockInput, 10) || 0,
+      unitsPerPack: Number.parseInt(unitsPerPackInput, 10) || 0,
     };
     if (editingProduct) {
       updateProduct(editingProduct.id, productData);
@@ -1120,7 +1127,7 @@ export const ProductsView: React.FC = () => {
               </div>
 
               {/* Stock & Alert Level */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     จำนวนสต็อกเริ่มต้น
@@ -1155,6 +1162,26 @@ export const ProductsView: React.FC = () => {
                     onBlur={() => setMinStockInput((value) => value || '0')}
                     className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400"
                   />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    จำนวนในแพ็ค
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="1000000"
+                    step="1"
+                    value={unitsPerPackInput}
+                    onFocus={(e) => e.currentTarget.select()}
+                    onChange={(e) => {
+                      const value = normalizeNumberInput(e.target.value, false);
+                      if (value !== null && (value === '' || Number(value) <= 1_000_000)) setUnitsPerPackInput(value);
+                    }}
+                    onBlur={() => setUnitsPerPackInput((value) => value || '0')}
+                    className="w-full appearance-none bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                  <p className="mt-1 text-[10px] text-slate-500">0 = ไม่คำนวณเป็นแพ็ค</p>
                 </div>
               </div>
 

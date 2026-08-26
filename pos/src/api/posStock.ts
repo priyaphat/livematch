@@ -55,6 +55,7 @@ export interface POSStockBatchRecord {
   mode: 'in' | 'out' | 'adjust';
   note: string;
   supplierId?: string;
+  externalReferenceNo?: string;
   supplierName?: string;
   discountType: 'none' | 'amount' | 'percent';
   discountRateBps: number;
@@ -87,6 +88,7 @@ export interface POSStockBatchInput {
   mode: 'in' | 'out' | 'adjust';
   note: string;
   supplierId?: string;
+  externalReferenceNo?: string;
   discountType?: 'none' | 'amount' | 'percent';
   discountAmountSatang?: number;
   discountRateBps?: number;
@@ -95,6 +97,7 @@ export interface POSStockBatchInput {
     quantity: number;
     targetQuantity?: number;
     costSatang?: number;
+    totalValueSatang?: number;
     note?: string;
   }>;
 }

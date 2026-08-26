@@ -67,6 +67,7 @@ export const StockView: React.FC = () => {
   // Batch Operation Modal state
   const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | null>(null);
   const [batchDocRef, setBatchDocRef] = useState<string>('');
+  const [batchExternalReference, setBatchExternalReference] = useState<string>('');
   const [batchSupplier, setBatchSupplier] = useState<string>('');
   const [batchReason, setBatchReason] = useState<string>('');
   const [batchDiscountType, setBatchDiscountType] = useState<'amount' | 'percent'>('amount');
@@ -78,6 +79,7 @@ export const StockView: React.FC = () => {
       product: Product;
       quantity: number;
       cost: number;
+      totalValue: number;
       note?: string;
     }>
   >([]);
@@ -160,6 +162,7 @@ export const StockView: React.FC = () => {
     return batchSummaries.filter((b) => {
       const matchSearch =
         b.referenceNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (b.externalReferenceNo && b.externalReferenceNo.toLowerCase().includes(searchQuery.toLowerCase())) ||
         b.reason.toLowerCase().includes(searchQuery.toLowerCase()) ||
         (b.supplierName && b.supplierName.toLowerCase().includes(searchQuery.toLowerCase())) ||
         b.performedBy.toLowerCase().includes(searchQuery.toLowerCase());
@@ -176,6 +179,9 @@ export const StockView: React.FC = () => {
     const timestamp = Date.now().toString().slice(-6);
     const prefix = mode === 'in' ? 'RCV' : mode === 'out' ? 'OUT' : 'ADJ';
     setBatchDocRef(`${prefix}-${timestamp}`);
+    setBatchExternalReference('');
+    setPickerSearch('');
+    setPickerCategory('all');
     setBatchModalMode(mode);
     setBatchSupplier(supplierId || suppliers[0]?.id || '');
     setBatchDiscountType('amount');
@@ -189,12 +195,14 @@ export const StockView: React.FC = () => {
     );
 
     if (initialProduct) {
+      const quantity = mode === 'adjust' ? initialProduct.stock : mode === 'in' ? 10 : 1;
       setBatchItems([
         {
           productId: initialProduct.id,
           product: initialProduct,
-          quantity: mode === 'adjust' ? initialProduct.stock : mode === 'in' ? 10 : 1,
+          quantity,
           cost: initialProduct.cost,
+          totalValue: mode === 'in' ? quantity * initialProduct.cost : 0,
           note: '',
         },
       ]);
@@ -235,6 +243,7 @@ export const StockView: React.FC = () => {
           product,
           quantity: batchModalMode === 'adjust' ? product.stock : batchModalMode === 'in' ? 10 : 1,
           cost: product.cost,
+          totalValue: batchModalMode === 'in' ? 10 * product.cost : 0,
           note: '',
         },
       ];
@@ -249,7 +258,7 @@ export const StockView: React.FC = () => {
   // Update Item in Batch
   const handleUpdateBatchItem = (
     productId: string,
-    updates: Partial<{ quantity: number; cost: number; note: string }>
+    updates: Partial<{ quantity: number; cost: number; totalValue: number; note: string }>
   ) => {
     setBatchItems((prev) =>
       prev.map((item) => (item.productId === productId ? { ...item, ...updates } : item))
@@ -268,12 +277,14 @@ export const StockView: React.FC = () => {
         productId: it.productId,
         quantity: it.quantity,
         cost: it.cost,
+        totalValue: it.totalValue,
         note: it.note,
       })),
       supplierId: batchModalMode === 'in' ? batchSupplier : undefined,
       supplierName: batchModalMode === 'in' ? suppliers.find((supplier) => supplier.id === batchSupplier)?.name : undefined,
       reason: batchReason,
       referenceNo: batchDocRef,
+      externalReferenceNo: batchModalMode === 'in' ? batchExternalReference : undefined,
       discountType: batchModalMode === 'in' ? batchDiscountType : 'amount',
       discountAmountSatang: batchModalMode === 'in' && batchDiscountType === 'amount' ? discountSatang : 0,
       discountRateBps: batchModalMode === 'in' && batchDiscountType === 'percent' ? Math.round(discountNumber * 100) : 0,
@@ -313,9 +324,30 @@ export const StockView: React.FC = () => {
     });
   }, [products, pickerCategory, pickerSearch]);
 
+  const handlePickerBarcodeEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.key !== 'Enter') return;
+    const barcode = pickerSearch.trim().toLowerCase();
+    if (!barcode) return;
+    const matches = products.filter((product) => product.barcode?.trim().toLowerCase() === barcode);
+    event.preventDefault();
+    if (matches.length === 0) {
+      showToast(`ไม่พบสินค้าบาร์โค้ด ${pickerSearch.trim()}`, 'warning');
+      return;
+    }
+    if (matches.length > 1) {
+      showToast(`บาร์โค้ด ${pickerSearch.trim()} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, 'error');
+      return;
+    }
+    handleAddProductToBatch(matches[0]);
+    setPickerSearch('');
+  };
+
   // Batch Totals Calculation inside Modal
   const batchTotalUnits = batchItems.reduce((sum, it) => sum + (batchModalMode === 'adjust' ? 1 : it.quantity), 0);
-  const batchGrossSatang = batchItems.reduce((sum, it) => sum + it.quantity * Math.round(it.cost * 100), 0);
+  const batchGrossSatang = batchItems.reduce(
+    (sum, it) => sum + Math.round((batchModalMode === 'in' ? it.totalValue : it.quantity * it.cost) * 100),
+    0
+  );
   const batchTotalValue = batchGrossSatang / 100;
   const discountNumber = Math.max(0, Number.parseFloat(batchDiscountInput) || 0);
   const discountSatang = batchModalMode === 'in'
@@ -808,6 +840,11 @@ export const StockView: React.FC = () => {
                               • ซัพพลายเออร์: {batch.supplierName}
                             </span>
                           )}
+                          {batch.externalReferenceNo && (
+                            <span className="text-blue-700 dark:text-blue-400 ml-2 font-medium">
+                              • เลขใบ/เลขบิล: {batch.externalReferenceNo}
+                            </span>
+                          )}
                         </div>
 
                         <div className="flex items-center gap-4 text-xs text-slate-500 dark:text-slate-400">
@@ -1115,7 +1152,7 @@ export const StockView: React.FC = () => {
             {/* Document Details Inputs */}
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 shrink-0">
               {batchModalMode === 'in' && (
-                <div className="sm:col-span-4">
+                <div className="sm:col-span-3">
                   <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                     ซัพพลายเออร์ / ผู้จัดส่งคู่ค้า
                   </label>
@@ -1134,7 +1171,24 @@ export const StockView: React.FC = () => {
                 </div>
               )}
 
-              <div className={batchModalMode === 'in' ? 'sm:col-span-4' : 'sm:col-span-12'}>
+              {batchModalMode === 'in' && (
+                <div className="sm:col-span-3">
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    เลขที่ใบส่งของ / เลขบิล
+                  </label>
+                  <input
+                    id="stock-in-external-reference-input"
+                    type="text"
+                    maxLength={120}
+                    value={batchExternalReference}
+                    onChange={(e) => setBatchExternalReference(e.target.value)}
+                    placeholder="เช่น INV-2569-001"
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500"
+                  />
+                </div>
+              )}
+
+              <div className={batchModalMode === 'in' ? 'sm:col-span-3' : 'sm:col-span-12'}>
                 <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                   เหตุผลการทำรายการ / หมายเลขอ้างอิง PO / หมายเหตุ
                 </label>
@@ -1151,7 +1205,7 @@ export const StockView: React.FC = () => {
               </div>
 
               {batchModalMode === 'in' && (
-                <div className="sm:col-span-4">
+                <div className="sm:col-span-3">
                   <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
                     ส่วนลดท้ายเอกสาร
                   </label>
@@ -1221,9 +1275,12 @@ export const StockView: React.FC = () => {
                       <div className="relative flex-1">
                         <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                         <input
+                          id="stock-batch-product-search"
                           type="text"
+                          autoFocus
                           value={pickerSearch}
                           onChange={(e) => setPickerSearch(e.target.value)}
+                          onKeyDown={handlePickerBarcodeEnter}
                           placeholder="ค้นหาชื่อสินค้า, SKU, บาร์โค้ดเพื่อเลือก..."
                           className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-yellow-500"
                         />
@@ -1421,22 +1478,23 @@ export const StockView: React.FC = () => {
                             {batchModalMode === 'in' && (
                               <div>
                                 <span className="text-[10px] text-slate-500 dark:text-slate-400 block mb-0.5">
-                                  ต้นทุน/หน่วย (฿)
+                                  มูลค่ารวม (฿)
                                 </span>
                                 <input
+                                  aria-label={`มูลค่ารวม ${item.product.name}`}
                                   type="number"
                                   step="0.01"
                                   min="0"
-                                  value={item.cost}
+                                  value={item.totalValue}
                                   onFocus={(e) => e.currentTarget.select()}
                                   onChange={(e) => {
                                     const normalized = normalizeDecimalInput(e.currentTarget.value);
                                     if (e.currentTarget.value !== normalized) e.currentTarget.value = normalized;
                                     handleUpdateBatchItem(item.productId, {
-                                      cost: Number.parseFloat(normalized) || 0,
+                                      totalValue: Number.parseFloat(normalized) || 0,
                                     });
                                   }}
-                                  className="w-20 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-2 py-1.5 text-xs text-slate-900 dark:text-white font-mono text-right focus:outline-none focus:border-yellow-500"
+                                  className="w-24 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-2 py-1.5 text-xs text-slate-900 dark:text-white font-mono text-right focus:outline-none focus:border-yellow-500"
                                 />
                               </div>
                             )}
@@ -1502,10 +1560,14 @@ export const StockView: React.FC = () => {
                               </div>
                             ) : (
                               <div className="text-right min-w-[90px]">
-                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่ารวม</span>
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 block">
+                                  {batchModalMode === 'in' ? 'ต้นทุน/หน่วย (คำนวณ)' : 'มูลค่ารวม'}
+                                </span>
                                 <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">
                                   {formatCurrency(
-                                    item.quantity * item.cost,
+                                    batchModalMode === 'in'
+                                      ? item.totalValue / Math.max(1, item.quantity)
+                                      : item.quantity * item.cost,
                                     settings.currencySymbol,
                                     settings.decimalPlaces
                                   )}
@@ -1769,12 +1831,18 @@ export const StockView: React.FC = () => {
 
             <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shrink-0">
               {selectedBatchForDetails.type === 'in' && (
-                <div className="sm:col-span-4">
+                <div className="sm:col-span-3">
                   <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block">ซัพพลายเออร์ / ผู้จัดส่งคู่ค้า</span>
                   <span className="font-bold text-slate-900 dark:text-white">{selectedBatchForDetails.supplierName || 'ไม่ระบุซัพพลายเออร์'}</span>
                 </div>
               )}
-              <div className={selectedBatchForDetails.type === 'in' ? 'sm:col-span-8' : 'sm:col-span-12'}>
+              {selectedBatchForDetails.type === 'in' && (
+                <div className="sm:col-span-3">
+                  <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block">เลขที่ใบส่งของ / เลขบิล</span>
+                  <span className="font-mono font-bold text-slate-900 dark:text-white">{selectedBatchForDetails.externalReferenceNo || '-'}</span>
+                </div>
+              )}
+              <div className={selectedBatchForDetails.type === 'in' ? 'sm:col-span-6' : 'sm:col-span-12'}>
                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400 block">เหตุผลการทำรายการ / หมายเหตุ</span>
                 <span className="font-medium text-slate-900 dark:text-white">{selectedBatchForDetails.reason || '-'}</span>
               </div>

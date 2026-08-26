@@ -859,7 +859,7 @@ func authorizePOSPath(w http.ResponseWriter, user adminUser, method, path string
 	if path == "reports/export-authorize" {
 		return requirePOSPermission(w, user, "reports") && requirePOSPermission(w, user, "report_export")
 	}
-	if path == "dashboard" || path == "reports" {
+	if path == "dashboard" || path == "reports" || strings.HasPrefix(path, "reports/") {
 		return requirePOSPermission(w, user, "reports")
 	}
 	if strings.HasPrefix(path, "sales/") && strings.HasSuffix(path, "/void") {

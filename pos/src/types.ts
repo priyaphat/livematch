@@ -27,6 +27,7 @@ export interface Product {
   cost: number;
   stock: number;
   minStockAlert: number;
+  unitsPerPack?: number;
   image: string;
   description?: string;
   unit: string;
@@ -124,6 +125,7 @@ export interface BatchStockOperationItem {
   productId: string;
   quantity: number; // for in/out: quantity, for adjust: target new stock level
   cost?: number;
+  totalValue?: number;
   note?: string;
 }
 
@@ -136,6 +138,7 @@ export interface StockBatchSummary {
   totalCostValue: number;
   reason: string;
   supplierName?: string;
+  externalReferenceNo?: string;
   performedBy: string;
   createdAt: string;
   items: StockMovement[];

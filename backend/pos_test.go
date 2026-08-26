@@ -121,6 +121,27 @@ func TestWeightedAverageCost(t *testing.T) {
 	}
 }
 
+func TestUnitCostFromLineTotalSatang(t *testing.T) {
+	tests := []struct {
+		name       string
+		lineTotal  int64
+		quantity   int
+		wantSatang int64
+	}{
+		{name: "800 baht divided by 10", lineTotal: 80000, quantity: 10, wantSatang: 8000},
+		{name: "half satang rounds up", lineTotal: 5, quantity: 2, wantSatang: 3},
+		{name: "below half rounds down", lineTotal: 4, quantity: 3, wantSatang: 1},
+		{name: "invalid zero quantity", lineTotal: 100, quantity: 0, wantSatang: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unitCostFromLineTotalSatang(tt.lineTotal, tt.quantity); got != tt.wantSatang {
+				t.Fatalf("unitCostFromLineTotalSatang(%d,%d)=%d, want %d", tt.lineTotal, tt.quantity, got, tt.wantSatang)
+			}
+		})
+	}
+}
+
 func TestAllocateStockDiscount(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -152,6 +173,16 @@ func TestAllocateStockDiscount(t *testing.T) {
 func TestAllocateStockDiscountRejectsExcess(t *testing.T) {
 	if _, err := allocateStockDiscount([]int64{100}, []int{1}, 101); err == nil {
 		t.Fatal("discount exceeding gross total should be rejected")
+	}
+}
+
+func TestAllocateStockDiscountByExactLineTotals(t *testing.T) {
+	got, err := allocateStockDiscountByLineTotals([]int64{100, 250}, []int{3, 2}, 5)
+	if err != nil {
+		t.Fatalf("allocateStockDiscountByLineTotals() error: %v", err)
+	}
+	if got[0] != 3 || got[1] != 2 {
+		t.Fatalf("allocation=%v, want [3 2]", got)
 	}
 }
 
