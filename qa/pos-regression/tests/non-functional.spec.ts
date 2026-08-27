@@ -24,6 +24,56 @@ test('POS-NF-002 API read ทั่วไปไม่เกิน 1 วินา
   await api.dispose();
 });
 
+test('POS-NF-003 เมนูด้านล่างสลับซ้ายขวาด้วย animation และจำตำแหน่งได้', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => window.localStorage.setItem('livematch_pos_dock_side', 'left'));
+  await page.reload();
+
+  const dock = page.locator('#bottom-dock-navigation');
+  await expect(dock).toHaveAttribute('data-dock-side', 'left');
+  const leftBox = await dock.boundingBox();
+  expect(leftBox).not.toBeNull();
+  const transitionDuration = await dock.evaluate((element) => getComputedStyle(element).transitionDuration);
+  expect(transitionDuration).not.toBe('0s');
+
+  await page.getByRole('button', { name: 'เลื่อนเมนูไปด้านขวา' }).click();
+  await expect(dock).toHaveAttribute('data-dock-side', 'right');
+  await expect(page.getByRole('button', { name: 'เลื่อนเมนูไปด้านซ้าย' })).toBeVisible();
+  await page.waitForTimeout(350);
+  const rightBox = await dock.boundingBox();
+  expect(rightBox).not.toBeNull();
+  expect(rightBox!.x).toBeGreaterThan(leftBox!.x);
+
+  await page.reload();
+  await expect(page.locator('#bottom-dock-navigation')).toHaveAttribute('data-dock-side', 'right');
+});
+
+test('POS-NF-004 @responsive เมนูด้านล่าง wrap เพิ่มความสูงและไม่มี scrollbar แนวนอน', async ({ page }) => {
+  await page.goto('/');
+  const dock = page.locator('#bottom-dock-navigation');
+  await expect(dock).toBeVisible();
+
+  const layout = await dock.evaluate((element) => {
+    const itemContainer = element.querySelector(':scope > div');
+    const itemButtons = Array.from(itemContainer?.querySelectorAll(':scope > button') || []);
+    const rowTops = new Set(itemButtons.map((button) => button.offsetTop));
+    return {
+      dockHeight: element.getBoundingClientRect().height,
+      flexWrap: itemContainer ? getComputedStyle(itemContainer).flexWrap : '',
+      overflowX: itemContainer ? getComputedStyle(itemContainer).overflowX : '',
+      rowCount: rowTops.size,
+      pageScrollWidth: document.documentElement.scrollWidth,
+      pageClientWidth: document.documentElement.clientWidth,
+    };
+  });
+
+  expect(layout.flexWrap).toBe('wrap');
+  expect(layout.overflowX).toBe('visible');
+  expect(layout.rowCount).toBe(2);
+  expect(layout.dockHeight).toBeGreaterThan(66);
+  expect(layout.pageScrollWidth).toBeLessThanOrEqual(layout.pageClientWidth + 1);
+});
+
 test('POS-CAT-006 modal หมวดหมู่และหน่วยนับไม่ล้นกรอบบน Desktop/Mobile', async ({ page }) => {
   for (const viewport of [{ width: 700, height: 800 }, { width: 390, height: 844 }]) {
     await page.setViewportSize(viewport);

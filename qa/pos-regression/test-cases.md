@@ -57,6 +57,7 @@
 | POS-RCPT-001 | P1 | Paid sale | เปิด/พิมพ์ใบเสร็จ | ไม่มีสาขา; มีสินค้า VAT วิธีชำระ ผู้ขาย ยอดถูก | Manual | Chromium/printer |
 | POS-BILL-001 | P1 | มีประวัติชำระเงิน | กดดูรายละเอียดจากแท็บประวัติการขาย | modal แสดงลูกค้า วันเวลา ผู้รับชำระ ช่องทาง รายการ Match/POS ยอดรวม เงินรับ/ทอนหรือเลขอ้างอิงครบ | Playwright | Chromium |
 | POS-BILL-002 | P1 | มีประวัติอย่างน้อย 21 รายการ | ค้นหา กรอง และเปลี่ยนหน้าประวัติการขาย | API แบ่งหน้าละ 20, จำนวนรวม/ช่วงรายการถูก และตัวกรองทำงานกับข้อมูลทุกหน้า | Playwright | Chromium/API |
+| POS-BILL-003 | P1 | เลือกยอดพักอย่างน้อย 1 บิล | กดชำระเงินทันทีและตรวจ Modal | แสดงรายการ Match/POS และสินค้าในแต่ละบิลครบ; Desktop แบ่งรายละเอียดซ้าย/ชำระเงินขวา และ Mobile เรียงหนึ่งคอลัมน์ | Manual | Chromium |
 | POS-XMATCH-001 | P1 | Match-only linked member | เปิด receivables POS | เห็น Match charge แม้ POS = 0 | Playwright | API |
 | POS-XMATCH-002 | P1 | Multiple linked players | เปิด receivables | สมาชิกมีค่า Match ทุกคนขึ้น; guest ไม่รวม | Playwright | API |
 | POS-XMATCH-003 | P1 | Match + shuttle + POS | เปิดรายละเอียดสองระบบ | ค่าสนาม ลูกแบด session และชื่อสินค้าแสดงครบ | Vitest | Match |
@@ -73,6 +74,8 @@
 | POS-DASH-002 | P2 | Seed transactions | สลับ 1d/1w/1m บนหน้า Dashboard | หัวข้อและการ์ดอัปเดตตรง API ทุกช่วง | Playwright | Chromium |
 | POS-DASH-003 | P2 | Dashboard มีบิลและหมวดหมู่ | ตรวจค่าเฉลี่ยและหัวข้อหมวดหมู่ | แสดงค่าเฉลี่ย 2 ตำแหน่งและจำนวนหมวดหมู่จริง | Playwright | Chromium |
 | POS-DASH-004 | P2 | Dashboard loaded | กดทางลัดสต็อกและประวัติบิล | เปิดหน้าปลายทางถูกต้อง | Playwright | Chromium |
+| POS-NF-003 | P2 | เปิดหน้า POS และเห็นเมนูด้านล่าง | กดปุ่มลูกศรสลับเมนูซ้าย/ขวา | เมนูเลื่อนด้วย animation, ปุ่มย้ายไปอยู่ขอบฝั่งตรงข้าม และจำตำแหน่งเมื่อ reload | Playwright | Chromium |
+| POS-NF-004 | P2 | เปิด POS บนหน้าจอแคบ | ตรวจเมนูด้านล่างและสลับตำแหน่ง | รายการเมนู wrap เพิ่มความสูงอัตโนมัติ ไม่มี scrollbar แนวนอน และหน้าไม่เกิด horizontal overflow | Playwright | Chromium Mobile |
 | POS-DASH-005 | P2 | Mobile viewport | เปิด Dashboard และสลับช่วงเวลา | ไม่มี horizontal overflow และ controls ไม่ถูก nav บัง | Playwright | Chromium Mobile |
 | POS-DASH-006 | P3 | Dashboard loaded | ใช้ Tab/Enter กับการ์ดและบิลล่าสุด | ทุกส่วนที่คลิกได้มี button/link semantics และ keyboard focus | Playwright | Chromium |
 | POS-RPT-001 | P2 | Seed reports | วัน/สัปดาห์/เดือน/custom + paginate | ยอด VAT top products payment methods ตรง DB | Playwright | API |

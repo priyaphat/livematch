@@ -1,5 +1,45 @@
 # LiveMatch POS Full-System Design QA
 
+## Bottom navigation wrap addendum — 2026-08-27
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-10d78c32-0310-4595-bdf5-c90ab25dec1a.png`
+- Implementation screenshot: `D:/VibeStudio/LiveMatch/artifacts/pos-bottom-nav-wrap-390-dark-full.png`
+- Focused paired comparison: `D:/VibeStudio/LiveMatch/artifacts/pos-bottom-nav-wrap-comparison.png`
+- Viewport: 390 × 844 CSS px, device scale factor 1
+- Source pixels: 612 × 75; focused implementation pixels: 366 × 122; compared without density scaling because the requested difference is responsive reflow rather than one-to-one frame size
+- State: POS authenticated, dark theme, bottom navigation docked right, all seven permitted menu items visible
+
+### Findings
+
+- No actionable P0, P1, or P2 issues remain.
+- The source's internal vertical scrollbar is removed. At 390px the seven menu items wrap into exactly two rows and the Dock grows from its single-row height to 122px.
+- The page remains 390px wide with `scrollWidth === clientWidth`; the wrap container reports `overflow-x: visible`, so there is no horizontal or vertical scrollbar inside the Dock.
+- The existing typography, colors, active red state, badges, icons, radius, shadow, and left/right toggle remain consistent with the source component.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing Thai labels, font size, weight, nowrap behavior, and active-state hierarchy are preserved.
+- Spacing and layout rhythm: fixed-width 68px menu buttons produce a balanced 4+3 two-row layout; the Dock height expands naturally.
+- Colors and visual tokens: dark surface, slate border, red active state, yellow icon accent, and status badge colors remain unchanged.
+- Image and icon fidelity: existing Lucide icons are preserved; no new raster asset, custom SVG, CSS drawing, or placeholder was introduced.
+- Copy and content: all seven menu labels and both accessible left/right toggle labels remain unchanged.
+
+### Interaction and responsive checks
+
+- [x] Left/right slide still uses the existing 300ms animation.
+- [x] Toggle remains reachable at the outer edge of the Dock.
+- [x] Menu items wrap to two rows at 390px.
+- [x] No internal scrollbar and no page-level horizontal overflow.
+- [x] Browser console error log is empty.
+
+### Comparison history
+
+- Earlier finding [P2]: the menu used `overflow-x-auto`, showing an internal scrollbar and hiding items within a fixed-height row.
+- Fix: replaced horizontal scrolling with `flex-wrap`, allowed automatic Dock height, and fixed each menu item at 68px to avoid an unnecessary third row.
+- Post-fix evidence: `artifacts/pos-bottom-nav-wrap-comparison.png`.
+
+final result: passed
+
 - Source visual truth: `C:/Users/OTAMOS/Desktop/livematch-pos/` rendered from the Stitch React app at `http://localhost:3000`
 - Implementation: `frontend/src/pages/POSPage.vue` rendered from the production Vue component with realistic mock API data
 - Mobile viewport: 390 × 844 CSS px, device scale factor 1
