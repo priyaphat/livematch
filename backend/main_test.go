@@ -809,6 +809,31 @@ func TestPlayerPaymentSummaryIncludesShuttleBrandDetailsAndCompactMatchHistory(t
 	}
 }
 
+func TestPlayerPaymentSummaryChargesOnlyAmountAddedAfterResume(t *testing.T) {
+	state := SessionState{
+		Session:  SessionInfo{Type: "liveMatch"},
+		Settings: Settings{EntryFee: 100, ShuttleFee: 40, ShuttleBrands: []ShuttleBrand{{ID: "default", Name: "ลูกแบด", Price: 40, Active: true}}},
+		Players:  []Player{{ID: 1, Name: "Member", Active: true, SettledAmountSatang: 10000}},
+	}
+
+	before := playerPaymentSummary(state, state.Players[0])
+	if before.FullTotalSatang != 10000 || before.SettledAmountSatang != 10000 || before.TotalSatang != 0 {
+		t.Fatalf("expected no new balance immediately after resume, got %#v", before)
+	}
+
+	state.History = []Match{{ID: 1, A1: 1, Status: "finished", Shuttles: 1, ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "default", Number: 1}}}}
+	afterGame := playerPaymentSummary(state, state.Players[0])
+	if afterGame.FullTotalSatang != 14000 || afterGame.SettledAmountSatang != 10000 || afterGame.TotalSatang != 4000 {
+		t.Fatalf("expected only the added 40 baht to remain, got %#v", afterGame)
+	}
+
+	state.Players[0].SettledAmountSatang += afterGame.TotalSatang
+	secondPayment := playerPaymentSummary(state, state.Players[0])
+	if secondPayment.TotalSatang != 0 || secondPayment.SettledAmountSatang != 14000 {
+		t.Fatalf("expected the second payment to settle the cumulative total, got %#v", secondPayment)
+	}
+}
+
 func TestLegacyMatchUsesSnapshottedShuttlePrice(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{ShuttleFee: 120, ShuttleBrands: []ShuttleBrand{{ID: "default", Price: 120, Active: true}}},

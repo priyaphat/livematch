@@ -176,6 +176,7 @@ export const ProductsView: React.FC = () => {
     unitsPerPack: 0,
     unit: units[0]?.name || 'แก้ว',
     status: 'active',
+    isPopular: false,
     image: DEFAULT_PRODUCT_IMAGE,
     description: '',
     noteOptionIds: [],
@@ -278,6 +279,7 @@ export const ProductsView: React.FC = () => {
       unitsPerPack: 0,
       unit: units[0]?.name || 'แก้ว',
       status: 'active',
+      isPopular: false,
       image: DEFAULT_PRODUCT_IMAGE,
       description: '',
       noteOptionIds: noteOptions.slice(0, 4).map((n) => n.id), // Default to first few common note options
@@ -309,6 +311,7 @@ export const ProductsView: React.FC = () => {
       unitsPerPack: p.unitsPerPack || 0,
       unit: p.unit,
       status: p.status,
+      isPopular: Boolean(p.isPopular),
       image: p.image,
       description: p.description || '',
       noteOptionIds: p.noteOptionIds || [],
@@ -1042,6 +1045,16 @@ export const ProductsView: React.FC = () => {
                   </select>
                 </div>
               </div>
+
+              <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-yellow-300 bg-yellow-50 p-3 text-xs font-bold text-slate-800 dark:border-yellow-500/40 dark:bg-yellow-950/20 dark:text-yellow-200">
+                <input
+                  type="checkbox"
+                  checked={Boolean(formData.isPopular)}
+                  onChange={(e) => setFormData({ ...formData, isPopular: e.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300 accent-red-600"
+                />
+                <span>แสดงสินค้านี้ในหมวด “สินค้ายอดนิยม” บนหน้าการขาย</span>
+              </label>
 
               {/* Inline Add Category Box */}
               {showInlineAddCategory && (

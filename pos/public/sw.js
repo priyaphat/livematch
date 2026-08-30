@@ -1,4 +1,4 @@
-const CACHE_NAME = 'livematch-pos-pwa-v1'
+const CACHE_NAME = 'livematch-pos-pwa-v2'
 const APP_SHELL = [
   '/',
   '/manifest.webmanifest',

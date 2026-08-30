@@ -15,6 +15,9 @@ import {
   ExternalLink,
   QrCode,
   LogOut,
+  Keyboard,
+  KeyboardOff,
+  LoaderCircle,
 } from "lucide-react";
 
 interface NavbarProps {
@@ -37,6 +40,8 @@ export const Navbar: React.FC<NavbarProps> = ({
     theme,
     toggleTheme,
     openCustomerDisplayWindow,
+    customerDisplayStatus,
+    setHardwareKeyboardMode,
   } = usePos();
   const [currentTime, setCurrentTime] = useState<string>("");
   const [currentDate, setCurrentDate] = useState<string>("");
@@ -147,12 +152,24 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               id="nav-customer-display-btn"
               onClick={handleOpenCustomerDisplayWindow}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-gradient-to-r from-red-600/10 to-amber-500/10 hover:from-red-600/20 hover:to-amber-500/20 border border-red-200 dark:border-amber-500/30 text-red-700 dark:text-yellow-400 text-xs font-bold transition-all shadow-xs"
-              title="เปิดหน้าต่างจอฝั่งลูกค้า / Front Desktop (แสดงรายการ, ยอดเงิน & QR Code ให้ลูกค้าดู)"
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all shadow-xs ${customerDisplayStatus === 'connected' ? 'border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-300' : customerDisplayStatus === 'unsupported' ? 'border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300' : 'bg-gradient-to-r from-red-600/10 to-amber-500/10 hover:from-red-600/20 hover:to-amber-500/20 border-red-200 dark:border-amber-500/30 text-red-700 dark:text-yellow-400'}`}
+              title={customerDisplayStatus === 'connected' ? 'จอลูกค้าเชื่อมต่อแล้ว' : customerDisplayStatus === 'connecting' ? 'กำลังเชื่อมต่อจอลูกค้า' : customerDisplayStatus === 'unsupported' ? 'Presentation API ไม่รองรับ — ใช้หน้าต่างสำรอง' : 'เชื่อมต่อจอลูกค้าด้วย Presentation API'}
+              aria-label="เชื่อมต่อจอลูกค้า"
             >
-              <Tv className="w-4 h-4 text-red-600 dark:text-yellow-400 animate-pulse" />
+              {customerDisplayStatus === 'connecting' ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Tv className={`w-4 h-4 ${customerDisplayStatus === 'connected' ? 'text-emerald-600' : 'text-red-600 dark:text-yellow-400'}`} />}
             </button>
           </div>
+
+          <button
+            id="nav-hardware-keyboard-toggle-btn"
+            onClick={() => setHardwareKeyboardMode(!settings.hardwareKeyboardMode)}
+            className={`p-2 rounded-xl border transition-colors ${settings.hardwareKeyboardMode ? 'border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-500/40 dark:bg-sky-500/10 dark:text-sky-300' : 'border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400'}`}
+            title={settings.hardwareKeyboardMode ? 'โหมดคีย์บอร์ด USB เปิดอยู่ — แตะเพื่อเปิดคีย์บอร์ดบนหน้าจอ' : 'แตะเพื่อซ่อนคีย์บอร์ดบนหน้าจอและใช้คีย์บอร์ด USB'}
+            aria-label={settings.hardwareKeyboardMode ? 'เปิดคีย์บอร์ดบนหน้าจอ' : 'ใช้คีย์บอร์ด USB'}
+            aria-pressed={settings.hardwareKeyboardMode}
+          >
+            {settings.hardwareKeyboardMode ? <KeyboardOff className="h-4 w-4" /> : <Keyboard className="h-4 w-4" />}
+          </button>
 
           {/* Theme Mode Toggle Button (White Mode / Dark Mode) */}
           <button

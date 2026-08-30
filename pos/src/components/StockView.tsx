@@ -803,10 +803,10 @@ export const StockView: React.FC = () => {
                           <span
                             className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${
                               isStockIn
-                                ? 'bg-red-100 dark:bg-red-600/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-500/40'
+                                ? 'bg-emerald-100 dark:bg-emerald-600/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/40'
                                 : isStockOut
-                                ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-800 dark:text-yellow-400 border border-yellow-300 dark:border-yellow-500/40'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700'
+                                ? 'bg-red-100 dark:bg-red-600/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-500/40'
+                                : 'bg-orange-100 dark:bg-orange-600/20 text-orange-700 dark:text-orange-400 border border-orange-200 dark:border-orange-500/40'
                             }`}
                           >
                             {isStockIn ? (
@@ -981,10 +981,10 @@ export const StockView: React.FC = () => {
                           <span
                             className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                               m.type === 'in'
-                                ? 'bg-red-100 dark:bg-red-600/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-500/30'
+                                ? 'bg-emerald-100 dark:bg-emerald-600/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/30'
                                 : m.type === 'out'
-                                ? 'bg-yellow-100 dark:bg-yellow-500/20 text-yellow-800 dark:text-yellow-400 border border-yellow-300 dark:border-yellow-500/30'
-                                : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700'
+                                ? 'bg-red-100 dark:bg-red-600/20 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-500/30'
+                                : 'bg-orange-100 dark:bg-orange-600/20 text-orange-700 dark:text-orange-400 border border-orange-200 dark:border-orange-500/30'
                             }`}
                           >
                             {m.type === 'in' ? 'รับเข้า' : m.type === 'out' ? 'จ่ายออก' : 'ปรับยอด'}

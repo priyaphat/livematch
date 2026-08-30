@@ -8,6 +8,14 @@ export interface POSSoldProductsReport {
   items: Array<{ productId: string; name: string; quantity: number; billCount: number; revenueSatang: number }>;
   pagination: POSPagination;
 }
+export interface POSPurchasesReport {
+  range: POSReportRange; startDate: string; endDate: string;
+  summary: { purchaseCount: number; totalQuantity: number; grossTotalSatang: number; discountSatang: number; netTotalSatang: number };
+  items: POSPurchaseReportItem[];
+  pagination: POSPagination;
+}
+export interface POSPurchaseReportLine { productId: string; productName: string; productSku: string; quantity: number; unitCostSatang: number; grossTotalSatang: number; discountSatang: number; netTotalSatang: number }
+export interface POSPurchaseReportItem { id: string; referenceNo: string; supplierId: string; supplierCode: string; supplierName: string; externalReferenceNo: string; note: string; itemCount: number; totalQuantity: number; grossTotalSatang: number; discountSatang: number; netTotalSatang: number; createdAt: string; actorName: string; products: string; lines: POSPurchaseReportLine[] }
 export interface POSInventoryReport {
   asOf: string;
   items: Array<{ productId: string; name: string; category: string; unit: string; active: boolean; stockQuantity: number; stockStatus: 'normal' | 'low' | 'out'; unitsPerPack: number; fullPacks: number | null; remainderUnits: number | null; costSatang: number; costValueSatang: number; priceSatang: number; retailValueSatang: number }>;
@@ -93,6 +101,15 @@ export function getPOSSoldProductsReport(range: POSReportRange, startDate = '', 
   query.set('page', String(page));
   if (exportAll) query.set('exportAll', '1');
   return posRequest<POSSoldProductsReport>(`/api/admin/pos/reports/sold-products?${query}`);
+}
+
+export function getPOSPurchasesReport(range: POSReportRange, startDate = '', endDate = '', page = 1, exportAll = false, filters: { search?: string; supplierId?: string } = {}) {
+  const query = reportRangeQuery(range, startDate, endDate);
+  query.set('page', String(page));
+  if (filters.search) query.set('search', filters.search);
+  if (filters.supplierId) query.set('supplierId', filters.supplierId);
+  if (exportAll) query.set('exportAll', '1');
+  return posRequest<POSPurchasesReport>(`/api/admin/pos/reports/purchases?${query}`);
 }
 
 export function getPOSInventoryReport(filters: POSInventoryFilters, page = 1, exportAll = false) {

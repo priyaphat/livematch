@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { usePos } from "../context/PosContext";
 import { Product } from "../types";
-import { INITIAL_CATEGORIES } from "../data/mockData";
 import { formatCurrency } from "../utils/formatters";
 import { PaymentModal } from "./PaymentModal";
 import { CustomerCombobox, CustomerSuggestion } from "./CustomerCombobox";
@@ -29,7 +28,44 @@ import {
   Hash,
   Delete,
   UserPlus,
+  Star,
 } from "lucide-react";
+
+const POPULAR_CATEGORY = "__popular__";
+const BARCODE_INTER_KEY_MAX_MS = 450;
+const BARCODE_COMPLETION_DELAY_MS = 500;
+
+const THAI_KEYBOARD_TO_BARCODE: Record<string, string> = {
+  "ๅ": "1", "/": "2", "-": "3", "ภ": "4", "ถ": "5", "ุ": "6", "ึ": "7", "ค": "8", "ต": "9", "จ": "0",
+  "ๆ": "q", "ไ": "w", "ำ": "e", "พ": "r", "ะ": "t", "ั": "y", "ี": "u", "ร": "i", "น": "o", "ย": "p",
+  "ฟ": "a", "ห": "s", "ก": "d", "ด": "f", "เ": "g", "้": "h", "่": "j", "า": "k", "ส": "l",
+  "ผ": "z", "ป": "x", "แ": "c", "อ": "v", "ิ": "b", "ื": "n", "ท": "m",
+};
+
+const getBarcodeCharacter = (event: KeyboardEvent): string => {
+  const digitMatch = /^Digit([0-9])$/.exec(event.code);
+  if (digitMatch) return digitMatch[1];
+
+  const numpadMatch = /^Numpad([0-9])$/.exec(event.code);
+  if (numpadMatch) return numpadMatch[1];
+
+  const letterMatch = /^Key([A-Z])$/.exec(event.code);
+  if (letterMatch) return letterMatch[1].toLowerCase();
+
+  if (event.code === "Minus") return event.shiftKey ? "_" : "-";
+  if (event.code === "Period" || event.code === "NumpadDecimal") return ".";
+
+  const translatedThaiKey = THAI_KEYBOARD_TO_BARCODE[event.key];
+  if (translatedThaiKey) return translatedThaiKey;
+
+  return event.key.length === 1 && /^[0-9A-Za-z._-]$/.test(event.key)
+    ? event.key
+    : "";
+};
+
+const normalizeScannerText = (value: string): string => Array.from(value)
+  .map((character) => THAI_KEYBOARD_TO_BARCODE[character] ?? (/^[0-9A-Za-z._-]$/.test(character) ? character : ""))
+  .join("");
 
 export const PosView: React.FC = () => {
   const {
@@ -88,6 +124,8 @@ export const PosView: React.FC = () => {
   const prevCartLengthRef = useRef<number>(cart.length);
   const barcodeBufferRef = useRef("");
   const barcodeLastKeyAtRef = useRef(0);
+  const barcodeCaptureInputRef = useRef<HTMLInputElement>(null);
+  const captureScannerTextRef = useRef<(value: string) => void>(() => undefined);
 
   // Auto-scroll cart when new item is added
   useEffect(() => {
@@ -98,13 +136,59 @@ export const PosView: React.FC = () => {
   }, [cart.length]);
 
   useEffect(() => {
+    let barcodeCompletionTimer: number | undefined;
+
     const resetBarcodeBuffer = () => {
+      if (barcodeCompletionTimer !== undefined) {
+        window.clearTimeout(barcodeCompletionTimer);
+        barcodeCompletionTimer = undefined;
+      }
       barcodeBufferRef.current = "";
       barcodeLastKeyAtRef.current = 0;
+      if (barcodeCaptureInputRef.current) barcodeCaptureInputRef.current.value = "";
+    };
+
+    const completeBarcode = (now: number) => {
+      const barcode = barcodeBufferRef.current.trim();
+      const completedQuickly = barcode.length >= 4 && now - barcodeLastKeyAtRef.current <= BARCODE_COMPLETION_DELAY_MS + 100;
+      resetBarcodeBuffer();
+      if (!completedQuickly) return false;
+
+      const matches = products.filter(
+        (product) => product.status === "active" && product.barcode?.trim().toLowerCase() === barcode.toLowerCase(),
+      );
+      setSearchQuery("");
+      if (matches.length === 0) {
+        playBeep("alert");
+        showToast(`ไม่พบสินค้าบาร์โค้ด ${barcode}`, "warning");
+        return true;
+      }
+      if (matches.length > 1) {
+        playBeep("alert");
+        showToast(`บาร์โค้ด ${barcode} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, "error");
+        return true;
+      }
+      addToCart(matches[0]);
+      return true;
+    };
+
+    const scheduleBarcodeCompletion = () => {
+      if (barcodeCompletionTimer !== undefined) window.clearTimeout(barcodeCompletionTimer);
+      barcodeCompletionTimer = window.setTimeout(() => completeBarcode(performance.now()), BARCODE_COMPLETION_DELAY_MS);
+    };
+
+    captureScannerTextRef.current = (value: string) => {
+      if (barcodeBufferRef.current || !value) return;
+      const barcode = normalizeScannerText(value);
+      if (!barcode) return;
+      barcodeBufferRef.current = barcode;
+      barcodeLastKeyAtRef.current = performance.now();
+      scheduleBarcodeCompletion();
     };
 
     const handleBarcodeKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+      if (["Shift", "CapsLock", "NumLock", "ScrollLock"].includes(event.key)) return;
       if (isPaymentModalOpen || isHoldModalOpen || isCreateHoldMemberOpen || isDiscountModalOpen || quantityModalItem) {
         resetBarcodeBuffer();
         return;
@@ -113,57 +197,66 @@ export const PosView: React.FC = () => {
       const target = event.target instanceof HTMLElement ? event.target : null;
       const isEditable = Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'));
       const isSaleSearch = target?.id === "pos-search-input";
-      if (isEditable && !isSaleSearch) {
+      const isScannerCapture = target?.id === "pos-barcode-capture-input";
+      if (isEditable && !isSaleSearch && !isScannerCapture) {
         resetBarcodeBuffer();
         return;
       }
 
       const now = performance.now();
       if (event.key === "Enter" || event.key === "Tab") {
-        const barcode = barcodeBufferRef.current.trim();
-        const completedQuickly = barcode.length >= 4 && now - barcodeLastKeyAtRef.current <= 150;
-        resetBarcodeBuffer();
-        if (!completedQuickly) return;
-
-        const matches = products.filter(
-          (product) => product.status === "active" && product.barcode?.trim().toLowerCase() === barcode.toLowerCase(),
-        );
-        event.preventDefault();
-        setSearchQuery("");
-        if (matches.length === 0) {
-          playBeep("alert");
-          showToast(`ไม่พบสินค้าบาร์โค้ด ${barcode}`, "warning");
-          return;
-        }
-        if (matches.length > 1) {
-          playBeep("alert");
-          showToast(`บาร์โค้ด ${barcode} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, "error");
-          return;
-        }
-        addToCart(matches[0]);
+        if (completeBarcode(now)) event.preventDefault();
         return;
       }
 
-      if (event.key.length !== 1 || !/^[0-9A-Za-z._-]$/.test(event.key)) {
+      const barcodeCharacter = getBarcodeCharacter(event);
+      if (!barcodeCharacter) {
         resetBarcodeBuffer();
         return;
       }
-      barcodeBufferRef.current = now - barcodeLastKeyAtRef.current <= 120
-        ? barcodeBufferRef.current + event.key
-        : event.key;
+      barcodeBufferRef.current = now - barcodeLastKeyAtRef.current <= BARCODE_INTER_KEY_MAX_MS
+        ? barcodeBufferRef.current + barcodeCharacter
+        : barcodeCharacter;
       barcodeLastKeyAtRef.current = now;
+      scheduleBarcodeCompletion();
     };
 
     window.addEventListener("keydown", handleBarcodeKeyDown, true);
-    return () => window.removeEventListener("keydown", handleBarcodeKeyDown, true);
+    return () => {
+      resetBarcodeBuffer();
+      window.removeEventListener("keydown", handleBarcodeKeyDown, true);
+    };
   }, [addToCart, isCreateHoldMemberOpen, isDiscountModalOpen, isHoldModalOpen, isPaymentModalOpen, playBeep, products, quantityModalItem, showToast]);
+
+  useEffect(() => {
+    if (isPaymentModalOpen || isHoldModalOpen || isCreateHoldMemberOpen || isDiscountModalOpen || quantityModalItem) return;
+
+    const focusScannerCapture = () => {
+      const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const isEditing = Boolean(activeElement?.closest('input:not(#pos-barcode-capture-input), textarea, select, [contenteditable="true"]'));
+      if (!isEditing) barcodeCaptureInputRef.current?.focus({ preventScroll: true });
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      window.setTimeout(focusScannerCapture, 0);
+    };
+
+    const focusTimer = window.setTimeout(focusScannerCapture, 0);
+    document.addEventListener("pointerup", handlePointerUp, true);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("pointerup", handlePointerUp, true);
+    };
+  }, [isCreateHoldMemberOpen, isDiscountModalOpen, isHoldModalOpen, isPaymentModalOpen, quantityModalItem]);
 
   // Filter products by category and search
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
       if (p.status !== "active") return false;
       const matchCat =
-        selectedCategory === "all" || p.category === selectedCategory;
+        selectedCategory === "all" ||
+        (selectedCategory === POPULAR_CATEGORY ? Boolean(p.isPopular) : p.category === selectedCategory);
       const matchSearch =
         p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         p.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -371,6 +464,17 @@ export const PosView: React.FC = () => {
 
   return (
     <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative pb-16 lg:pb-0">
+      <input
+        ref={barcodeCaptureInputRef}
+        id="pos-barcode-capture-input"
+        type="text"
+        inputMode="none"
+        autoComplete="off"
+        tabIndex={-1}
+        aria-hidden="true"
+        className="fixed -left-[9999px] top-0 h-px w-px opacity-0 pointer-events-none"
+        onInput={(event) => captureScannerTextRef.current(event.currentTarget.value)}
+      />
       {/* Mobile Top View Switcher (Only visible on screens < lg) */}
       <div className="lg:hidden shrink-0 bg-slate-900 border-b border-slate-800 p-2 flex items-center gap-2">
         <button
@@ -459,6 +563,23 @@ export const PosView: React.FC = () => {
                   }`}
                 >
                   {products.filter((p) => p.status === "active").length}
+                </span>
+              </button>
+
+              {/* Popular products */}
+              <button
+                id="cat-filter-popular"
+                onClick={() => setSelectedCategory(POPULAR_CATEGORY)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border shrink-0 ${
+                  selectedCategory === POPULAR_CATEGORY
+                    ? "bg-amber-500 text-slate-950 border-amber-400 font-bold shadow-md shadow-amber-500/20 scale-[1.02]"
+                    : "bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/70 hover:bg-amber-100 dark:hover:bg-amber-950/50"
+                }`}
+              >
+                <Star className="w-4 h-4" />
+                <span>สินค้ายอดนิยม</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${selectedCategory === POPULAR_CATEGORY ? "bg-black/10 text-slate-950" : "bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300"}`}>
+                  {products.filter((p) => p.status === "active" && p.isPopular).length}
                 </span>
               </button>
 

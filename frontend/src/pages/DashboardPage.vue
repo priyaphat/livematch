@@ -28,10 +28,12 @@ const props = defineProps([
   'quietPlayers',
   'topWinners',
   'playerCost',
+  'playerOutstandingCost',
   'playerScore',
   'levelLabel',
   'selectAdminTab'
 ])
+const outstandingCost = (player) => props.playerOutstandingCost ? props.playerOutstandingCost(player) : (player.paid ? 0 : Number(props.playerCost(player) || 0))
 
 const exportLoading = ref(false)
 const exportError = ref('')
@@ -455,7 +457,7 @@ async function exportExcel() {
               <td class="px-3 py-3 text-center">{{ player.draws || 0 }}</td>
               <td class="px-3 py-3 text-center">{{ player.losses || 0 }}</td>
               <td class="px-3 py-3 text-right font-black">{{ money(playerCost(player)) }}</td>
-              <td class="px-4 py-3 text-right"><span class="rounded-full px-2.5 py-1 text-xs font-black" :class="player.paid ? 'bg-court-100 text-court-800 dark:bg-court-900/50 dark:text-court-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'">{{ player.paid ? 'จ่ายแล้ว' : 'ค้างชำระ' }}</span></td>
+              <td class="px-4 py-3 text-right"><span class="rounded-full px-2.5 py-1 text-xs font-black" :class="outstandingCost(player) <= 0 ? 'bg-court-100 text-court-800 dark:bg-court-900/50 dark:text-court-200' : 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'">{{ outstandingCost(player) <= 0 ? (player.paid ? 'จ่ายแล้ว' : 'ยังไม่มียอดเพิ่ม') : 'ค้างชำระ' }}</span></td>
             </tr>
           </tbody>
         </table>

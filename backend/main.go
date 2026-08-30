@@ -105,23 +105,25 @@ type Settings struct {
 }
 
 type Player struct {
-	ID               int    `json:"id"`
-	Name             string `json:"name"`
-	Games            int    `json:"games"`
-	Wins             int    `json:"wins"`
-	Draws            int    `json:"draws"`
-	Losses           int    `json:"losses"`
-	Shuttles         int    `json:"shuttles"`
-	Paid             bool   `json:"paid"`
-	Active           bool   `json:"active"`
-	Level            string `json:"level"`
-	Coupon           bool   `json:"coupon"`
-	ClubMember       bool   `json:"clubMember"`
-	MemberTypeID     string `json:"memberTypeId,omitempty"`
-	MemberTypeName   string `json:"memberTypeName,omitempty"`
-	MemberID         string `json:"memberId,omitempty"`
-	BillingAccountID string `json:"billingAccountId,omitempty"`
-	WaitStartedAt    string `json:"waitStartedAt"`
+	ID                      int    `json:"id"`
+	Name                    string `json:"name"`
+	Games                   int    `json:"games"`
+	Wins                    int    `json:"wins"`
+	Draws                   int    `json:"draws"`
+	Losses                  int    `json:"losses"`
+	Shuttles                int    `json:"shuttles"`
+	Paid                    bool   `json:"paid"`
+	Active                  bool   `json:"active"`
+	Level                   string `json:"level"`
+	Coupon                  bool   `json:"coupon"`
+	ClubMember              bool   `json:"clubMember"`
+	MemberTypeID            string `json:"memberTypeId,omitempty"`
+	MemberTypeName          string `json:"memberTypeName,omitempty"`
+	MemberID                string `json:"memberId,omitempty"`
+	BillingAccountID        string `json:"billingAccountId,omitempty"`
+	WaitStartedAt           string `json:"waitStartedAt"`
+	SettledAmountSatang     int64  `json:"settledAmountSatang"`
+	OutstandingAmountSatang int64  `json:"outstandingAmountSatang"`
 }
 
 type MemberType struct {
@@ -169,16 +171,20 @@ type PlayerMatchHistoryItem struct {
 }
 
 type PlayerPaymentSummary struct {
-	PlayerID     int                      `json:"playerId"`
-	PlayerName   string                   `json:"playerName"`
-	SessionType  string                   `json:"sessionType"`
-	Paid         bool                     `json:"paid"`
-	Items        []PlayerPaymentItem      `json:"items"`
-	MatchHistory []PlayerMatchHistoryItem `json:"matchHistory,omitempty"`
-	Total        int                      `json:"-"`
-	TotalTHB     float64                  `json:"totalThb"`
-	TotalSatang  int64                    `json:"totalSatang"`
-	Calculated   time.Time                `json:"calculatedAt"`
+	PlayerID            int                      `json:"playerId"`
+	PlayerName          string                   `json:"playerName"`
+	SessionType         string                   `json:"sessionType"`
+	Paid                bool                     `json:"paid"`
+	Items               []PlayerPaymentItem      `json:"items"`
+	MatchHistory        []PlayerMatchHistoryItem `json:"matchHistory,omitempty"`
+	Total               int                      `json:"-"`
+	TotalTHB            float64                  `json:"totalThb"`
+	TotalSatang         int64                    `json:"totalSatang"`
+	FullTotalTHB        float64                  `json:"fullTotalThb"`
+	FullTotalSatang     int64                    `json:"fullTotalSatang"`
+	SettledAmountTHB    float64                  `json:"settledAmountThb"`
+	SettledAmountSatang int64                    `json:"settledAmountSatang"`
+	Calculated          time.Time                `json:"calculatedAt"`
 }
 
 type ShuttleBrand struct {
@@ -476,6 +482,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players add column if not exists member_id text;
 		alter table players add column if not exists member_type_id text;
 		alter table players add column if not exists wait_started_at timestamptz default now();
+		alter table players add column if not exists settled_amount_satang bigint not null default 0;
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -1191,6 +1198,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_products add column if not exists image_data text not null default '';
 		alter table pos_products add column if not exists barcode text not null default '';
 		alter table pos_products add column if not exists description text not null default '';
+		alter table pos_products add column if not exists is_popular boolean not null default false;
 		alter table pos_products add column if not exists cost_satang bigint not null default 0 check (cost_satang >= 0);
 		alter table pos_products add column if not exists price_satang bigint not null default 0 check (price_satang >= 0);
 		alter table pos_products add column if not exists units_per_pack integer not null default 0 check (units_per_pack between 0 and 1000000);
@@ -1367,6 +1375,11 @@ func (a *app) migrate(ctx context.Context) error {
 		update billing_payment_allocations set amount_satang=amount_thb::bigint*100 where amount_satang=0 and amount_thb<>0;
 		update billing_payments bp set origin_system='pos' where bp.received_by_type='pos_staff' or (exists(select 1 from billing_payment_allocations a where a.payment_id=bp.id and a.source_type='pos') and not exists(select 1 from billing_payment_allocations a where a.payment_id=bp.id and a.source_type='match'));
 		alter table player_payment_events add column if not exists billing_payment_id text references billing_payments(id) on delete set null;
+		update players p set settled_amount_satang=coalesce((
+			select e.amount_satang from player_payment_events e
+			where e.session_id=p.session_id and e.player_id=p.id and e.paid
+			order by e.created_at desc,e.id desc limit 1
+		),0) where p.paid and p.settled_amount_satang=0;
 		create index if not exists idx_sessions_admin on sessions(admin_id);
 		create index if not exists idx_admin_sessions_admin on admin_sessions(admin_id);
 		create index if not exists idx_coin_ledger_admin on coin_ledger(admin_id);
@@ -1973,6 +1986,36 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "resume":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		for index := range state.Players {
+			player := &state.Players[index]
+			if player.ID != playerID || !player.Active {
+				continue
+			}
+			if !player.Paid {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นกลับมาเล่นแล้วหรือยังไม่ได้ชำระเงิน", "code": "player_not_paid"})
+				return
+			}
+			if matchListContainsPlayer(state.Pending, playerID) || matchListContainsPlayer(state.Queue, playerID) || matchListContainsPlayer(state.Live, playerID) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นอยู่ในรายการจับคู่ คิว หรือกำลังแข่งขัน", "code": "player_busy"})
+				return
+			}
+			if player.SettledAmountSatang == 0 {
+				player.SettledAmountSatang = playerPaymentSummary(state, *player).FullTotalSatang
+			}
+			player.Paid = false
+			player.Coupon = false
+			player.WaitStartedAt = time.Now().UTC().Format(time.RFC3339)
+			state.Couples = slices.DeleteFunc(state.Couples, func(c Couple) bool { return c.A == playerID || c.B == playerID })
+			a.respondSavedWithActivity(w, r, state, "resume_player", "player", strconv.Itoa(playerID), map[string]any{"settledAmountSatang": player.SettledAmountSatang})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
 	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "settle":
 		playerID, err := strconv.Atoi(parts[2])
 		if err != nil {
@@ -2111,6 +2154,13 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					logDetails["paid"] = *body.Paid
 					logDetails["paymentMethod"] = method
 					actionName = "toggle_player_paid"
+					if *body.Paid {
+						outstanding := playerPaymentSummary(state, state.Players[i]).TotalSatang
+						state.Players[i].SettledAmountSatang += outstanding
+						logDetails["paymentAmountSatang"] = outstanding
+					} else {
+						state.Players[i].SettledAmountSatang = 0
+					}
 					state.Players[i].Paid = *body.Paid
 					if *body.Paid {
 						state.Players[i].Coupon = false
@@ -2429,6 +2479,7 @@ func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state Session
 }
 
 func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, state SessionState, action, targetType, targetID string, details map[string]any) {
+	refreshPlayerOutstandingAmounts(&state)
 	if err := a.saveState(r.Context(), state); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2451,11 +2502,13 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 					continue
 				}
 				summary := playerPaymentSummary(state, player)
-				amount := summary.Total
-				amountSatang := summary.TotalSatang
+				amountSatang, _ := details["paymentAmountSatang"].(int64)
+				if amountSatang == 0 && !player.Paid {
+					amountSatang = summary.FullTotalSatang
+				}
+				amount := int((amountSatang + 99) / 100)
 				if isLiveShare(state) {
-					amount = liveSharePlayerCost(state, player)
-					amountSatang = int64(amount) * 100
+					amount = int((amountSatang + 99) / 100)
 				}
 				var memberID any
 				if player.MemberID != "" {
@@ -2595,9 +2648,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz, $18)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang); err != nil {
 			return err
 		}
 	}
@@ -2780,7 +2833,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at
+		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang
 		from players p
 		left join member_types mt on mt.id=p.member_type_id
 		where p.session_id = $1
@@ -2793,7 +2846,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	for rows.Next() {
 		var player Player
 		var waitStartedAt sql.NullTime
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang); err != nil {
 			return SessionState{}, err
 		}
 		if waitStartedAt.Valid {
@@ -2934,6 +2987,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	normalizePlayerWaitState(&state)
+	refreshPlayerOutstandingAmounts(&state)
 	applySessionReadOnly(&state, createdAt)
 	return state, nil
 }
@@ -3916,40 +3970,22 @@ func totalRevenueExact(state SessionState) float64 {
 	var totalSatang int64
 	for _, player := range state.Players {
 		if player.Active {
-			totalSatang += playerPaymentSummary(state, player).TotalSatang
+			totalSatang += playerPaymentSummary(state, player).FullTotalSatang
 		}
 	}
 	return thbFromSatang(totalSatang)
 }
 
 func paidRevenue(state SessionState) int {
-	if isLiveShare(state) {
-		total := 0
-		for _, player := range state.Players {
-			if player.Active && player.Paid {
-				total += liveSharePlayerCost(state, player)
-			}
-		}
-		return total
-	}
-	total := 0
-	share := sessionFeeShare(state)
-	for _, player := range state.Players {
-		if player.Active && player.Paid {
-			total += playerEntryFee(state, player) + playerShuttleCost(state, player.ID) + share
-		}
-	}
-	return total
+	return int(paidRevenueExact(state))
 }
 
 func paidRevenueExact(state SessionState) float64 {
-	if isLiveShare(state) {
-		return float64(paidRevenue(state))
-	}
 	var totalSatang int64
 	for _, player := range state.Players {
-		if player.Active && player.Paid {
-			totalSatang += playerPaymentSummary(state, player).TotalSatang
+		if player.Active {
+			summary := playerPaymentSummary(state, player)
+			totalSatang += min(summary.SettledAmountSatang, summary.FullTotalSatang)
 		}
 	}
 	return thbFromSatang(totalSatang)
@@ -4166,7 +4202,10 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		PlayerID: player.ID, PlayerName: player.Name, SessionType: state.Session.Type,
 		Paid: player.Paid, Items: []PlayerPaymentItem{}, Calculated: time.Now().UTC(),
 	}
-	defer finalizePaymentSummary(&summary)
+	defer func() {
+		finalizePaymentSummary(&summary)
+		applySettledCredit(&summary, player)
+	}()
 	if isLiveShare(state) {
 		activeHours := liveShareActiveHours(state)
 		playerHours := normalizedHourSet(state.LiveShare.PlayerHours[strconv.Itoa(player.ID)])
@@ -4279,6 +4318,38 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		summary.Total += sessionShare
 	}
 	return summary
+}
+
+func applySettledCredit(summary *PlayerPaymentSummary, player Player) {
+	summary.FullTotalSatang = summary.TotalSatang
+	summary.FullTotalTHB = summary.TotalTHB
+	settled := player.SettledAmountSatang
+	if settled == 0 && player.Paid {
+		// Compatibility for states created before settled_amount_satang existed.
+		settled = summary.FullTotalSatang
+	}
+	if settled < 0 {
+		settled = 0
+	}
+	summary.SettledAmountSatang = settled
+	summary.SettledAmountTHB = thbFromSatang(settled)
+	credit := min(settled, summary.FullTotalSatang)
+	if credit > 0 {
+		summary.Items = append(summary.Items, PlayerPaymentItem{
+			Key: "settled-credit", Label: "ยอด Match ที่ชำระแล้ว", Description: "ไม่นำยอดเดิมกลับมาเรียกเก็บซ้ำ",
+			Quantity: 1, UnitAmountSatang: -credit, AmountSatang: -credit,
+			UnitAmountTHB: -thbFromSatang(credit), AmountTHB: -thbFromSatang(credit),
+		})
+	}
+	summary.TotalSatang = max(summary.FullTotalSatang-credit, 0)
+	summary.TotalTHB = thbFromSatang(summary.TotalSatang)
+	summary.Total = int((summary.TotalSatang + 99) / 100)
+}
+
+func refreshPlayerOutstandingAmounts(state *SessionState) {
+	for index := range state.Players {
+		state.Players[index].OutstandingAmountSatang = playerPaymentSummary(*state, state.Players[index]).TotalSatang
+	}
 }
 
 func finalizePaymentSummary(summary *PlayerPaymentSummary) {
@@ -4464,11 +4535,11 @@ func sessionFeeShare(state SessionState) int {
 }
 
 func paymentPercent(state SessionState) int {
-	total := totalRevenue(state)
+	total := totalRevenueExact(state)
 	if total == 0 {
 		return 0
 	}
-	return paidRevenue(state) * 100 / total
+	return int(paidRevenueExact(state) * 100 / total)
 }
 
 func cancelledMatchCount(state SessionState) int {

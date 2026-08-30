@@ -132,6 +132,8 @@ export const BillsView: React.FC = () => {
   const [billingSummary, setBillingSummary] = useState<POSBillingSummary | null>(null);
   const [batchLiveTotal, setBatchLiveTotal] = useState<number | null>(null);
   const [batchQrDataUrl, setBatchQrDataUrl] = useState('');
+  const [batchQrError, setBatchQrError] = useState('');
+  const [batchQrReceiverName, setBatchQrReceiverName] = useState('');
 
   const filteredOrders = historyOrders;
 
@@ -263,6 +265,9 @@ export const BillsView: React.FC = () => {
     if (batchPayMethod === 'cash' && cashGiven < paymentTotal) {
       return;
     }
+    if (batchPayMethod === 'promptpay' && !batchQrDataUrl) {
+      return;
+    }
 
     setIsBatchPaying(true);
     const completed = await processBatchHeldPayment({
@@ -319,12 +324,29 @@ export const BillsView: React.FC = () => {
   const isBatchCashSufficient = batchCashGiven >= paymentTotal;
 
   useEffect(() => {
-    if (!isBatchPayModalOpen || batchPayMethod !== 'promptpay' || paymentTotal <= 0) { setBatchQrDataUrl(''); return; }
+    if (!isBatchPayModalOpen || batchPayMethod !== 'promptpay' || paymentTotal <= 0) {
+      setBatchQrDataUrl('');
+      setBatchQrError('');
+      setBatchQrReceiverName('');
+      return;
+    }
     let cancelled = false;
+    setBatchQrDataUrl('');
+    setBatchQrError('');
     void getPOSPaymentQR(Math.round(paymentTotal * 100)).then(async (result) => {
       const image = result.promptPayPayload ? await QRCode.toDataURL(result.promptPayPayload, { width: 260, margin: 1 }) : result.fallbackImage || '';
-      if (!cancelled) setBatchQrDataUrl(image);
-    }).catch(() => { if (!cancelled) setBatchQrDataUrl(''); });
+      if (!image) throw new Error('ระบบยังไม่ได้ตั้งค่า PromptPay');
+      if (!cancelled) {
+        setBatchQrDataUrl(image);
+        setBatchQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setBatchQrDataUrl('');
+        setBatchQrReceiverName('');
+        setBatchQrError(error instanceof Error ? error.message : 'ไม่สามารถสร้าง QR PromptPay ได้');
+      }
+    });
     return () => { cancelled = true; };
   }, [isBatchPayModalOpen, batchPayMethod, paymentTotal]);
 
@@ -338,6 +360,9 @@ export const BillsView: React.FC = () => {
       totalDue: paymentTotal,
       cashReceived: batchPayMethod === 'cash' ? batchCashGiven : undefined,
       change: batchPayMethod === 'cash' ? batchChange : undefined,
+      qrDataUrl: batchPayMethod === 'promptpay' ? batchQrDataUrl : undefined,
+      qrError: batchPayMethod === 'promptpay' ? batchQrError : undefined,
+      qrReceiverName: batchPayMethod === 'promptpay' ? batchQrReceiverName : undefined,
       items: billCart,
       totals: {
         itemCount: selectedTotalItemsCount,
@@ -351,7 +376,7 @@ export const BillsView: React.FC = () => {
 
     localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
     broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
-  }, [isBatchPayModalOpen, batchPayMethod, batchCashGiven, batchChange, paymentTotal, heldOrders, selectedHeldIds]);
+  }, [isBatchPayModalOpen, batchPayMethod, batchCashGiven, batchChange, paymentTotal, heldOrders, selectedHeldIds, batchQrDataUrl, batchQrError, batchQrReceiverName]);
 
   return (
     <div className="flex-1 w-full p-4 sm:p-6 space-y-6 pb-44 sm:pb-48 overflow-y-auto bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
@@ -493,7 +518,7 @@ export const BillsView: React.FC = () => {
               ไม่พบรายการพักยอดที่ตรงกับคำค้นหา &quot;{heldSearchQuery}&quot;
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {filteredHeldOrders.map((held) => {
                 const isSelected = selectedHeldIds.includes(held.id);
                 return (
@@ -1264,12 +1289,13 @@ export const BillsView: React.FC = () => {
               {batchPayMethod === 'promptpay' && (
                 <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center text-center space-y-3">
                   <div className="p-3 bg-white rounded-2xl shadow-sm border border-slate-200 inline-block">
-                    {batchQrDataUrl ? <img src={batchQrDataUrl} alt="PromptPay QR" className="w-36 h-36 object-contain" /> : <QrCode className="w-36 h-36 text-slate-900" />}
+                    {batchQrDataUrl ? <img src={batchQrDataUrl} alt="PromptPay QR" className="w-36 h-36 object-contain" /> : <div className="grid h-36 w-36 place-items-center px-3 text-center">{batchQrError ? <span className="text-xs font-bold text-rose-600">{batchQrError}</span> : <QrCode className="w-16 h-16 animate-pulse text-slate-400" />}</div>}
                   </div>
                   <div>
                     <p className="text-xs font-bold text-slate-900 dark:text-white">
-                      พร้อมเพย์: {settings.promptPayId || '0812345678'} ({settings.storeName})
+                      ผู้รับ: {batchQrReceiverName || settings.promptPayReceiverName || settings.storeName}
                     </p>
+                    {settings.effectivePromptPayIdMasked && <p className="text-[10px] text-slate-400">PromptPay: {settings.effectivePromptPayIdMasked}</p>}
                     <p className="text-xs text-slate-500">สแกนเพื่อชำระยอดรวม {formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)}</p>
                   </div>
                   <input
@@ -1308,10 +1334,10 @@ export const BillsView: React.FC = () => {
 
               <button
                 type="button"
-                disabled={isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient)}
+                disabled={isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient) || (batchPayMethod === 'promptpay' && !batchQrDataUrl)}
                 onClick={handleConfirmBatchPayment}
                 className={`flex-1 flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black shadow-lg transition-all ${
-                  isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient)
+                  isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient) || (batchPayMethod === 'promptpay' && !batchQrDataUrl)
                     ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
                     : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/25'
                 }`}

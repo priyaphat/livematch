@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
+import ExcelJS from 'exceljs';
 import { csrfHeaders, ownerApi } from './helpers';
 
 test.describe.configure({ mode: 'serial' });
@@ -301,7 +302,6 @@ test('POS-STOCK-011 สองเครื่องจ่ายออกพร้
 });
 
 test('POS-STOCK-012 ปรับยอดลงต้องยังแสดงประเภทเป็นปรับยอด', async () => {
-  test.fail(true, 'Known P2: movement mapper classifies every negative delta as stock-out even when reason is adjustment');
   const up = await api.post('/api/admin/pos/stock/batch', {
     headers,
     data: {
@@ -482,7 +482,6 @@ test('POS-PAY-002 ยกเลิก Hold คืนสต็อกและเ�
 });
 
 test('POS-DASH-001 ช่วง 1d/1w/1m และการ์ด dashboard ตรงยอดขายจริง', async () => {
-  test.fail(true, 'Known P2: averageBillSatang uses truncation instead of half-up rounding');
   const salesResponse = await api.get('/api/admin/pos/sales?status=paid&page=1&pageSize=100');
   const paidSales = (await salesResponse.json()).items as Array<{ totalSatang: number }>;
   const expectedSales = paidSales.reduce((sum, sale) => sum + sale.totalSatang, 0);
@@ -563,11 +562,17 @@ test('POS-RPT-003 สินค้าที่ขายแสดงเฉพา�
 });
 
 test('POS-RPT-004 สินค้าคงเหลือคำนวณแพ็ค เศษ filter และไม่แสดง category code', async () => {
+  const currentCoffee = await product('qa-product-coffee-a');
   const response = await api.get('/api/admin/pos/reports/inventory?page=1&pageSize=100&packStatus=configured&status=all&stockStatus=all');
   expect(response.ok(), await response.text()).toBeTruthy();
   const report = await response.json();
   const coffee = report.items.find((item: { productId: string }) => item.productId === 'qa-product-coffee-a');
-  expect(coffee).toMatchObject({ category: 'เครื่องดื่ม', unitsPerPack: 12, fullPacks: 3, remainderUnits: 4 });
+  expect(coffee).toMatchObject({
+    category: 'เครื่องดื่ม',
+    unitsPerPack: 12,
+    fullPacks: Math.floor(currentCoffee.stockQuantity / 12),
+    remainderUnits: currentCoffee.stockQuantity % 12,
+  });
   expect(report.items.some((item: { productId: string }) => item.productId === 'qa-product-b')).toBeFalsy();
 });
 
@@ -582,8 +587,84 @@ test('POS-RPT-005 Special แยก LiveMatch Session วันเดียว�
   expect(report.summary.totalSatang).toBe(report.summary.posRevenueSatang + report.summary.matchEntryFeeSatang + report.summary.matchShuttleSatang);
 });
 
+test('POS-RPT-007 รายงานซื้อจากซัพพลายเออร์เริ่มที่วันนี้และ Excel ตรงข้อมูลจริง', async ({ page }) => {
+  const purchase = await api.post('/api/admin/pos/stock/batch', {
+    headers,
+    data: {
+      name: 'QA-RPT-PURCHASE-001', mode: 'in', note: 'เอกสารตรวจรายงานซื้อ', externalReferenceNo: 'SUP-INV-007',
+      supplierId: 'qa-supplier-a', discountType: 'amount', discountAmountSatang: 5,
+      items: [
+        { productId: allocationProductAId, quantity: 2, costSatang: 100 },
+        { productId: allocationProductBId, quantity: 1, costSatang: 100 },
+      ],
+    },
+  });
+  expect(purchase.status(), await purchase.text()).toBe(201);
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'showSaveFilePicker');
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: /รายงาน/ }).click();
+  await expect(page.getByRole('button', { name: 'วันนี้', exact: true })).toHaveClass(/bg-emerald-500/);
+  await page.getByRole('button', { name: 'ซื้อจากซัพพลายเออร์', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'รายการซื้อจากซัพพลายเออร์', exact: true })).toBeVisible();
+  await expect(page.locator('#purchase-report-supplier')).toHaveValue('');
+  await expect(page.locator('#purchase-report-supplier')).toContainText('ซัพพลายเออร์ทั้งหมด');
+  await page.locator('#purchase-report-search').fill('SUP-INV-007');
+  await page.locator('#purchase-report-supplier').selectOption('qa-supplier-a');
+  await expect(page.getByText('QA-RPT-PURCHASE-001', { exact: true })).toBeVisible();
+
+  const purchaseTableRow = page.getByText('QA-RPT-PURCHASE-001', { exact: true }).locator('xpath=ancestor::tr');
+  await purchaseTableRow.getByRole('button', { name: 'ดูรายละเอียด' }).click();
+  const detailDialog = page.getByRole('dialog', { name: /รายละเอียดการซื้อ QA-RPT-PURCHASE-001/ });
+  await expect(detailDialog).toBeVisible();
+  await expect(detailDialog.getByText('QA กระจายส่วนลด A', { exact: true })).toBeVisible();
+  await expect(detailDialog.getByText('QA กระจายส่วนลด B', { exact: true })).toBeVisible();
+
+  const individualDownloadPromise = page.waitForEvent('download');
+  await detailDialog.getByRole('button', { name: 'Export Excel รายการนี้' }).click();
+  const individualDownload = await individualDownloadPromise;
+  expect(individualDownload.suggestedFilename()).toBe('pos-purchase-QA-RPT-PURCHASE-001.xlsx');
+  const individualPath = 'artifacts/purchase-report-individual-verification.xlsx';
+  await individualDownload.saveAs(individualPath);
+  const individualWorkbook = new ExcelJS.Workbook();
+  await individualWorkbook.xlsx.readFile(individualPath);
+  const individualSheet = individualWorkbook.worksheets[0];
+  expect(individualSheet.getRow(5).values).toEqual([, 'ลำดับ', 'สินค้า', 'SKU', 'จำนวน', 'ต้นทุน/หน่วย (บาท)', 'ยอดก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'ยอดสุทธิ (บาท)']);
+  expect(individualSheet.getCell(6, 2).value).toBe('QA กระจายส่วนลด A');
+  expect(individualSheet.getCell(6, 8).numFmt).toBe('#,##0.00');
+  await detailDialog.getByRole('button', { name: 'ปิดรายละเอียดการซื้อ' }).click();
+
+  const downloadPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'ส่งออกแท็บนี้ Excel' }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^pos-purchases-\d{4}-\d{2}-\d{2}-\d{4}-\d{2}-\d{2}\.xlsx$/);
+  const verificationPath = 'artifacts/purchase-report-verification.xlsx';
+  await download.saveAs(verificationPath);
+  const downloadedPath = verificationPath;
+  expect(downloadedPath).toBeTruthy();
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(downloadedPath!);
+  const worksheet = workbook.getWorksheet('รายการซื้อจากซัพพลายเออร์');
+  expect(worksheet).toBeTruthy();
+  expect(worksheet!.getRow(5).values).toEqual([
+    , 'ลำดับ', 'วันที่ซื้อ', 'เลขเอกสาร', 'เลขอ้างอิงซัพพลายเออร์', 'รหัสซัพพลายเออร์', 'ซัพพลายเออร์', 'รายการสินค้า', 'จำนวนรายการ', 'จำนวนชิ้น', 'ยอดก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'ยอดสุทธิ (บาท)', 'ผู้บันทึก', 'หมายเหตุ',
+  ]);
+  const purchaseRow = Array.from({ length: Math.max(0, worksheet!.rowCount - 5) }, (_, index) => worksheet!.getRow(index + 6))
+    .find((row) => row.getCell(3).value === 'QA-RPT-PURCHASE-001');
+  expect(purchaseRow).toBeTruthy();
+  expect(purchaseRow!.getCell(6).value).toBe('ซัพพลายเออร์ QA');
+  expect(purchaseRow!.getCell(8).value).toBe(2);
+  expect(purchaseRow!.getCell(9).value).toBe(3);
+  expect(purchaseRow!.getCell(10).value).toBe(3);
+  expect(purchaseRow!.getCell(11).value).toBe(0.05);
+  expect(purchaseRow!.getCell(12).value).toBe(2.95);
+  expect(purchaseRow!.getCell(10).numFmt).toBe('#,##0.00');
+  expect(purchaseRow!.getCell(12).numFmt).toBe('#,##0.00');
+});
+
 test('POS-STOCK-006 ประวัติใช้สีรับเข้าเขียว จ่ายออกแดง และปรับยอดส้ม', async ({ page }) => {
-  test.fail(true, 'Known P2: stock movement badge colors do not match the approved mapping');
   await page.goto('/');
   await page.getByRole('button', { name: /จัดการสต็อก/ }).click();
   await page.getByRole('button', { name: /ประวัติเคลื่อนไหวรายชิ้น/ }).click();

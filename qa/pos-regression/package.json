@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-	"load:polling": "node load/polling-load.mjs",
+    "load:polling": "node load/polling-load.mjs",
     "test": "playwright test",
     "test:smoke": "playwright test --project=chromium-desktop --grep @smoke",
     "test:cross-system": "playwright test --project=chromium-desktop --grep @cross-system",
@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",
+    "exceljs": "^4.4.0",
     "typescript": "^5.9.3"
   }
 }

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import QRCode from 'qrcode'
-import { ArrowDown, ArrowUp, Check, Copy, Download, Pencil, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
+import { ArrowDown, ArrowUp, Check, Copy, Download, Pencil, Play, Plus, QrCode, Save, Search, Trash2, X } from '@lucide/vue'
 import { exportMembersExcel } from '../excelExport'
 import { useWaitClock, waitMinutes } from '../waitTime'
 
@@ -10,6 +10,8 @@ const props = defineProps([
   'forms',
   'money',
   'playerCost',
+  'playerSettledCost',
+  'playerOutstandingCost',
   'playerLiveShareHours',
   'levelLabel',
   'playerDeleteBlockReasons',
@@ -20,11 +22,22 @@ const props = defineProps([
   'openPlayersQr',
   'saveSettings',
   'togglePayment',
+  'resumePlayer',
   'isSessionReadOnly',
   'apiRequest'
 ])
 const waitClock = useWaitClock()
 const playerWaitMinutes = (player) => waitMinutes(player.waitStartedAt, waitClock.value)
+const settledCost = (player) => props.playerSettledCost
+  ? props.playerSettledCost(player)
+  : Math.min(Number(props.playerCost(player) || 0), Math.max(0, Number(player?.settledAmountSatang || 0)) / 100 || (player?.paid ? Number(props.playerCost(player) || 0) : 0))
+const outstandingCost = (player) => {
+  const matchOutstanding = props.playerOutstandingCost
+    ? props.playerOutstandingCost(player)
+    : Math.max(0, Number(props.playerCost(player) || 0) - settledCost(player))
+  const syncedCombinedOutstanding = Math.max(0, Number(player?.billingTotalSatang || 0)) / 100
+  return Math.max(matchOutstanding, syncedCombinedOutstanding)
+}
 
 const filteredPlayers = computed(() => {
   const keyword = props.forms.playerSearch.trim().toLocaleLowerCase('th-TH')
@@ -33,8 +46,8 @@ const filteredPlayers = computed(() => {
     !keyword || player.name.toLocaleLowerCase('th-TH').includes(keyword) || String(player.id).includes(keyword)
   ) && (
     paymentFilter === 'all' ||
-    (paymentFilter === 'paid' && player.paid) ||
-    (paymentFilter === 'unpaid' && !player.paid)
+    (paymentFilter === 'paid' && outstandingCost(player) <= 0) ||
+    (paymentFilter === 'unpaid' && outstandingCost(player) > 0)
   ))
 })
 
@@ -99,6 +112,10 @@ const paymentSaving = ref(false)
 const paymentError = ref('')
 const paymentMethod = ref('cash')
 const paymentQr = ref('')
+const paymentConfirmOpen = ref(false)
+const resumePlayerTarget = ref(null)
+const resumeSaving = ref(false)
+const resumeError = ref('')
 const combinedShuttleBreakdown = computed(() => (
   paymentSummary.value?.matchBreakdownItems?.find((item) => item.label === 'ค่าลูกแบด (หารตามจำนวนผู้เล่นจริง)') || null
 ))
@@ -147,6 +164,8 @@ function playerSortAria(key) {
 async function openPaymentModal(player) {
   if (props.isSessionReadOnly || paymentSaving.value) return
   if (player.paid && player.memberId) return
+  if (!player.paid && settledCost(player) > 0 && outstandingCost(player) <= 0) return
+  paymentConfirmOpen.value = false
   paymentPlayer.value = player
   paymentSummary.value = null
   paymentError.value = ''
@@ -167,14 +186,47 @@ async function openPaymentModal(player) {
 
 function closePaymentModal() {
   if (paymentSaving.value) return
+  paymentConfirmOpen.value = false
   paymentPlayer.value = null
   paymentSummary.value = null
   paymentError.value = ''
   paymentQr.value = ''
 }
 
+function openResumeConfirmation(player) {
+  if (props.isSessionReadOnly || resumeSaving.value || !player.paid) return
+  resumeError.value = ''
+  resumePlayerTarget.value = player
+}
+
+function closeResumeConfirmation() {
+  if (resumeSaving.value) return
+  resumePlayerTarget.value = null
+  resumeError.value = ''
+}
+
+async function confirmResumePlayer() {
+  if (!resumePlayerTarget.value || resumeSaving.value) return
+  resumeSaving.value = true
+  resumeError.value = ''
+  try {
+    await props.resumePlayer(resumePlayerTarget.value)
+  } catch (error) {
+    resumeError.value = error.message || 'เปิดให้กลับมาเล่นไม่สำเร็จ'
+  } finally {
+    resumeSaving.value = false
+    if (!resumeError.value) resumePlayerTarget.value = null
+  }
+}
+
+function requestPaymentConfirmation() {
+  if (!paymentPlayer.value || paymentSaving.value || paymentLoading.value || (!paymentPlayer.value.paid && !paymentSummary.value)) return
+  paymentConfirmOpen.value = true
+}
+
 async function confirmPaymentChange() {
   if (!paymentPlayer.value || paymentSaving.value || (!paymentPlayer.value.paid && !paymentSummary.value)) return
+  paymentConfirmOpen.value = false
   paymentSaving.value = true
   paymentError.value = ''
   let saved = false
@@ -459,7 +511,7 @@ async function exportExcel() {
         เพิ่ม
       </button>
       <p class="text-xs font-medium text-stone-500 md:col-span-2">
-        ระบบค้นหาหลังหยุดพิมพ์ 700 ms ตั้งแต่ตัวแรก · {{ state.session?.allowMatchGuestEntry ? 'พิมพ์ชื่อแล้วกด Enter เพื่อเพิ่มขาจรได้' : 'ปิดการเพิ่มขาจรอยู่ ต้องเลือกหรือสร้างสมาชิกก่อน' }}
+        {{ state.session?.allowMatchGuestEntry ? 'พิมพ์ชื่อแล้วกด Enter เพื่อเพิ่มขาจรได้' : 'ปิดการเพิ่มขาจรอยู่ ต้องเลือกหรือสร้างสมาชิกก่อน' }}
       </p>
     </div>
 
@@ -511,8 +563,8 @@ async function exportExcel() {
         </label>
         <select v-model="forms.playerPaymentFilter" class="h-11 rounded-md border border-stone-200 bg-white px-3 font-bold dark:border-stone-700 dark:bg-stone-900">
           <option value="all">ทั้งหมด</option>
-          <option value="paid">จ่ายแล้ว</option>
-          <option value="unpaid">ยังไม่จ่าย</option>
+          <option value="paid">ชำระครบ</option>
+          <option value="unpaid">มียอดค้าง</option>
         </select>
         <select v-model.number="forms.playerPageSize" class="h-11 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900">
           <option :value="8">8 แถว</option>
@@ -561,28 +613,44 @@ async function exportExcel() {
           <span class="text-right font-bold">{{ player.shuttles }}</span>
           <span class="text-right font-black tabular-nums text-court-700 dark:text-court-300">{{ money(playerCost(player)) }}</span>
         </div>
-        <div class="mt-2 flex flex-wrap items-center gap-2 text-sm">
-          <span class="font-semibold text-stone-600 dark:text-stone-300">ค่าใช้จ่าย {{ money(playerCost(player)) }}</span>
-          <span class="font-semibold text-stone-600 dark:text-stone-300">ชนะ {{ player.wins || 0 }} · เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses || 0 }}</span>
-          <button
-            class="inline-flex h-8 items-center gap-1 rounded-md border border-court-200 bg-court-500/10 px-2 text-xs font-bold text-court-700 dark:border-court-900/60 dark:text-court-300"
-            :disabled="isSessionReadOnly"
-            :aria-label="player.memberId ? 'ลบสมาชิกออกจาก Match' : 'แก้ไขสมาชิก'"
-            @click.stop="openEditPlayer(player)"
-          >
-            <Trash2 v-if="player.memberId" class="h-3.5 w-3.5" />
-            <Pencil v-else class="h-3.5 w-3.5" />
-            {{ player.memberId ? 'ลบออก' : 'แก้ไข' }}
-          </button>
-          <button
-            class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
-            :class="player.paid ? 'border border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300' : 'bg-shuttle-400 text-stone-900'"
-            :disabled="isSessionReadOnly || (player.paid && player.memberId)"
-            @click.stop="openPaymentModal(player)"
-          >
-            <Check v-if="player.paid" class="h-3.5 w-3.5" />
-            {{ player.paid ? (player.memberId ? 'ชำระแล้ว' : 'ยกเลิกการชำระ') : 'ชำระเงิน' }}
-          </button>
+        <div class="mt-2 flex flex-wrap items-start justify-between gap-3 text-sm">
+          <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+            <span class="font-semibold text-stone-600 dark:text-stone-300">ค่าใช้จ่าย {{ money(playerCost(player)) }}</span>
+            <span v-if="settledCost(player) > 0" class="font-semibold text-court-700 dark:text-court-300">ชำระแล้ว {{ money(settledCost(player)) }}</span>
+            <span v-if="!player.paid && settledCost(player) > 0 && outstandingCost(player) <= 0" class="rounded bg-sky-50 px-2 py-1 text-xs font-black text-sky-700 dark:bg-sky-950/30 dark:text-sky-300">กลับมาเล่นแล้ว · ยังไม่มียอดเพิ่ม</span>
+            <span class="font-semibold text-stone-600 dark:text-stone-300">ชนะ {{ player.wins || 0 }} · เสมอ {{ player.draws || 0 }} · แพ้ {{ player.losses || 0 }}</span>
+          </div>
+          <div class="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2" data-testid="player-actions">
+            <button
+              v-if="!player.paid || !player.memberId"
+              class="inline-flex h-8 items-center gap-1 rounded-md border border-court-200 bg-court-500/10 px-2 text-xs font-bold text-court-700 dark:border-court-900/60 dark:text-court-300"
+              :disabled="isSessionReadOnly"
+              :aria-label="player.memberId ? 'ลบสมาชิกออกจาก Match' : 'แก้ไขสมาชิก'"
+              @click.stop="openEditPlayer(player)"
+            >
+              <Trash2 v-if="player.memberId" class="h-3.5 w-3.5" />
+              <Pencil v-else class="h-3.5 w-3.5" />
+              {{ player.memberId ? 'ลบออก' : 'แก้ไข' }}
+            </button>
+            <button
+              class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
+              :class="player.paid ? 'border border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300' : 'bg-shuttle-400 text-stone-900'"
+              :disabled="isSessionReadOnly || (player.paid && player.memberId) || (!player.paid && settledCost(player) > 0 && outstandingCost(player) <= 0)"
+              @click.stop="openPaymentModal(player)"
+            >
+              <Check v-if="player.paid" class="h-3.5 w-3.5" />
+              {{ player.paid ? (player.memberId ? 'ชำระแล้ว' : 'ยกเลิกการชำระ') : settledCost(player) > 0 ? (outstandingCost(player) > 0 ? 'ชำระยอดเพิ่ม' : 'ยังไม่มียอดเพิ่ม') : 'ชำระเงิน' }}
+            </button>
+            <button
+              v-if="player.paid"
+              type="button"
+              class="inline-flex h-8 items-center gap-1 rounded-md bg-court-600 px-2 text-xs font-black text-white disabled:opacity-40"
+              :disabled="isSessionReadOnly"
+              @click.stop="openResumeConfirmation(player)"
+            >
+              <Play class="h-3.5 w-3.5" /> กลับมาเล่น
+            </button>
+          </div>
         </div>
       </article>
 
@@ -678,6 +746,11 @@ async function exportExcel() {
                   </div>
                 </div>
               </section>
+              <div v-if="Number(paymentSummary.settledAmountSatang || 0) > 0" class="mt-2 grid gap-1 rounded-lg bg-court-50 p-3 text-sm dark:bg-court-950/20">
+                <div class="flex justify-between gap-3"><span>ยอด Match ปัจจุบัน</span><b>{{ money(paymentSummary.fullTotalThb) }}</b></div>
+                <div class="flex justify-between gap-3 text-court-700 dark:text-court-300"><span>ยอด Match ที่ชำระแล้ว</span><b>− {{ money(paymentSummary.settledAmountThb) }}</b></div>
+                <div class="flex justify-between gap-3 border-t border-court-200 pt-1 font-black dark:border-court-900"><span>ยอด Match เพิ่ม</span><b>{{ money(paymentSummary.matchTotalThb ?? paymentSummary.totalThb) }}</b></div>
+              </div>
               <div class="mt-2 flex items-center justify-between border-t border-stone-200 pt-4 text-lg font-black dark:border-stone-700">
                 <span>ยอดรวม</span>
                 <span class="text-court-700 dark:text-court-300">{{ money(paymentSummary.totalThb) }}</span>
@@ -706,10 +779,54 @@ async function exportExcel() {
             class="h-11 rounded-md font-black text-white disabled:cursor-not-allowed disabled:opacity-40"
             :class="paymentPlayer.paid ? 'bg-rose-600' : 'bg-court-500'"
             :disabled="paymentSaving || paymentLoading || (!paymentPlayer.paid && !paymentSummary)"
-            @click="confirmPaymentChange"
+            @click="requestPaymentConfirmation"
           >
             {{ paymentSaving ? 'กำลังบันทึก...' : paymentPlayer.paid ? 'ตกลง' : 'ชำระ' }}
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="paymentConfirmOpen && paymentPlayer"
+      class="fixed inset-0 z-[70] grid place-items-center bg-stone-950/60 p-4"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="payment-confirm-title"
+      @click.self="paymentConfirmOpen = false"
+    >
+      <div class="w-full max-w-sm rounded-lg border border-stone-200 bg-white p-5 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+        <p class="text-xs font-black uppercase tracking-wider" :class="paymentPlayer.paid ? 'text-rose-600' : 'text-court-600 dark:text-court-300'">กรุณายืนยัน</p>
+        <h2 id="payment-confirm-title" class="mt-1 text-xl font-black">{{ paymentPlayer.paid ? 'ยกเลิกการชำระเงิน?' : 'ยืนยันการชำระเงิน?' }}</h2>
+        <p class="mt-3 text-sm font-semibold text-stone-600 dark:text-stone-300">
+          {{ paymentPlayer.paid ? `ต้องการยกเลิกสถานะชำระเงินของ ${paymentPlayer.name} ใช่หรือไม่` : `ยืนยันว่าได้รับชำระเงินจาก ${paymentPlayer.name} แล้วใช่หรือไม่` }}
+        </p>
+        <div class="mt-5 grid grid-cols-2 gap-2">
+          <button type="button" class="h-11 rounded-md border border-stone-200 font-black dark:border-stone-700" @click="paymentConfirmOpen = false">ไม่</button>
+          <button type="button" class="h-11 rounded-md font-black text-white" :class="paymentPlayer.paid ? 'bg-rose-600' : 'bg-court-500'" @click="confirmPaymentChange">ใช่</button>
+        </div>
+      </div>
+    </div>
+
+    <div
+      v-if="resumePlayerTarget"
+      class="fixed inset-0 z-[75] grid place-items-center bg-stone-950/60 p-4"
+      role="alertdialog"
+      aria-modal="true"
+      aria-labelledby="resume-player-title"
+      @click.self="closeResumeConfirmation"
+    >
+      <div class="w-full max-w-sm rounded-lg border border-stone-200 bg-white p-5 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+        <p class="text-xs font-black uppercase tracking-wider text-court-600 dark:text-court-300">กรุณายืนยัน</p>
+        <h2 id="resume-player-title" class="mt-1 text-xl font-black">ให้กลับมาเล่นอีกครั้ง?</h2>
+        <p class="mt-3 text-sm font-semibold text-stone-600 dark:text-stone-300">
+          {{ resumePlayerTarget.name }} จะกลับเข้าสู่รายชื่อผู้เล่น โดยยอดที่ชำระแล้วจะยังคงเดิม และคิดเฉพาะค่าใช้จ่ายที่เพิ่มขึ้น
+        </p>
+        <p class="mt-2 text-xs font-semibold text-stone-500">ระบบจะปิดสิทธิ์สุ่มไว้ก่อน กรุณาเปิดอีกครั้งเมื่อต้องการจัดลงสนาม</p>
+        <p v-if="resumeError" class="mt-3 rounded-lg bg-rose-50 p-3 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-200">{{ resumeError }}</p>
+        <div class="mt-5 grid grid-cols-2 gap-2">
+          <button type="button" class="h-11 rounded-md border border-stone-200 font-black disabled:opacity-40 dark:border-stone-700" :disabled="resumeSaving" @click="closeResumeConfirmation">ไม่</button>
+          <button type="button" class="h-11 rounded-md bg-court-600 font-black text-white disabled:opacity-40" :disabled="resumeSaving" @click="confirmResumePlayer">{{ resumeSaving ? 'กำลังบันทึก...' : 'ใช่' }}</button>
         </div>
       </div>
     </div>

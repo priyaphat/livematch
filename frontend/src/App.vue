@@ -1643,10 +1643,10 @@ const liveShareShuttleCost = computed(() => liveShareShuttleCount.value * Number
 const liveShareSessionCost = computed(() => Math.max(0, Number(state.settings.sessionFee || 0)))
 const liveShareTotalCost = computed(() => liveShareCourtCost.value + liveShareShuttleCost.value + liveShareSessionCost.value)
 const totalRevenue = computed(() => activePlayers.value.reduce((sum, player) => sum + playerCost(player), 0))
-const paidRevenue = computed(() => activePlayers.value.filter((player) => player.paid).reduce((sum, player) => sum + playerCost(player), 0))
+const paidRevenue = computed(() => activePlayers.value.reduce((sum, player) => sum + playerSettledCost(player), 0))
 const unpaidRevenue = computed(() => Math.max(0, totalRevenue.value - paidRevenue.value))
 const paymentPercent = computed(() => totalRevenue.value ? Math.round((paidRevenue.value / totalRevenue.value) * 100) : 0)
-const unpaidPlayers = computed(() => activePlayers.value.filter((player) => !player.paid))
+const unpaidPlayers = computed(() => activePlayers.value.filter((player) => playerOutstandingCost(player) > 0))
 const minGames = computed(() => (activePlayers.value.length ? Math.min(...activePlayers.value.map((player) => player.games)) : 0))
 const maxGames = computed(() => (activePlayers.value.length ? Math.max(...activePlayers.value.map((player) => player.games)) : 0))
 const topPlayers = computed(() => [...activePlayers.value].sort((a, b) => b.games - a.games || a.id - b.id).slice(0, 4))
@@ -1764,6 +1764,18 @@ function playerEntryFee(player) {
     return Math.max(0, Number(state.settings.memberEntryFees[player.memberTypeId]) || 0)
   }
   return Number(player?.clubMember ? state.settings.clubEntryFee : state.settings.entryFee) || 0
+}
+
+function playerSettledCost(player) {
+  const fullCost = playerCost(player)
+  const stored = Math.max(0, Number(player?.settledAmountSatang || 0)) / 100
+  return Math.min(fullCost, stored || (player?.paid ? fullCost : 0))
+}
+
+function playerOutstandingCost(player) {
+  const matchOutstanding = Math.max(0, playerCost(player) - playerSettledCost(player))
+  const syncedCombinedOutstanding = Math.max(0, Number(player?.billingTotalSatang || 0)) / 100
+  return Math.max(matchOutstanding, syncedCombinedOutstanding)
 }
 
 function activeShuttleBrands() {
@@ -3296,6 +3308,17 @@ async function togglePaymentApi(player, paymentSummary = null, paymentMethod = '
   }
 }
 
+async function resumePlayerApi(player) {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}/resume`, { method: 'POST' }))
+    showToast(`${player.name} กลับมาเล่นแล้ว กรุณาเปิดสิทธิ์สุ่มเมื่อต้องการจัดลงสนาม`)
+  } catch (error) {
+    showToast(error.message || 'เปิดให้ผู้เล่นกลับมาเล่นไม่สำเร็จ')
+    throw error
+  }
+}
+
 async function updatePlayerLevelApi(playerId, level) {
   if (!ensureSessionActive()) return
   try {
@@ -3584,6 +3607,8 @@ const pageProps = computed(() => ({
   isLiveShare: isLiveShare.value,
   money,
   playerCost,
+  playerSettledCost,
+  playerOutstandingCost,
   playerEntryFee,
   playerLiveShareHours,
   playerDeleteBlockReasons,
@@ -3604,6 +3629,7 @@ const pageProps = computed(() => ({
   openQueueQr,
   copyQrLink,
   togglePayment: togglePaymentApi,
+  resumePlayer: resumePlayerApi,
   updatePlayerLevel: updatePlayerLevelApi,
   updatePlayerRandomStatus: updatePlayerRandomStatusApi,
   randomMatch: randomMatchApi,

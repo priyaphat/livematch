@@ -16,11 +16,7 @@ import {
 } from '../types';
 import {
   INITIAL_SETTINGS,
-  INITIAL_PRODUCTS,
-  INITIAL_CATEGORIES,
-  INITIAL_UNITS,
-  INITIAL_NOTE_OPTIONS,
-} from '../data/mockData';
+} from '../data/defaultSettings';
 import confetti from 'canvas-confetti';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
 import {
@@ -65,6 +61,12 @@ import {
   settlePOSAccount,
   voidPOSSale,
 } from '../api/posSales';
+import {
+  CustomerDisplayConnectionStatus,
+  enableHardwareKeyboardMode,
+  getPresentationRequestConstructor,
+  PresentationConnectionLike,
+} from '../utils/browserHardware';
 
 interface PosContextType {
   activeTab: 'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display';
@@ -78,6 +80,7 @@ interface PosContextType {
   // Settings
   settings: StoreSettings;
   updateSettings: (newSettings: Partial<StoreSettings>) => Promise<boolean>;
+  setHardwareKeyboardMode: (enabled: boolean) => void;
   members: POSMember[];
 
   // Categories & Units
@@ -128,6 +131,7 @@ interface PosContextType {
     payload: any;
   }) => void;
   openCustomerDisplayWindow: () => void;
+  customerDisplayStatus: CustomerDisplayConnectionStatus;
 
   // Held Orders
   heldOrders: HeldOrder[];
@@ -246,7 +250,7 @@ const isPOSEditing = () => {
 };
 
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings'>('pos');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display'>('pos');
   
   // Local storage synced states with fallback
   const [settings, setSettings] = useState<StoreSettings>(() => {
@@ -257,8 +261,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       printerType: local.printerType === 'thermal_58mm' ? 'thermal_58mm' : 'thermal_80mm',
       autoPrintReceipt: local.autoPrintReceipt ?? INITIAL_SETTINGS.autoPrintReceipt,
       enableSoundEffects: local.enableSoundEffects ?? INITIAL_SETTINGS.enableSoundEffects,
+      hardwareKeyboardMode: local.hardwareKeyboardMode ?? INITIAL_SETTINGS.hardwareKeyboardMode,
       theme: local.theme === 'dark' ? 'dark' : 'light',
-      cashierName: '', currencySymbol: '฿', decimalPlaces: 2,
+      cashierName: '',
+      currencySymbol: INITIAL_SETTINGS.currencySymbol,
+      decimalPlaces: INITIAL_SETTINGS.decimalPlaces,
     };
   });
 
@@ -268,29 +275,25 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return 'light';
   });
 
-  const [categories, setCategories] = useState<Category[]>(() => {
-    const saved = localStorage.getItem('siampure_categories');
-    return saved ? JSON.parse(saved) : INITIAL_CATEGORIES;
-  });
+  // Catalog data is server-owned. Starting empty prevents demo or stale browser data
+  // from being sold when the catalog API is unavailable.
+  const [categories, setCategories] = useState<Category[]>([]);
 
-  const [units, setUnits] = useState<UnitItem[]>(() => {
-    const saved = localStorage.getItem('siampure_units');
-    return saved ? JSON.parse(saved) : INITIAL_UNITS;
-  });
+  const [units, setUnits] = useState<UnitItem[]>([]);
 
   const [noteOptions, setNoteOptions] = useState<NoteOption[]>(() => {
     const saved = localStorage.getItem('siampure_note_options');
-    return saved ? JSON.parse(saved) : INITIAL_NOTE_OPTIONS;
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved) as NoteOption[];
+      // Remove the legacy demo notes while preserving notes created on this device.
+      return parsed.filter((note) => !/^note-(?:[1-9]|1\d)$/.test(note.id));
+    } catch {
+      return [];
+    }
   });
 
-  const [products, setProducts] = useState<Product[]>(() => {
-    const saved = localStorage.getItem('siampure_products');
-    const initialProducts: Product[] = saved ? JSON.parse(saved) : INITIAL_PRODUCTS;
-    return initialProducts.map((product) => ({
-      ...product,
-      image: product.image || DEFAULT_PRODUCT_IMAGE,
-    }));
-  });
+  const [products, setProducts] = useState<Product[]>([]);
 
   const [cart, setCart] = useState<CartItem[]>(() => {
     const saved = localStorage.getItem('siampure_cart');
@@ -333,8 +336,18 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Sync to local storage
   useEffect(() => {
-    localStorage.setItem('siampure_settings', JSON.stringify({ printerType: settings.printerType, autoPrintReceipt: settings.autoPrintReceipt, enableSoundEffects: settings.enableSoundEffects, theme: settings.theme }));
+    localStorage.setItem('siampure_settings', JSON.stringify({ printerType: settings.printerType, autoPrintReceipt: settings.autoPrintReceipt, enableSoundEffects: settings.enableSoundEffects, hardwareKeyboardMode: settings.hardwareKeyboardMode, theme: settings.theme }));
   }, [settings]);
+
+  useEffect(() => {
+    if (!settings.hardwareKeyboardMode) return;
+    return enableHardwareKeyboardMode();
+  }, [settings.hardwareKeyboardMode]);
+
+  const setHardwareKeyboardMode = (enabled: boolean) => {
+    setSettings((current) => ({ ...current, hardwareKeyboardMode: enabled }));
+    showToast(enabled ? 'ปิดคีย์บอร์ดบนหน้าจอแล้ว ใช้คีย์บอร์ด USB ได้ทันที' : 'เปิดคีย์บอร์ดบนหน้าจอแล้ว', 'info');
+  };
 
   useEffect(() => {
     localStorage.setItem('siampure_theme', theme);
@@ -357,20 +370,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   useEffect(() => {
-    localStorage.setItem('siampure_categories', JSON.stringify(categories));
-  }, [categories]);
-
-  useEffect(() => {
-    localStorage.setItem('siampure_units', JSON.stringify(units));
-  }, [units]);
+    localStorage.removeItem('siampure_categories');
+    localStorage.removeItem('siampure_units');
+    localStorage.removeItem('siampure_products');
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('siampure_note_options', JSON.stringify(noteOptions));
   }, [noteOptions]);
-
-  useEffect(() => {
-    localStorage.setItem('siampure_products', JSON.stringify(products));
-  }, [products]);
 
   const isDisplayCustomerUrl = typeof window !== 'undefined' && (
     window.location.search.includes('display=customer') ||
@@ -406,10 +413,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (e.newValue === 'percent' || e.newValue === 'amount') {
             setDiscountTypeState(e.newValue);
           }
-        } else if (e.key === 'siampure_products') {
-          setProducts(JSON.parse(e.newValue));
-        } else if (e.key === 'siampure_categories') {
-          setCategories(JSON.parse(e.newValue));
         } else if (e.key === 'siampure_settings') {
           setSettings(JSON.parse(e.newValue));
         }
@@ -457,6 +460,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     description: item.description || '',
     unit: item.unit,
     status: item.active ? 'active' : 'inactive',
+    isPopular: item.popular,
     noteOptionIds: [],
   });
 
@@ -473,6 +477,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     lowStockThreshold: item.minStockAlert,
     unitsPerPack: item.unitsPerPack || 0,
     active: item.status === 'active',
+    popular: Boolean(item.isPopular),
     unit: item.unit,
     imageData: item.image.startsWith('data:image/') ? item.image : '',
     description: item.description || '',
@@ -596,11 +601,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       logoData: apiSettings.logoData || '',
       navbarTitle: apiSettings.navbarTitle || '',
       navbarIconData: apiSettings.navbarIconData || '',
-      customerDisplayTitle: apiSettings.customerDisplayTitle || 'พร้อมเสิร์ฟความอร่อย',
-      customerDisplayHighlight: apiSettings.customerDisplayHighlight || 'เครื่องดื่ม & เบเกอรี่สดใหม่',
-      customerDisplaySubtitle: apiSettings.customerDisplaySubtitle || 'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์',
-      customerDisplayCardText: apiSettings.customerDisplayCardText || 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด',
-      customerDisplayCtaText: apiSettings.customerDisplayCtaText || 'สั่งรายการได้ที่พนักงานแคชเชียร์',
+      customerDisplayTitle: apiSettings.customerDisplayTitle || INITIAL_SETTINGS.customerDisplayTitle,
+      customerDisplayHighlight: apiSettings.customerDisplayHighlight || INITIAL_SETTINGS.customerDisplayHighlight,
+      customerDisplaySubtitle: apiSettings.customerDisplaySubtitle || INITIAL_SETTINGS.customerDisplaySubtitle,
+      customerDisplayCardText: apiSettings.customerDisplayCardText || INITIAL_SETTINGS.customerDisplayCardText,
+      customerDisplayCtaText: apiSettings.customerDisplayCtaText || INITIAL_SETTINGS.customerDisplayCtaText,
       defaultLowStock: apiSettings.defaultLowStock,
       storeName: apiSettings.receiptHeader || current.storeName,
       taxId: apiSettings.storeTaxId || '',
@@ -613,7 +618,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       effectivePromptPaySource: apiSettings.effectivePromptPaySource,
       effectivePromptPayAvailable: apiSettings.effectivePromptPayAvailable,
       vatEnabled: apiSettings.taxRatePercent > 0,
-      vatRate: apiSettings.taxRatePercent || current.vatRate,
+      vatRate: apiSettings.taxRatePercent,
       vatType: apiSettings.pricesIncludeTax ? 'included' : 'excluded',
       receiptFooterMessage: apiSettings.receiptFooter || current.receiptFooterMessage,
     }));
@@ -993,9 +998,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Customer Display Multi-Layer Synchronization Helper
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const customerWindowsRef = useRef<Window[]>([]);
+  const presentationConnectionRef = useRef<PresentationConnectionLike | null>(null);
+  const [customerDisplayStatus, setCustomerDisplayStatus] = useState<CustomerDisplayConnectionStatus>('idle');
+  const latestCustomerDisplayStateRef = useRef<any>(null);
+  latestCustomerDisplayStateRef.current = { cart, cartTotals, discount, discountType, settings };
 
-  // Function to open standalone Customer Display Window
-  const openCustomerDisplayWindow = () => {
+  const openCustomerDisplayPopup = () => {
     const url = `${window.location.origin}${window.location.pathname}?display=customer`;
     const popup = window.open(
       url,
@@ -1004,21 +1012,91 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     if (popup) {
       try {
-        (popup as any).__SIAMPURE_INITIAL_STATE__ = {
-          cart,
-          cartTotals,
-          discount,
-          discountType,
-          settings,
-        };
+        (popup as any).__SIAMPURE_INITIAL_STATE__ = latestCustomerDisplayStateRef.current;
         customerWindowsRef.current.push(popup);
-      } catch (e) {
-        // ignore
+      } catch {
+        // The storage/BroadcastChannel transports will still synchronize the window.
       }
     } else {
       setActiveTab('customer-display');
     }
   };
+
+  // Function to open standalone Customer Display Window
+  const openCustomerDisplayWindow = async () => {
+    const url = `${window.location.origin}${window.location.pathname}?display=customer`;
+    const PresentationRequestConstructor = getPresentationRequestConstructor();
+    if (!PresentationRequestConstructor) {
+      setCustomerDisplayStatus('unsupported');
+      showToast('เบราว์เซอร์นี้ไม่รองรับ Presentation API กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
+      openCustomerDisplayPopup();
+      return;
+    }
+
+    if (presentationConnectionRef.current?.state === 'connected') {
+      presentationConnectionRef.current.send(JSON.stringify({ type: 'CART_UPDATE', payload: latestCustomerDisplayStateRef.current }));
+      showToast('จอลูกค้าเชื่อมต่ออยู่แล้ว', 'info');
+      return;
+    }
+
+    setCustomerDisplayStatus('connecting');
+    try {
+      const request = new PresentationRequestConstructor(url);
+      if (request.getAvailability) {
+        try {
+          const availability = await request.getAvailability();
+          if (!availability.value) {
+            setCustomerDisplayStatus('unsupported');
+            showToast('ไม่พบจอที่ Presentation API มองเห็น กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
+            openCustomerDisplayPopup();
+            return;
+          }
+        } catch {
+          // Some Chromium builds expose Presentation API but not availability monitoring.
+        }
+      }
+      const connection = await request.start();
+      presentationConnectionRef.current = connection;
+      setCustomerDisplayStatus('connected');
+      const disconnect = () => {
+        if (presentationConnectionRef.current === connection) presentationConnectionRef.current = null;
+        setCustomerDisplayStatus('idle');
+      };
+      connection.addEventListener('close', disconnect);
+      connection.addEventListener('terminate', disconnect);
+      connection.addEventListener('message', (event) => {
+        const raw = (event as MessageEvent).data;
+        try {
+          const message = typeof raw === 'string' ? JSON.parse(raw) : raw;
+          if (message?.type === 'REQUEST_CURRENT_STATE' || message?.type === 'CUSTOMER_DISPLAY_MOUNTED') {
+            connection.send(JSON.stringify({ type: 'CART_UPDATE', payload: latestCustomerDisplayStateRef.current }));
+          }
+        } catch {
+          // Ignore malformed messages from an unrelated presentation receiver.
+        }
+      });
+      connection.send(JSON.stringify({ type: 'CART_UPDATE', payload: latestCustomerDisplayStateRef.current }));
+      showToast('เชื่อมต่อจอลูกค้าแล้ว', 'success');
+    } catch (error) {
+      const errorName = error instanceof DOMException ? error.name : '';
+      if (['AbortError', 'NotAllowedError', 'NotFoundError'].includes(errorName)) {
+        setCustomerDisplayStatus('idle');
+        showToast('ยกเลิกการเลือกจอลูกค้า', 'info');
+        return;
+      }
+      setCustomerDisplayStatus('unsupported');
+      showToast('ไม่พบจอที่ Presentation API ใช้งานได้ กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
+      openCustomerDisplayPopup();
+    }
+  };
+
+  useEffect(() => () => {
+    try {
+      presentationConnectionRef.current?.close();
+    } catch {
+      // Connection may already be closed by the receiving display.
+    }
+  }, []);
 
   // BroadcastChannel Handshake
   useEffect(() => {
@@ -1135,6 +1213,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           // ignore
         }
       });
+      // 5. Presentation API connection for a true secondary display.
+      if (presentationConnectionRef.current?.state === 'connected') {
+        presentationConnectionRef.current.send(JSON.stringify(data));
+      }
     } catch (e) {
       console.warn('BroadcastCustomerDisplay error:', e);
     }
@@ -1167,7 +1249,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (current) {
       void updatePOSProduct(id, productPayload({ ...current, ...updated }))
         .then(refreshPOSCatalog)
-        .catch((requestError) => showToast(requestError instanceof Error ? requestError.message : 'อัปเดตสินค้าไม่สำเร็จ', 'error'));
+        .catch((requestError) => {
+          showToast(requestError instanceof Error ? requestError.message : 'อัปเดตสินค้าไม่สำเร็จ', 'error');
+          void refreshPOSCatalog();
+        });
     }
   };
 
@@ -1830,6 +1915,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         toggleTheme,
         settings,
         updateSettings,
+        setHardwareKeyboardMode,
         members,
         categories,
         addCategory,
@@ -1845,6 +1931,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteNoteOption,
         broadcastCustomerDisplay,
         openCustomerDisplayWindow,
+        customerDisplayStatus,
         products,
         addProduct,
         updateProduct,

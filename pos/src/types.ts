@@ -32,6 +32,7 @@ export interface Product {
   description?: string;
   unit: string;
   status: 'active' | 'inactive';
+  isPopular?: boolean;
   noteOptionIds?: string[]; // IDs of bound NoteOptions
 }
 
@@ -205,6 +206,7 @@ export interface StoreSettings {
   printerType: 'thermal_80mm' | 'thermal_58mm';
   autoPrintReceipt: boolean;
   enableSoundEffects: boolean;
+  hardwareKeyboardMode: boolean;
   cashierName: string;
   theme?: 'light' | 'dark';
 }

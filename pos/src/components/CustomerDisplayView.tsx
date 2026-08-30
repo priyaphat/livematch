@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency } from '../utils/formatters';
-import { generatePromptPayPayload } from '../utils/promptpay';
-import QRCode from 'qrcode';
 import confetti from 'canvas-confetti';
 import {
   ShoppingBag,
@@ -138,6 +136,9 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
     totalDue: number;
     cashReceived?: number;
     change?: number;
+    qrDataUrl?: string;
+    qrError?: string;
+    qrReceiverName?: string;
     items?: CartItem[];
     totals?: {
       itemCount: number;
@@ -162,7 +163,6 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
 
   const [lastCompletedOrder, setLastCompletedOrder] = useState<Order | null>(null);
   const [showThankYouBanner, setShowThankYouBanner] = useState<boolean>(false);
-  const [qrDataUrl, setQrDataUrl] = useState<string>('');
   const [countdown, setCountdown] = useState<number>(120);
 
   // Sync with local context cart when changed in the same React tree
@@ -218,6 +218,9 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
         totalDue: Number(modalState.totalDue) || 0,
         cashReceived: modalState.cashReceived ? Number(modalState.cashReceived) : undefined,
         change: modalState.change ? Number(modalState.change) : undefined,
+        qrDataUrl: typeof modalState.qrDataUrl === 'string' ? modalState.qrDataUrl : undefined,
+        qrError: typeof modalState.qrError === 'string' ? modalState.qrError : undefined,
+        qrReceiverName: typeof modalState.qrReceiverName === 'string' ? modalState.qrReceiverName : undefined,
         items: Array.isArray(modalState.items) ? modalState.items : undefined,
         totals: modalState.totals && typeof modalState.totals === 'object' ? modalState.totals : undefined,
       });
@@ -276,6 +279,39 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
       }
     };
     window.addEventListener('message', handleWindowPostMessage);
+
+    // Presentation API receiver used by Android/Chrome secondary-display flows.
+    let presentationDisposed = false;
+    const presentationCleanups: Array<() => void> = [];
+    const addPresentationConnection = (connection: any) => {
+      if (!connection || presentationDisposed) return;
+      const handlePresentationMessage = (event: MessageEvent) => {
+        try {
+          const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+          if (message?.type) handleIncomingEvent(message.type, message.payload);
+        } catch {
+          // Ignore unrelated or malformed receiver messages.
+        }
+      };
+      connection.addEventListener?.('message', handlePresentationMessage);
+      presentationCleanups.push(() => connection.removeEventListener?.('message', handlePresentationMessage));
+      try {
+        connection.send(JSON.stringify({ type: 'CUSTOMER_DISPLAY_MOUNTED' }));
+        connection.send(JSON.stringify({ type: 'REQUEST_CURRENT_STATE' }));
+      } catch {
+        // Other transports below can still provide the initial state.
+      }
+    };
+    const presentationReceiver = (navigator as any).presentation?.receiver;
+    if (presentationReceiver?.connectionList) {
+      void presentationReceiver.connectionList.then((list: any) => {
+        if (presentationDisposed) return;
+        list.connections?.forEach(addPresentationConnection);
+        const handleConnectionAvailable = (event: any) => addPresentationConnection(event.connection);
+        list.addEventListener?.('connectionavailable', handleConnectionAvailable);
+        presentationCleanups.push(() => list.removeEventListener?.('connectionavailable', handleConnectionAvailable));
+      }).catch(() => undefined);
+    }
 
     // 2. BroadcastChannel
     let bc: BroadcastChannel | null = null;
@@ -373,6 +409,8 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
     }, 2500);
 
     return () => {
+      presentationDisposed = true;
+      presentationCleanups.forEach((cleanup) => cleanup());
       if (bc) bc.close();
       window.removeEventListener('message', handleWindowPostMessage);
       window.removeEventListener('siampure_customer_event', handleCustomEvent);
@@ -414,46 +452,6 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
     ? activePaymentModal.items
     : displayCart;
   const paymentTotals = activePaymentModal.totals || displayTotals;
-
-  useEffect(() => {
-    if (!isPromptPayModalActive) {
-      setQrDataUrl('');
-      return;
-    }
-
-    let isCancelled = false;
-    const generateQr = async () => {
-      try {
-        const promptPayId = settings.promptPayId || '0812345678';
-        const payload = generatePromptPayPayload(
-          promptPayId,
-          currentTotalDue > 0 ? currentTotalDue : undefined
-        );
-
-        const url = await QRCode.toDataURL(payload, {
-          width: 360,
-          margin: 2,
-          color: {
-            dark: '#002B49',
-            light: '#FFFFFF',
-          },
-          errorCorrectionLevel: 'M',
-        });
-
-        if (!isCancelled) {
-          setQrDataUrl(url);
-        }
-      } catch (err) {
-        console.error('Failed to generate PromptPay QR:', err);
-      }
-    };
-
-    generateQr();
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [isPromptPayModalActive, settings.promptPayId, currentTotalDue]);
 
   // PromptPay countdown timer
   useEffect(() => {
@@ -563,14 +561,14 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               </div>
 
               <h2 className="whitespace-pre-line text-3xl sm:text-5xl font-black text-slate-900 tracking-tight leading-tight">
-                {settings.customerDisplayTitle || 'พร้อมเสิร์ฟความอร่อย'} <br />
+                {settings.customerDisplayTitle || 'ยินดีต้อนรับ'} <br />
                 <span className="text-amber-600">
-                  {settings.customerDisplayHighlight || 'เครื่องดื่ม & เบเกอรี่สดใหม่'}
+                  {settings.customerDisplayHighlight || 'กรุณาตรวจสอบรายการและยอดชำระ'}
                 </span>
               </h2>
 
               <p className="whitespace-pre-line text-slate-600 text-sm sm:text-base leading-relaxed">
-                {settings.customerDisplaySubtitle || 'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์'}
+                {settings.customerDisplaySubtitle || 'รายการสินค้าและยอดเงินจะแสดงบนหน้าจอนี้แบบเรียลไทม์'}
               </p>
 
               {/* Store Service Badges */}
@@ -603,7 +601,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                   {settings.storeName}
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {settings.customerDisplayCardText || 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด'}
+                  {settings.customerDisplayCardText || 'ตรวจสอบรายการให้ถูกต้องก่อนชำระเงิน'}
                 </p>
               </div>
 
@@ -623,7 +621,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               </div>
 
               <div className="text-xs text-amber-800 bg-amber-50/80 px-4 py-2 rounded-xl border border-amber-200/80 font-medium">
-                ✨ {settings.customerDisplayCtaText || 'สั่งรายการได้ที่พนักงานแคชเชียร์'}
+                ✨ {settings.customerDisplayCtaText || 'กรุณาติดต่อพนักงานหากต้องการแก้ไขรายการ'}
               </div>
             </div>
           </div>
@@ -805,9 +803,9 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
                       <span className="rounded-full bg-amber-200 px-2.5 py-1 font-mono text-[11px] font-black text-amber-950">{countdown}s</span>
                     </div>
                     <div className="mx-auto w-fit rounded-2xl border-2 border-slate-900 bg-white p-2 shadow-sm">
-                      {qrDataUrl ? <img src={qrDataUrl} alt="PromptPay QR Code" className="h-28 w-28 object-contain" /> : <div className="grid h-28 w-28 place-items-center text-slate-400"><QrCode className="h-12 w-12 animate-pulse" /></div>}
+                      {activePaymentModal.qrDataUrl ? <img src={activePaymentModal.qrDataUrl} alt="PromptPay QR Code" className="h-28 w-28 object-contain" /> : <div className="grid h-28 w-28 place-items-center px-3 text-center text-slate-400">{activePaymentModal.qrError ? <span className="text-[10px] font-bold text-rose-600">{activePaymentModal.qrError}</span> : <QrCode className="h-12 w-12 animate-pulse" />}</div>}
                     </div>
-                    <p className="mt-1 text-[11px] font-semibold text-slate-600">ผู้รับ: {settings.promptPayReceiverName || settings.storeName}</p>
+                    <p className="mt-1 text-[11px] font-semibold text-slate-600">ผู้รับ: {activePaymentModal.qrReceiverName || settings.promptPayReceiverName || settings.storeName}</p>
                   </div>
                 ) : (
                   <div className="rounded-3xl border-2 border-amber-400 bg-amber-50 p-5 text-center shadow-xs">
@@ -820,7 +818,7 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
 
               {/* Footer Note */}
               <div className="pt-4 text-center text-xs text-slate-500">
-                {settings.receiptFooterMessage || 'ขอบคุณที่ใช้บริการ Siam Pure Cafe & Bistro'}
+                {settings.receiptFooterMessage || 'ขอบคุณที่ใช้บริการ / Thank you!'}
               </div>
             </div>
           </>
@@ -933,9 +931,9 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
 
                 {/* Big Scannable QR Code */}
                 <div className="bg-white p-3 rounded-2xl shadow-md border-2 border-slate-900 relative">
-                  {qrDataUrl ? (
+                  {activePaymentModal.qrDataUrl ? (
                     <img
-                      src={qrDataUrl}
+                      src={activePaymentModal.qrDataUrl}
                       alt="PromptPay QR Code"
                       className="w-48 h-48 object-contain rounded-lg"
                       referrerPolicy="no-referrer"
@@ -1123,9 +1121,9 @@ export const CustomerDisplayView: React.FC<CustomerDisplayViewProps> = ({ isStan
               </div>
               <div className="flex justify-between">
                 <span className="text-slate-500">ส่วนลด / คูปอง:</span>
-                {lastCompletedOrder.discountAmount > 0 ? (
+                {lastCompletedOrder.discount > 0 ? (
                   <span className="font-mono font-bold text-emerald-700">
-                    -{formatCurrency(lastCompletedOrder.discountAmount, settings.currencySymbol, settings.decimalPlaces)}
+                    -{formatCurrency(lastCompletedOrder.discount, settings.currencySymbol, settings.decimalPlaces)}
                   </span>
                 ) : (
                   <span className="text-slate-500">ไม่มีส่วนลด</span>

@@ -120,7 +120,7 @@ export const DashboardView: React.FC = () => {
               {formatCurrency(
                 (dashboard?.averageBillSatang || 0) / 100,
                 settings.currencySymbol,
-                0
+                2
               )}
               /บิล
             </p>
@@ -128,9 +128,10 @@ export const DashboardView: React.FC = () => {
         </div>
 
         {/* Card 3: Held Orders */}
-        <div
+        <button
+          type="button"
           onClick={() => setActiveTab('bills')}
-          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-amber-500 rounded-3xl p-4 sm:p-5 flex flex-col justify-between shadow-sm dark:shadow-xl cursor-pointer transition-all group"
+          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-amber-500 rounded-3xl p-4 sm:p-5 flex flex-col justify-between shadow-sm dark:shadow-xl cursor-pointer transition-all group text-left"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">รายการพักยอด</span>
@@ -148,12 +149,13 @@ export const DashboardView: React.FC = () => {
               <ArrowUpRight className="w-3 h-3" />
             </p>
           </div>
-        </div>
+        </button>
 
         {/* Card 4: Low Stock Alert */}
-        <div
+        <button
+          type="button"
           onClick={() => setActiveTab('stock')}
-          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-500 rounded-3xl p-4 sm:p-5 flex flex-col justify-between shadow-sm dark:shadow-xl cursor-pointer transition-all group"
+          className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 hover:border-rose-500 rounded-3xl p-4 sm:p-5 flex flex-col justify-between shadow-sm dark:shadow-xl cursor-pointer transition-all group text-left"
         >
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">สินค้าสต็อกต่ำ</span>
@@ -171,7 +173,7 @@ export const DashboardView: React.FC = () => {
               <ArrowUpRight className="w-3 h-3" />
             </p>
           </div>
-        </div>
+        </button>
       </div>
 
       {/* Main Charts & Analytics Grid */}
@@ -238,7 +240,7 @@ export const DashboardView: React.FC = () => {
               <ShoppingBag className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
               <span>สัดส่วนยอดขายตามหมวดหมู่</span>
             </h2>
-            <span className="text-xs text-slate-500 dark:text-slate-400">5 หมวดหมู่หลัก</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">{categoryList.length} หมวดหมู่หลัก</span>
           </div>
 
           <div className="space-y-3.5 my-auto">
@@ -371,10 +373,12 @@ export const DashboardView: React.FC = () => {
             {(dashboard?.recentSales || []).map((sale) => {
               const order = orders.find((item) => item.paymentId === sale.paymentId);
               return (
-              <div
+              <button
+                type="button"
                 key={sale.id}
                 onClick={() => order && setSelectedOrderForReceipt(order)}
-                className={`bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 hover:border-slate-400 dark:hover:border-slate-700 rounded-2xl p-3 flex items-center justify-between gap-3 transition-colors ${order ? 'cursor-pointer' : ''}`}
+                disabled={!order}
+                className={`w-full text-left bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 hover:border-slate-400 dark:hover:border-slate-700 rounded-2xl p-3 flex items-center justify-between gap-3 transition-colors ${order ? 'cursor-pointer' : ''}`}
               >
                 <div>
                   <div className="flex items-center gap-2">
@@ -408,7 +412,7 @@ export const DashboardView: React.FC = () => {
                     {order ? 'ดูใบเสร็จ ↗' : sale.actorName}
                   </span>
                 </div>
-              </div>
+              </button>
             );})}
           </div>
         </div>

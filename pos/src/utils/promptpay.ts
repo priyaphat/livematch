@@ -40,24 +40,16 @@ function formatPromptPayTarget(target: string): string {
     return formatTLV('03', cleaned);
   }
 
-  // Fallback as phone or custom
-  if (cleaned.length > 0) {
-    if (cleaned.startsWith('0')) {
-      return formatTLV('01', '0066' + cleaned.substring(1));
-    }
-    return formatTLV('02', cleaned);
-  }
-
-  return formatTLV('01', '0066812345678');
+  throw new Error('กรุณาตั้งค่าหมายเลข PromptPay ให้ถูกต้องก่อนสร้าง QR');
 }
 
 /**
  * Generates an official EMVCo Thai QR PromptPay payload string
- * @param promptPayId Mobile number (e.g. '0812345678') or Tax ID (e.g. '0105558912341')
+ * @param promptPayId Thai mobile number, tax ID, national ID or supported e-Wallet ID
  * @param amount Optional payment amount in THB
  */
 export function generatePromptPayPayload(promptPayId: string, amount?: number): string {
-  const targetTag = formatPromptPayTarget(promptPayId || '0812345678');
+  const targetTag = formatPromptPayTarget(promptPayId);
   
   // Tag 29: Merchant Account Information - PromptPay
   // AID for PromptPay: A000000677010111

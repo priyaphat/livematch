@@ -1708,6 +1708,65 @@ describe('LiveMatch app', () => {
     expect(deleted?.id).toBe(player.id)
   })
 
+  it('requires explicit yes confirmation before marking a player as paid', async () => {
+    const player = { id: 1, name: 'Player A', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const togglePayment = vi.fn().mockResolvedValue(undefined)
+    const apiRequest = vi.fn().mockResolvedValue({
+      items: [],
+      matchHistory: [],
+      totalThb: 120,
+      posEnabled: false,
+      promptPayPayload: ''
+    })
+    const wrapper = mount(PlayersPage, {
+      props: {
+        state: {
+          session: { id: 'session-1' },
+          settings: { showPaymentOnShare: true },
+          players: [player]
+        },
+        forms: {
+          newPlayerName: '',
+          newPlayerPhone: '',
+          playerSearch: '',
+          playerPaymentFilter: 'all',
+          playerPage: 1,
+          playerPageSize: 8,
+          selectedPlayerId: null,
+          shareLink: '',
+          shareStatus: ''
+        },
+        money: (value) => `฿${value}`,
+        playerCost: () => 120,
+        playerLiveShareHours: () => 0,
+        levelLabel: (value) => value,
+        playerDeleteBlockReasons: () => [],
+        addPlayer: () => {},
+        renamePlayer: () => {},
+        deletePlayer: () => {},
+        sharePlayers: () => {},
+        openPlayersQr: () => {},
+        saveSettings: () => {},
+        togglePayment,
+        apiRequest,
+        isSessionReadOnly: false
+      }
+    })
+
+    const openButton = wrapper.findAll('button').find((button) => button.text().trim() === 'ชำระเงิน')
+    await openButton.trigger('click')
+    await flushPromises()
+    const payButton = wrapper.findAll('button').find((button) => button.text().trim() === 'ชำระ')
+    await payButton.trigger('click')
+    expect(wrapper.text()).toContain('ยืนยันการชำระเงิน?')
+    expect(togglePayment).not.toHaveBeenCalled()
+
+    const yesButton = wrapper.findAll('button').find((button) => button.text().trim() === 'ใช่')
+    await yesButton.trigger('click')
+    await flushPromises()
+    expect(togglePayment).toHaveBeenCalledTimes(1)
+  })
+
   it('disables member delete when the player has references', async () => {
     const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
     const wrapper = mount(PlayersPage, {
@@ -2055,6 +2114,43 @@ describe('LiveMatch app', () => {
     expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/payment-events?all=1')
     expect(wrapper.text()).toContain('Player A')
     expect(wrapper.text()).toContain('฿125')
+  })
+
+  it('filters match and payment history by player name', async () => {
+    const names = { 1: 'Alice', 2: 'Partner A', 3: 'Opponent A', 4: 'Opponent B', 5: 'Bob', 6: 'Partner B', 7: 'Opponent C', 8: 'Opponent D' }
+    const apiRequest = vi.fn().mockResolvedValue({
+      items: [
+        { id: 'pay-a', playerName: 'Alice', paid: true, amount: 100, createdAt: '29/08/2026 10:00' },
+        { id: 'pay-b', playerName: 'Bob', paid: true, amount: 200, createdAt: '29/08/2026 11:00' }
+      ]
+    })
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          session: { id: 'session-1', type: 'liveMatch' },
+          settings: {},
+          history: [
+            { id: 1, a1: 1, a2: 2, b1: 3, b2: 4, court: '1', level: 'light', status: 'completed', winner: 'A', scores: [], shuttles: 0 },
+            { id: 2, a1: 5, a2: 6, b1: 7, b2: 8, court: '2', level: 'light', status: 'completed', winner: 'B', scores: [], shuttles: 0 }
+          ]
+        },
+        playerName: (id) => names[id] || `p${id}`,
+        matchLevelLabel: (level) => level,
+        updateHistoryWinner: () => {},
+        apiRequest
+      }
+    })
+
+    await wrapper.get('input[aria-label="กรองประวัติด้วยชื่อ"]').setValue('Alice')
+    expect(wrapper.findAll('[data-testid="match-history-item"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="match-history-item"]').text()).toContain('Alice')
+
+    const paymentTab = wrapper.findAll('button').find((button) => button.text().includes('ประวัติการชำระเงิน'))
+    await paymentTab.trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="payment-history-item"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="payment-history-item"]').text()).toContain('Alice')
+    expect(wrapper.get('[data-testid="payment-history-item"]').text()).not.toContain('Bob')
   })
 
   it('refreshes the shared queue every 9 seconds', async () => {

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { CreditCard, Download, Plus, Trophy, X } from '@lucide/vue'
+import { CreditCard, Download, Plus, Search, Trophy, X } from '@lucide/vue'
 import { exportHistoryExcel, exportPaymentHistoryExcel } from '../excelExport'
 import { emptyMatchScores, matchScoreSummary, validateMatchScores } from '../matchScores.js'
 
@@ -19,6 +19,20 @@ const props = defineProps([
 const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
 const activeTab = ref('matches')
 const paymentEvents = ref([])
+const historyNameFilter = ref('')
+const normalizedNameFilter = computed(() => historyNameFilter.value.trim().toLocaleLowerCase('th-TH'))
+const filteredHistory = computed(() => {
+  if (!normalizedNameFilter.value) return sortedHistory.value
+  return sortedHistory.value.filter((match) => (
+    [match.a1, match.a2, match.b1, match.b2]
+      .filter((id) => Number(id) > 0)
+      .some((id) => props.playerName(id).toLocaleLowerCase('th-TH').includes(normalizedNameFilter.value))
+  ))
+})
+const filteredPaymentEvents = computed(() => {
+  if (!normalizedNameFilter.value) return paymentEvents.value
+  return paymentEvents.value.filter((event) => String(event.playerName || '').toLocaleLowerCase('th-TH').includes(normalizedNameFilter.value))
+})
 const paymentLoading = ref(false)
 const paymentLoaded = ref(false)
 const paymentError = ref('')
@@ -139,9 +153,9 @@ async function exportExcel() {
     if (activeTab.value === 'payments') {
       await loadPaymentEvents(true)
       if (paymentError.value) throw new Error(paymentError.value)
-      await exportPaymentHistoryExcel(props, paymentEvents.value)
+      await exportPaymentHistoryExcel(props, filteredPaymentEvents.value)
     } else {
-      await exportHistoryExcel(props)
+      await exportHistoryExcel({ ...props, state: { ...props.state, history: filteredHistory.value } })
     }
   } catch (error) {
     exportError.value = error?.message || 'สร้างไฟล์ Excel ไม่สำเร็จ'
@@ -156,7 +170,7 @@ async function exportExcel() {
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
       <div>
         <h1 class="font-black">ประวัติ</h1>
-        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? sortedHistory.length : paymentEvents.length }} รายการ</p>
+        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? filteredHistory.length : filteredPaymentEvents.length }} รายการ</p>
       </div>
       <button
         class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-bold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300"
@@ -191,12 +205,23 @@ async function exportExcel() {
       </button>
     </nav>
 
+    <label class="relative block">
+      <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
+      <input
+        v-model="historyNameFilter"
+        type="search"
+        aria-label="กรองประวัติด้วยชื่อ"
+        placeholder="ค้นหาชื่อผู้เล่น..."
+        class="h-11 w-full rounded-lg border border-stone-200 bg-white pl-10 pr-3 text-sm font-bold outline-none transition focus:border-court-500 focus:ring-2 focus:ring-court-500/15 dark:border-stone-700 dark:bg-stone-900"
+      />
+    </label>
+
     <div v-if="activeTab === 'payments'" class="overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">
       <p v-if="paymentLoading" class="p-5 text-center text-sm font-bold text-stone-500">กำลังโหลดประวัติการชำระเงิน...</p>
       <p v-else-if="paymentError" class="p-5 text-center text-sm font-bold text-rose-700 dark:text-rose-300">{{ paymentError }}</p>
-      <p v-else-if="!paymentEvents.length" class="p-5 text-center text-sm font-bold text-stone-500">ยังไม่มีประวัติการชำระเงิน</p>
+      <p v-else-if="!filteredPaymentEvents.length" class="p-5 text-center text-sm font-bold text-stone-500">{{ paymentEvents.length ? 'ไม่พบชื่อที่ค้นหา' : 'ยังไม่มีประวัติการชำระเงิน' }}</p>
       <div v-else class="divide-y divide-stone-100 dark:divide-stone-800">
-		<article v-for="event in paymentEvents" :key="event.id" class="grid cursor-pointer gap-2 p-4 hover:bg-paper-50 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5 dark:hover:bg-stone-800/50" @click="selectedPayment = event">
+		<article v-for="event in filteredPaymentEvents" :key="event.id" data-testid="payment-history-item" class="grid cursor-pointer gap-2 p-4 hover:bg-paper-50 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5 dark:hover:bg-stone-800/50" @click="selectedPayment = event">
           <div class="min-w-0">
             <p class="truncate font-black">{{ event.playerName }}</p>
             <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ event.createdAt }}</p>
@@ -219,10 +244,12 @@ async function exportExcel() {
 	  </div>
 	</div>
     </div>
+    <p v-if="activeTab === 'matches' && !filteredHistory.length" class="rounded-lg border border-stone-200 bg-white p-5 text-center text-sm font-bold text-stone-500 dark:border-stone-700 dark:bg-stone-900">{{ sortedHistory.length ? 'ไม่พบชื่อที่ค้นหา' : 'ยังไม่มีประวัติการแข่งขัน' }}</p>
     <article
-      v-for="match in sortedHistory"
+      v-for="match in filteredHistory"
       v-show="activeTab === 'matches'"
       :key="match.id"
+      data-testid="match-history-item"
       class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900"
     >
       <div class="flex items-start justify-between gap-3 border-b border-stone-100 bg-paper-100 p-3 dark:border-stone-800 dark:bg-stone-800">

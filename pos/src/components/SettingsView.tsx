@@ -38,12 +38,14 @@ import {
   History,
   Image as ImageIcon,
   TestTube2,
+  Search,
+  ShieldAlert,
+  MonitorSmartphone,
 } from 'lucide-react';
 
 type SettingsTab = 'store' | 'customer-display' | 'printer' | 'tax' | 'permissions' | 'members' | 'activity';
 type MemberRole = POSRole;
 
-const MAX_MEMBERS = 3;
 const PERMISSION_LABELS = [
   ['sales', 'ขายสินค้า'],
   ['bills', 'บิลและประวัติ'],
@@ -97,7 +99,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const [activeTab, setActiveTab] = useState<SettingsTab>('store');
   const [formData, setFormData] = useState<StoreSettings>({ ...settings });
   const [members, setMembers] = useState<POSStaffMember[]>([]);
-  const [maxMembers, setMaxMembers] = useState(MAX_MEMBERS);
+  const [maxMembers, setMaxMembers] = useState(0);
   const [permissions, setPermissions] = useState<Record<MemberRole, POSPermissions>>(DEFAULT_PERMISSIONS);
   const [memberDraft, setMemberDraft] = useState({ name: '', email: '', pin: '', role: 'cashier' as Exclude<MemberRole, 'owner'> });
   const [memberEdits, setMemberEdits] = useState<Record<string, { name: string; email: string }>>({});
@@ -105,7 +107,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const [activity, setActivity] = useState<POSActivityItem[]>([]);
   const [testQR, setTestQR] = useState('');
   const [isFormDirty, setIsFormDirty] = useState(false);
+  const [printerDocumentMode, setPrinterDocumentMode] = useState<'discover' | 'test' | null>(null);
   const isOwner = currentUser.role === 'owner';
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const browserLabel = /EdgA\//i.test(navigator.userAgent) ? 'Microsoft Edge Android' : /Chrome\//i.test(navigator.userAgent) ? 'Chrome / Chromium' : navigator.userAgent.split(' ').slice(-1)[0] || 'ไม่ทราบ';
 
   const applyAccessSettings = (payload: Awaited<ReturnType<typeof getPOSAccessSettings>>) => {
     setMembers(payload.items);
@@ -140,13 +145,33 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     } catch (error) { showToast(error instanceof Error ? error.message : 'ทดสอบ QR ไม่สำเร็จ', 'error'); }
   };
 
-  const testPrint = () => {
-    const popup = window.open('', '_blank', 'width=420,height=600');
-    if (!popup) { showToast('กรุณาอนุญาต popup เพื่อทดสอบพิมพ์', 'warning'); return; }
-    const doc = popup.document; doc.title = 'POS Test Print';
-    const root = doc.createElement('main'); root.style.cssText = `width:${formData.printerType === 'thermal_58mm' ? '48mm' : '72mm'};margin:auto;font-family:Tahoma,sans-serif;text-align:center;color:#000`;
-    [formData.storeName, 'ทดสอบเครื่องพิมพ์ POS', new Date().toLocaleString('th-TH'), 'สกุลเงิน: บาท (฿) · 2 ตำแหน่ง', formData.receiptFooterMessage].forEach((value) => { const p = doc.createElement('p'); p.textContent = value || '-'; root.appendChild(p); });
-    doc.body.appendChild(root); popup.focus(); window.setTimeout(() => popup.print(), 250);
+  useEffect(() => {
+    if (!printerDocumentMode) return;
+    const handleAfterPrint = () => setPrinterDocumentMode(null);
+    window.addEventListener('afterprint', handleAfterPrint, { once: true });
+    const timer = window.setTimeout(() => {
+      try {
+        window.print();
+        showToast(printerDocumentMode === 'discover' ? 'เปิดหน้าต่างค้นหา/เลือกเครื่องพิมพ์ของ Android แล้ว' : 'ส่งใบทดสอบไปยังหน้าต่างพิมพ์แล้ว', 'info');
+        window.setTimeout(() => setPrinterDocumentMode(null), 5000);
+      } catch {
+        setPrinterDocumentMode(null);
+        showToast('เบราว์เซอร์นี้ไม่สามารถเปิดหน้าต่างพิมพ์ได้', 'error');
+      }
+    }, 120);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('afterprint', handleAfterPrint);
+    };
+  }, [printerDocumentMode]);
+
+  const openPrinterDialog = (mode: 'discover' | 'test') => {
+    if (typeof window.print !== 'function') {
+      showToast('เบราว์เซอร์นี้ไม่รองรับ Android Print Dialog', 'error');
+      return;
+    }
+    setPrinterDocumentMode(null);
+    window.setTimeout(() => setPrinterDocumentMode(mode), 0);
   };
 
   const forceLogout = async (member: POSStaffMember) => {
@@ -332,7 +357,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               }`}
             >
               <Users className="w-4 h-4" />
-              <span>เพิ่มสมาชิก ({members.length}/{MAX_MEMBERS})</span>
+              <span>เพิ่มสมาชิก ({members.length}/{maxMembers || '—'})</span>
             </button>
             <button
               onClick={() => setActiveTab('activity')}
@@ -532,7 +557,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               <div className="grid min-h-[430px] gap-5 rounded-2xl border border-slate-200 bg-white p-6 lg:grid-cols-[1.2fr_.8fr] lg:items-center dark:border-slate-700 dark:bg-slate-900">
                 <div>
                   <span className="inline-flex rounded-full border border-amber-300 bg-amber-50 px-3 py-1 text-[10px] font-bold text-amber-800">✨ ยินดีต้อนรับสู่ {formData.storeName}</span>
-                  <h4 className="mt-5 whitespace-pre-line text-3xl font-black leading-tight text-slate-900 dark:text-white">{formData.customerDisplayTitle || 'พร้อมเสิร์ฟความอร่อย'}<br /><span className="text-amber-600">{formData.customerDisplayHighlight || 'เครื่องดื่ม & เบเกอรี่สดใหม่'}</span></h4>
+                  <h4 className="mt-5 whitespace-pre-line text-3xl font-black leading-tight text-slate-900 dark:text-white">{formData.customerDisplayTitle || 'ยินดีต้อนรับ'}<br /><span className="text-amber-600">{formData.customerDisplayHighlight || 'กรุณาตรวจสอบรายการและยอดชำระ'}</span></h4>
                   <p className="mt-4 whitespace-pre-line text-xs leading-relaxed text-slate-500">{formData.customerDisplaySubtitle}</p>
                 </div>
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5 text-center dark:border-slate-700 dark:bg-slate-950">
@@ -554,6 +579,22 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               <span>เครื่องพิมพ์ความร้อน & ใบเสร็จ</span>
             </h3>
             <p className="text-[11px] text-slate-500">ขนาดกระดาษและการเปิดใบเสร็จอัตโนมัติบันทึกเฉพาะ browser เครื่องนี้ ส่วนข้อความท้ายใบเสร็จบันทึกในบัญชีร้าน</p>
+
+            <section className="rounded-2xl border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-500/20 dark:bg-sky-500/5" aria-labelledby="printer-device-status-title">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h4 id="printer-device-status-title" className="flex items-center gap-2 text-xs font-black text-slate-900 dark:text-white"><MonitorSmartphone className="h-4 w-4 text-sky-600" />สถานะการพิมพ์บนอุปกรณ์นี้</h4>
+                  <p className="mt-1 text-[10px] leading-relaxed text-slate-500">เว็บไม่สามารถอ่านรายชื่อเครื่องพิมพ์ของ Android ล่วงหน้าได้ ปุ่มค้นหาจะเปิด Android Print Dialog เพื่อให้ระบบแสดงเครื่องที่ใช้งานได้</p>
+                </div>
+                <span className={`shrink-0 rounded-full px-2.5 py-1 text-[9px] font-black ${typeof window.print === 'function' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'}`}>{typeof window.print === 'function' ? 'พร้อมเปิด Print Dialog' : 'ไม่รองรับ'}</span>
+              </div>
+              <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-4">
+                <div className="rounded-xl bg-white/80 p-2.5 dark:bg-slate-950/60"><dt className="font-bold text-slate-400">ระบบ</dt><dd className="mt-0.5 font-black">{isAndroid ? 'Android' : 'Desktop / Other'}</dd></div>
+                <div className="rounded-xl bg-white/80 p-2.5 dark:bg-slate-950/60"><dt className="font-bold text-slate-400">Browser</dt><dd className="mt-0.5 truncate font-black" title={browserLabel}>{browserLabel}</dd></div>
+                <div className="rounded-xl bg-white/80 p-2.5 dark:bg-slate-950/60"><dt className="font-bold text-slate-400">การเชื่อมต่อ</dt><dd className={`mt-0.5 font-black ${window.isSecureContext ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'}`}>{window.isSecureContext ? 'HTTPS / Secure' : 'ไม่ใช่ HTTPS'}</dd></div>
+                <div className="rounded-xl bg-white/80 p-2.5 dark:bg-slate-950/60"><dt className="font-bold text-slate-400">กระดาษ</dt><dd className="mt-0.5 font-black">{formData.printerType === 'thermal_58mm' ? '58 mm' : '80 mm'}</dd></div>
+              </dl>
+            </section>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
@@ -632,7 +673,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                 />
               </div>
               <div className="md:col-span-2">
-                <button type="button" onClick={testPrint} className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"><Printer className="h-4 w-4" />ทดสอบพิมพ์จากเครื่องนี้</button>
+                <div className="flex flex-wrap gap-2">
+                  <button id="discover-printer-btn" type="button" onClick={() => openPrinterDialog('discover')} className="inline-flex items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-xs font-bold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"><Search className="h-4 w-4" />ค้นหา / เลือกเครื่องพิมพ์</button>
+                  <button id="test-printer-btn" type="button" onClick={() => openPrinterDialog('test')} className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"><Printer className="h-4 w-4" />ทดสอบพิมพ์จากเครื่องนี้</button>
+                </div>
+                <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10px] leading-relaxed text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/5 dark:text-amber-300">
+                  <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>หากไม่พบเครื่องติดฐาน ให้เปิด <b>Android Settings → Connected devices → Printing</b> แล้วเปิด Print Service ของผู้ผลิต หากยังไม่ปรากฏ แสดงว่า Wongnai เรียกเครื่องพิมพ์ผ่าน SDK เฉพาะและเว็บ Chrome ไม่สามารถเข้าถึงโดยตรงได้</p>
+                </div>
               </div>
             </div>
           </div>
@@ -927,6 +975,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
           </button>
         </div> : null}
       </form>
+      {printerDocumentMode && (
+        <section id="printer-test-document" className={formData.printerType === 'thermal_58mm' ? 'printer-test-58mm' : 'printer-test-80mm'} aria-hidden="true">
+          <h1>{formData.storeName || 'LiveMatch POS'}</h1>
+          <p>{printerDocumentMode === 'discover' ? 'ค้นหา / เลือกเครื่องพิมพ์ Android' : 'ทดสอบเครื่องพิมพ์ POS'}</p>
+          <p>Printer test · ทดสอบภาษาไทย</p>
+          <p>{new Date().toLocaleString('th-TH')}</p>
+          <div className="printer-test-rule">--------------------------------</div>
+          {printerDocumentMode === 'test' ? <><p className="printer-test-row"><span>รายการทดสอบ</span><b>1 × ฿10.00</b></p><p className="printer-test-row"><span>ยอดรวม</span><b>฿10.00</b></p><div className="printer-test-rule">--------------------------------</div></> : null}
+          <p>{formData.receiptFooterMessage || 'ขอบคุณที่ใช้บริการ / Thank you!'}</p>
+          <p className="printer-test-small">Paper: {formData.printerType === 'thermal_58mm' ? '58 mm' : '80 mm'} · LiveMatch POS Web/PWA</p>
+        </section>
+      )}
     </div>
   );
 };

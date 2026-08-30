@@ -25,6 +25,7 @@ export interface POSProductRecord {
   unitsPerPack: number;
   imageData?: string;
   description?: string;
+  popular: boolean;
 }
 
 export interface POSProductPage {
@@ -69,7 +70,7 @@ export async function posRequest<T>(path: string, init: RequestInit = {}): Promi
     if (response.status === 401 || (response.status === 403 && payload.code === 'pos_not_enabled')) {
       window.dispatchEvent(new Event('livematch:pos-unauthorized'));
     }
-    throw new POSApiError(payload.error || 'ไม่สามารถเชื่อมต่อ POS API ได้', response.status);
+    throw new POSApiError(payload.error || payload.message || 'ไม่สามารถเชื่อมต่อ POS API ได้', response.status);
   }
   return payload as T;
 }

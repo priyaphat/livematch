@@ -88,9 +88,10 @@ const PosAppContent: React.FC = () => {
     if (showCheckingState) setIsCheckingAuth(true);
     try {
       const payload = await getCurrentAdmin();
+      const resolvedPermissions = { ...ALL_POS_PERMISSIONS, ...(payload.permissions || {}) };
       setAuthUser(payload.user);
-      setPermissions(payload.permissions || ALL_POS_PERMISSIONS);
-      window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS, user: payload.user } }));
+      setPermissions(resolvedPermissions);
+      window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: resolvedPermissions, user: payload.user } }));
     } catch {
       setAuthUser(null);
     } finally {
@@ -112,9 +113,10 @@ const PosAppContent: React.FC = () => {
 
   const handleLogin = async (credentials: LoginCredentials) => {
     const payload = await loginAdmin(credentials);
+    const resolvedPermissions = { ...ALL_POS_PERMISSIONS, ...(payload.permissions || {}) };
     setAuthUser(payload.user);
-    setPermissions(payload.permissions || ALL_POS_PERMISSIONS);
-    window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: payload.permissions || ALL_POS_PERMISSIONS, user: payload.user } }));
+    setPermissions(resolvedPermissions);
+    window.dispatchEvent(new CustomEvent('livematch:pos-authenticated', { detail: { permissions: resolvedPermissions, user: payload.user } }));
   };
 
   const handleLogout = async () => {

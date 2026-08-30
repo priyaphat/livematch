@@ -42,6 +42,34 @@ test('POS-XMATCH-004 @smoke @cross-system POS Hold ใช้ billing account เ
   await api.dispose();
 });
 
+test('POS-XMATCH-008 @cross-system ชำระแล้วกลับมาเล่นและสั่ง POS ต้องมียอดเพิ่มใน Match sync', async () => {
+  const api = await ownerApi();
+  const headers = await csrfHeaders(api);
+  const beforeSettlement = await api.get('/api/admin/pos/billing-summary?accountId=qa-billing-a-3');
+  const initial = await beforeSettlement.json();
+  const settlement = await api.post('/api/admin/pos/settlements', {
+    headers,
+    data: { billingAccountId: 'qa-billing-a-3', method: 'cash', expectedTotalSatang: initial.totalSatang, cashReceivedSatang: initial.totalSatang },
+  });
+  expect(settlement.ok(), await settlement.text()).toBeTruthy();
+  const resume = await api.post('/api/sessions/qa-session-a/players/3/resume', { headers, data: {} });
+  expect(resume.ok(), await resume.text()).toBeTruthy();
+  const hold = await api.post('/api/admin/pos/sales', {
+    headers,
+    data: {
+      requestId: 'qa-resume-pos-hold-001', action: 'hold', buyerType: 'member', buyerId: 'qa-member-a-3',
+      discountType: 'amount', discountAmountSatang: 0, discountRateBps: 0,
+      expectedTotalSatang: 4500, items: [{ productId: 'qa-product-coffee-a', quantity: 1 }],
+    },
+  });
+  expect(hold.ok(), await hold.text()).toBeTruthy();
+  const sync = await api.get('/api/sessions/qa-session-a/billing-sync');
+  expect(sync.ok(), await sync.text()).toBeTruthy();
+  const player = (await sync.json()).players.find((item: { playerId: number }) => item.playerId === 3);
+  expect(player).toMatchObject({ paid: false, posTotalSatang: 4500, totalSatang: 4500 });
+  await api.dispose();
+});
+
 test('POS-XMEM-001 @smoke @cross-system ค้นสมาชิกได้เฉพาะ active member ของ Admin เดียวกัน', async () => {
   const api = await ownerApi();
   const response = await api.get('/api/admin/pos/members?search=สมาชิก%20QA');

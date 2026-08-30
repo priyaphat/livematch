@@ -36,28 +36,6 @@ interface CustomerComboboxProps {
   autoFocus?: boolean;
 }
 
-// Built-in presets for quick service & table management
-const DEFAULT_PRESETS: CustomerSuggestion[] = [
-  { id: 't-1', name: 'โต๊ะ 1', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนห้องแอร์' },
-  { id: 't-2', name: 'โต๊ะ 2', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนห้องแอร์' },
-  { id: 't-3', name: 'โต๊ะ 3', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนห้องแอร์' },
-  { id: 't-4', name: 'โต๊ะ 4', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนริมกระจก' },
-  { id: 't-5', name: 'โต๊ะ 5', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนริมกระจก' },
-  { id: 't-6', name: 'โต๊ะ 6', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนกลางร้าน' },
-  { id: 't-7', name: 'โต๊ะ 7', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนกลางร้าน' },
-  { id: 't-8', name: 'โต๊ะ 8', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'โซนระเบียง (Outdoor)' },
-  { id: 't-vip1', name: 'โต๊ะ VIP 1', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'ห้องประชุม / รับรอง' },
-  { id: 't-vip2', name: 'โต๊ะ VIP 2', category: 'table', categoryLabel: 'โต๊ะในร้าน', detail: 'ห้องประชุม / รับรอง' },
-  { id: 's-takeaway', name: 'สั่งกลับบ้าน (Take Away)', category: 'service', categoryLabel: 'บริการภายนอก', detail: 'แพ็กใส่ถุง' },
-  { id: 's-delivery-lineman', name: 'Delivery - LINE MAN', category: 'service', categoryLabel: 'บริการภายนอก', detail: 'ไรเดอร์รับหน้าร้าน' },
-  { id: 's-delivery-grab', name: 'Delivery - GrabFood', category: 'service', categoryLabel: 'บริการภายนอก', detail: 'ไรเดอร์รับหน้าร้าน' },
-  { id: 's-delivery-shopee', name: 'Delivery - ShopeeFood', category: 'service', categoryLabel: 'บริการภายนอก', detail: 'ไรเดอร์รับหน้าร้าน' },
-  { id: 's-walkin', name: 'ลูกค้าหน้าร้าน (Walk-in)', category: 'service', categoryLabel: 'บริการภายนอก', detail: 'รอรับหน้าบาร์' },
-  { id: 'm-1', name: 'คุณสมชาย (ลูกค้าประจำ VIP)', category: 'member', categoryLabel: 'ลูกค้าประจำ', detail: 'เบอร์ 081-xxx-5678' },
-  { id: 'm-2', name: 'คุณวิภา (ลูกค้าประจำ)', category: 'member', categoryLabel: 'ลูกค้าประจำ', detail: 'เบอร์ 089-xxx-1234' },
-  { id: 'm-3', name: 'คุณธนา (ลูกค้าประจำ)', category: 'member', categoryLabel: 'ลูกค้าประจำ', detail: 'เบอร์ 086-xxx-9988' },
-];
-
 export const CustomerCombobox: React.FC<CustomerComboboxProps> = ({
   value,
   onChange,
@@ -101,10 +79,10 @@ export const CustomerCombobox: React.FC<CustomerComboboxProps> = ({
     };
   }, [inputValue, delayMs, onSearch]);
 
-  // Combine default presets with dynamic recent customers passed from props
+  // Use server-provided suggestions and real recent entries only.
   const allSuggestions = useMemo(() => {
     if (suggestions) return suggestions;
-    const combined: CustomerSuggestion[] = [...DEFAULT_PRESETS];
+    const combined: CustomerSuggestion[] = [];
 
     // Add unique recent customers from past held orders or context
     recentCustomerNames.forEach((name, idx) => {
@@ -317,7 +295,6 @@ export const CustomerCombobox: React.FC<CustomerComboboxProps> = ({
             <span className="font-bold">
               ผลการค้นหา {isSearching ? '(กำลังพิมพ์...)' : `(${filteredSuggestions.length} รายการ)`}
             </span>
-            <span className="font-mono text-[10px]">Delay: {delayMs}ms</span>
           </div>
 
           {/* Option to use custom typed text if not strictly existing */}

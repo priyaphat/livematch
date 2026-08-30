@@ -20,6 +20,8 @@ function mountPlayers(apiRequest, overrides = {}) {
       forms,
       money: (value) => String(value),
       playerCost: overrides.playerCost || (() => 0),
+      playerSettledCost: overrides.playerSettledCost,
+      playerOutstandingCost: overrides.playerOutstandingCost,
       playerLiveShareHours: () => 0,
       levelLabel: (value) => value,
       playerDeleteBlockReasons: () => [],
@@ -30,6 +32,7 @@ function mountPlayers(apiRequest, overrides = {}) {
       openPlayersQr: vi.fn(),
       saveSettings: vi.fn(),
       togglePayment: overrides.togglePayment || vi.fn(),
+      resumePlayer: overrides.resumePlayer || vi.fn(),
       isSessionReadOnly: false,
       apiRequest
     }
@@ -359,6 +362,8 @@ describe('PlayersPage payment modal', () => {
 
     const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ชำระ')
     await confirmButton.trigger('click')
+    const yesButton = wrapper.findAll('button').find((button) => button.text() === 'ใช่')
+    await yesButton.trigger('click')
     await flushPromises()
     expect(togglePayment).toHaveBeenCalledWith(player, expect.objectContaining({ totalThb: 270 }), 'cash')
   })
@@ -376,7 +381,37 @@ describe('PlayersPage payment modal', () => {
 
     const confirmButton = wrapper.findAll('button').find((button) => button.text() === 'ตกลง')
     await confirmButton.trigger('click')
+    const yesButton = wrapper.findAll('button').find((button) => button.text() === 'ใช่')
+    await yesButton.trigger('click')
     await flushPromises()
     expect(togglePayment).toHaveBeenCalledWith(paidPlayer, null, 'cash')
+  })
+
+  it('confirms returning a paid player without cancelling the previous payment', async () => {
+    const paidPlayer = { ...player, paid: true, memberId: 'member-7', settledAmountSatang: 10000 }
+    const resumePlayer = vi.fn().mockResolvedValue()
+    const togglePayment = vi.fn()
+    const { wrapper } = mountPlayers(vi.fn(), { state: { ...state, players: [paidPlayer] }, resumePlayer, togglePayment, playerCost: () => 100 })
+
+    expect(wrapper.findAll('button').some((button) => button.text() === 'ลบออก')).toBe(false)
+    await wrapper.findAll('button').find((button) => button.text() === 'กลับมาเล่น').trigger('click')
+    expect(wrapper.text()).toContain('ยอดที่ชำระแล้วจะยังคงเดิม')
+    await wrapper.findAll('button').find((button) => button.text() === 'ใช่').trigger('click')
+    await flushPromises()
+
+    expect(resumePlayer).toHaveBeenCalledWith(paidPlayer)
+    expect(togglePayment).not.toHaveBeenCalled()
+  })
+
+  it('shows a new POS balance after a settled player resumes', () => {
+    const resumedPlayer = { ...player, paid: false, memberId: 'member-7', settledAmountSatang: 10000, billingTotalSatang: 4500, posTotalSatang: 4500 }
+    const { wrapper } = mountPlayers(vi.fn(), {
+      state: { ...state, players: [resumedPlayer] },
+      playerCost: () => 100,
+      playerOutstandingCost: () => 0,
+    })
+
+    expect(wrapper.text()).toContain('ชำระยอดเพิ่ม')
+    expect(wrapper.text()).not.toContain('กลับมาเล่นแล้ว · ยังไม่มียอดเพิ่ม')
   })
 })

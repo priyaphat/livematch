@@ -45,6 +45,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
       setCustomerNote('');
       setMethod('cash');
       setQrGeneratedTime(120);
+      setQrDataUrl('');
+      setQrError('');
+      setQrReceiverName('');
 
       const modalPayload = {
         isOpen: true,
@@ -95,6 +98,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
       totalDue,
       cashReceived: method === 'cash' ? cashGiven : undefined,
       change: method === 'cash' ? change : undefined,
+      qrDataUrl: method === 'promptpay' ? qrDataUrl : undefined,
+      qrError: method === 'promptpay' ? qrError : undefined,
+      qrReceiverName: method === 'promptpay' ? qrReceiverName : undefined,
     };
 
     try {
@@ -107,11 +113,16 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
       type: 'PAYMENT_MODAL_STATE',
       payload: modalPayload,
     });
-  }, [isOpen, method, cashGiven, change, totalDue]);
+  }, [isOpen, method, cashGiven, change, totalDue, qrDataUrl, qrError, qrReceiverName]);
 
   // Generate dynamic EMVCo PromptPay QR Code
   useEffect(() => {
-    if (method !== 'promptpay') return;
+    if (method !== 'promptpay') {
+      setQrDataUrl('');
+      setQrError('');
+      setQrReceiverName('');
+      return;
+    }
     let isCancelled = false;
 
     const generateQr = async () => {
@@ -119,7 +130,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
         setIsQrLoading(true);
         setQrError('');
         const result = await getPOSPaymentQR(Math.round(totalDue * 100));
-        setQrReceiverName(result.receiverName || settings.promptPayReceiver || settings.storeName);
+        setQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
         if (!result.promptPayPayload && result.fallbackImage) {
           setQrDataUrl(result.fallbackImage);
           setIsQrLoading(false);
@@ -191,6 +202,9 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
 
   const handleComplete = async () => {
     if (method === 'cash' && !isCashSufficient) {
+      return;
+    }
+    if (method === 'promptpay' && !qrDataUrl) {
       return;
     }
 
@@ -445,6 +459,11 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
                       alt="PromptPay QR Code"
                       className="w-44 h-44 object-contain rounded-lg"
                     />
+                  ) : qrError ? (
+                    <div className="w-44 h-44 flex flex-col items-center justify-center text-red-600 gap-2 px-3">
+                      <AlertCircle className="w-12 h-12" />
+                      <span className="text-xs font-bold">{qrError}</span>
+                    </div>
                   ) : (
                     <div className="w-44 h-44 flex flex-col items-center justify-center text-slate-400 gap-2">
                       <QrCode className="w-12 h-12 animate-pulse" />
@@ -489,10 +508,10 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
 
           <button
             id="confirm-checkout-btn"
-            disabled={isCompleting || (method === 'cash' && !isCashSufficient) || (method === 'promptpay' && (!!qrError || isQrLoading))}
+            disabled={isCompleting || (method === 'cash' && !isCashSufficient) || (method === 'promptpay' && (!qrDataUrl || !!qrError || isQrLoading))}
             onClick={handleComplete}
             className={`flex-1 flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-black text-sm shadow-md transition-all ${
-              isCompleting || (method === 'cash' && !isCashSufficient) || (method === 'promptpay' && (!!qrError || isQrLoading))
+              isCompleting || (method === 'cash' && !isCashSufficient) || (method === 'promptpay' && (!qrDataUrl || !!qrError || isQrLoading))
                 ? 'bg-slate-200 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed border border-slate-300 dark:border-slate-700'
                 : 'bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-600 text-white shadow-red-600/30 scale-[1.01] active:scale-[0.99]'
             }`}

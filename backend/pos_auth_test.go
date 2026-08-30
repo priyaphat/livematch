@@ -417,7 +417,12 @@ func TestPOSSaleIntegration(t *testing.T) {
 	if err = db.QueryRow(`select details::text from activity_logs where action='settle_combined_bill' and target_id=$1`, paymentID).Scan(&activityDetails); err != nil {
 		t.Fatalf("POS-AUDIT-001 settlement activity missing: %v", err)
 	}
-	if !strings.Contains(activityDetails, `"cashReceivedSatang": 4000`) || !strings.Contains(activityDetails, `"changeSatang": 897`) || !strings.Contains(activityDetails, `"allocations"`) {
+	var settlementDetails struct {
+		CashReceivedSatang int64            `json:"cashReceivedSatang"`
+		ChangeSatang       int64            `json:"changeSatang"`
+		Allocations        []map[string]any `json:"allocations"`
+	}
+	if err = json.Unmarshal([]byte(activityDetails), &settlementDetails); err != nil || settlementDetails.CashReceivedSatang != 4000 || settlementDetails.ChangeSatang != 897 || len(settlementDetails.Allocations) == 0 {
 		t.Fatalf("POS-AUDIT-001 settlement details incomplete: %s", activityDetails)
 	}
 	if strings.Contains(activityDetails, "CASH-TEST") {
@@ -432,6 +437,10 @@ func TestPOSSaleIntegration(t *testing.T) {
 	}
 	if historyTotal != 1 || len(history) != 1 || history[0].PaymentID != paymentID || history[0].OriginSystem != "pos" || history[0].POSTotalSatang != 3103 {
 		t.Fatalf("history total=%d items=%#v", historyTotal, history)
+	}
+	sessionHistory, sessionHistoryTotal, err := a.listBillingPaymentHistory(t.Context(), adminID, matchSessionID, 1, 20)
+	if err != nil || sessionHistoryTotal != 0 || len(sessionHistory) != 0 {
+		t.Fatalf("session payment history leaked unrelated POS payment: total=%d items=%#v err=%v", sessionHistoryTotal, sessionHistory, err)
 	}
 	filteredHistory, filteredTotal, err := a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "cash", 1, 20)
 	if err != nil || filteredTotal != 1 || len(filteredHistory) != 1 || filteredHistory[0].PaymentID != paymentID {

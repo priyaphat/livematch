@@ -43,7 +43,6 @@ test('POS-DASH-002 ช่วง 1d/1w/1m อัปเดตหัวข้อแ
 });
 
 test('POS-DASH-003 ค่าเฉลี่ยต่อบิลแสดงสตางค์และจำนวนหมวดหมู่ไม่ hardcode', async ({ page }) => {
-  test.fail(true, 'Known P2: dashboard truncates average display and hardcodes category count to 5');
   const response = await api.get('/api/admin/pos/dashboard?range=1d');
   const dashboard = await response.json();
   await page.goto('/');
@@ -61,6 +60,15 @@ test('POS-DASH-004 ทางลัด Dashboard เปิดหน้าสต�
   await page.getByRole('button', { name: 'แดชบอร์ด' }).click();
   await page.getByRole('button', { name: 'ดูประวัติบิลทั้งหมด →' }).click();
   await expect(page.getByRole('heading', { name: 'จัดการบิล & ประวัติการขาย' })).toBeVisible();
+});
+
+test('POS-BILL-004 การ์ดพักยอดแสดง 4 ใบต่อแถวบน Desktop', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'บิล & ประวัติ' }).click();
+  await page.locator('#tab-held-bills-btn').click();
+  const heldCard = page.locator('[id^="held-card-"]').first();
+  await expect(heldCard).toBeVisible();
+  await expect(heldCard.locator('..')).toHaveClass(/lg:grid-cols-4/);
 });
 
 test('POS-BILL-001 ประวัติการขายเปิดดูรายละเอียดการชำระและรายการสินค้าได้', async ({ page }) => {
@@ -125,7 +133,6 @@ test('POS-DASH-005 @responsive Dashboard มือถือไม่มี horiz
 });
 
 test('POS-DASH-006 การ์ดพักยอด สต็อกต่ำ และบิลล่าสุดใช้งานด้วย keyboard ได้', async ({ page }) => {
-  test.fail(true, 'Known P3: clickable dashboard cards and recent-sale rows are divs without button/link semantics');
   await page.goto('/');
   await page.getByRole('button', { name: 'แดชบอร์ด' }).click();
   await expect(page.getByRole('button', { name: /รายการพักยอด/ })).toBeVisible();

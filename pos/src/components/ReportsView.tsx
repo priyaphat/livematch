@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateShort } from '../utils/formatters';
-import { authorizePOSReportExport, getPOSInventoryReport, getPOSReports, getPOSSoldProductsReport, getPOSSpecialReport, POSInventoryFilters, POSInventoryReport, POSReportData, POSReportRange, POSSoldProductsReport, POSSpecialReport } from '../api/posReports';
+import { authorizePOSReportExport, getPOSInventoryReport, getPOSPurchasesReport, getPOSReports, getPOSSoldProductsReport, getPOSSpecialReport, POSInventoryFilters, POSInventoryReport, POSPurchaseReportItem, POSPurchasesReport, POSReportData, POSReportRange, POSSoldProductsReport, POSSpecialReport } from '../api/posReports';
 import {
   BarChart3,
   Calendar,
@@ -14,16 +14,19 @@ import {
   Percent,
   ArrowUpRight,
   Sparkles,
+  Eye,
+  FileSpreadsheet,
+  X,
 } from 'lucide-react';
 
 export const ReportsView: React.FC = () => {
-  const { settings, showToast, categories } = usePos();
+  const { settings, showToast, categories, suppliers } = usePos();
 
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
-  const [dateRange, setDateRange] = useState<POSReportRange>('month');
+  const [dateRange, setDateRange] = useState<POSReportRange>('day');
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
-  const [reportType, setReportType] = useState<'overview' | 'top_sellers' | 'vat' | 'payments' | 'sold_products' | 'inventory' | 'special'>('overview');
+  const [reportType, setReportType] = useState<'overview' | 'top_sellers' | 'vat' | 'payments' | 'sold_products' | 'purchases' | 'inventory' | 'special'>('overview');
   const [report, setReport] = useState<POSReportData | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
@@ -31,16 +34,21 @@ export const ReportsView: React.FC = () => {
   const [topPage, setTopPage] = useState(1);
   const [vatPage, setVatPage] = useState(1);
   const [soldPage, setSoldPage] = useState(1);
+  const [purchasesPage, setPurchasesPage] = useState(1);
   const [inventoryPage, setInventoryPage] = useState(1);
   const [specialPOSPage, setSpecialPOSPage] = useState(1);
   const [specialSessionPage, setSpecialSessionPage] = useState(1);
   const [soldReport, setSoldReport] = useState<POSSoldProductsReport | null>(null);
+  const [purchasesReport, setPurchasesReport] = useState<POSPurchasesReport | null>(null);
+  const [purchaseSearch, setPurchaseSearch] = useState('');
+  const [purchaseSupplierId, setPurchaseSupplierId] = useState('');
+  const [selectedPurchase, setSelectedPurchase] = useState<POSPurchaseReportItem | null>(null);
   const [inventoryReport, setInventoryReport] = useState<POSInventoryReport | null>(null);
   const [specialReport, setSpecialReport] = useState<POSSpecialReport | null>(null);
   const [inventoryFilters, setInventoryFilters] = useState<POSInventoryFilters>({ status: 'all', stockStatus: 'all', packStatus: 'all' });
   const [extraLoading, setExtraLoading] = useState(false);
 
-  useEffect(() => { setTopPage(1); setVatPage(1); setSoldPage(1); setSpecialPOSPage(1); setSpecialSessionPage(1); }, [dateRange, startDate, endDate]);
+  useEffect(() => { setTopPage(1); setVatPage(1); setSoldPage(1); setPurchasesPage(1); setSpecialPOSPage(1); setSpecialSessionPage(1); }, [dateRange, startDate, endDate]);
 
   useEffect(() => {
     if (dateRange === 'custom' && (!startDate || !endDate || startDate > endDate)) return;
@@ -51,6 +59,9 @@ export const ReportsView: React.FC = () => {
         if (reportType === 'sold_products') {
           const result = await getPOSSoldProductsReport(dateRange, startDate, endDate, soldPage);
           if (!cancelled) setSoldReport(result);
+        } else if (reportType === 'purchases') {
+          const result = await getPOSPurchasesReport(dateRange, startDate, endDate, purchasesPage, false, { search: purchaseSearch, supplierId: purchaseSupplierId });
+          if (!cancelled) setPurchasesReport(result);
         } else if (reportType === 'inventory') {
           const result = await getPOSInventoryReport(inventoryFilters, inventoryPage);
           if (!cancelled) setInventoryReport(result);
@@ -66,7 +77,7 @@ export const ReportsView: React.FC = () => {
     };
     void load();
     return () => { cancelled = true; };
-  }, [reportType, dateRange, startDate, endDate, soldPage, inventoryPage, inventoryFilters, specialPOSPage, specialSessionPage]);
+  }, [reportType, dateRange, startDate, endDate, soldPage, purchasesPage, purchaseSearch, purchaseSupplierId, inventoryPage, inventoryFilters, specialPOSPage, specialSessionPage]);
 
   useEffect(() => {
     if (dateRange === 'custom' && (!startDate || !endDate || startDate > endDate)) {
@@ -108,6 +119,7 @@ export const ReportsView: React.FC = () => {
     vat: 'รายงานภาษีขาย',
     payments: 'สัดส่วนช่องทางชำระเงิน',
     sold_products: dateRange === 'day' ? 'สินค้าที่ขายในวันนี้' : 'สินค้าที่ขายในช่วงที่เลือก',
+    purchases: 'รายการซื้อจากซัพพลายเออร์',
     inventory: 'สินค้าคงเหลือ',
     special: 'รายงานรวม POS + LiveMatch',
   } as const;
@@ -145,7 +157,7 @@ export const ReportsView: React.FC = () => {
     </div>
   );
 
-  const handleExportCSV = async () => {
+  const handleExportCSV = async (singlePurchase?: POSPurchaseReportItem) => {
     if (isExporting) return;
     if (!report) {
       showToast('ยังไม่มีข้อมูลรายงานสำหรับส่งออก', 'warning');
@@ -162,15 +174,28 @@ export const ReportsView: React.FC = () => {
       return;
     }
 
-    let exportReport: POSReportData;
+    let exportReport: POSReportData = report;
     let exportSold: POSSoldProductsReport | null = null;
+    let exportPurchases: POSPurchasesReport | null = null;
     let exportInventory: POSInventoryReport | null = null;
     let exportSpecial: POSSpecialReport | null = null;
     try {
-      exportReport = await getPOSReports(dateRange, startDate, endDate, 1, 1, true);
-      if (reportType === 'sold_products') exportSold = await getPOSSoldProductsReport(dateRange, startDate, endDate, 1, true);
-      if (reportType === 'inventory') exportInventory = await getPOSInventoryReport(inventoryFilters, 1, true);
-      if (reportType === 'special') exportSpecial = await getPOSSpecialReport(dateRange, startDate, endDate, 1, 1, true);
+      if (singlePurchase) {
+        exportPurchases = {
+          range: dateRange,
+          startDate: report.startDate,
+          endDate: report.endDate,
+          summary: { purchaseCount: 1, totalQuantity: singlePurchase.totalQuantity, grossTotalSatang: singlePurchase.grossTotalSatang, discountSatang: singlePurchase.discountSatang, netTotalSatang: singlePurchase.netTotalSatang },
+          items: [singlePurchase],
+          pagination: { page: 1, pageSize: 1, total: 1, totalPages: 1 },
+        };
+      } else {
+        exportReport = await getPOSReports(dateRange, startDate, endDate, 1, 1, true);
+        if (reportType === 'sold_products') exportSold = await getPOSSoldProductsReport(dateRange, startDate, endDate, 1, true);
+        if (reportType === 'purchases') exportPurchases = await getPOSPurchasesReport(dateRange, startDate, endDate, 1, true, { search: purchaseSearch, supplierId: purchaseSupplierId });
+        if (reportType === 'inventory') exportInventory = await getPOSInventoryReport(inventoryFilters, 1, true);
+        if (reportType === 'special') exportSpecial = await getPOSSpecialReport(dateRange, startDate, endDate, 1, 1, true);
+      }
     } catch (error) {
       setIsExporting(false);
       showToast(error instanceof Error ? error.message : 'โหลดข้อมูลทั้งหมดสำหรับ Excel ไม่สำเร็จ', 'error');
@@ -236,6 +261,12 @@ export const ReportsView: React.FC = () => {
     } else if (reportType === 'sold_products') {
       headers = ['ลำดับ', 'สินค้า', 'จำนวนขาย', 'จำนวนบิล', 'ยอดขาย (บาท)'];
       rows = (exportSold?.items || []).map((item, index) => [index + 1, item.name, item.quantity, item.billCount, item.revenueSatang / 100]);
+    } else if (singlePurchase) {
+      headers = ['ลำดับ', 'สินค้า', 'SKU', 'จำนวน', 'ต้นทุน/หน่วย (บาท)', 'ยอดก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'ยอดสุทธิ (บาท)'];
+      rows = (singlePurchase.lines || []).map((item, index) => [index + 1, item.productName, item.productSku || '-', item.quantity, item.unitCostSatang / 100, item.grossTotalSatang / 100, item.discountSatang / 100, item.netTotalSatang / 100]);
+    } else if (reportType === 'purchases') {
+      headers = ['ลำดับ', 'วันที่ซื้อ', 'เลขเอกสาร', 'เลขอ้างอิงซัพพลายเออร์', 'รหัสซัพพลายเออร์', 'ซัพพลายเออร์', 'รายการสินค้า', 'จำนวนรายการ', 'จำนวนชิ้น', 'ยอดก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'ยอดสุทธิ (บาท)', 'ผู้บันทึก', 'หมายเหตุ'];
+      rows = (exportPurchases?.items || []).map((item, index) => [index + 1, formatCSVDateTime(item.createdAt), item.referenceNo, item.externalReferenceNo || '-', item.supplierCode || '-', item.supplierName, item.products || '-', item.itemCount, item.totalQuantity, item.grossTotalSatang / 100, item.discountSatang / 100, item.netTotalSatang / 100, item.actorName || '-', item.note || '-']);
     } else if (reportType === 'inventory') {
       headers = ['ลำดับ', 'สินค้า', 'หมวดหมู่', 'หน่วยนับ', 'สถานะสินค้า', 'คงเหลือ', 'จำนวนในแพ็ค', 'แพ็คเต็ม', 'เศษ', 'ต้นทุน/หน่วย (บาท)', 'มูลค่าทุน (บาท)', 'ราคาขาย (บาท)', 'มูลค่าขาย (บาท)'];
       rows = (exportInventory?.items || []).map((item, index) => [index + 1, item.name, item.category || '-', item.unit || '-', item.active ? 'ใช้งาน' : 'ปิดใช้งาน', item.stockQuantity, item.unitsPerPack || 'ไม่ได้กำหนด', item.fullPacks ?? '-', item.remainderUnits ?? '-', item.costSatang / 100, item.costValueSatang / 100, item.priceSatang / 100, item.retailValueSatang / 100]);
@@ -248,23 +279,26 @@ export const ReportsView: React.FC = () => {
       });
     }
 
+    const exportTitle = singlePurchase ? `รายละเอียดใบซื้อ ${singlePurchase.referenceNo}` : reportNames[reportType];
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'LiveMatch POS';
     workbook.created = new Date();
-    const worksheet = workbook.addWorksheet(reportNames[reportType], {
+    const worksheet = workbook.addWorksheet(exportTitle.replace(/[\\/?*:[\]]/g, '-').slice(0, 31), {
       views: [{ state: 'frozen', ySplit: 5 }],
       pageSetup: { orientation: headers.length > 6 ? 'landscape' : 'portrait', fitToPage: true, fitToWidth: 1 },
     });
     const columnCount = Math.max(1, headers.length);
     worksheet.mergeCells(1, 1, 1, columnCount);
-    worksheet.getCell(1, 1).value = `รายงาน POS — ${reportNames[reportType]}`;
+    worksheet.getCell(1, 1).value = `รายงาน POS — ${exportTitle}`;
     worksheet.getCell(1, 1).font = { name: 'Tahoma', size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
     worksheet.getCell(1, 1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
     worksheet.getCell(1, 1).alignment = { horizontal: 'left', vertical: 'middle' };
     worksheet.getRow(1).height = 30;
 
     worksheet.mergeCells(2, 1, 2, columnCount);
-    worksheet.getCell(2, 1).value = reportType === 'inventory'
+    worksheet.getCell(2, 1).value = singlePurchase
+      ? `ซัพพลายเออร์: ${singlePurchase.supplierName} (${singlePurchase.supplierCode || '-'}) · วันที่ซื้อ: ${formatCSVDateTime(singlePurchase.createdAt)}`
+      : reportType === 'inventory'
       ? `ข้อมูลสต็อก ณ ${new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short', timeZone: 'Asia/Bangkok' }).format(new Date(exportInventory?.asOf || Date.now()))}`
       : `ช่วงข้อมูล: ${formatCSVDate(report.startDate)} ถึง ${formatCSVDate(report.endDate)}`;
     worksheet.mergeCells(3, 1, 3, columnCount);
@@ -305,6 +339,8 @@ export const ReportsView: React.FC = () => {
     if (reportType === 'vat') { integerColumns.push(1); moneyColumns.push(5, 6, 7, 8, 9); }
     if (reportType === 'payments') { integerColumns.push(2); moneyColumns.push(3); }
     if (reportType === 'sold_products') { integerColumns.push(1, 3, 4); moneyColumns.push(5); }
+    if (singlePurchase) { integerColumns.push(1, 4); moneyColumns.push(5, 6, 7, 8); }
+    else if (reportType === 'purchases') { integerColumns.push(1, 8, 9); moneyColumns.push(10, 11, 12); }
     if (reportType === 'inventory') { integerColumns.push(1, 6, 7, 8, 9); moneyColumns.push(10, 11, 12, 13); }
     if (reportType === 'special') { integerColumns.push(4); moneyColumns.push(5, 6); }
     for (let rowNumber = 6; rowNumber <= worksheet.rowCount; rowNumber += 1) {
@@ -316,6 +352,14 @@ export const ReportsView: React.FC = () => {
       rows.forEach((row) => { width = Math.max(width, String(row[columnIndex] ?? '').length + 2); });
       column.width = Math.min(36, Math.max(12, width));
     });
+    if (singlePurchase) {
+      const detailWidths = [10, 34, 20, 12, 22, 24, 18, 20];
+      worksheet.columns.forEach((column, columnIndex) => { column.width = detailWidths[columnIndex]; });
+    } else if (reportType === 'purchases') {
+      const purchaseColumnWidths = [10, 22, 22, 28, 20, 24, 40, 14, 14, 24, 18, 18, 20, 28];
+      worksheet.columns.forEach((column, columnIndex) => { column.width = purchaseColumnWidths[columnIndex]; });
+      for (let rowNumber = 6; rowNumber <= worksheet.rowCount; rowNumber += 1) worksheet.getRow(rowNumber).height = 34;
+    }
     if (rows.length > 0) worksheet.autoFilter = { from: { row: 5, column: 1 }, to: { row: 5, column: columnCount } };
 
     if (reportType === 'special' && exportSpecial) {
@@ -357,7 +401,9 @@ export const ReportsView: React.FC = () => {
       showToast('ไม่สามารถสร้างไฟล์ Excel ได้', 'error');
       return;
     }
-    const fileName = `pos-${reportType}-${report.startDate}-${report.endDate}.xlsx`;
+    const fileName = singlePurchase
+      ? `pos-purchase-${singlePurchase.referenceNo.replace(/[^a-zA-Z0-9_-]/g, '-')}.xlsx`
+      : `pos-${reportType}-${report.startDate}-${report.endDate}.xlsx`;
     const blob = new Blob([workbookBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const fallbackDownload = () => {
       const objectUrl = URL.createObjectURL(blob);
@@ -395,7 +441,7 @@ export const ReportsView: React.FC = () => {
       } else {
         fallbackDownload();
       }
-      showToast(`บันทึก Excel: ${reportNames[reportType]} สำเร็จ`, 'success');
+      showToast(`บันทึก Excel: ${exportTitle} สำเร็จ`, 'success');
     } catch (error) {
       if (!(error instanceof DOMException && error.name === 'AbortError')) {
         showToast(error instanceof Error ? error.message : 'ไม่สามารถบันทึกไฟล์ Excel ได้', 'error');
@@ -480,7 +526,7 @@ export const ReportsView: React.FC = () => {
 
           <button
             id="export-csv-btn"
-            onClick={handleExportCSV}
+            onClick={() => void handleExportCSV()}
             disabled={isLoading || isExporting || !report}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 border border-slate-200 dark:border-slate-700 text-xs font-semibold transition-all shadow-xs disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -580,6 +626,9 @@ export const ReportsView: React.FC = () => {
         </button>
         <button onClick={() => setReportType('sold_products')} className={`px-3.5 py-1.5 rounded-xl font-bold transition-all ${reportType === 'sold_products' ? 'bg-emerald-500 text-slate-950 shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
           {dateRange === 'day' ? 'สินค้าที่ขายในวันนี้' : 'สินค้าที่ขายในช่วงที่เลือก'}
+        </button>
+        <button onClick={() => setReportType('purchases')} className={`px-3.5 py-1.5 rounded-xl font-bold transition-all ${reportType === 'purchases' ? 'bg-emerald-500 text-slate-950 shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
+          ซื้อจากซัพพลายเออร์
         </button>
         <button onClick={() => setReportType('inventory')} className={`px-3.5 py-1.5 rounded-xl font-bold transition-all ${reportType === 'inventory' ? 'bg-emerald-500 text-slate-950 shadow-xs' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
           สินค้าคงเหลือ
@@ -845,6 +894,92 @@ export const ReportsView: React.FC = () => {
         </div>
       )}
 
+      {reportType === 'purchases' && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 rounded-3xl border border-slate-200 bg-white p-4 shadow-md sm:grid-cols-2 dark:border-slate-800 dark:bg-slate-900">
+            <input
+              id="purchase-report-search"
+              value={purchaseSearch}
+              onChange={(event) => { setPurchasesPage(1); setPurchaseSearch(event.target.value); }}
+              placeholder="ค้นหาชื่อเอกสาร เลขอ้างอิง หรือซัพพลายเออร์"
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950"
+            />
+            <select
+              id="purchase-report-supplier"
+              value={purchaseSupplierId}
+              onChange={(event) => { setPurchasesPage(1); setPurchaseSupplierId(event.target.value); }}
+              className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950"
+            >
+              <option value="">ซัพพลายเออร์ทั้งหมด</option>
+              {suppliers.map((supplier) => <option key={supplier.id} value={supplier.id}>{supplier.name}{supplier.code ? ` (${supplier.code})` : ''}</option>)}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {[
+              ['เอกสารซื้อ', `${purchasesReport?.summary.purchaseCount || 0} รายการ`],
+              ['จำนวนสินค้า', `${purchasesReport?.summary.totalQuantity || 0} ชิ้น`],
+              ['ส่วนลดจากซัพพลายเออร์', formatCurrency((purchasesReport?.summary.discountSatang || 0) / 100, settings.currencySymbol, 2)],
+              ['ยอดซื้อสุทธิ', formatCurrency((purchasesReport?.summary.netTotalSatang || 0) / 100, settings.currencySymbol, 2)],
+            ].map(([label, value]) => (
+              <div key={label} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900">
+                <p className="text-xs text-slate-500">{label}</p>
+                <p className="mt-1 text-lg font-black text-emerald-600 dark:text-emerald-400">{value}</p>
+              </div>
+            ))}
+          </div>
+          <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-md dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
+              <div><h3 className="text-sm font-bold">รายการซื้อจากซัพพลายเออร์</h3><p className="text-xs text-slate-500">อ้างอิงจากเอกสารรับสินค้าเข้าที่ระบุซัพพลายเออร์</p></div>
+              <div className="text-right text-xs text-slate-500">ก่อนส่วนลด {formatCurrency((purchasesReport?.summary.grossTotalSatang || 0) / 100, settings.currencySymbol, 2)}</div>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1100px] text-left text-xs">
+                <thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-3">วันที่/เอกสาร</th><th className="p-3">ซัพพลายเออร์</th><th className="p-3">สินค้า</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">ก่อนลด</th><th className="p-3 text-right">ส่วนลด</th><th className="p-3 text-right">สุทธิ</th><th className="p-3">ผู้บันทึก</th><th className="p-3 text-center">จัดการ</th></tr></thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {(purchasesReport?.items || []).length === 0 && <tr><td colSpan={9} className="p-8 text-center text-slate-400">ไม่พบรายการซื้อที่ตรงกับตัวกรอง</td></tr>}
+                  {(purchasesReport?.items || []).map((item) => (
+                    <tr key={item.id}>
+                      <td className="p-3"><strong className="block">{item.referenceNo}</strong><span className="text-slate-500">{formatCSVDateTime(item.createdAt)}</span>{item.externalReferenceNo && <span className="block text-blue-600">อ้างอิง: {item.externalReferenceNo}</span>}</td>
+                      <td className="p-3"><strong>{item.supplierName}</strong>{item.supplierCode && <span className="block text-slate-500">{item.supplierCode}</span>}</td>
+                      <td className="max-w-[320px] p-3 text-slate-600 dark:text-slate-300">{item.products || '-'}</td>
+                      <td className="p-3 text-right font-mono">{item.itemCount} รายการ<br/><span className="text-slate-500">{item.totalQuantity} ชิ้น</span></td>
+                      <td className="p-3 text-right font-mono">{formatCurrency(item.grossTotalSatang / 100, settings.currencySymbol, 2)}</td>
+                      <td className="p-3 text-right font-mono text-amber-600">{formatCurrency(item.discountSatang / 100, settings.currencySymbol, 2)}</td>
+                      <td className="p-3 text-right font-mono font-bold text-emerald-600">{formatCurrency(item.netTotalSatang / 100, settings.currencySymbol, 2)}</td>
+                      <td className="p-3">{item.actorName || '-'}</td>
+                      <td className="p-3"><div className="flex justify-center gap-2"><button type="button" onClick={() => setSelectedPurchase(item)} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-bold text-slate-600 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-700 dark:text-slate-300"><Eye className="h-3.5 w-3.5"/>ดูรายละเอียด</button><button type="button" onClick={() => void handleExportCSV(item)} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 font-bold text-white hover:bg-emerald-500"><FileSpreadsheet className="h-3.5 w-3.5"/>Excel</button></div></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {purchasesReport && paginationBar(purchasesReport.pagination.page, purchasesReport.pagination.totalPages, purchasesReport.pagination.total, setPurchasesPage)}
+          </div>
+        </div>
+      )}
+
+      {selectedPurchase && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-labelledby="purchase-detail-title">
+          <div className="max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-3xl bg-white shadow-2xl dark:bg-slate-900">
+            <div className="flex items-start justify-between border-b border-slate-200 p-5 dark:border-slate-800">
+              <div><h2 id="purchase-detail-title" className="text-lg font-black">รายละเอียดการซื้อ {selectedPurchase.referenceNo}</h2><p className="mt-1 text-xs text-slate-500">{selectedPurchase.supplierName} · {formatCSVDateTime(selectedPurchase.createdAt)}</p></div>
+              <button type="button" onClick={() => setSelectedPurchase(null)} aria-label="ปิดรายละเอียดการซื้อ" className="rounded-xl border border-slate-200 p-2 text-slate-500 hover:text-slate-900 dark:border-slate-700 dark:hover:text-white"><X className="h-5 w-5"/></button>
+            </div>
+            <div className="max-h-[70vh] overflow-y-auto p-5">
+              <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">{[
+                ['เลขอ้างอิงซัพพลายเออร์', selectedPurchase.externalReferenceNo || '-'],
+                ['ผู้บันทึก', selectedPurchase.actorName || '-'],
+                ['จำนวนสินค้า', `${selectedPurchase.totalQuantity} ชิ้น`],
+                ['ยอดสุทธิ', formatCurrency(selectedPurchase.netTotalSatang / 100, settings.currencySymbol, 2)],
+              ].map(([label, value]) => <div key={label} className="rounded-2xl bg-slate-50 p-3 dark:bg-slate-950"><p className="text-[10px] font-bold text-slate-400">{label}</p><p className="mt-1 text-sm font-black">{value}</p></div>)}</div>
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800"><table className="w-full min-w-[760px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950"><tr><th className="p-3 text-left">สินค้า / SKU</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">ต้นทุน/หน่วย</th><th className="p-3 text-right">ก่อนลด</th><th className="p-3 text-right">ส่วนลด</th><th className="p-3 text-right">สุทธิ</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(selectedPurchase.lines || []).map((line) => <tr key={`${line.productId}:${line.productSku}`}><td className="p-3"><strong className="block">{line.productName}</strong><span className="text-slate-500">{line.productSku || '-'}</span></td><td className="p-3 text-right font-mono">{line.quantity}</td><td className="p-3 text-right font-mono">{formatCurrency(line.unitCostSatang / 100, settings.currencySymbol, 2)}</td><td className="p-3 text-right font-mono">{formatCurrency(line.grossTotalSatang / 100, settings.currencySymbol, 2)}</td><td className="p-3 text-right font-mono text-amber-600">{formatCurrency(line.discountSatang / 100, settings.currencySymbol, 2)}</td><td className="p-3 text-right font-mono font-black text-emerald-600">{formatCurrency(line.netTotalSatang / 100, settings.currencySymbol, 2)}</td></tr>)}</tbody></table></div>
+              {selectedPurchase.note && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs text-slate-600 dark:bg-slate-950 dark:text-slate-300">หมายเหตุ: {selectedPurchase.note}</p>}
+              <div className="mt-5 flex justify-end"><button type="button" onClick={() => void handleExportCSV(selectedPurchase)} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white hover:bg-emerald-500"><Download className="h-4 w-4"/>Export Excel รายการนี้</button></div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {reportType === 'inventory' && (
         <div className="space-y-4">
           <div className="grid grid-cols-1 gap-2 rounded-3xl border border-slate-200 bg-white p-4 shadow-md sm:grid-cols-2 lg:grid-cols-5 dark:border-slate-800 dark:bg-slate-900">
@@ -874,7 +1009,7 @@ export const ReportsView: React.FC = () => {
           <div className="space-y-3">{(specialReport?.sessions || []).map((session) => <div key={session.id} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="flex flex-wrap justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800"><div><h3 className="font-bold">{session.name}</h3><p className="text-xs text-slate-500">{formatThaiDateShort(session.occurredAt)} · {session.gameCount} เกม · {session.playerCount} คน</p></div><strong className="text-emerald-600">{formatCurrency(session.totalSatang / 100, settings.currencySymbol, 2)}</strong></div><div className="mt-3 grid gap-4 lg:grid-cols-2"><div><p className="mb-2 text-xs font-bold">ค่าเข้าสนามตามประเภทสมาชิก</p>{session.entryFees.map((item) => <div key={`${item.memberTypeId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.memberTypeName} · {item.quantity} คน × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div><div><p className="mb-2 text-xs font-bold">ลูกแบดที่ใช้จริง</p>{session.shuttles.map((item) => <div key={`${item.brandId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.brandName} · {item.quantity} ลูก × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div></div></div>)}{specialReport && paginationBar(specialReport.sessionPagination.page, specialReport.sessionPagination.totalPages, specialReport.sessionPagination.total, setSpecialSessionPage)}</div>
         </div>
       )}
-      {extraLoading && (reportType === 'sold_products' || reportType === 'inventory' || reportType === 'special') && <div className="text-center text-xs text-slate-500">กำลังโหลดข้อมูลรายงาน...</div>}
+      {extraLoading && (reportType === 'sold_products' || reportType === 'purchases' || reportType === 'inventory' || reportType === 'special') && <div className="text-center text-xs text-slate-500">กำลังโหลดข้อมูลรายงาน...</div>}
     </div>
   );
 };
