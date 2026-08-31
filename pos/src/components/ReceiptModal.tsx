@@ -2,18 +2,35 @@ import React, { useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { Printer, X, Check, Copy, Share2 } from 'lucide-react';
+import { printIminText } from '../utils/iminPrinter';
 
 export const ReceiptModal: React.FC = () => {
   const { selectedOrderForReceipt, setSelectedOrderForReceipt, settings, showToast } = usePos();
   const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>('80mm');
   const [copied, setCopied] = useState(false);
+  const [isPrinting, setIsPrinting] = useState(false);
 
   if (!selectedOrderForReceipt) return null;
 
   const order = selectedOrderForReceipt;
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
+    if (isPrinting) return;
+    setIsPrinting(true);
+    if (/Android/i.test(navigator.userAgent)) {
+      try {
+        const receiptText = document.getElementById('printable-receipt')?.innerText.trim();
+        if (!receiptText) throw new Error('ไม่พบข้อมูลใบเสร็จสำหรับพิมพ์');
+        await printIminText(receiptText, paperWidth);
+        showToast('พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว', 'success');
+        setIsPrinting(false);
+        return;
+      } catch (error) {
+        showToast(`${error instanceof Error ? error.message : 'เชื่อมต่อ InnerPrinter ไม่สำเร็จ'} · เปิด Android Print Dialog แทน`, 'warning');
+      }
+    }
     window.print();
+    setIsPrinting(false);
   };
 
   const handleCopyText = () => {
@@ -287,11 +304,12 @@ export const ReceiptModal: React.FC = () => {
           <div className="flex items-center gap-2">
             <button
               id="print-receipt-btn"
-              onClick={handlePrint}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-black transition-all shadow-md shadow-red-600/20"
+              onClick={() => void handlePrint()}
+              disabled={isPrinting}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:cursor-wait disabled:opacity-60 text-white text-xs font-black transition-all shadow-md shadow-red-600/20"
             >
               <Printer className="w-4 h-4" />
-              <span>พิมพ์ใบเสร็จ (Print)</span>
+              <span>{isPrinting ? 'กำลังพิมพ์…' : 'พิมพ์ใบเสร็จ (Print)'}</span>
             </button>
           </div>
         </div>

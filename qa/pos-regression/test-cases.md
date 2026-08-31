@@ -60,6 +60,7 @@
 | POS-HW-001 | P1 | Android + USB keyboard | เปิด/ปิดโหมดคีย์บอร์ด USB | inputmode เป็น none ระหว่างเปิด, พิมพ์ด้วย hardware event ได้ และคืนค่าเดิมเมื่อปิด | Playwright | Chromium Android UA |
 | POS-HW-002 | P1 | W POS firmware รายงาน user agent เป็น Linux/Chromium | เปิดหน้า POS | ปุ่มคีย์บอร์ด USB ยังแสดงและสลับ inputmode ได้ | Playwright | Chromium Linux UA |
 | POS-PRINT-001 | P1 | Owner เปิดตั้งค่าเครื่องพิมพ์ | กดค้นหา/เลือกเครื่องพิมพ์ | สร้างเอกสาร 80 mm ในหน้าเดิมและเปิด Android Print Dialog | Playwright | Chromium mocked print |
+| POS-PRINT-002 | P1 | W POS Android เปิด iMin H5 Web Print service | ตรวจหาและทดสอบ InnerPrinter | เชื่อมต่อ localhost WebSocket, ตรวจสถานะและส่งข้อความไทยพร้อม feed/cut โดยไม่เปิด Android Print Dialog | Playwright | Chromium mocked iMin WebSocket |
 | POS-RCPT-001 | P1 | Paid sale | เปิด/พิมพ์ใบเสร็จ | ไม่มีสาขา; มีสินค้า VAT วิธีชำระ ผู้ขาย ยอดถูก | Manual | Chromium/printer |
 | POS-BILL-001 | P1 | มีประวัติชำระเงิน | กดดูรายละเอียดจากแท็บประวัติการขาย | modal แสดงลูกค้า วันเวลา ผู้รับชำระ ช่องทาง รายการ Match/POS ยอดรวม เงินรับ/ทอนหรือเลขอ้างอิงครบ | Playwright | Chromium |
 | POS-BILL-002 | P1 | มีประวัติอย่างน้อย 21 รายการ | ค้นหา กรอง และเปลี่ยนหน้าประวัติการขาย | API แบ่งหน้าละ 20, จำนวนรวม/ช่วงรายการถูก และตัวกรองทำงานกับข้อมูลทุกหน้า | Playwright | Chromium/API |

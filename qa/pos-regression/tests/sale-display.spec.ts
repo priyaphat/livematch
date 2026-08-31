@@ -280,6 +280,58 @@ test('POS-PRINT-001 เปิด Android Print Dialog ด้วยเอกส�
   await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(2);
 });
 
+test('POS-PRINT-002 @smoke iMin Web Print พบ InnerPrinter และพิมพ์ตรงโดยไม่เปิด Android Print Dialog', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 13; iMin D4) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
+    (window as any).__printCalls = 0;
+    (window as any).__iminCommands = [];
+    window.print = () => { (window as any).__printCalls += 1; };
+
+    class MockIminWebSocket {
+      static OPEN = 1;
+      readonly OPEN = 1;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+
+      constructor(public url: string) {
+        window.setTimeout(() => {
+          this.readyState = 1;
+          this.onopen?.(new Event('open'));
+        }, 0);
+      }
+
+      send(payload: string) {
+        const command = JSON.parse(payload);
+        (window as any).__iminCommands.push(command);
+        if (command.type === 2) {
+          window.setTimeout(() => this.onmessage?.(new MessageEvent('message', {
+            data: JSON.stringify({ type: 2, data: { value: 0 } }),
+          })), 0);
+        }
+      }
+
+      close() {
+        this.readyState = 3;
+      }
+    }
+
+    (window as any).WebSocket = MockIminWebSocket;
+  });
+
+  await page.goto('/');
+  await page.locator('#nav-tab-settings').click();
+  await page.getByRole('button', { name: 'เครื่องพิมพ์' }).click();
+  await page.locator('#test-printer-btn').click();
+  await expect(page.locator('#imin-printer-status-badge')).toContainText('InnerPrinter พร้อมใช้');
+  await expect(page.locator('#imin-printer-status-message')).toContainText('พร้อมพิมพ์');
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toEqual(expect.arrayContaining([1, 2, 25, 12, 4, 5]));
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 12)?.data?.text || '')).toContain('ภาษาไทย');
+  await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
+});
+
 test('POS-PWA-001 @smoke PWA manifest มี icon และ standalone start URL', async ({ page, request }) => {
   await page.goto('/');
   const href = await page.locator('link[rel="manifest"]').getAttribute('href');

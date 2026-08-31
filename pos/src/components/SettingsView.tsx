@@ -18,6 +18,7 @@ import {
   POSActivityItem,
 } from '../api/posAccess';
 import { getPOSPaymentQR } from '../api/posSales';
+import { printIminText, probeIminPrinter } from '../utils/iminPrinter';
 import { SystemSelect } from './SystemSelect';
 import {
   Settings,
@@ -108,6 +109,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const [testQR, setTestQR] = useState('');
   const [isFormDirty, setIsFormDirty] = useState(false);
   const [printerDocumentMode, setPrinterDocumentMode] = useState<'discover' | 'test' | null>(null);
+  const [iminPrinterState, setIminPrinterState] = useState<'idle' | 'checking' | 'connected' | 'unavailable' | 'error'>('idle');
+  const [iminPrinterMessage, setIminPrinterMessage] = useState('ยังไม่ได้ตรวจสอบ InnerPrinter');
   const isOwner = currentUser.role === 'owner';
   const isAndroid = /Android/i.test(navigator.userAgent);
   const browserLabel = /EdgA\//i.test(navigator.userAgent) ? 'Microsoft Edge Android' : /Chrome\//i.test(navigator.userAgent) ? 'Chrome / Chromium' : navigator.userAgent.split(' ').slice(-1)[0] || 'ไม่ทราบ';
@@ -165,7 +168,44 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     };
   }, [printerDocumentMode]);
 
-  const openPrinterDialog = (mode: 'discover' | 'test') => {
+  const openPrinterDialog = async (mode: 'discover' | 'test') => {
+    if (isAndroid) {
+      setIminPrinterState('checking');
+      setIminPrinterMessage('กำลังเชื่อมต่อ iMin Web Print…');
+      try {
+        let status = await probeIminPrinter();
+        if (status.available && status.ready && mode === 'test') {
+          status = await printIminText([
+              formData.storeName,
+              'ทดสอบเครื่องพิมพ์ iMin InnerPrinter',
+              'iMin Web Print / LiveMatch POS',
+              '--------------------------------',
+              'ภาษาไทย: ทดสอบพิมพ์สำเร็จ',
+              'English: Printer test successful',
+              `Paper: ${formData.printerType === 'thermal_58mm' ? '58 mm' : '80 mm'}`,
+              new Date().toLocaleString('th-TH'),
+            ].join('\n'), formData.printerType === 'thermal_58mm' ? '58mm' : '80mm');
+        }
+
+        if (status.available) {
+          setIminPrinterState(status.ready ? 'connected' : 'error');
+          setIminPrinterMessage(`InnerPrinter · ${status.connectionType || '-'} · ${status.message}`);
+          showToast(status.ready
+            ? (mode === 'test' ? 'พิมพ์ใบทดสอบผ่าน iMin InnerPrinter แล้ว' : 'เชื่อมต่อ iMin InnerPrinter สำเร็จ')
+            : status.message,
+          status.ready ? 'success' : 'error');
+          return;
+        }
+        setIminPrinterState('unavailable');
+        setIminPrinterMessage(status.message);
+      } catch (error) {
+        setIminPrinterState('error');
+        setIminPrinterMessage(error instanceof Error ? error.message : 'เชื่อมต่อ InnerPrinter ไม่สำเร็จ');
+        showToast(error instanceof Error ? error.message : 'เชื่อมต่อ InnerPrinter ไม่สำเร็จ', 'error');
+        return;
+      }
+    }
+
     if (typeof window.print !== 'function') {
       showToast('เบราว์เซอร์นี้ไม่รองรับ Android Print Dialog', 'error');
       return;
@@ -584,10 +624,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <h4 id="printer-device-status-title" className="flex items-center gap-2 text-xs font-black text-slate-900 dark:text-white"><MonitorSmartphone className="h-4 w-4 text-sky-600" />สถานะการพิมพ์บนอุปกรณ์นี้</h4>
-                  <p className="mt-1 text-[10px] leading-relaxed text-slate-500">เว็บไม่สามารถอ่านรายชื่อเครื่องพิมพ์ของ Android ล่วงหน้าได้ ปุ่มค้นหาจะเปิด Android Print Dialog เพื่อให้ระบบแสดงเครื่องที่ใช้งานได้</p>
+                  <p className="mt-1 text-[10px] leading-relaxed text-slate-500">บน W POS ระบบจะตรวจ iMin InnerPrinter ผ่าน Web Print ก่อน หากไม่รองรับจึงเปิด Android Print Dialog เป็น fallback</p>
                 </div>
-                <span className={`shrink-0 rounded-full px-2.5 py-1 text-[9px] font-black ${typeof window.print === 'function' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300'}`}>{typeof window.print === 'function' ? 'พร้อมเปิด Print Dialog' : 'ไม่รองรับ'}</span>
+                <span id="imin-printer-status-badge" className={`shrink-0 rounded-full px-2.5 py-1 text-[9px] font-black ${iminPrinterState === 'connected' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-300' : iminPrinterState === 'checking' ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/10 dark:text-sky-300' : iminPrinterState === 'error' ? 'bg-rose-100 text-rose-700 dark:bg-rose-500/10 dark:text-rose-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>{iminPrinterState === 'connected' ? 'InnerPrinter พร้อมใช้' : iminPrinterState === 'checking' ? 'กำลังตรวจสอบ' : iminPrinterState === 'error' ? 'InnerPrinter มีปัญหา' : 'Android Print fallback'}</span>
               </div>
+              <p id="imin-printer-status-message" className="mt-2 text-[10px] font-bold text-slate-600 dark:text-slate-300">{iminPrinterMessage}</p>
               <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px] sm:grid-cols-4">
                 <div className="rounded-xl bg-white/80 p-2.5 dark:bg-slate-950/60"><dt className="font-bold text-slate-400">ระบบ</dt><dd className="mt-0.5 font-black">{isAndroid ? 'Android' : 'Desktop / Other'}</dd></div>
                 <div className="rounded-xl bg-white/80 p-2.5 dark:bg-slate-950/60"><dt className="font-bold text-slate-400">Browser</dt><dd className="mt-0.5 truncate font-black" title={browserLabel}>{browserLabel}</dd></div>
@@ -674,12 +715,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
               </div>
               <div className="md:col-span-2">
                 <div className="flex flex-wrap gap-2">
-                  <button id="discover-printer-btn" type="button" onClick={() => openPrinterDialog('discover')} className="inline-flex items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-xs font-bold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"><Search className="h-4 w-4" />ค้นหา / เลือกเครื่องพิมพ์</button>
-                  <button id="test-printer-btn" type="button" onClick={() => openPrinterDialog('test')} className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"><Printer className="h-4 w-4" />ทดสอบพิมพ์จากเครื่องนี้</button>
+                  <button id="discover-printer-btn" type="button" disabled={iminPrinterState === 'checking'} onClick={() => void openPrinterDialog('discover')} className="inline-flex items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 py-2.5 text-xs font-bold text-sky-700 disabled:opacity-60 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"><Search className="h-4 w-4" />ตรวจหา InnerPrinter / Android</button>
+                  <button id="test-printer-btn" type="button" disabled={iminPrinterState === 'checking'} onClick={() => void openPrinterDialog('test')} className="inline-flex items-center gap-2 rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-2.5 text-xs font-bold text-emerald-700 disabled:opacity-60 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-300"><Printer className="h-4 w-4" />ทดสอบพิมพ์ InnerPrinter</button>
                 </div>
                 <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10px] leading-relaxed text-amber-800 dark:border-amber-500/20 dark:bg-amber-500/5 dark:text-amber-300">
                   <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
-                  <p>หากไม่พบเครื่องติดฐาน ให้เปิด <b>Android Settings → Connected devices → Printing</b> แล้วเปิด Print Service ของผู้ผลิต หากยังไม่ปรากฏ แสดงว่า Wongnai เรียกเครื่องพิมพ์ผ่าน SDK เฉพาะและเว็บ Chrome ไม่สามารถเข้าถึงโดยตรงได้</p>
+                  <p>รองรับ iMin H5 Web Print ที่ <b>127.0.0.1:8081</b> โดยตรง ไม่ต้องให้ InnerPrinter ปรากฏใน Android Print Dialog หาก Web Print ใช้ไม่ได้ ระบบจะกลับไปใช้ Print Service ตามเดิม</p>
                 </div>
               </div>
             </div>
