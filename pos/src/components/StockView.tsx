@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext';
 import { Product, StockMovement, Supplier, StockBatchSummary } from '../types';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
+import { isAndroidDevice } from '../utils/browserHardware';
 import {
   PlusCircle,
   MinusCircle,
@@ -59,13 +60,14 @@ export const StockView: React.FC = () => {
 
   // Navigation & View Mode inside Stock Management
   const [activeMainTab, setActiveMainTab] = useState<'master' | 'batches' | 'movements' | 'suppliers'>('master');
-  const [movementFilterTab, setMovementFilterTab] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
+  const [movementFilterTab, setMovementFilterTab] = useState<'all' | 'in' | 'out' | 'adjust' | 'transfer'>('all');
+  const [selectedStockLocation, setSelectedStockLocation] = useState<'primary' | 'secondary'>(settings.saleStockLocation);
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'low' | 'out' | 'normal'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
   // Batch Operation Modal state
-  const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | null>(null);
+  const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | 'transfer' | null>(null);
   const [batchDocRef, setBatchDocRef] = useState<string>('');
   const [batchExternalReference, setBatchExternalReference] = useState<string>('');
   const [batchSupplier, setBatchSupplier] = useState<string>('');
@@ -88,6 +90,7 @@ export const StockView: React.FC = () => {
   const [isPickerOpen, setIsPickerOpen] = useState<boolean>(false);
   const [pickerSearch, setPickerSearch] = useState<string>('');
   const [pickerCategory, setPickerCategory] = useState<string>('all');
+  const isAndroid = isAndroidDevice();
 
   // View Batch Details Modal
   const [selectedBatchForDetails, setSelectedBatchForDetails] = useState<StockBatchSummary | null>(null);
@@ -104,11 +107,13 @@ export const StockView: React.FC = () => {
   });
 
   // Calculate Metrics
-  const totalStockUnits = stockSummary.totalUnits;
-  const totalInventoryCost = stockSummary.inventoryCostValue;
-  const totalInventoryRetail = stockSummary.inventoryRetailValue;
-  const lowStockCount = stockSummary.lowStockCount;
-  const outOfStockCount = stockSummary.outOfStockCount;
+  const selectedTrackedProducts = products.filter((product) => product.trackStock);
+  const selectedQuantities = selectedTrackedProducts.map((product) => ({ product, quantity: selectedStockLocation === 'secondary' ? product.secondaryStock : product.primaryStock }));
+  const totalStockUnits = selectedQuantities.reduce((sum, item) => sum + item.quantity, 0);
+  const totalInventoryCost = selectedQuantities.reduce((sum, item) => sum + item.quantity * item.product.cost, 0);
+  const totalInventoryRetail = selectedQuantities.reduce((sum, item) => sum + item.quantity * item.product.price, 0);
+  const lowStockCount = selectedQuantities.filter((item) => item.quantity > 0 && item.quantity <= item.product.minStockAlert).length;
+  const outOfStockCount = selectedQuantities.filter((item) => item.quantity <= 0).length;
 
   // Extract Categories
   const categoryIds = useMemo(() => {
@@ -125,6 +130,8 @@ export const StockView: React.FC = () => {
   // Filter Master Products
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (!p.trackStock) return false;
+      const selectedStock = selectedStockLocation === 'secondary' ? p.secondaryStock : p.primaryStock;
       const matchCat = selectedCategory === 'all' || p.category === selectedCategory;
       const matchSearch =
         p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -133,29 +140,30 @@ export const StockView: React.FC = () => {
 
       let matchStatus = true;
       if (stockStatusFilter === 'low') {
-        matchStatus = p.stock > 0 && p.stock <= p.minStockAlert;
+        matchStatus = selectedStock > 0 && selectedStock <= p.minStockAlert;
       } else if (stockStatusFilter === 'out') {
-        matchStatus = p.stock <= 0;
+        matchStatus = selectedStock <= 0;
       } else if (stockStatusFilter === 'normal') {
-        matchStatus = p.stock > p.minStockAlert;
+        matchStatus = selectedStock > p.minStockAlert;
       }
 
       return matchCat && matchSearch && matchStatus;
     });
-  }, [products, selectedCategory, searchQuery, stockStatusFilter]);
+  }, [products, selectedCategory, searchQuery, stockStatusFilter, selectedStockLocation]);
 
   // Filter Detailed Movements
   const filteredMovements = useMemo(() => {
     return stockMovements.filter((m) => {
       const matchTab = movementFilterTab === 'all' || m.type === movementFilterTab;
+      const matchLocation = m.stockLocation === selectedStockLocation;
       const matchSearch =
         m.productName.toLowerCase().includes(searchQuery.toLowerCase()) ||
         m.productSku.toLowerCase().includes(searchQuery.toLowerCase()) ||
         m.referenceNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
         m.reason.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchTab && matchSearch;
+      return matchTab && matchLocation && matchSearch;
     });
-  }, [stockMovements, movementFilterTab, searchQuery]);
+  }, [stockMovements, movementFilterTab, searchQuery, selectedStockLocation]);
 
   // Filter Batches
   const filteredBatches = useMemo(() => {
@@ -171,13 +179,14 @@ export const StockView: React.FC = () => {
   }, [batchSummaries, searchQuery]);
 
   // Open Modal Helpers
-  const handleOpenBatchModal = (mode: 'in' | 'out' | 'adjust', initialProduct?: Product, supplierId?: string) => {
-    if (mode === 'out' && initialProduct && initialProduct.stock <= 0) {
+  const stockAtSelectedLocation = (product: Product) => selectedStockLocation === 'secondary' ? product.secondaryStock : product.primaryStock;
+  const handleOpenBatchModal = (mode: 'in' | 'out' | 'adjust' | 'transfer', initialProduct?: Product, supplierId?: string) => {
+    if ((mode === 'out' || mode === 'transfer') && initialProduct && stockAtSelectedLocation(initialProduct) <= 0) {
       showToast(`สินค้า "${initialProduct.name}" ไม่มีสต็อกคงเหลือ`, 'warning');
       return;
     }
     const timestamp = Date.now().toString().slice(-6);
-    const prefix = mode === 'in' ? 'RCV' : mode === 'out' ? 'OUT' : 'ADJ';
+    const prefix = mode === 'in' ? 'RCV' : mode === 'out' ? 'OUT' : mode === 'transfer' ? 'TRF' : 'ADJ';
     setBatchDocRef(`${prefix}-${timestamp}`);
     setBatchExternalReference('');
     setPickerSearch('');
@@ -191,11 +200,11 @@ export const StockView: React.FC = () => {
         ? 'สั่งซื้อสินค้าเข้าสต็อกประจำงวด'
         : mode === 'out'
         ? 'เบิกใช้หน้าร้าน / สินค้าชำรุดเสียหาย'
-        : 'ตรวจนับสต็อกจริงสิ้นวัน'
+        : mode === 'transfer' ? `โอนจาก ${selectedStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName}` : 'ตรวจนับสต็อกจริงสิ้นวัน'
     );
 
     if (initialProduct) {
-      const quantity = mode === 'adjust' ? initialProduct.stock : mode === 'in' ? 10 : 1;
+      const quantity = mode === 'adjust' ? stockAtSelectedLocation(initialProduct) : mode === 'in' ? 10 : 1;
       setBatchItems([
         {
           productId: initialProduct.id,
@@ -214,7 +223,7 @@ export const StockView: React.FC = () => {
 
   // Add Product to Batch Line Items
   const handleAddProductToBatch = (product: Product) => {
-    if (batchModalMode === 'out' && product.stock <= 0) {
+    if ((batchModalMode === 'out' || batchModalMode === 'transfer') && stockAtSelectedLocation(product) <= 0) {
       showToast(`สินค้า "${product.name}" ไม่มีสต็อกคงเหลือ`, 'warning');
       return;
     }
@@ -229,8 +238,8 @@ export const StockView: React.FC = () => {
                 quantity:
                   batchModalMode === 'adjust'
                     ? item.quantity
-                    : batchModalMode === 'out'
-                    ? Math.min(item.product.stock, item.quantity + 1)
+                    : batchModalMode === 'out' || batchModalMode === 'transfer'
+                    ? Math.min(stockAtSelectedLocation(item.product), item.quantity + 1)
                     : item.quantity + 1,
               }
             : item
@@ -241,7 +250,7 @@ export const StockView: React.FC = () => {
         {
           productId: product.id,
           product,
-          quantity: batchModalMode === 'adjust' ? product.stock : batchModalMode === 'in' ? 10 : 1,
+          quantity: batchModalMode === 'adjust' ? stockAtSelectedLocation(product) : batchModalMode === 'in' ? 10 : 1,
           cost: product.cost,
           totalValue: batchModalMode === 'in' ? 10 * product.cost : 0,
           note: '',
@@ -263,6 +272,37 @@ export const StockView: React.FC = () => {
     setBatchItems((prev) =>
       prev.map((item) => (item.productId === productId ? { ...item, ...updates } : item))
     );
+  };
+
+  const normalizeBatchQuantity = (product: Product, value: number) => {
+    const minimum = batchModalMode === 'adjust' ? 0 : 1;
+    const normalized = Math.max(minimum, Number.isFinite(value) ? Math.trunc(value) : minimum);
+    return batchModalMode === 'out' || batchModalMode === 'transfer'
+      ? Math.min(stockAtSelectedLocation(product), normalized)
+      : normalized;
+  };
+
+  const handleAndroidStepperKey = (event: React.KeyboardEvent<HTMLInputElement>, item: { productId: string; product: Product; quantity: number }) => {
+    if (!isAndroid) return;
+    let next: number | null = null;
+    if (/^\d$/.test(event.key)) {
+      const target = event.currentTarget;
+      const replaceSelection = target.selectionStart === 0 && target.selectionEnd === target.value.length;
+      next = Number.parseInt(replaceSelection ? event.key : `${item.quantity}${event.key}`, 10);
+    } else if (event.key === 'Backspace' || event.key === 'Delete') {
+      next = Number.parseInt(String(item.quantity).slice(0, -1), 10);
+    } else if (event.key === 'ArrowUp') {
+      next = item.quantity + 1;
+    } else if (event.key === 'ArrowDown') {
+      next = item.quantity - 1;
+    } else if (event.key === 'Enter') {
+      event.currentTarget.blur();
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    handleUpdateBatchItem(item.productId, { quantity: normalizeBatchQuantity(item.product, next) });
   };
 
   // Submit Batch Document
@@ -288,6 +328,9 @@ export const StockView: React.FC = () => {
       discountType: batchModalMode === 'in' ? batchDiscountType : 'amount',
       discountAmountSatang: batchModalMode === 'in' && batchDiscountType === 'amount' ? discountSatang : 0,
       discountRateBps: batchModalMode === 'in' && batchDiscountType === 'percent' ? Math.round(discountNumber * 100) : 0,
+      stockLocation: selectedStockLocation,
+      sourceStockLocation: batchModalMode === 'transfer' ? selectedStockLocation : undefined,
+      destinationStockLocation: batchModalMode === 'transfer' ? (selectedStockLocation === 'primary' ? 'secondary' : 'primary') : undefined,
     });
     setIsSavingBatch(false);
     if (saved) {
@@ -315,6 +358,7 @@ export const StockView: React.FC = () => {
   // Products available in Picker (filtered)
   const pickerFilteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (!p.trackStock) return false;
       const matchCat = pickerCategory === 'all' || p.category === pickerCategory;
       const matchSearch =
         p.name.toLowerCase().includes(pickerSearch.toLowerCase()) ||
@@ -357,11 +401,11 @@ export const StockView: React.FC = () => {
     : 0;
   const batchNetValue = (batchGrossSatang - discountSatang) / 100;
   const discountInvalid = batchModalMode === 'in' && (discountNumber > (batchDiscountType === 'percent' ? 100 : batchTotalValue));
-  const adjustmentBeforeUnits = batchItems.reduce((sum, it) => sum + it.product.stock, 0);
+  const adjustmentBeforeUnits = batchItems.reduce((sum, it) => sum + stockAtSelectedLocation(it.product), 0);
   const adjustmentAfterUnits = batchItems.reduce((sum, it) => sum + it.quantity, 0);
   const adjustmentUnitDelta = adjustmentAfterUnits - adjustmentBeforeUnits;
   const adjustmentBeforeValue = batchItems.reduce(
-    (sum, it) => sum + it.product.stock * it.cost,
+    (sum, it) => sum + stockAtSelectedLocation(it.product) * it.cost,
     0
   );
   const adjustmentAfterValue = batchItems.reduce(
@@ -397,6 +441,7 @@ export const StockView: React.FC = () => {
 
         {/* Major Action Buttons (Red, Yellow, White theme) */}
         <div className="flex flex-wrap items-center gap-2.5">
+          {settings.secondaryStockEnabled && <select aria-label="เลือกสต็อก" value={selectedStockLocation} onChange={(e) => setSelectedStockLocation(e.target.value as 'primary' | 'secondary')} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"><option value="primary">{settings.primaryStockName}</option><option value="secondary">{settings.secondaryStockName}</option></select>}
           <button
             id="stock-in-batch-btn"
             onClick={() => handleOpenBatchModal('in')}
@@ -423,6 +468,8 @@ export const StockView: React.FC = () => {
             <Sliders className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
             <span>ปรับปรุงสต็อก (Adjust)</span>
           </button>
+
+          {settings.secondaryStockEnabled && <button id="transfer-stock-batch-btn" onClick={() => handleOpenBatchModal('transfer')} className="flex items-center gap-2 rounded-2xl border border-sky-300 bg-sky-50 px-3.5 py-2.5 text-xs font-bold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"><ArrowUpRight className="h-4 w-4" /><span>โอนย้ายสต็อก</span></button>}
 
           <button
             id="manage-suppliers-btn"
@@ -663,9 +710,10 @@ export const StockView: React.FC = () => {
                     </tr>
                   ) : (
                     filteredProducts.map((p) => {
-                      const isLow = p.stock > 0 && p.stock <= p.minStockAlert;
-                      const isOut = p.stock <= 0;
-                      const totalLineCost = p.stock * p.cost;
+                      const currentStock = stockAtSelectedLocation(p);
+                      const isLow = currentStock > 0 && currentStock <= p.minStockAlert;
+                      const isOut = currentStock <= 0;
+                      const totalLineCost = currentStock * p.cost;
 
                       return (
                         <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
@@ -706,7 +754,7 @@ export const StockView: React.FC = () => {
                                   : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
                               }`}
                             >
-                              {p.stock} {p.unit}
+                              {currentStock} {p.unit}
                             </span>
                           </td>
                           <td className="p-3.5 text-right font-mono font-bold text-yellow-600 dark:text-yellow-400">
@@ -1277,7 +1325,7 @@ export const StockView: React.FC = () => {
                         <input
                           id="stock-batch-product-search"
                           type="text"
-                          autoFocus
+                          autoFocus={!isAndroid || settings.hardwareKeyboardMode}
                           value={pickerSearch}
                           onChange={(e) => setPickerSearch(e.target.value)}
                           onKeyDown={handlePickerBarcodeEnter}
@@ -1326,7 +1374,7 @@ export const StockView: React.FC = () => {
                                 {prod.name}
                               </div>
                               <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
-                                <span>คงเหลือ: {prod.stock}</span>
+                                <span>คงเหลือ: {stockAtSelectedLocation(prod)}</span>
                                 {inBatch && (
                                   <span className="text-yellow-700 dark:text-yellow-400 font-bold">
                                     ✓ {inBatch.quantity}
@@ -1369,7 +1417,7 @@ export const StockView: React.FC = () => {
                 ) : (
                   <div className="space-y-2">
                     {batchItems.map((item, index) => {
-                      const beforeStock = item.product.stock;
+                      const beforeStock = stockAtSelectedLocation(item.product);
                       let afterStock = beforeStock;
                       if (batchModalMode === 'in') afterStock = beforeStock + item.quantity;
                       if (batchModalMode === 'out')
@@ -1436,17 +1484,20 @@ export const StockView: React.FC = () => {
                                   -
                                 </button>
                                 <input
-                                  type="number"
-                                  min={batchModalMode === 'adjust' ? '0' : '1'}
-                                  max={batchModalMode === 'out' ? item.product.stock : undefined}
+                                  type="text"
+                                  inputMode="none"
+                                  pattern="[0-9]*"
+                                  aria-label={`จำนวน ${item.product.name}`}
+                                  readOnly={isAndroid}
                                   value={item.quantity}
                                   onFocus={(e) => e.currentTarget.select()}
+                                  onKeyDown={(event) => handleAndroidStepperKey(event, item)}
                                   onChange={(e) => {
                                     const normalized = normalizeWholeNumberInput(e.currentTarget.value);
                                     if (e.currentTarget.value !== normalized) e.currentTarget.value = normalized;
                                     const parsed = normalized === '' ? Number.NaN : Number.parseInt(normalized, 10);
-                                    const nextQuantity = batchModalMode === 'out'
-                                      ? Math.min(item.product.stock, parsed || 1)
+                                    const nextQuantity = batchModalMode === 'out' || batchModalMode === 'transfer'
+                                      ? Math.min(stockAtSelectedLocation(item.product), parsed || 1)
                                       : parsed || (batchModalMode === 'adjust' ? 0 : 1);
                                     if (normalized !== '' && e.currentTarget.value !== String(nextQuantity)) {
                                       e.currentTarget.value = String(nextQuantity);
@@ -1462,8 +1513,8 @@ export const StockView: React.FC = () => {
                                   onClick={() =>
                                     handleUpdateBatchItem(item.productId, {
                                       quantity:
-                                        batchModalMode === 'out'
-                                          ? Math.min(item.product.stock, item.quantity + 1)
+                                        batchModalMode === 'out' || batchModalMode === 'transfer'
+                                          ? Math.min(stockAtSelectedLocation(item.product), item.quantity + 1)
                                           : item.quantity + 1,
                                     })
                                   }

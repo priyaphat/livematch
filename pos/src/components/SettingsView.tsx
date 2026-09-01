@@ -8,7 +8,9 @@ import {
   forceLogoutPOSStaff,
   getPOSActivity,
   getPOSAccessSettings,
+  POSPermissionKey,
   POSPermissions,
+  POS_REPORT_PERMISSION_KEYS,
   POSRole,
   POSStaffMember,
   resetPOSStaffPIN,
@@ -44,7 +46,7 @@ import {
   MonitorSmartphone,
 } from 'lucide-react';
 
-type SettingsTab = 'store' | 'customer-display' | 'printer' | 'tax' | 'permissions' | 'members' | 'activity';
+type SettingsTab = 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'permissions' | 'members' | 'activity';
 type MemberRole = POSRole;
 
 const PERMISSION_LABELS = [
@@ -62,10 +64,22 @@ const PERMISSION_LABELS = [
   ['member_create', 'เพิ่มสมาชิกหลัก'],
 ] as const;
 
+const REPORT_PERMISSION_LABELS = [
+  ['report_overview', 'สรุปภาพรวมรายได้'],
+  ['report_top_sellers', 'อันดับสินค้าขายดี'],
+  ['report_vat', 'รายงานภาษีขาย (VAT)'],
+  ['report_payments', 'สัดส่วนช่องทางชำระเงิน'],
+  ['report_sold_products', 'สินค้าที่ขาย'],
+  ['report_purchases', 'ซื้อจากซัพพลายเออร์'],
+  ['report_inventory', 'สินค้าคงเหลือ'],
+  ['report_transfers', 'โอนย้ายสต็อก'],
+  ['report_special', 'POS + LiveMatch'],
+] as const;
+
 const DEFAULT_PERMISSIONS: Record<MemberRole, POSPermissions> = {
-  owner: { sales: true, bills: true, products: true, stock: true, reports: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  manager: { sales: true, bills: true, products: true, stock: true, reports: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
+  owner: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_transfers: true, report_special: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  manager: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_transfers: true, report_special: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, report_overview: false, report_top_sellers: false, report_vat: false, report_payments: false, report_sold_products: false, report_purchases: false, report_inventory: false, report_transfers: false, report_special: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
 };
 
 const STAFF_ROLE_OPTIONS: Array<{ value: Exclude<MemberRole, 'owner'>; label: string }> = [
@@ -108,6 +122,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const [activity, setActivity] = useState<POSActivityItem[]>([]);
   const [testQR, setTestQR] = useState('');
   const [isFormDirty, setIsFormDirty] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [printerDocumentMode, setPrinterDocumentMode] = useState<'discover' | 'test' | null>(null);
   const [iminPrinterState, setIminPrinterState] = useState<'idle' | 'checking' | 'connected' | 'unavailable' | 'error'>('idle');
   const [iminPrinterMessage, setIminPrinterMessage] = useState('ยังไม่ได้ตรวจสอบ InnerPrinter');
@@ -222,18 +237,21 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!(await updateSettings(formData))) return;
-    if (isOwner) {
-      try {
+    if (isSavingSettings) return;
+    setIsSavingSettings(true);
+    try {
+      const successMessage = activeTab === 'stock' ? 'บันทึกการตั้งค่าสต็อกเรียบร้อยแล้ว' : 'บันทึกการตั้งค่าเรียบร้อยแล้ว';
+      if (!(await updateSettings(formData, successMessage))) return;
+      if (isOwner) {
         applyAccessSettings(await savePOSRolePermissions({ manager: permissions.manager, cashier: permissions.cashier }));
-      } catch (error) {
-        showToast(error instanceof Error ? error.message : 'บันทึกสิทธิ์ไม่สำเร็จ', 'error');
-        return;
       }
+      setIsFormDirty(false);
+      playBeep('success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกสิทธิ์ไม่สำเร็จ', 'error');
+    } finally {
+      setIsSavingSettings(false);
     }
-    setIsFormDirty(false);
-    playBeep('success');
-    showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
   };
 
   const addMember = async () => {
@@ -302,11 +320,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     }
   };
 
-  const togglePermission = (role: Exclude<MemberRole, 'owner'>, permission: string) => {
-    setPermissions((current) => ({
-      ...current,
-      [role]: { ...current[role], [permission]: !current[role][permission] },
-    }));
+  const togglePermission = (role: Exclude<MemberRole, 'owner'>, permission: POSPermissionKey) => {
+    setPermissions((current) => {
+      const enabled = !current[role][permission];
+      const next = { ...current[role], [permission]: enabled };
+      if (permission === 'reports') POS_REPORT_PERMISSION_KEYS.forEach((key) => { next[key] = enabled; });
+      if (permission.startsWith('report_') && permission !== 'report_export') {
+        next.reports = enabled || POS_REPORT_PERMISSION_KEYS.some((key) => key !== permission && next[key]);
+      }
+      return { ...current, [role]: next };
+    });
   };
 
   return (
@@ -336,6 +359,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
         >
           <Store className="w-4 h-4" />
           <span>ข้อมูลร้านค้า (Store Info)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('stock')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${activeTab === 'stock' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+        >
+          <Store className="w-4 h-4" />
+          <span>ตั้งค่าสต็อก</span>
         </button>
 
         <button
@@ -564,6 +595,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                 <button type="button" onClick={() => void testPromptPay()} className="mt-3 inline-flex items-center gap-2 rounded-xl bg-emerald-500 px-4 py-2 font-bold text-slate-950"><TestTube2 className="h-4 w-4" />บันทึกและทดสอบ QR ฿100</button>
                 {testQR ? <img src={testQR} alt="QR ทดสอบ" className="mt-3 h-40 w-40 rounded-xl bg-white p-2" /> : null}
               </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'stock' && (
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h3 className="text-sm font-black">คลังสินค้าและการตัดสต็อก</h3>
+              <p className="mt-1 text-xs text-slate-500">ยอดเดิมทั้งหมดอยู่ในสต็อกหลัก การเปลี่ยนคลังขายมีผลกับบิลใหม่เท่านั้น</p>
+              <label className="mt-5 flex items-center justify-between gap-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                <span><b className="block text-xs">เปิดใช้งานสต็อกที่ 2</b><small className="text-slate-500">ต้องโอนยอดในสต็อกที่ 2 ให้เป็นศูนย์ก่อนปิด</small></span>
+                <input type="checkbox" checked={formData.secondaryStockEnabled} onChange={(e) => setFormData({ ...formData, secondaryStockEnabled: e.target.checked, saleStockLocation: e.target.checked ? formData.saleStockLocation : 'primary' })} className="h-5 w-5 accent-emerald-500" />
+              </label>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <label className="text-xs font-bold">ชื่อสต็อกหลัก<input value={formData.primaryStockName} onChange={(e) => setFormData({ ...formData, primaryStockName: e.target.value })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950" /></label>
+                <label className="text-xs font-bold">ชื่อสต็อกที่ 2<input disabled={!formData.secondaryStockEnabled} value={formData.secondaryStockName} onChange={(e) => setFormData({ ...formData, secondaryStockName: e.target.value })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950" /></label>
+              </div>
+              <label className="mt-4 block text-xs font-bold">สต็อกที่ใช้ตัดเมื่อขาย
+                <select value={formData.saleStockLocation} onChange={(e) => setFormData({ ...formData, saleStockLocation: e.target.value as StoreSettings['saleStockLocation'] })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950">
+                  <option value="primary">{formData.primaryStockName || 'สต็อกหลัก'}</option>
+                  {formData.secondaryStockEnabled && <option value="secondary">{formData.secondaryStockName || 'สต็อกที่ 2'}</option>}
+                </select>
+              </label>
             </div>
           </div>
         )}
@@ -833,16 +887,32 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                     {PERMISSION_LABELS.map(([key, label]) => {
                       const enabled = permissions[role][key];
                       return (
-                        <label key={key} className={`flex items-center justify-between rounded-xl border px-3 py-2.5 ${enabled ? 'border-emerald-200 bg-white dark:border-emerald-500/20 dark:bg-slate-900' : 'border-slate-200 bg-slate-100 opacity-65 dark:border-slate-800 dark:bg-slate-900/50'}`}>
-                          <span className="text-xs font-semibold">{label}</span>
-                          <input
-                            type="checkbox"
-                            checked={enabled}
-                            disabled={role === 'owner' || !isOwner}
-                            onChange={() => role !== 'owner' && togglePermission(role, key)}
-                            className="h-4 w-4 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed"
-                          />
-                        </label>
+                        <React.Fragment key={key}>
+                          <label className={`flex items-center justify-between rounded-xl border px-3 py-2.5 ${enabled ? 'border-emerald-200 bg-white dark:border-emerald-500/20 dark:bg-slate-900' : 'border-slate-200 bg-slate-100 opacity-65 dark:border-slate-800 dark:bg-slate-900/50'}`}>
+                            <span className="text-xs font-semibold">{label}</span>
+                            <input
+                              type="checkbox"
+                              checked={enabled}
+                              disabled={role === 'owner' || !isOwner}
+                              onChange={() => role !== 'owner' && togglePermission(role, key)}
+                              className="h-4 w-4 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed"
+                            />
+                          </label>
+                          {key === 'reports' && (
+                            <div className={`ml-3 grid gap-1.5 border-l-2 py-1 pl-3 ${enabled ? 'border-emerald-200 dark:border-emerald-500/20' : 'border-slate-200 dark:border-slate-800'}`}>
+                              <p className="px-2 text-[10px] font-black uppercase tracking-wide text-slate-400">เมนูรายงานย่อย</p>
+                              {REPORT_PERMISSION_LABELS.map(([reportKey, reportLabel]) => {
+                                const reportEnabled = permissions[role][reportKey];
+                                return (
+                                  <label key={reportKey} className={`flex items-center justify-between rounded-lg px-2.5 py-2 ${reportEnabled ? 'bg-emerald-50 text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100' : 'bg-slate-100 text-slate-500 dark:bg-slate-900'}`}>
+                                    <span className="text-[11px] font-semibold">{reportLabel}</span>
+                                    <input type="checkbox" checked={reportEnabled} disabled={role === 'owner' || !isOwner} onChange={() => role !== 'owner' && togglePermission(role, reportKey)} className="h-3.5 w-3.5 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed" />
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
@@ -1009,10 +1079,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
           <button
             type="submit"
             id="save-settings-btn"
-            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all scale-[1.01] active:scale-[0.99]"
+            disabled={isSavingSettings}
+            aria-busy={isSavingSettings}
+            className="flex min-w-[210px] items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all scale-[1.01] active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
           >
-            <Save className="w-4 h-4" />
-            <span>บันทึกการตั้งค่า (Save Settings)</span>
+            {isSavingSettings ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            <span>{isSavingSettings ? (activeTab === 'stock' ? 'กำลังบันทึกสต็อก...' : 'กำลังบันทึก...') : 'บันทึกการตั้งค่า (Save Settings)'}</span>
           </button>
         </div> : null}
       </form>

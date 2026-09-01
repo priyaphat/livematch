@@ -157,6 +157,7 @@ export const ProductsView: React.FC = () => {
   const [priceInput, setPriceInput] = useState('80');
   const [costInput, setCostInput] = useState('30');
   const [stockInput, setStockInput] = useState('20');
+  const [secondaryStockInput, setSecondaryStockInput] = useState('0');
   const [minStockInput, setMinStockInput] = useState('10');
   const [unitsPerPackInput, setUnitsPerPackInput] = useState('0');
 
@@ -172,6 +173,10 @@ export const ProductsView: React.FC = () => {
     price: 80,
     cost: 30,
     stock: 20,
+    primaryStock: 20,
+    secondaryStock: 0,
+    totalStock: 20,
+    trackStock: true,
     minStockAlert: 10,
     unitsPerPack: 0,
     unit: units[0]?.name || 'แก้ว',
@@ -275,6 +280,10 @@ export const ProductsView: React.FC = () => {
       price: 80,
       cost: 25,
       stock: 30,
+      primaryStock: 30,
+      secondaryStock: 0,
+      totalStock: 30,
+      trackStock: true,
       minStockAlert: 10,
       unitsPerPack: 0,
       unit: units[0]?.name || 'แก้ว',
@@ -288,6 +297,7 @@ export const ProductsView: React.FC = () => {
     setPriceInput('80');
     setCostInput('25');
     setStockInput('30');
+    setSecondaryStockInput('0');
     setMinStockInput('10');
     setUnitsPerPackInput('0');
     setShowInlineAddCategory(false);
@@ -307,6 +317,10 @@ export const ProductsView: React.FC = () => {
       price: p.price,
       cost: p.cost,
       stock: p.stock,
+      primaryStock: p.primaryStock,
+      secondaryStock: p.secondaryStock,
+      totalStock: p.totalStock,
+      trackStock: p.trackStock,
       minStockAlert: p.minStockAlert,
       unitsPerPack: p.unitsPerPack || 0,
       unit: p.unit,
@@ -321,7 +335,8 @@ export const ProductsView: React.FC = () => {
     setShowInlineAddNote(false);
     setPriceInput(String(p.price));
     setCostInput(String(p.cost));
-    setStockInput(String(p.stock));
+    setStockInput(String(p.primaryStock));
+    setSecondaryStockInput(String(p.secondaryStock));
     setMinStockInput(String(p.minStockAlert));
     setUnitsPerPackInput(String(p.unitsPerPack || 0));
     setIsAddProductModalOpen(true);
@@ -333,9 +348,12 @@ export const ProductsView: React.FC = () => {
       ...formData,
       price: Number(priceInput) || 0,
       cost: Number(costInput) || 0,
-      stock: Number.parseInt(stockInput, 10) || 0,
-      minStockAlert: Number.parseInt(minStockInput, 10) || 0,
-      unitsPerPack: Number.parseInt(unitsPerPackInput, 10) || 0,
+      stock: formData.trackStock ? (settings.saleStockLocation === 'secondary' ? Number.parseInt(secondaryStockInput, 10) || 0 : Number.parseInt(stockInput, 10) || 0) : 0,
+      primaryStock: formData.trackStock ? Number.parseInt(stockInput, 10) || 0 : 0,
+      secondaryStock: formData.trackStock ? Number.parseInt(secondaryStockInput, 10) || 0 : 0,
+      totalStock: formData.trackStock ? (Number.parseInt(stockInput, 10) || 0) + (Number.parseInt(secondaryStockInput, 10) || 0) : 0,
+      minStockAlert: formData.trackStock ? Number.parseInt(minStockInput, 10) || 0 : 0,
+      unitsPerPack: formData.trackStock ? Number.parseInt(unitsPerPackInput, 10) || 0 : 0,
     };
     if (editingProduct) {
       updateProduct(editingProduct.id, productData);
@@ -720,7 +738,7 @@ export const ProductsView: React.FC = () => {
                     </tr>
                   ) : (
                     paginatedProducts.map((prod) => {
-                      const isLow = prod.stock <= prod.minStockAlert;
+                      const isLow = prod.trackStock && prod.stock <= prod.minStockAlert;
                       const margin = calculateMargin(prod.price, prod.cost);
                       const catObj = categories.find((c) => c.id === prod.category);
 
@@ -796,8 +814,10 @@ export const ProductsView: React.FC = () => {
                                   : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
                               }`}
                             >
-                              {isLow && <AlertTriangle className="w-3 h-3 text-red-600 dark:text-red-400" />}
-                              {prod.stock} {prod.unit}
+                              {prod.trackStock ? <>
+                                {isLow && <AlertTriangle className="w-3 h-3 text-red-600 dark:text-red-400" />}
+                                {prod.stock} {prod.unit}
+                              </> : <span className="font-sans text-slate-500">ไม่ติดตามสต็อก</span>}
                             </span>
                           </td>
 
@@ -1140,10 +1160,23 @@ export const ProductsView: React.FC = () => {
               </div>
 
               {/* Stock & Alert Level */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 font-bold dark:border-slate-700 dark:bg-slate-950">
+                <input type="checkbox" checked={!formData.trackStock} onChange={(e) => {
+                  const trackStock = !e.target.checked;
+                  setFormData({ ...formData, trackStock, minStockAlert: trackStock ? Number.parseInt(minStockInput, 10) || 0 : 0, unitsPerPack: trackStock ? Number.parseInt(unitsPerPackInput, 10) || 0 : 0 });
+                  if (!trackStock) {
+                    setStockInput('0');
+                    setSecondaryStockInput('0');
+                    setMinStockInput('0');
+                    setUnitsPerPackInput('0');
+                  }
+                }} className="h-4 w-4 accent-red-600" />
+                <span>ไม่ต้องสต็อกของ <small className="ml-1 font-normal text-slate-500">ขายได้โดยไม่ตรวจหรือตัดจำนวน</small></span>
+              </label>
+              {formData.trackStock ? <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    จำนวนสต็อกเริ่มต้น
+                    {settings.primaryStockName} เริ่มต้น
                   </label>
                   <input
                     type="number"
@@ -1159,6 +1192,10 @@ export const ProductsView: React.FC = () => {
                     className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400 disabled:cursor-not-allowed disabled:opacity-60"
                   />
                 </div>
+                {settings.secondaryStockEnabled && <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">{settings.secondaryStockName} เริ่มต้น</label>
+                  <input type="number" min="0" value={secondaryStockInput} disabled={Boolean(editingProduct)} onFocus={(e) => e.currentTarget.select()} onChange={(e) => { const value = normalizeNumberInput(e.target.value, false); if (value !== null) setSecondaryStockInput(value); }} onBlur={() => setSecondaryStockInput((value) => value || '0')} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-60" />
+                </div>}
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     เตือนเมื่อสต็อกต่ำกว่า
@@ -1196,7 +1233,7 @@ export const ProductsView: React.FC = () => {
                   />
                   <p className="mt-1 text-[10px] text-slate-500">0 = ไม่คำนวณเป็นแพ็ค</p>
                 </div>
-              </div>
+              </div> : <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950">สินค้านี้ขายได้โดยไม่แสดงจำนวนคงเหลือ ไม่มีการเตือนสต็อกต่ำ และไม่คำนวณจำนวนแพ็ค</div>}
 
               {/* IMAGE UPLOAD SECTION (No URL field) */}
               <div className="space-y-2">

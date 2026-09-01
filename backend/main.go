@@ -1113,6 +1113,11 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_settings add column if not exists customer_display_subtitle text not null default E'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์';
 		alter table pos_settings add column if not exists customer_display_card_text text not null default 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด';
 		alter table pos_settings add column if not exists customer_display_cta_text text not null default 'สั่งรายการได้ที่พนักงานแคชเชียร์';
+		alter table pos_settings add column if not exists secondary_stock_enabled boolean not null default false;
+		alter table pos_settings add column if not exists primary_stock_name text not null default 'สต็อกหลัก';
+		alter table pos_settings add column if not exists secondary_stock_name text not null default 'สต็อกที่ 2';
+		alter table pos_settings add column if not exists sale_stock_location text not null default 'primary';
+		do $$ begin alter table pos_settings add constraint pos_settings_sale_stock_location_check check (sale_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		create table if not exists pos_staff (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1202,6 +1207,9 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_products add column if not exists cost_satang bigint not null default 0 check (cost_satang >= 0);
 		alter table pos_products add column if not exists price_satang bigint not null default 0 check (price_satang >= 0);
 		alter table pos_products add column if not exists units_per_pack integer not null default 0 check (units_per_pack between 0 and 1000000);
+		alter table pos_products add column if not exists secondary_stock_quantity integer not null default 0 check (secondary_stock_quantity >= 0);
+		alter table pos_products add column if not exists track_stock boolean not null default true;
+		update pos_products set low_stock_threshold=0,units_per_pack=0 where not track_stock and (low_stock_threshold<>0 or units_per_pack<>0);
 		update pos_products set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
 		update pos_products set price_satang=price_thb::bigint*100 where price_satang=0 and price_thb<>0;
 		drop index if exists idx_pos_products_barcode;
@@ -1269,6 +1277,8 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_sales add column if not exists vat_satang bigint not null default 0 check (vat_satang >= 0);
 		alter table pos_sales add column if not exists prices_include_tax boolean not null default true;
 		alter table pos_sales add column if not exists total_satang bigint not null default 0 check (total_satang >= 0);
+		alter table pos_sales add column if not exists stock_location text not null default 'primary';
+		do $$ begin alter table pos_sales add constraint pos_sales_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_sales set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
 		update pos_sales set subtotal_satang=total_thb::bigint*100,net_before_vat_satang=total_thb::bigint*100,total_satang=total_thb::bigint*100 where total_satang=0 and total_thb<>0;
 		create unique index if not exists idx_pos_sales_request on pos_sales(admin_id,request_id) where request_id<>'';
@@ -1287,6 +1297,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_sale_items add column if not exists unit_price_satang bigint not null default 0 check (unit_price_satang >= 0);
 		alter table pos_sale_items add column if not exists line_total_satang bigint not null default 0 check (line_total_satang >= 0);
 		alter table pos_sale_items add column if not exists note text not null default '';
+		alter table pos_sale_items add column if not exists stock_tracked boolean not null default true;
 		update pos_sale_items set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
 		update pos_sale_items set unit_price_satang=unit_price_thb::bigint*100,line_total_satang=line_total_thb::bigint*100 where line_total_satang=0 and line_total_thb<>0;
 		create table if not exists pos_suppliers (
@@ -1326,6 +1337,14 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_batches add column if not exists total_cost_satang bigint not null default 0 check (total_cost_satang >= 0);
 		alter table pos_stock_batches add column if not exists actor_type text not null default 'admin';
 		alter table pos_stock_batches add column if not exists actor_name text not null default '';
+		alter table pos_stock_batches add column if not exists stock_location text not null default 'primary';
+		alter table pos_stock_batches add column if not exists source_stock_location text;
+		alter table pos_stock_batches add column if not exists destination_stock_location text;
+		alter table pos_stock_batches drop constraint if exists pos_stock_batches_mode_check;
+		alter table pos_stock_batches add constraint pos_stock_batches_mode_check check (mode in ('in','out','adjust','transfer'));
+		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
+		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_source_location_check check (source_stock_location is null or source_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
+		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_destination_location_check check (destination_stock_location is null or destination_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_stock_batches set total_cost_satang=total_cost_thb::bigint*100 where total_cost_satang=0 and total_cost_thb<>0;
 		create table if not exists pos_stock_movements (
 			id bigserial primary key,
@@ -1352,6 +1371,10 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_movements add column if not exists resulting_cost_satang bigint not null default 0 check (resulting_cost_satang >= 0);
 		alter table pos_stock_movements add column if not exists actor_type text not null default 'admin';
 		alter table pos_stock_movements add column if not exists actor_name text not null default '';
+		alter table pos_stock_movements add column if not exists stock_location text not null default 'primary';
+		alter table pos_stock_movements drop constraint if exists pos_stock_movements_reason_check;
+		alter table pos_stock_movements add constraint pos_stock_movements_reason_check check (reason in ('sale','void','restock','adjustment','transfer_out','transfer_in'));
+		do $$ begin alter table pos_stock_movements add constraint pos_stock_movements_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_stock_movements set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
 		update pos_stock_movements set gross_total_satang=total_cost_thb::bigint*100 where gross_total_satang=0 and total_cost_thb<>0;
 		update pos_stock_movements set net_total_satang=total_cost_thb::bigint*100 where net_total_satang=0 and total_cost_thb<>0;

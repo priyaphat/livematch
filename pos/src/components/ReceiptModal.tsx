@@ -2,11 +2,11 @@ import React, { useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { Printer, X, Check, Copy, Share2 } from 'lucide-react';
-import { printIminText } from '../utils/iminPrinter';
+import { printIminBitmap } from '../utils/iminPrinter';
 
 export const ReceiptModal: React.FC = () => {
   const { selectedOrderForReceipt, setSelectedOrderForReceipt, settings, showToast } = usePos();
-  const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>('80mm');
+  const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>(() => settings.printerType === 'thermal_58mm' ? '58mm' : '80mm');
   const [copied, setCopied] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
 
@@ -19,9 +19,25 @@ export const ReceiptModal: React.FC = () => {
     setIsPrinting(true);
     if (/Android/i.test(navigator.userAgent)) {
       try {
-        const receiptText = document.getElementById('printable-receipt')?.innerText.trim();
-        if (!receiptText) throw new Error('ไม่พบข้อมูลใบเสร็จสำหรับพิมพ์');
-        await printIminText(receiptText, paperWidth);
+        const receiptElement = document.getElementById('printable-receipt');
+        if (!receiptElement) throw new Error('ไม่พบข้อมูลใบเสร็จสำหรับพิมพ์');
+        await document.fonts?.ready;
+        const { toPng } = await import('html-to-image');
+        const targetWidth = paperWidth === '58mm' ? 384 : 576;
+        const receiptWidth = Math.max(1, receiptElement.getBoundingClientRect().width);
+        const imageData = await toPng(receiptElement, {
+          backgroundColor: '#ffffff',
+          cacheBust: true,
+          pixelRatio: targetWidth / receiptWidth,
+          skipFonts: true,
+          style: {
+            boxShadow: 'none',
+            border: 'none',
+            borderRadius: '0',
+            margin: '0',
+          },
+        });
+        await printIminBitmap(imageData, paperWidth);
         showToast('พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว', 'success');
         setIsPrinting(false);
         return;
@@ -148,6 +164,9 @@ export const ReceiptModal: React.FC = () => {
                 {order.vatRate > 0 && <>Tax ID: <span className="font-mono">{settings.taxId}</span> | </>}Tel:{' '}
                 <span className="font-mono">{settings.phone}</span>
               </div>
+              <div className="pt-1 text-[11px] font-bold">
+                {order.vatRate > 0 ? 'ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ' : 'ใบเสร็จรับเงิน'}
+              </div>
             </div>
 
             {/* Receipt Meta */}
@@ -173,6 +192,7 @@ export const ReceiptModal: React.FC = () => {
                   <span className="font-mono text-[10px]">{order.referenceNumber}</span>
                 </div>
               )}
+              {order.customerNote && <div className="flex justify-between"><span className="text-slate-500">ลูกค้า:</span><span>{order.customerNote}</span></div>}
             </div>
 
             {/* Items table */}
@@ -217,7 +237,7 @@ export const ReceiptModal: React.FC = () => {
               </div>
               {order.discount > 0 && (
                 <div className="flex justify-between text-rose-600">
-                  <span>ส่วนลด ({order.discountType === 'percent' ? `${order.discount}%` : 'คูปอง'}):</span>
+                  <span>ส่วนลด ({order.discountType === 'percent' ? `${order.discountRate ?? 0}%` : 'จำนวนเงิน'}):</span>
                   <span>-{formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}</span>
                 </div>
               )}

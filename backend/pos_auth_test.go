@@ -107,6 +107,35 @@ func TestNormalizePOSPermissionsDropsUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestNormalizePOSPermissionsMigratesAndEnforcesReportChildren(t *testing.T) {
+	legacy := normalizePOSPermissions(map[string]bool{"reports": true})
+	for _, permission := range posReportPermissionKeys {
+		if !legacy[permission] {
+			t.Fatalf("legacy reports permission should enable %s", permission)
+		}
+	}
+
+	disabled := normalizePOSPermissions(map[string]bool{"reports": false, "report_inventory": true})
+	if disabled["report_inventory"] {
+		t.Fatal("report child must be disabled when the reports menu is disabled")
+	}
+}
+
+func TestRequirePOSReportPermission(t *testing.T) {
+	user := adminUser{POSRole: "manager", POSPermissions: map[string]bool{"reports": true, "report_inventory": true}}
+	if !requirePOSReportPermission(httptest.NewRecorder(), user, "inventory") {
+		t.Fatal("inventory report permission should allow inventory")
+	}
+	response := httptest.NewRecorder()
+	if requirePOSReportPermission(response, user, "purchases") || response.Code != http.StatusForbidden {
+		t.Fatalf("purchases report should be denied, got %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	if requirePOSReportPermission(response, user, "unknown") || response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown report type should be rejected, got %d", response.Code)
+	}
+}
+
 func TestPOSStaffIntegration(t *testing.T) {
 	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
 	if dsn == "" {

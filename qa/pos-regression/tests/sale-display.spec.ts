@@ -332,6 +332,60 @@ test('POS-PRINT-002 @smoke iMin Web Print พบ InnerPrinter และพิม
   await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
 });
 
+test('POS-PRINT-003 ใบเสร็จ iMin ใช้ภาพเดียวกับ Preview และไม่เปิด Android Print Dialog', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 13; iMin D4) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
+    (window as any).__printCalls = 0;
+    (window as any).__iminCommands = [];
+    window.print = () => { (window as any).__printCalls += 1; };
+    class MockIminWebSocket {
+      static OPEN = 1;
+      readonly OPEN = 1;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(public url: string) { window.setTimeout(() => { this.readyState = 1; this.onopen?.(new Event('open')); }, 0); }
+      send(payload: string) {
+        const command = JSON.parse(payload);
+        (window as any).__iminCommands.push(command);
+        if (command.type === 2) window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 2, data: { value: 0 } }) })), 0);
+      }
+      close() { this.readyState = 3; }
+    }
+    (window as any).WebSocket = MockIminWebSocket;
+  });
+
+  const api = await ownerApi();
+  const headers = await csrfHeaders(api);
+  const sale = await api.post('/api/admin/pos/sales', {
+    headers,
+    data: {
+      requestId: `qa-receipt-bitmap-${Date.now()}`,
+      action: 'pay',
+      buyerType: 'anonymous',
+      method: 'promptpay',
+      expectedTotalSatang: 4500,
+      referenceNumber: 'QA-RECEIPT-BITMAP',
+      items: [{ productId: 'qa-product-coffee-a', quantity: 1 }],
+    },
+  });
+  expect(sale.status(), await sale.text()).toBe(201);
+  await api.dispose();
+
+  await page.goto('/');
+  await page.locator('#nav-tab-dashboard').click();
+  await page.getByText('ดูใบเสร็จ ↗').first().click();
+  await expect(page.locator('#printable-receipt')).toContainText('ใบเสร็จรับเงิน');
+  await page.locator('#print-receipt-btn').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toContain(26);
+  const bitmap = await page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 26)?.data?.text || '');
+  expect(bitmap).toMatch(/^data:image\/png;base64,/);
+  expect(bitmap.length).toBeGreaterThan(1000);
+  await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
+});
+
 test('POS-PWA-001 @smoke PWA manifest มี icon และ standalone start URL', async ({ page, request }) => {
   await page.goto('/');
   const href = await page.locator('link[rel="manifest"]').getAttribute('href');

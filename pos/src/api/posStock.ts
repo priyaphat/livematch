@@ -30,7 +30,8 @@ export interface POSStockMovementRecord {
   productId: string;
   productName: string;
   productSku: string;
-  type: 'in' | 'out' | 'adjust';
+  type: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation: 'primary' | 'secondary';
   quantity: number;
   beforeStock: number;
   afterStock: number;
@@ -52,7 +53,10 @@ export interface POSStockMovementRecord {
 export interface POSStockBatchRecord {
   id: string;
   name: string;
-  mode: 'in' | 'out' | 'adjust';
+  mode: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation: 'primary' | 'secondary';
+  sourceStockLocation?: 'primary' | 'secondary';
+  destinationStockLocation?: 'primary' | 'secondary';
   note: string;
   supplierId?: string;
   externalReferenceNo?: string;
@@ -85,7 +89,10 @@ export interface POSStockBatchRecord {
 
 export interface POSStockBatchInput {
   name: string;
-  mode: 'in' | 'out' | 'adjust';
+  mode: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation?: 'primary' | 'secondary';
+  sourceStockLocation?: 'primary' | 'secondary';
+  destinationStockLocation?: 'primary' | 'secondary';
   note: string;
   supplierId?: string;
   externalReferenceNo?: string;
@@ -102,16 +109,16 @@ export interface POSStockBatchInput {
   }>;
 }
 
-export async function getPOSStockSummary() {
-  return posRequest<POSStockSummary>('/api/admin/pos/stock/summary');
+export async function getPOSStockSummary(stockLocation?: 'primary' | 'secondary') {
+  return posRequest<POSStockSummary>(`/api/admin/pos/stock/summary${stockLocation ? `?stockLocation=${stockLocation}` : ''}`);
 }
 
-export async function listPOSStockBatches() {
-  return (await posRequest<{ items: POSStockBatchRecord[] }>('/api/admin/pos/stock/batches?limit=200')).items;
+export async function listPOSStockBatches(stockLocation?: 'primary' | 'secondary') {
+  return (await posRequest<{ items: POSStockBatchRecord[] }>(`/api/admin/pos/stock/batches?limit=200${stockLocation ? `&stockLocation=${stockLocation}` : ''}`)).items;
 }
 
-export async function listPOSStockMovements() {
-  return (await posRequest<{ items: POSStockMovementRecord[] }>('/api/admin/pos/stock/movements?limit=200')).items;
+export async function listPOSStockMovements(stockLocation?: 'primary' | 'secondary') {
+  return (await posRequest<{ items: POSStockMovementRecord[] }>(`/api/admin/pos/stock/movements?limit=200${stockLocation ? `&stockLocation=${stockLocation}` : ''}`)).items;
 }
 
 export function createPOSStockBatch(input: POSStockBatchInput) {

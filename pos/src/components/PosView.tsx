@@ -633,9 +633,9 @@ export const PosView: React.FC = () => {
             ) : (
               <div id="pos-product-grid" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 sm:gap-3 pb-4">
                 {filteredProducts.map((product) => {
-                  const isOutOfStock = product.stock <= 0;
+                  const isOutOfStock = product.trackStock && product.stock <= 0;
                   const isLowStock =
-                    product.stock <= product.minStockAlert && !isOutOfStock;
+                    product.trackStock && product.stock <= product.minStockAlert && !isOutOfStock;
                   const inCartItem = cart.find(
                     (it) => it.product.id === product.id,
                   );
@@ -663,7 +663,7 @@ export const PosView: React.FC = () => {
 
                         {/* Stock Badge */}
                         <div className="absolute top-2 left-2 flex flex-col gap-1">
-                          {isOutOfStock ? (
+                          {!product.trackStock ? null : isOutOfStock ? (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-600 text-white shadow-xs">
                               สินค้าหมด
                             </span>
@@ -905,14 +905,14 @@ export const PosView: React.FC = () => {
                           <input
                             type="number"
                             min="1"
-                            max={item.product.stock || 99999}
+                            max={item.product.trackStock ? (item.product.stock || 0) : 99999}
                             value={item.quantity}
                             onChange={(e) => {
                               const val = parseInt(e.target.value, 10);
                               if (!isNaN(val)) {
                                 const safeVal = Math.max(
                                   1,
-                                  Math.min(item.product.stock || 99999, val),
+                                  Math.min(item.product.trackStock ? item.product.stock : 99999, val),
                                 );
                                 updateCartQuantity(item.product.id, safeVal);
                               }
@@ -1316,7 +1316,7 @@ export const PosView: React.FC = () => {
                       )}
                     </span>
                     <span>/ {quantityModalItem.product.unit}</span>
-                    <span>• สต็อก: {quantityModalItem.product.stock}</span>
+                    {quantityModalItem.product.trackStock && <span>• สต็อก: {quantityModalItem.product.stock}</span>}
                   </div>
                 </div>
               </div>
@@ -1346,7 +1346,7 @@ export const PosView: React.FC = () => {
                   id="modal-qty-input"
                   type="number"
                   min="1"
-                  max={quantityModalItem.product.stock || 99999}
+                  max={quantityModalItem.product.trackStock ? quantityModalItem.product.stock : 99999}
                   value={tempQuantityStr}
                   autoFocus
                   onFocus={(e) => e.target.select()}

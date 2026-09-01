@@ -128,9 +128,24 @@ class IminPrinterClient {
     await delay(250);
     return status;
   }
+
+  async printBitmap(imageData: string, paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
+    const status = await this.probe();
+    if (!status.ready || !status.connectionType) throw new Error(status.message);
+
+    this.send(1, status.connectionType);
+    this.send(25, '', paperWidth === '58mm' ? 1 : 0);
+    this.send(6, '', 1);
+    this.send(26, imageData);
+    this.send(4, '', 100);
+    this.send(5);
+    await delay(350);
+    return status;
+  }
 }
 
 const client = new IminPrinterClient();
 
 export const probeIminPrinter = () => client.probe();
 export const printIminText = (text: string, paperWidth: '58mm' | '80mm') => client.printText(text, paperWidth);
+export const printIminBitmap = (imageData: string, paperWidth: '58mm' | '80mm') => client.printBitmap(imageData, paperWidth);

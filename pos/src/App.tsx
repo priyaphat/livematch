@@ -28,6 +28,15 @@ const ALL_POS_PERMISSIONS: POSPermissions = {
   products: true,
   stock: true,
   reports: true,
+  report_overview: true,
+  report_top_sellers: true,
+  report_vat: true,
+  report_payments: true,
+  report_sold_products: true,
+  report_purchases: true,
+  report_inventory: true,
+  report_transfers: true,
+  report_special: true,
   settings: true,
   discounts: true,
   void_sales: true,
@@ -177,7 +186,7 @@ const PosAppContent: React.FC = () => {
         {activeTab === 'bills' && permissions.bills && <BillsView />}
         {activeTab === 'products' && permissions.products && <ProductsView />}
         {activeTab === 'stock' && permissions.stock && <StockView />}
-        {activeTab === 'reports' && permissions.reports && <ReportsView />}
+        {activeTab === 'reports' && permissions.reports && <ReportsView permissions={permissions} />}
         {activeTab === 'settings' && permissions.settings && <SettingsView currentUser={authUser} />}
         {activeTab === 'customer-display' && permissions.sales && <CustomerDisplayView />}
       </main>

@@ -123,6 +123,18 @@ try {
         }
     }
 
+    if ($Suite -eq 'full') {
+        Write-Host '[QA] Read-only stock ledger reconciliation' -ForegroundColor Cyan
+        $env:AUDIT_DATABASE_URL = $qaDatabaseUrl
+        $env:AUDIT_ADMIN_ID = ''
+        try {
+            Invoke-InDirectory (Join-Path $repoRoot 'backend') { go run ./cmd/stock-audit }
+        } finally {
+            Remove-Item Env:AUDIT_DATABASE_URL -ErrorAction SilentlyContinue
+            Remove-Item Env:AUDIT_ADMIN_ID -ErrorAction SilentlyContinue
+        }
+    }
+
     $result = 'PASS'
 } catch {
     $failure = $_.Exception.Message

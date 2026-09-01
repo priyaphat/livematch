@@ -19,6 +19,8 @@ let duplicateProductId = '';
 let tinySatangProductAId = '';
 let tinySatangProductBId = '';
 let halfUpProductId = '';
+let dualStockProductId = '';
+let untrackedProductId = '';
 let originalSettings: Record<string, unknown>;
 
 async function createProduct(input: {
@@ -57,7 +59,7 @@ async function product(id: string) {
   expect(response.ok()).toBeTruthy();
   const found = (await response.json()).items.find((item: { id: string }) => item.id === id);
   expect(found, `product ${id} is missing`).toBeTruthy();
-  return found as { id: string; stockQuantity: number; costSatang: number };
+  return found as { id: string; stockQuantity: number; secondaryStockQuantity: number; saleStockQuantity: number; trackStock: boolean; lowStockThreshold: number; unitsPerPack: number; costSatang: number };
 }
 
 async function saveSettings(changes: Record<string, unknown>) {
@@ -114,6 +116,38 @@ test.beforeAll(async () => {
   halfUpProductId = (await createProduct({
     sku: 'QA-TXN-HALF-UP', name: 'QA ปัดครึ่งขึ้น', priceSatang: 100, costSatang: 1, stockQuantity: 1,
   })).id;
+
+  const dual = await api.post('/api/admin/pos/products', { headers, data: { sku: 'QA-DUAL-STOCK', barcode: '', category: 'qa-category-snack-a', name: 'QA สองสต็อก', priceSatang: 1000, costSatang: 400, stockQuantity: 5, secondaryStockQuantity: 3, trackStock: true, lowStockThreshold: 1, unitsPerPack: 0, active: true, unit: 'ชิ้น', imageData: '', description: '' } });
+  expect(dual.ok(), await dual.text()).toBeTruthy(); dualStockProductId = (await dual.json()).id;
+  const untracked = await api.post('/api/admin/pos/products', { headers, data: { sku: 'QA-UNTRACKED', barcode: '', category: 'qa-category-snack-a', name: 'QA ไม่ติดตามสต็อก', priceSatang: 100, costSatang: 10, stockQuantity: 8, secondaryStockQuantity: 3, trackStock: false, lowStockThreshold: 5, unitsPerPack: 12, active: true, unit: 'รายการ', imageData: '', description: '' } });
+  expect(untracked.ok(), await untracked.text()).toBeTruthy(); untrackedProductId = (await untracked.json()).id;
+});
+
+test('POS-STOCK-017 เปิดสองสต็อก โอนแบบ atomic และกรอง movement ตามคลัง', async () => {
+  await saveSettings({ secondaryStockEnabled: true, primaryStockName: 'หน้าร้าน', secondaryStockName: 'หลังร้าน', saleStockLocation: 'secondary' });
+  const transfer = await api.post('/api/admin/pos/stock/batch', { headers, data: { name: 'QA-TRANSFER-001', mode: 'transfer', sourceStockLocation: 'primary', destinationStockLocation: 'secondary', stockLocation: 'primary', note: 'ทดสอบโอน', items: [{ productId: dualStockProductId, quantity: 2 }] } });
+  expect(transfer.status(), await transfer.text()).toBe(201);
+  expect(await product(dualStockProductId)).toMatchObject({ stockQuantity: 3, secondaryStockQuantity: 5, saleStockQuantity: 5 });
+  const primaryMovements = await api.get('/api/admin/pos/stock/movements?limit=200&stockLocation=primary');
+  const secondaryMovements = await api.get('/api/admin/pos/stock/movements?limit=200&stockLocation=secondary');
+  expect((await primaryMovements.json()).items.some((item: { referenceNo: string; reason: string }) => item.referenceNo === 'QA-TRANSFER-001' && item.reason === 'transfer_out')).toBeTruthy();
+  expect((await secondaryMovements.json()).items.some((item: { referenceNo: string; reason: string }) => item.referenceNo === 'QA-TRANSFER-001' && item.reason === 'transfer_in')).toBeTruthy();
+  const blockedDisable = await api.put('/api/admin/pos/settings', { headers, data: { ...originalSettings, secondaryStockEnabled: false } });
+  expect(blockedDisable.status()).toBe(409);
+  const cleanupTransfer = await api.post('/api/admin/pos/stock/batch', { headers, data: { name: 'QA-TRANSFER-001-CLEANUP', mode: 'transfer', sourceStockLocation: 'secondary', destinationStockLocation: 'primary', stockLocation: 'secondary', note: 'คืนยอดหลังทดสอบ', items: [{ productId: dualStockProductId, quantity: 5 }] } });
+  expect(cleanupTransfer.status(), await cleanupTransfer.text()).toBe(201);
+  expect(await product(dualStockProductId)).toMatchObject({ stockQuantity: 8, secondaryStockQuantity: 0 });
+  await saveSettings({});
+});
+
+test('POS-STOCK-018 สินค้าไม่ติดตามขายได้โดยไม่สร้าง movement หรือตัดยอด', async () => {
+  const beforeMovements = await api.get('/api/admin/pos/stock/movements?limit=200');
+  const beforeCount = (await beforeMovements.json()).items.filter((item: { productId: string }) => item.productId === untrackedProductId).length;
+  const sale = await api.post('/api/admin/pos/sales', { headers, data: { requestId: 'qa-untracked-sale', action: 'pay', buyerType: 'anonymous', method: 'cash', cashReceivedSatang: 99900, expectedTotalSatang: 99900, items: [{ productId: untrackedProductId, quantity: 999 }] } });
+  expect(sale.status(), await sale.text()).toBe(201);
+  expect(await product(untrackedProductId)).toMatchObject({ stockQuantity: 0, secondaryStockQuantity: 0, trackStock: false, lowStockThreshold: 0, unitsPerPack: 0 });
+  const afterMovements = await api.get('/api/admin/pos/stock/movements?limit=200');
+  expect((await afterMovements.json()).items.filter((item: { productId: string }) => item.productId === untrackedProductId)).toHaveLength(beforeCount);
 });
 
 test.afterAll(async () => {

@@ -57,6 +57,19 @@ func TestDecodePOSProductRejectsNegativeStock(t *testing.T) {
 	}
 }
 
+func TestProductStockFieldsRespectSaleLocationAndTracking(t *testing.T) {
+	product := posProductRecord{StockQuantity: 7, SecondaryStockQuantity: 3, TrackStock: true, LowStockThreshold: 3}
+	applyProductStockFields(&product, "secondary")
+	if product.TotalStockQuantity != 10 || product.SaleStockQuantity != 3 || !product.LowStock {
+		t.Fatalf("unexpected stock fields: %+v", product)
+	}
+	product.TrackStock = false
+	applyProductStockFields(&product, "primary")
+	if product.LowStock {
+		t.Fatal("untracked product must not be low stock")
+	}
+}
+
 func TestDecodePOSProductNormalizesText(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":" W-01 ","category":" Drinks ","name":" Water ","priceThb":20,"costThb":10,"stockQuantity":4,"lowStockThreshold":2,"active":true}`))
 	recorder := httptest.NewRecorder()
@@ -66,6 +79,18 @@ func TestDecodePOSProductNormalizesText(t *testing.T) {
 	}
 	if product.SKU != "W-01" || product.Category != "Drinks" || product.Name != "Water" {
 		t.Fatalf("product was not normalized: %#v", product)
+	}
+}
+
+func TestDecodePOSProductClearsStockOnlySettings(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"name":"Service","priceThb":100,"costThb":20,"stockQuantity":9,"secondaryStockQuantity":4,"trackStock":false,"lowStockThreshold":7,"unitsPerPack":12,"active":true}`))
+	recorder := httptest.NewRecorder()
+	product, ok := decodePOSProduct(recorder, req)
+	if !ok {
+		t.Fatalf("non-stock product should be accepted: %s", recorder.Body.String())
+	}
+	if product.StockQuantity != 0 || product.SecondaryStockQuantity != 0 || product.LowStockThreshold != 0 || product.UnitsPerPack != 0 {
+		t.Fatalf("stock-only values were not cleared: %#v", product)
 	}
 }
 

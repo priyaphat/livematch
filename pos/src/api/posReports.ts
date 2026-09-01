@@ -29,6 +29,8 @@ export interface POSSpecialReport {
   posPagination: POSPagination; sessionPagination: POSPagination;
 }
 export interface POSInventoryFilters { search?: string; category?: string; status?: 'all' | 'active' | 'inactive'; stockStatus?: 'all' | 'normal' | 'low' | 'out'; packStatus?: 'all' | 'configured' | 'unconfigured' }
+export type POSReportStockLocation = 'all' | 'primary' | 'secondary';
+export interface POSTransfersReport { range: POSReportRange; startDate: string; endDate: string; stockLocation: POSReportStockLocation; summary: { transferCount: number; totalQuantity: number }; items: Array<{ id: string; referenceNo: string; note: string; sourceStockLocation: 'primary' | 'secondary'; destinationStockLocation: 'primary' | 'secondary'; createdAt: string; actorName: string; totalQuantity: number; lines: Array<{ productId: string; productName: string; productSku: string; quantity: number }> }>; pagination: POSPagination }
 
 export interface POSReportData {
   range: POSReportRange;
@@ -74,7 +76,7 @@ export interface POSReportData {
   salesPagination: { page: number; pageSize: number; total: number; totalPages: number };
 }
 
-export function getPOSReports(range: POSReportRange, startDate = '', endDate = '', topPage = 1, vatPage = 1, exportAll = false) {
+export function getPOSReports(range: POSReportRange, startDate = '', endDate = '', topPage = 1, vatPage = 1, exportAll = false, stockLocation: POSReportStockLocation = 'all', reportType = 'overview') {
   const query = new URLSearchParams({ range });
   if (range === 'custom') {
     query.set('startDate', startDate);
@@ -83,11 +85,13 @@ export function getPOSReports(range: POSReportRange, startDate = '', endDate = '
   query.set('topPage', String(topPage));
   query.set('vatPage', String(vatPage));
   if (exportAll) query.set('exportAll', '1');
+  query.set('stockLocation', stockLocation);
+  query.set('reportType', reportType);
   return posRequest<POSReportData>(`/api/admin/pos/reports?${query}`);
 }
 
-export function authorizePOSReportExport() {
-  return posRequest<{ allowed: boolean }>('/api/admin/pos/reports/export-authorize', { method: 'POST', body: '{}' });
+export function authorizePOSReportExport(details: { operation?: 'export' | 'print'; reportType?: string; stockLocation?: POSReportStockLocation } = {}) {
+  return posRequest<{ allowed: boolean }>('/api/admin/pos/reports/export-authorize', { method: 'POST', body: JSON.stringify(details) });
 }
 
 function reportRangeQuery(range: POSReportRange, startDate: string, endDate: string) {
@@ -96,33 +100,42 @@ function reportRangeQuery(range: POSReportRange, startDate: string, endDate: str
   return query;
 }
 
-export function getPOSSoldProductsReport(range: POSReportRange, startDate = '', endDate = '', page = 1, exportAll = false) {
+export function getPOSSoldProductsReport(range: POSReportRange, startDate = '', endDate = '', page = 1, exportAll = false, stockLocation: POSReportStockLocation = 'all') {
   const query = reportRangeQuery(range, startDate, endDate);
   query.set('page', String(page));
   if (exportAll) query.set('exportAll', '1');
+  query.set('stockLocation', stockLocation);
   return posRequest<POSSoldProductsReport>(`/api/admin/pos/reports/sold-products?${query}`);
 }
 
-export function getPOSPurchasesReport(range: POSReportRange, startDate = '', endDate = '', page = 1, exportAll = false, filters: { search?: string; supplierId?: string } = {}) {
+export function getPOSPurchasesReport(range: POSReportRange, startDate = '', endDate = '', page = 1, exportAll = false, filters: { search?: string; supplierId?: string } = {}, stockLocation: POSReportStockLocation = 'all') {
   const query = reportRangeQuery(range, startDate, endDate);
   query.set('page', String(page));
   if (filters.search) query.set('search', filters.search);
   if (filters.supplierId) query.set('supplierId', filters.supplierId);
   if (exportAll) query.set('exportAll', '1');
+  query.set('stockLocation', stockLocation);
   return posRequest<POSPurchasesReport>(`/api/admin/pos/reports/purchases?${query}`);
 }
 
-export function getPOSInventoryReport(filters: POSInventoryFilters, page = 1, exportAll = false) {
+export function getPOSInventoryReport(filters: POSInventoryFilters, page = 1, exportAll = false, stockLocation: POSReportStockLocation = 'all') {
   const query = new URLSearchParams({ page: String(page), status: filters.status || 'all', stockStatus: filters.stockStatus || 'all', packStatus: filters.packStatus || 'all' });
   if (filters.search) query.set('search', filters.search);
   if (filters.category) query.set('category', filters.category);
   if (exportAll) query.set('exportAll', '1');
+  query.set('stockLocation', stockLocation);
   return posRequest<POSInventoryReport>(`/api/admin/pos/reports/inventory?${query}`);
 }
 
-export function getPOSSpecialReport(range: POSReportRange, startDate = '', endDate = '', posPage = 1, sessionPage = 1, exportAll = false) {
+export function getPOSSpecialReport(range: POSReportRange, startDate = '', endDate = '', posPage = 1, sessionPage = 1, exportAll = false, stockLocation: POSReportStockLocation = 'all') {
   const query = reportRangeQuery(range, startDate, endDate);
   query.set('posPage', String(posPage)); query.set('sessionPage', String(sessionPage));
   if (exportAll) query.set('exportAll', '1');
+  query.set('stockLocation', stockLocation);
   return posRequest<POSSpecialReport>(`/api/admin/pos/reports/special?${query}`);
+}
+
+export function getPOSTransfersReport(range: POSReportRange, startDate = '', endDate = '', page = 1, exportAll = false, stockLocation: POSReportStockLocation = 'all', search = '') {
+  const query = reportRangeQuery(range, startDate, endDate); query.set('page', String(page)); query.set('stockLocation', stockLocation); if (search) query.set('search', search); if (exportAll) query.set('exportAll', '1');
+  return posRequest<POSTransfersReport>(`/api/admin/pos/reports/transfers?${query}`);
 }

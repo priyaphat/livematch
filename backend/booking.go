@@ -1440,7 +1440,7 @@ func (a *app) writeBookingExport(w http.ResponseWriter, r *http.Request, adminID
 			b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.note,
 			to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
 			to_char(b.updated_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
-			coalesce(pay.id,''),coalesce(pay.amount_thb,0),coalesce(pay.status,''),
+			coalesce(pay.id,''),coalesce(case when pay.booking_id=b.id then pay.amount_thb else 0 end,0),coalesce(pay.status,''),
 			coalesce(pay.note,''),coalesce(pay.reviewed_by,''),
 			coalesce(to_char(pay.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),''),
 			coalesce(to_char(pay.reviewed_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'')
@@ -1449,7 +1449,7 @@ func (a *app) writeBookingExport(w http.ResponseWriter, r *http.Request, adminID
 		left join members m on m.id=b.member_id and m.admin_id=b.admin_id
 		left join public_users u on u.id=m.public_user_id
 		left join lateral (
-			select bp.id,bp.amount_thb,bp.status,bp.note,bp.reviewed_by,bp.created_at,bp.reviewed_at
+			select bp.id,bp.booking_id,bp.amount_thb,bp.status,bp.note,bp.reviewed_by,bp.created_at,bp.reviewed_at
 			from booking_payments bp
 			join bookings paid_booking on paid_booking.id=bp.booking_id and paid_booking.admin_id=b.admin_id
 			where bp.booking_id=b.id

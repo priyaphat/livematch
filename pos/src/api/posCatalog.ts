@@ -18,6 +18,10 @@ export interface POSProductRecord {
   costThb: number;
   costSatang: number;
   stockQuantity: number;
+  secondaryStockQuantity: number;
+  totalStockQuantity: number;
+  saleStockQuantity: number;
+  trackStock: boolean;
   lowStockThreshold: number;
   active: boolean;
   lowStock: boolean;

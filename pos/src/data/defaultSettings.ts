@@ -29,5 +29,9 @@ export const INITIAL_SETTINGS: StoreSettings = {
   customerDisplayCardText: 'ตรวจสอบรายการให้ถูกต้องก่อนชำระเงิน',
   customerDisplayCtaText: 'กรุณาติดต่อพนักงานหากต้องการแก้ไขรายการ',
   defaultLowStock: 0,
+  secondaryStockEnabled: false,
+  primaryStockName: 'สต็อกหลัก',
+  secondaryStockName: 'สต็อกที่ 2',
+  saleStockLocation: 'primary',
   theme: 'light',
 };

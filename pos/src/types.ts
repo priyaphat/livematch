@@ -26,6 +26,10 @@ export interface Product {
   price: number;
   cost: number;
   stock: number;
+  primaryStock: number;
+  secondaryStock: number;
+  totalStock: number;
+  trackStock: boolean;
   minStockAlert: number;
   unitsPerPack?: number;
   image: string;
@@ -61,6 +65,7 @@ export interface Order {
   subtotal: number;
   discount: number;
   discountType: 'amount' | 'percent';
+  discountRate?: number;
   vatAmount: number;
   vatRate: number;
   isVatIncluded: boolean;
@@ -105,7 +110,8 @@ export interface StockMovement {
   productId: string;
   productName: string;
   productSku: string;
-  type: 'in' | 'out' | 'adjust'; // รับเข้า | จ่ายออก | ปรับปรุง
+  type: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation?: 'primary' | 'secondary';
   quantity: number;
   beforeStock: number;
   afterStock: number;
@@ -133,7 +139,10 @@ export interface BatchStockOperationItem {
 export interface StockBatchSummary {
   id?: string;
   referenceNo: string;
-  type: 'in' | 'out' | 'adjust';
+  type: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation?: 'primary' | 'secondary';
+  sourceStockLocation?: 'primary' | 'secondary';
+  destinationStockLocation?: 'primary' | 'secondary';
   itemsCount: number;
   totalQuantity: number;
   totalCostValue: number;
@@ -207,6 +216,10 @@ export interface StoreSettings {
   autoPrintReceipt: boolean;
   enableSoundEffects: boolean;
   hardwareKeyboardMode: boolean;
+  secondaryStockEnabled: boolean;
+  primaryStockName: string;
+  secondaryStockName: string;
+  saleStockLocation: 'primary' | 'secondary';
   cashierName: string;
   theme?: 'light' | 'dark';
 }

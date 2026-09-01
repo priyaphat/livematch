@@ -79,7 +79,7 @@ interface PosContextType {
 
   // Settings
   settings: StoreSettings;
-  updateSettings: (newSettings: Partial<StoreSettings>) => Promise<boolean>;
+  updateSettings: (newSettings: Partial<StoreSettings>, successMessage?: string) => Promise<boolean>;
   setHardwareKeyboardMode: (enabled: boolean) => void;
   members: POSMember[];
 
@@ -167,7 +167,10 @@ interface PosContextType {
   stockOut: (productId: string, quantity: number, reason: string) => void;
   adjustStock: (productId: string, newStock: number, reason: string) => void;
   batchStockOperation: (params: {
-    type: 'in' | 'out' | 'adjust';
+    type: 'in' | 'out' | 'adjust' | 'transfer';
+    stockLocation?: 'primary' | 'secondary';
+    sourceStockLocation?: 'primary' | 'secondary';
+    destinationStockLocation?: 'primary' | 'secondary';
     items: Array<{
       productId: string;
       quantity: number; // for adjust: target stock count, for in/out: quantity delta
@@ -453,7 +456,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     category: catalog.find((category) => category.name.toLowerCase() === item.category.toLowerCase())?.id || item.category,
     price: item.priceSatang / 100,
     cost: item.costSatang / 100,
-    stock: item.stockQuantity,
+    stock: item.saleStockQuantity,
+    primaryStock: item.stockQuantity,
+    secondaryStock: item.secondaryStockQuantity,
+    totalStock: item.totalStockQuantity,
+    trackStock: item.trackStock,
     minStockAlert: item.lowStockThreshold,
     unitsPerPack: item.unitsPerPack || 0,
     image: item.imageData || DEFAULT_PRODUCT_IMAGE,
@@ -473,7 +480,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     priceSatang: Math.round(item.price * 100),
     costThb: Math.round(item.cost),
     costSatang: Math.round(item.cost * 100),
-    stockQuantity: item.stock,
+    stockQuantity: item.primaryStock ?? item.stock,
+    secondaryStockQuantity: item.secondaryStock ?? 0,
+    totalStockQuantity: item.totalStock ?? item.stock,
+    saleStockQuantity: item.stock,
+    trackStock: item.trackStock !== false,
     lowStockThreshold: item.minStockAlert,
     unitsPerPack: item.unitsPerPack || 0,
     active: item.status === 'active',
@@ -493,6 +504,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       price: item.unitPriceSatang / 100,
       cost: item.unitCostSatang / 100,
       stock: 0,
+      primaryStock: 0,
+      secondaryStock: 0,
+      totalStock: 0,
+      trackStock: item.stockTracked !== false,
       minStockAlert: 0,
       image: DEFAULT_PRODUCT_IMAGE,
       unit: 'ชิ้น',
@@ -521,6 +536,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     subtotal: sale.subtotalSatang / 100,
     discount: sale.discountSatang / 100,
     discountType: sale.discountType,
+    discountRate: sale.discountRateBps / 100,
     vatAmount: sale.vatSatang / 100,
     vatRate: sale.vatRateBps / 100,
     isVatIncluded: sale.pricesIncludeTax,
@@ -553,7 +569,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const accountSales = openSales.filter((sale) => sale.billingAccountId === receivable.billingAccountId);
       const posItems = accountSales.flatMap((sale) => sale.items.map((item) => ({ product: saleItemProduct(item), quantity: item.quantity, note: item.note })));
       const matchItems = receivable.lines.filter((line) => line.sourceType === 'match').map((line) => ({
-        product: { id: `billing-match-${line.sourceId}`, sku: '', name: line.label, category: '', price: line.amountSatang / 100, cost: 0, stock: 0, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const },
+        product: { id: `billing-match-${line.sourceId}`, sku: '', name: line.label, category: '', price: line.amountSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const },
         quantity: 1,
       }));
       return {
@@ -607,6 +623,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       customerDisplayCardText: apiSettings.customerDisplayCardText || INITIAL_SETTINGS.customerDisplayCardText,
       customerDisplayCtaText: apiSettings.customerDisplayCtaText || INITIAL_SETTINGS.customerDisplayCtaText,
       defaultLowStock: apiSettings.defaultLowStock,
+      secondaryStockEnabled: apiSettings.secondaryStockEnabled,
+      primaryStockName: apiSettings.primaryStockName || 'สต็อกหลัก',
+      secondaryStockName: apiSettings.secondaryStockName || 'สต็อกที่ 2',
+      saleStockLocation: apiSettings.saleStockLocation || 'primary',
       storeName: apiSettings.receiptHeader || current.storeName,
       taxId: apiSettings.storeTaxId || '',
       phone: apiSettings.storePhone || '',
@@ -662,6 +682,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     productName: item.productName,
     productSku: item.productSku,
     type: item.type,
+    stockLocation: item.stockLocation,
     quantity: item.quantity,
     beforeStock: item.beforeStock,
     afterStock: item.afterStock,
@@ -689,6 +710,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         productName: line.productName,
         productSku: line.productSku || product?.sku || '',
         type: item.mode,
+        stockLocation: item.stockLocation,
         quantity: line.delta,
         beforeStock: line.balance - line.delta,
         afterStock: line.balance,
@@ -708,6 +730,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: item.id,
       referenceNo: item.name || item.id,
       type: item.mode,
+      stockLocation: item.stockLocation,
+      sourceStockLocation: item.sourceStockLocation,
+      destinationStockLocation: item.destinationStockLocation,
       itemsCount: movements.length,
       totalQuantity: movements.reduce((sum, movement) => sum + Math.abs(movement.quantity), 0),
       totalCostValue: item.totalCostSatang / 100,
@@ -728,7 +753,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshPOSStock = async () => {
     try {
       const [summary, apiMovements, apiBatches, apiSuppliers] = await Promise.all([
-        getPOSStockSummary(),
+        getPOSStockSummary(settings.saleStockLocation),
         listPOSStockMovements(),
         listPOSStockBatches(),
         listPOSSuppliers(),
@@ -793,7 +818,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 	};
   }, [isBillingPollingActive]);
 
-  const updateSettings = async (newSettings: Partial<StoreSettings>): Promise<boolean> => {
+  const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว'): Promise<boolean> => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
     if (newSettings.theme) {
       setThemeState(newSettings.theme);
@@ -811,17 +836,23 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customerDisplayTitle: merged.customerDisplayTitle, customerDisplayHighlight: merged.customerDisplayHighlight,
         customerDisplaySubtitle: merged.customerDisplaySubtitle, customerDisplayCardText: merged.customerDisplayCardText,
         customerDisplayCtaText: merged.customerDisplayCtaText,
+        secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
+        secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
       });
       const persisted = await getPOSSettings();
       setSettings((current) => ({
         ...current,
+        secondaryStockEnabled: persisted.secondaryStockEnabled,
+        primaryStockName: persisted.primaryStockName,
+        secondaryStockName: persisted.secondaryStockName,
+        saleStockLocation: persisted.saleStockLocation,
         effectivePromptPayType: persisted.effectivePromptPayType,
         effectivePromptPayReceiverName: persisted.effectivePromptPayReceiverName,
         effectivePromptPayIdMasked: persisted.effectivePromptPayIdMasked,
         effectivePromptPaySource: persisted.effectivePromptPaySource,
         effectivePromptPayAvailable: persisted.effectivePromptPayAvailable,
       }));
-      showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
+      showToast(successMessage, 'success');
       return true;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'บันทึกการตั้งค่าไม่สำเร็จ', 'error');
@@ -1267,9 +1298,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  const withSaleStockDelta = (product: Product, delta: number): Product => {
+    if (!product.trackStock) return product;
+    if (settings.saleStockLocation === 'secondary') {
+      const secondaryStock = Math.max(0, product.secondaryStock + delta);
+      return { ...product, secondaryStock, totalStock: product.primaryStock + secondaryStock, stock: secondaryStock };
+    }
+    const primaryStock = Math.max(0, product.primaryStock + delta);
+    return { ...product, primaryStock, totalStock: primaryStock + product.secondaryStock, stock: primaryStock };
+  };
+
   // Cart operations
   const addToCart = (product: Product, quantity = 1, note = '') => {
-    if (product.stock <= 0) {
+    if (product.trackStock && product.stock <= 0) {
       showToast(`สินค้า "${product.name}" หมดสต็อกแล้ว!`, 'error');
       playBeep('alert');
       return;
@@ -1282,7 +1323,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (existingIndex > -1) {
         const newQty = prevCart[existingIndex].quantity + quantity;
-        if (newQty > product.stock) {
+        if (product.trackStock && newQty > product.stock) {
           showToast(`สินค้าในสต็อกมีเพียง ${product.stock} ${product.unit}`, 'warning');
           return prevCart;
         }
@@ -1305,7 +1346,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCart((prevCart) =>
       prevCart.map((item) => {
         if (item.product.id === productId) {
-          if (quantity > item.product.stock) {
+          if (item.product.trackStock && quantity > item.product.stock) {
             showToast(`สต็อกไม่เพียงพอ (คงเหลือ ${item.product.stock})`, 'warning');
             return item;
           }
@@ -1580,8 +1621,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           .filter((it) => it.productId === prod.id)
           .reduce((sum, it) => sum + it.quantity, 0);
         if (itemQuantitySum > 0) {
-          const newStock = Math.max(0, prod.stock - itemQuantitySum);
-          return { ...prod, stock: newStock };
+          return withSaleStockDelta(prod, -itemQuantitySum);
         }
         return prod;
       })
@@ -1685,6 +1725,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       subtotal: cartTotals.subtotal,
       discount: cartTotals.discountAmount,
       discountType,
+      discountRate: discountType === 'percent' ? discount : undefined,
       vatRate: settings.vatEnabled ? settings.vatRate : 0,
       vatAmount: cartTotals.vatAmount,
       isVatIncluded: settings.vatEnabled && settings.vatType === 'included',
@@ -1704,8 +1745,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prevProducts.map((prod) => {
         const cartMatch = cart.find((item) => item.product.id === prod.id);
         if (cartMatch) {
-          const newStock = Math.max(0, prod.stock - cartMatch.quantity);
-          return { ...prod, stock: newStock };
+          return withSaleStockDelta(prod, -cartMatch.quantity);
         }
         return prod;
       })
@@ -1750,7 +1790,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prevProducts.map((prod) => {
         const itemMatch = targetOrder.items.find((item) => item.productId === prod.id);
         if (itemMatch) {
-          return { ...prod, stock: prod.stock + itemMatch.quantity };
+          return withSaleStockDelta(prod, itemMatch.quantity);
         }
         return prod;
       })
@@ -1806,8 +1846,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     discountType = 'amount',
     discountAmountSatang = 0,
     discountRateBps = 0,
+    stockLocation,
+    sourceStockLocation,
+    destinationStockLocation,
   }: {
-    type: 'in' | 'out' | 'adjust';
+    type: 'in' | 'out' | 'adjust' | 'transfer';
+    stockLocation?: 'primary' | 'secondary';
+    sourceStockLocation?: 'primary' | 'secondary';
+    destinationStockLocation?: 'primary' | 'secondary';
     items: Array<{
       productId: string;
       quantity: number;
@@ -1832,6 +1878,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const input: POSStockBatchInput = {
       name: docRef,
       mode: type,
+      stockLocation: stockLocation || settings.saleStockLocation,
+      sourceStockLocation,
+      destinationStockLocation,
       note: reason,
       supplierId: type === 'in' ? (supplierId || suppliers.find((supplier) => supplier.name === supplierName)?.id) : undefined,
       externalReferenceNo: type === 'in' ? externalReferenceNo : undefined,
@@ -1849,7 +1898,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return createPOSStockBatch(input)
       .then(async () => {
         await Promise.all([refreshPOSCatalog(), refreshPOSStock()]);
-        const typeLabel = type === 'in' ? 'รับเข้า' : type === 'out' ? 'เบิกจ่ายออก' : 'ปรับยอด';
+        const typeLabel = type === 'in' ? 'รับเข้า' : type === 'out' ? 'เบิกจ่ายออก' : type === 'transfer' ? 'โอนย้าย' : 'ปรับยอด';
         playBeep('success');
         showToast(`บันทึกเอกสาร ${docRef} (${typeLabel} ${items.length} รายการ) สำเร็จ`, 'success');
         return true;

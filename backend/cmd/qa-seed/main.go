@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -129,6 +131,29 @@ func main() {
 		('qa-session-a-2',1,'สมาชิก QA คนที่สาม',1,1,false,false,'middle',true,'qa-member-a-3','qa-member-type-a-general','qa-billing-a-3')
 	`)
 	mustExec(ctx, tx, `
+		insert into booking_settings(admin_id,public_token_hash,public_token,open_time,close_time,interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name)
+		values ('qa-admin-a',$1,'qa-booking-a','16:00','22:00',60,true,true,'mobile','0810000000','QA Receiver')
+	`, qaTokenDigest("qa-booking-a"))
+	mustExec(ctx, tx, `
+		insert into booking_courts(id,admin_id,name,price_per_interval,sort_order,active)
+		values ('qa-booking-court-a','qa-admin-a','สนามจอง QA',100,1,true)
+	`)
+	mustExec(ctx, tx, `
+		insert into bookings(id,admin_id,court_id,member_id,booked_by,booker_name,start_at,end_at,interval_minutes,unit_price_thb,total_price_thb,status,payment_status,booking_batch_id)
+		values ('qa-booking-paid-a','qa-admin-a','qa-booking-court-a','qa-member-a-1','member','สมาชิก QA Match Only',
+		(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '18 hour') at time zone 'Asia/Bangkok',
+		(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '19 hour') at time zone 'Asia/Bangkok',
+		60,100,100,'confirmed','paid','qa-booking-batch-a')
+	`)
+	mustExec(ctx, tx, `
+		insert into booking_occupancies(admin_id,court_id,booking_id,kind,occupied_range)
+		select admin_id,court_id,id,'booking',tstzrange(start_at,end_at,'[)') from bookings where id='qa-booking-paid-a'
+	`)
+	mustExec(ctx, tx, `
+		insert into booking_payments(id,admin_id,booking_id,member_id,amount_thb,status,note,reviewed_by,reviewed_at)
+		values ('qa-booking-payment-a','qa-admin-a','qa-booking-paid-a','qa-member-a-1',100,'approved','QA seed approved','qa-admin-a',now())
+	`)
+	mustExec(ctx, tx, `
 		insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,shuttle_pricing_mode,shuttle_price_snapshot,legacy_shuttle_fee) values
 		('qa-session-a',1,'history','สนาม 1','middle',1,2,3,4,2,'[{"brandId":"qa-shuttle","number":1},{"brandId":"qa-shuttle","number":2}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,50),
 		('qa-session-a-2',1,'history','สนาม 1','middle',1,1,1,1,1,'[{"brandId":"qa-shuttle","number":1}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,55)
@@ -154,6 +179,11 @@ func main() {
 		('qa-product-b','qa-admin-b','QA-B-001','qa-category-b','สินค้า Tenant B',99,9900,50,5000,99,5,true,'กล่อง',10,'','8850000000004','')
 	`)
 	mustExec(ctx, tx, `
+		insert into pos_stock_movements(admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location)
+		select admin_id,id,stock_quantity,stock_quantity,'restock','ยอดตั้งต้น QA','qa-seed','system','QA Seed',cost_satang,stock_quantity::bigint*cost_satang,stock_quantity::bigint*cost_satang,cost_satang,cost_satang,'primary'
+		from pos_products where id in ('qa-product-coffee-a','qa-product-cake-a','qa-product-inactive-a','qa-product-b') and stock_quantity>0
+	`)
+	mustExec(ctx, tx, `
 		insert into pos_suppliers(id,admin_id,code,name,contact_person,phone,email,address,active)
 		values ('qa-supplier-a','qa-admin-a','SUP-QA-001','ซัพพลายเออร์ QA','คุณทดสอบ','0890000001','supplier.qa@example.invalid','QA address',true)
 	`)
@@ -174,6 +204,11 @@ func mustHash(value string) string {
 		log.Fatal(err)
 	}
 	return string(hash)
+}
+
+func qaTokenDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func mustExec(ctx context.Context, tx *sql.Tx, query string, args ...any) {

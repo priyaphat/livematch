@@ -68,6 +68,61 @@ describe("admin Excel exports", () => {
     expect(values.join(" ")).not.toContain("SECRET");
   });
 
+  it("reconciles a multi-slot booking without counting the batch payment twice", async () => {
+    const workbook = await buildBookingAdminWorkbook({
+      generatedAt: "2026-09-01T10:00:00+07:00",
+      startDate: "2026-09-02",
+      endDate: "2026-09-02",
+      status: "all",
+      items: [
+        {
+          bookingId: "batch-booking-a",
+          batchId: "batch-1",
+          bookerName: "สมาชิก Booking Ledger",
+          courtName: "สนาม A",
+          startAt: "2026-09-02 20:30",
+          endAt: "2026-09-02 21:00",
+          intervalMinutes: 30,
+          unitPriceThb: 120,
+          totalPriceThb: 120,
+          bookingStatus: "confirmed",
+          paymentStatus: "paid",
+          paymentAmountThb: 270,
+          paymentReviewStatus: "approved",
+        },
+        {
+          bookingId: "batch-booking-b",
+          batchId: "batch-1",
+          bookerName: "สมาชิก Booking Ledger",
+          courtName: "สนาม B",
+          startAt: "2026-09-02 20:30",
+          endAt: "2026-09-02 21:00",
+          intervalMinutes: 30,
+          unitPriceThb: 150,
+          totalPriceThb: 150,
+          bookingStatus: "confirmed",
+          paymentStatus: "paid",
+          paymentAmountThb: 0,
+          paymentReviewStatus: "approved",
+        },
+      ],
+    });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const excel = await import("exceljs");
+    const restored = new excel.Workbook();
+    await restored.xlsx.load(buffer);
+    const sheet = restored.getWorksheet("รายการจองสนาม");
+    const rows = [];
+    sheet.eachRow((row) => {
+      if (["สนาม A", "สนาม B"].includes(row.getCell(5).value)) rows.push(row);
+    });
+
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.getCell(9).value)).toEqual([120, 150]);
+    expect(rows.reduce((sum, row) => sum + row.getCell(10).value, 0)).toBe(270);
+    expect(rows.reduce((sum, row) => sum + row.getCell(16).value, 0)).toBe(270);
+  });
+
   it("creates one selected member report and excludes other members", async () => {
     const workbook = await buildMembersAdminWorkbook({
       generatedAt: "2026-07-24T10:00:00+07:00",

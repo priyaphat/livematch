@@ -23,6 +23,7 @@ export interface POSSaleItem {
   unitCostSatang: number;
   lineTotalSatang: number;
   note?: string;
+  stockTracked?: boolean;
 }
 
 export interface POSSale {
@@ -47,6 +48,7 @@ export interface POSSale {
   cashReceivedSatang?: number;
   changeSatang?: number;
   referenceNumber?: string;
+  stockLocation: 'primary' | 'secondary';
 }
 
 export interface POSSettingsRecord {
@@ -79,6 +81,10 @@ export interface POSSettingsRecord {
   effectivePromptPayIdMasked?: string;
   effectivePromptPaySource?: string;
   effectivePromptPayAvailable?: boolean;
+  secondaryStockEnabled: boolean;
+  primaryStockName: string;
+  secondaryStockName: string;
+  saleStockLocation: 'primary' | 'secondary';
 }
 
 export interface POSBillingSummary {

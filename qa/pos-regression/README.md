@@ -17,6 +17,14 @@
 ./qa/pos-regression/run.ps1 -Suite full
 ```
 
+ตรวจฐานร้านแบบ read-only โดยต้องระบุ connection string ชัดเจน:
+
+```powershell
+./qa/pos-regression/run-stock-audit.ps1 -DatabaseUrl $env:STORE_READONLY_DATABASE_URL -OutputPath ./qa/pos-regression/results/stock-audit.json
+```
+
+ตัว audit เปิด transaction แบบ `READ ONLY, REPEATABLE READ` และหยุดทันทีถ้าฐานไม่ยืนยันสถานะ read-only
+
 Runner จะตรวจชื่อฐานและพอร์ต, ล้างเฉพาะ Docker project `livematch-pos-qa`, สร้างฐานใหม่, รอ migration, seed ข้อมูล QA, รัน test และปิด stack พร้อมลบ QA volume เมื่อเสร็จ ใช้ `-KeepStack` เมื่อต้องการตรวจ defect ต่อด้วยมือ
 
 ## Test accounts

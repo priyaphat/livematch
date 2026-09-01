@@ -33,7 +33,9 @@ var dummyPOSCredentialHash = func() string {
 	return string(hash)
 }()
 
-var posPermissionKeys = []string{"sales", "bills", "products", "stock", "reports", "settings", "discounts", "void_sales", "stock_adjust", "product_pricing", "report_export", "member_create"}
+var posReportPermissionKeys = []string{"report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_transfers", "report_special"}
+
+var posPermissionKeys = []string{"sales", "bills", "products", "stock", "reports", "report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_transfers", "report_special", "settings", "discounts", "void_sales", "stock_adjust", "product_pricing", "report_export", "member_create"}
 
 type posPrincipal struct {
 	User        adminUser
@@ -81,16 +83,34 @@ func allPOSPermissions() map[string]bool {
 }
 
 func defaultPOSPermissions(role string) map[string]bool {
+	reportAccess := role == "manager"
 	if role == "manager" {
-		return map[string]bool{"sales": true, "bills": true, "products": true, "stock": true, "reports": true, "settings": false, "discounts": true, "void_sales": true, "stock_adjust": true, "product_pricing": true, "report_export": true, "member_create": true}
+		result := map[string]bool{"sales": true, "bills": true, "products": true, "stock": true, "reports": true, "settings": false, "discounts": true, "void_sales": true, "stock_adjust": true, "product_pricing": true, "report_export": true, "member_create": true}
+		for _, key := range posReportPermissionKeys {
+			result[key] = reportAccess
+		}
+		return result
 	}
-	return map[string]bool{"sales": true, "bills": true, "products": false, "stock": false, "reports": false, "settings": false, "discounts": false, "void_sales": false, "stock_adjust": false, "product_pricing": false, "report_export": false, "member_create": true}
+	result := map[string]bool{"sales": true, "bills": true, "products": false, "stock": false, "reports": false, "settings": false, "discounts": false, "void_sales": false, "stock_adjust": false, "product_pricing": false, "report_export": false, "member_create": true}
+	for _, key := range posReportPermissionKeys {
+		result[key] = reportAccess
+	}
+	return result
 }
 
 func normalizePOSPermissions(input map[string]bool) map[string]bool {
 	result := map[string]bool{}
 	for _, key := range posPermissionKeys {
-		result[key] = input[key]
+		value, exists := input[key]
+		if !exists && strings.HasPrefix(key, "report_") && key != "report_export" {
+			value = input["reports"]
+		}
+		result[key] = value
+	}
+	if !result["reports"] {
+		for _, key := range posReportPermissionKeys {
+			result[key] = false
+		}
 	}
 	return result
 }
@@ -107,6 +127,13 @@ func (a *app) posPermissions(ctx context.Context, adminID, role string) map[stri
 			for _, key := range posPermissionKeys {
 				if value, ok := stored[key]; ok {
 					result[key] = value
+				} else if strings.HasPrefix(key, "report_") && key != "report_export" {
+					result[key] = result["reports"]
+				}
+			}
+			if !result["reports"] {
+				for _, key := range posReportPermissionKeys {
+					result[key] = false
 				}
 			}
 		}
@@ -819,6 +846,40 @@ func requirePOSPermission(w http.ResponseWriter, user adminUser, permission stri
 		return false
 	}
 	return true
+}
+
+func posReportPermission(reportType string) string {
+	switch strings.TrimSpace(reportType) {
+	case "overview":
+		return "report_overview"
+	case "top_sellers":
+		return "report_top_sellers"
+	case "vat":
+		return "report_vat"
+	case "payments":
+		return "report_payments"
+	case "sold_products":
+		return "report_sold_products"
+	case "purchases":
+		return "report_purchases"
+	case "inventory":
+		return "report_inventory"
+	case "transfers":
+		return "report_transfers"
+	case "special":
+		return "report_special"
+	default:
+		return ""
+	}
+}
+
+func requirePOSReportPermission(w http.ResponseWriter, user adminUser, reportType string) bool {
+	permission := posReportPermission(reportType)
+	if permission == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ประเภทรายงานไม่ถูกต้อง", "code": "invalid_report_type"})
+		return false
+	}
+	return requirePOSPermission(w, user, "reports") && requirePOSPermission(w, user, permission)
 }
 
 func authorizePOSPath(w http.ResponseWriter, user adminUser, method, path string) bool {
