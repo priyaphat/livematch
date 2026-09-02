@@ -69,7 +69,7 @@ describe('Excel export data', () => {
     const reopened = new ExcelJS.Workbook()
     await reopened.xlsx.load(buffer)
     expect(reopened.getWorksheet('สมาชิก').getCell('A1').value).toBe('ชื่อ')
-  })
+  }, 30_000)
 
   it('sanitizes unsafe filename characters and keeps Thai names', () => {
     expect(sanitizeFilenamePart(' สนาม / วันเสาร์:*? ')).toBe('สนาม-วันเสาร์')

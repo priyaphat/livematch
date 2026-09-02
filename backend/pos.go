@@ -306,6 +306,10 @@ func (a *app) posSettings(ctx context.Context, adminID string) (posSettingsRecor
 	if errors.Is(err, sql.ErrNoRows) {
 		return a.ensurePOSSettings(ctx, adminID)
 	}
+	if !supportedPromptPayType(s.PromptPayType) {
+		s.PromptPayType = "mobile"
+		s.PromptPayID = ""
+	}
 	return s, err
 }
 
@@ -314,7 +318,7 @@ func (a *app) effectivePOSPromptPay(ctx context.Context, adminID string, setting
 		return promptPaySettings{ID: settings.PromptPayID, Type: settings.PromptPayType, ReceiverName: settings.PromptPayReceiverName}, "pos"
 	}
 	var inherited promptPaySettings
-	if a.db.QueryRowContext(ctx, `select promptpay_type,promptpay_id,promptpay_receiver_name from booking_settings where admin_id=$1`, adminID).Scan(&inherited.Type, &inherited.ID, &inherited.ReceiverName) == nil && inherited.ID != "" {
+	if a.db.QueryRowContext(ctx, `select promptpay_type,promptpay_id,promptpay_receiver_name from booking_settings where admin_id=$1`, adminID).Scan(&inherited.Type, &inherited.ID, &inherited.ReceiverName) == nil && inherited.ID != "" && supportedPromptPayType(inherited.Type) {
 		return inherited, "booking"
 	}
 	return promptPaySettings{ID: settings.PromptPayID, Type: settings.PromptPayType, ReceiverName: settings.PromptPayReceiverName}, "pos"
@@ -2048,10 +2052,33 @@ func (a *app) deletePOSSupplier(w http.ResponseWriter, r *http.Request, user adm
 }
 
 func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
-	var b posSettingsRecord
-	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 6<<20)).Decode(&b) != nil {
+	previous, err := a.ensurePOSSettings(r.Context(), user.ID)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	var raw json.RawMessage
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 6<<20)).Decode(&raw) != nil {
 		writeJSON(w, 400, map[string]string{"error": "ข้อมูลตั้งค่าไม่ถูกต้อง"})
 		return
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || len(fields) == 0 {
+		writeJSON(w, 400, map[string]string{"error": "ข้อมูลตั้งค่าไม่ถูกต้อง"})
+		return
+	}
+	b := previous
+	if json.Unmarshal(raw, &b) != nil {
+		writeJSON(w, 400, map[string]string{"error": "ข้อมูลตั้งค่าไม่ถูกต้อง"})
+		return
+	}
+	stockOnly := true
+	for key := range fields {
+		switch key {
+		case "secondaryStockEnabled", "primaryStockName", "secondaryStockName", "saleStockLocation":
+		default:
+			stockOnly = false
+		}
 	}
 	b.ReceiptHeader, b.ReceiptFooter = strings.TrimSpace(b.ReceiptHeader), strings.TrimSpace(b.ReceiptFooter)
 	b.StoreTaxID, b.StorePhone, b.StoreEmail, b.StoreAddress = strings.TrimSpace(b.StoreTaxID), strings.TrimSpace(b.StorePhone), strings.ToLower(strings.TrimSpace(b.StoreEmail)), strings.TrimSpace(b.StoreAddress)
@@ -2101,35 +2128,52 @@ func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user admin
 			}
 		}
 	}
-	if b.ReceiptHeader == "" || b.DefaultLowStock < 0 || b.DefaultLowStock > 1_000_000 || b.TaxRatePercent < 0 || b.TaxRatePercent > 100 || len(b.ReceiptHeader) > 200 || len(b.NavbarTitle) > 80 || len(b.PrimaryStockName) > 80 || len(b.SecondaryStockName) > 80 || len(b.CustomerDisplayTitle) > 120 || len(b.CustomerDisplayHighlight) > 120 || len(b.CustomerDisplaySubtitle) > 300 || len(b.CustomerDisplayCardText) > 300 || len(b.CustomerDisplayCTAText) > 160 || len(b.ReceiptFooter) > 500 || len(b.PromptPayReceiverName) > 200 || len(b.StorePhone) > 30 || len(b.StoreEmail) > 254 || len(b.StoreAddress) > 500 || !validEmail || !validTaxID || !posImageWithinLimit(b.LogoData, 2*1024*1024) || !validImageData(b.LogoData, true) || !posImageWithinLimit(b.NavbarIconData, 2*1024*1024) || !validImageData(b.NavbarIconData, true) || !posImageWithinLimit(b.PaymentQRImage, 2*1024*1024) || !validImageData(b.PaymentQRImage, true) {
+	invalidStockSettings := len(b.PrimaryStockName) > 80 || len(b.SecondaryStockName) > 80 || (b.SecondaryStockEnabled && b.SaleStockLocation == "secondary" && !validStockLocation(b.SaleStockLocation))
+	invalidStoreSettings := b.ReceiptHeader == "" || b.DefaultLowStock < 0 || b.DefaultLowStock > 1_000_000 || b.TaxRatePercent < 0 || b.TaxRatePercent > 100 || len(b.ReceiptHeader) > 200 || len(b.NavbarTitle) > 80 || len(b.CustomerDisplayTitle) > 120 || len(b.CustomerDisplayHighlight) > 120 || len(b.CustomerDisplaySubtitle) > 300 || len(b.CustomerDisplayCardText) > 300 || len(b.CustomerDisplayCTAText) > 160 || len(b.ReceiptFooter) > 500 || len(b.PromptPayReceiverName) > 200 || len(b.StorePhone) > 30 || len(b.StoreEmail) > 254 || len(b.StoreAddress) > 500 || !validEmail || !validTaxID || !posImageWithinLimit(b.LogoData, 2*1024*1024) || !validImageData(b.LogoData, true) || !posImageWithinLimit(b.NavbarIconData, 2*1024*1024) || !validImageData(b.NavbarIconData, true) || !posImageWithinLimit(b.PaymentQRImage, 2*1024*1024) || !validImageData(b.PaymentQRImage, true)
+	if invalidStockSettings || (!stockOnly && invalidStoreSettings) {
 		writeJSON(w, 400, map[string]string{"error": "กรุณาตรวจข้อมูลร้าน อีเมล เลขผู้เสียภาษี และรูปภาพอีกครั้ง"})
 		return
 	}
-	b.PromptPayType, b.PromptPayID, b.PromptPayReceiverName = strings.TrimSpace(b.PromptPayType), strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName)
-	if b.PromptPayType == "" {
-		b.PromptPayType = "mobile"
-	}
-	if b.PromptPayType != "mobile" && b.PromptPayType != "national_id" && b.PromptPayType != "ewallet" {
-		writeJSON(w, 400, map[string]string{"error": "ประเภท PromptPay ไม่ถูกต้อง"})
-		return
-	}
-	if b.PromptPayID != "" {
-		if _, _, err := normalizePromptPayTarget(promptPaySettings{ID: b.PromptPayID, Type: b.PromptPayType}); err != nil {
-			writeJSON(w, 400, map[string]string{"error": "PromptPay setting ไม่ถูกต้อง"})
+	if !stockOnly {
+		b.PromptPayType, b.PromptPayID, b.PromptPayReceiverName = strings.TrimSpace(b.PromptPayType), strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName)
+		if b.PromptPayType == "" {
+			b.PromptPayType = "mobile"
+		}
+		if b.PromptPayType != "mobile" && b.PromptPayType != "national_id" && b.PromptPayType != "ewallet" {
+			writeJSON(w, 400, map[string]string{"error": "ประเภท PromptPay ไม่ถูกต้อง"})
 			return
 		}
+		if b.PromptPayID != "" {
+			if _, _, err := normalizePromptPayTarget(promptPaySettings{ID: b.PromptPayID, Type: b.PromptPayType}); err != nil {
+				writeJSON(w, 400, map[string]string{"error": "PromptPay setting ไม่ถูกต้อง"})
+				return
+			}
+		}
+		if b.Theme != "dark" {
+			b.Theme = "light"
+		}
+		if b.Language != "en" {
+			b.Language = "th"
+		}
+	} else {
+		secondaryStockEnabled := b.SecondaryStockEnabled
+		primaryStockName := b.PrimaryStockName
+		secondaryStockName := b.SecondaryStockName
+		saleStockLocation := b.SaleStockLocation
+		b = previous
+		b.SecondaryStockEnabled = secondaryStockEnabled
+		b.PrimaryStockName = primaryStockName
+		b.SecondaryStockName = secondaryStockName
+		b.SaleStockLocation = saleStockLocation
 	}
-	if b.Theme != "dark" {
-		b.Theme = "light"
-	}
-	if b.Language != "en" {
-		b.Language = "th"
-	}
-	previous, _ := a.ensurePOSSettings(r.Context(), user.ID)
 	if previous.SecondaryStockEnabled && !b.SecondaryStockEnabled {
-		var remaining int
-		if err := a.db.QueryRowContext(r.Context(), `select coalesce(sum(secondary_stock_quantity),0) from pos_products where admin_id=$1 and deleted_at is null and track_stock`, user.ID).Scan(&remaining); err != nil || remaining != 0 {
-			writeJSON(w, http.StatusConflict, map[string]string{"error": "กรุณาโอนสต็อกที่ 2 กลับสต็อกหลักให้หมดก่อนปิดใช้งาน"})
+		var remaining int64
+		if err := a.db.QueryRowContext(r.Context(), `select coalesce(sum(secondary_stock_quantity),0) from pos_products where admin_id=$1 and deleted_at is null and track_stock`, user.ID).Scan(&remaining); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		if remaining != 0 {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": fmt.Sprintf("ยังปิดสต็อกที่ 2 ไม่ได้: คงเหลือ %d ชิ้น กรุณาโอนกลับสต็อกหลักให้หมดก่อน", remaining), "remainingSecondaryStockQuantity": remaining})
 			return
 		}
 	}

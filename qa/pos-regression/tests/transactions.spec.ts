@@ -124,7 +124,8 @@ test.beforeAll(async () => {
 });
 
 test('POS-STOCK-017 เปิดสองสต็อก โอนแบบ atomic และกรอง movement ตามคลัง', async () => {
-  await saveSettings({ secondaryStockEnabled: true, primaryStockName: 'หน้าร้าน', secondaryStockName: 'หลังร้าน', saleStockLocation: 'secondary' });
+  const enableDualStock = await api.put('/api/admin/pos/settings', { headers, data: { secondaryStockEnabled: true, primaryStockName: 'หน้าร้าน', secondaryStockName: 'หลังร้าน', saleStockLocation: 'secondary' } });
+  expect(enableDualStock.status(), await enableDualStock.text()).toBe(200);
   const transfer = await api.post('/api/admin/pos/stock/batch', { headers, data: { name: 'QA-TRANSFER-001', mode: 'transfer', sourceStockLocation: 'primary', destinationStockLocation: 'secondary', stockLocation: 'primary', note: 'ทดสอบโอน', items: [{ productId: dualStockProductId, quantity: 2 }] } });
   expect(transfer.status(), await transfer.text()).toBe(201);
   expect(await product(dualStockProductId)).toMatchObject({ stockQuantity: 3, secondaryStockQuantity: 5, saleStockQuantity: 5 });

@@ -58,3 +58,74 @@ test('POS-SEC-003 @smoke API ส่วนตัว no-store และ error ไ�
   expect(body.toLowerCase()).not.toContain('postgres');
   await api.dispose();
 });
+
+test('POS-SEC-005 ข้อมูลสำคัญแยกตามร้านทั้ง POS สมาชิก Match และจองสนาม', async () => {
+  const ownerA = await ownerApi('a');
+  const ownerB = await ownerApi('b');
+
+  const [productsA, productsB, movementsA, movementsB, membersA, membersB, inventoryA, inventoryB] = await Promise.all([
+    ownerA.get('/api/admin/pos/products?page=1&pageSize=100&status=all'),
+    ownerB.get('/api/admin/pos/products?page=1&pageSize=100&status=all'),
+    ownerA.get('/api/admin/pos/stock/movements?limit=200'),
+    ownerB.get('/api/admin/pos/stock/movements?limit=200'),
+    ownerA.get('/api/admin/pos/members?search='),
+    ownerB.get('/api/admin/pos/members?search='),
+    ownerA.get('/api/admin/pos/reports/inventory?page=1&pageSize=100&stockLocation=all'),
+    ownerB.get('/api/admin/pos/reports/inventory?page=1&pageSize=100&stockLocation=all'),
+  ]);
+  for (const response of [productsA, productsB, movementsA, movementsB, membersA, membersB, inventoryA, inventoryB]) {
+    expect(response.ok(), await response.text()).toBeTruthy();
+  }
+
+  const textProductsA = JSON.stringify(await productsA.json());
+  const textProductsB = JSON.stringify(await productsB.json());
+  const textMovementsA = JSON.stringify(await movementsA.json());
+  const textMovementsB = JSON.stringify(await movementsB.json());
+  const textMembersA = JSON.stringify(await membersA.json());
+  const textMembersB = JSON.stringify(await membersB.json());
+  const textInventoryA = JSON.stringify(await inventoryA.json());
+  const textInventoryB = JSON.stringify(await inventoryB.json());
+
+  expect(textProductsA).not.toContain('qa-product-b');
+  expect(textProductsB).not.toContain('qa-product-coffee-a');
+  expect(textMovementsA).not.toContain('qa-product-b');
+  expect(textMovementsB).not.toContain('qa-product-coffee-a');
+  expect(textMembersA).not.toContain('qa-member-b-1');
+  expect(textMembersB).not.toContain('qa-member-a-1');
+  expect(textInventoryA).not.toContain('qa-product-b');
+  expect(textInventoryB).not.toContain('qa-product-coffee-a');
+
+  const [settingsA, settingsB, supervisorB, bookingHistoryB] = await Promise.all([
+    ownerA.get('/api/admin/pos/settings'),
+    ownerB.get('/api/admin/pos/settings'),
+    ownerB.get('/api/admin/supervisor'),
+    ownerB.get('/api/admin/booking/history?page=1&pageSize=100'),
+  ]);
+  for (const response of [settingsA, settingsB, supervisorB, bookingHistoryB]) {
+    expect(response.ok(), await response.text()).toBeTruthy();
+  }
+  expect((await settingsA.json()).receiptHeader).toBe('QA POS Receipt');
+  expect((await settingsB.json()).receiptHeader).not.toBe('QA POS Receipt');
+  expect(JSON.stringify(await supervisorB.json())).not.toContain('qa-session-a');
+  expect(JSON.stringify(await bookingHistoryB.json())).not.toContain('qa-booking-paid-a');
+
+  const forbiddenReads = await Promise.all([
+    ownerB.get('/api/admin/members/qa-member-a-1'),
+    ownerB.get('/api/admin/pos/billing-summary?accountId=qa-billing-a-1'),
+    ownerB.get('/api/sessions/qa-session-a/billing-sync'),
+    ownerB.get('/api/admin/booking/payments/qa-booking-payment-a/slip'),
+  ]);
+  for (const response of forbiddenReads) {
+    expect([403, 404], `${response.url()} returned ${response.status()}: ${await response.text()}`).toContain(response.status());
+  }
+
+  const headersB = await csrfHeaders(ownerB);
+  const forbiddenMemberUpdate = await ownerB.patch('/api/admin/members/qa-member-a-1', {
+    headers: headersB,
+    data: { name: 'tenant breach', phone: '0899999999', email: '', memberTypeId: 'qa-member-type-b-general', active: true },
+  });
+  expect([403, 404]).toContain(forbiddenMemberUpdate.status());
+
+  await ownerA.dispose();
+  await ownerB.dispose();
+});

@@ -1661,6 +1661,14 @@ func TestNormalizePromptPayTargetUsesThaiQRIdentifierTags(t *testing.T) {
 	}
 }
 
+func TestNormalizePromptPayTargetRejectsRemovedTypes(t *testing.T) {
+	for _, promptPayType := range []string{"bank_account", "merchant"} {
+		if _, _, err := normalizePromptPayTarget(promptPaySettings{ID: "123456789012345", Type: promptPayType}); err == nil {
+			t.Fatalf("expected removed type %q to be rejected", promptPayType)
+		}
+	}
+}
+
 func TestBookingAcceptanceOpen(t *testing.T) {
 	location := bangkokLocation
 	at := func(hour, minute int) time.Time { return time.Date(2026, 8, 12, hour, minute, 0, 0, location) }

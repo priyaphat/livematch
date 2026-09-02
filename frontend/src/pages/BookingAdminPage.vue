@@ -48,6 +48,9 @@ const qrModal = ref(false);
 const qrDataUrl = ref("");
 const qrStatus = ref("");
 const settingsStatus = ref("");
+const paymentTestQr = ref("");
+const paymentTestError = ref("");
+const paymentTestLoading = ref(false);
 const telegramCheckLoading = ref(false);
 const telegramCheckResult = ref(null);
 const telegramCheckError = ref("");
@@ -118,6 +121,51 @@ const settingsTabs = [
   { id: "display", label: "การแสดงผล" },
   { id: "courts", label: "จัดการสนาม" },
 ];
+function paymentSettingsDraft(value = {}) {
+  const draft = { ...value };
+  if (!["mobile", "national_id", "ewallet"].includes(draft.promptPayType)) {
+    draft.promptPayType = "mobile";
+    draft.promptPayId = "";
+  }
+  return draft;
+}
+
+function changePaymentQRType(event) {
+  settings.promptPayType = event.target.value;
+  settings.promptPayId = "";
+  paymentTestQr.value = "";
+  paymentTestError.value = "";
+}
+
+function currentPaymentTarget() {
+  const type = settings.promptPayType || "mobile";
+  const id = String(settings.promptPayId || "").replace(/\D/g, "");
+  if (!id) throw new Error("กรุณากรอกเลขสำหรับรับชำระ");
+  return { promptPayType: type, promptPayId: id };
+}
+
+async function testPaymentQR() {
+  if (paymentTestLoading.value) return;
+  paymentTestLoading.value = true;
+  paymentTestQr.value = "";
+  paymentTestError.value = "";
+  try {
+    const target = currentPaymentTarget();
+    const result = await props.apiRequest("/api/admin/booking/payment-qr-test", {
+      method: "POST",
+      body: JSON.stringify({ ...target, amountThb: 1 }),
+    });
+    paymentTestQr.value = await QRCode.toDataURL(result.promptPayPayload, {
+      width: 300,
+      margin: 1,
+      errorCorrectionLevel: "M",
+    });
+  } catch (error) {
+    paymentTestError.value = error.message || "สร้าง QR ทดสอบไม่สำเร็จ";
+  } finally {
+    paymentTestLoading.value = false;
+  }
+}
 const pendingBookings = computed(() => {
   const groups = new Map();
   for (const booking of state.pendingReviews) {
@@ -378,7 +426,7 @@ function applyOverview(
   if (includeConfiguration || !settingsReady) {
     Object.assign(savedScheduleSettings, data.settings || {});
     if (replaceSettingsDraft || !settingsReady)
-      Object.assign(settings, data.settings || {});
+      Object.assign(settings, paymentSettingsDraft(data.settings));
     courts.value = (data.courts || []).map((court) => ({ ...court }));
     settingsReady = true;
   }
@@ -395,8 +443,12 @@ async function loadOverview(
   if (!silent) state.loading = true;
   state.error = "";
   try {
+    const params = new URLSearchParams({
+      date: state.date,
+      includeConfiguration: String(includeConfiguration || !settingsReady),
+    });
     const data = await props.apiRequest(
-      `/api/admin/booking/overview?date=${state.date}`,
+      `/api/admin/booking/overview?${params.toString()}`,
     );
     if (request !== overviewRequest) return;
     applyOverview(data, includeConfiguration, replaceSettingsDraft);
@@ -690,10 +742,14 @@ async function saveSettings() {
   settingsStatus.value = "";
   try {
     const payload = { ...settings };
+    if (payload.paymentQrMode !== "uploaded" && payload.promptPayId)
+      Object.assign(payload, currentPaymentTarget());
     if (payload.logoData === savedScheduleSettings.logoData)
       delete payload.logoData;
     if (payload.popupImage === savedScheduleSettings.popupImage)
       delete payload.popupImage;
+    if (payload.paymentQrImage === savedScheduleSettings.paymentQrImage)
+      delete payload.paymentQrImage;
     await props.apiRequest("/api/admin/booking/settings", {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -1599,8 +1655,23 @@ onUnmounted(() => {
 
         <div v-else-if="settingsTab === 'payment'" class="mt-4 grid gap-3 sm:grid-cols-2">
           <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.useSamePrice" type="checkbox" />ใช้ราคาเดียวกันทุกสนาม</label>
-          <label class="grid gap-1 text-sm font-bold">PromptPay<select v-model="settings.promptPayType" class="h-10 rounded-lg border bg-transparent px-3"><option value="mobile">เบอร์โทร</option><option value="national_id">บัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option><option value="ewallet">e-Wallet</option></select></label>
-          <label class="grid gap-1 text-sm font-bold">เลข PromptPay<input v-model="settings.promptPayId" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="grid gap-1 text-sm font-bold sm:col-span-2">QR ที่ใช้รับชำระ<select v-model="settings.paymentQrMode" data-testid="booking-payment-qr-mode" class="h-10 rounded-lg border bg-transparent px-3"><option value="generated">ให้ระบบสร้าง QR ตามยอดจอง</option><option value="uploaded">ใช้รูป QR รับเงินที่อัปโหลด</option></select></label>
+          <label v-if="settings.paymentQrMode === 'generated'" class="grid gap-1 text-sm font-bold">ประเภท QR รับชำระ<select :value="settings.promptPayType" data-testid="booking-payment-qr-type" class="h-10 rounded-lg border bg-transparent px-3" @change="changePaymentQRType"><option value="mobile">เบอร์โทร</option><option value="national_id">บัตรประชาชน / เลขผู้เสียภาษีนิติบุคคล</option><option value="ewallet">e-Wallet</option></select></label>
+          <label v-if="settings.paymentQrMode === 'generated'" class="grid gap-1 text-sm font-bold">เลข PromptPay<input v-model="settings.promptPayId" data-testid="booking-payment-qr-id" inputmode="numeric" autocomplete="off" class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <div v-if="settings.paymentQrMode === 'generated'" class="grid gap-3 rounded-xl border border-purple-200 bg-purple-50 p-3 sm:col-span-2 dark:border-purple-900 dark:bg-purple-950/20">
+            <button type="button" data-testid="booking-payment-test-qr" class="booking-secondary-button h-10 justify-center" :disabled="paymentTestLoading" @click="testPaymentQR"><RefreshCw class="h-4 w-4" :class="paymentTestLoading && 'animate-spin'" />{{ paymentTestLoading ? 'กำลังสร้าง QR...' : 'ทดสอบสร้าง QR ยอด ฿1' }}</button>
+            <p v-if="paymentTestError" data-testid="booking-payment-test-error" class="rounded-lg bg-red-50 p-3 text-sm font-bold text-red-700 dark:bg-red-950/30 dark:text-red-200">{{ paymentTestError }}</p>
+            <div v-if="paymentTestQr" data-testid="booking-payment-test-preview" class="grid justify-items-center gap-2">
+              <img :src="paymentTestQr" alt="QR ทดสอบการรับชำระ" class="h-56 w-56 rounded-xl border bg-white p-2" />
+              <p class="text-center text-xs font-bold text-stone-600 dark:text-stone-300">QR ทดสอบยอด ฿1 · กรุณาสแกนด้วยแอปธนาคารก่อนบันทึกใช้งานจริง</p>
+            </div>
+          </div>
+          <div v-else class="grid gap-3 rounded-xl border border-court-200 bg-court-50 p-3 sm:col-span-2 dark:border-court-900 dark:bg-court-950/20">
+            <p class="text-sm font-bold">อัปโหลด QR รับเงินที่สร้างจากแอปธนาคาร ลูกค้าจะเห็นรูปนี้ทุกยอดและต้องกรอกยอดโอนตามหน้าจอ</p>
+            <div v-if="settings.paymentQrImage" class="grid justify-items-center gap-2"><img :src="settings.paymentQrImage" alt="ตัวอย่าง QR รับเงินที่อัปโหลด" class="h-56 w-56 rounded-xl border bg-white p-2 object-contain" /><span class="text-xs font-bold text-court-700">เลือกใช้รูปนี้อยู่</span></div>
+            <label class="inline-flex h-11 cursor-pointer items-center justify-center rounded-lg border border-dashed font-black">อัปโหลดรูป QR รับเงิน<input data-testid="booking-payment-qr-upload" class="sr-only" type="file" accept="image/png,image/jpeg,image/webp" @change="fileData($event, 'paymentQrImage', 2 * 1024 * 1024)" /></label>
+            <button v-if="settings.paymentQrImage" type="button" class="h-10 rounded-lg border border-red-200 font-bold text-red-700" @click="settings.paymentQrImage = ''">ลบรูป QR รับเงิน</button>
+          </div>
           <label class="grid gap-1 text-sm font-bold sm:col-span-2">ชื่อผู้รับ<input v-model="settings.promptPayReceiverName" class="h-10 rounded-lg border bg-transparent px-3" /></label>
           <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700 sm:col-span-2 sm:grid-cols-2">
             <label class="grid gap-1 text-sm font-bold">Telegram Bot token<input v-model="settings.telegramBotToken" type="password" placeholder="เว้นว่างเพื่อใช้ค่าเดิม" class="h-10 rounded-lg border bg-transparent px-3" /></label>

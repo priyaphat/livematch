@@ -16,6 +16,7 @@
 | POS-SEC-002 | P1 | Authenticated | Mutation ไม่มี/ผิด CSRF | API ปฏิเสธ | Playwright | API |
 | POS-SEC-003 | P2 | Authenticated | อ่าน auth/settings/catalog | มี `Cache-Control: no-store` และ error ไม่รั่ว SQL | Playwright | API |
 | POS-SEC-004 | P1 | Cashier restricted | เรียก endpoint ที่ไม่มีสิทธิ์ | API ปฏิเสธแม้เรียกตรง | Go | API |
+| POS-SEC-005 | P0 | Login Admin A/B คนละร้าน | สลับอ่านรายการและยิง ID ตรงของสินค้า สต็อก บิล สมาชิก รายงาน ตั้งค่า Match และจองสนาม | ไม่พบข้อมูลข้ามร้านและคำขออ่าน/แก้ไข resource ของอีกร้านตอบ 403/404 | Playwright | API |
 | POS-CAT-001 | P2 | Seed catalog | เปิดหน้าขายและสินค้า | แสดงชื่อหมวดหมู่/หน่วย ไม่แสดง ID/code | Playwright | Chromium |
 | POS-CAT-002 | P2 | Owner | Category/Unit CRUD + pagination | ข้อมูลถูก tenant และหน้า paginate ถูก | Manual | Chromium |
 | POS-CAT-003 | P2 | Owner | Product create/edit/deactivate | default image, ราคา 2 ตำแหน่ง, ไม่มี leading zero | Manual | Chromium |

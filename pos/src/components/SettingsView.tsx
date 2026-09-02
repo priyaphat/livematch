@@ -240,8 +240,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     if (isSavingSettings) return;
     setIsSavingSettings(true);
     try {
-      const successMessage = activeTab === 'stock' ? 'บันทึกการตั้งค่าสต็อกเรียบร้อยแล้ว' : 'บันทึกการตั้งค่าเรียบร้อยแล้ว';
-      if (!(await updateSettings(formData, successMessage))) return;
+      const isStockSettings = activeTab === 'stock';
+      const successMessage = isStockSettings ? 'บันทึกการตั้งค่าสต็อกเรียบร้อยแล้ว' : 'บันทึกการตั้งค่าเรียบร้อยแล้ว';
+      const settingsToSave = isStockSettings ? {
+        secondaryStockEnabled: formData.secondaryStockEnabled,
+        primaryStockName: formData.primaryStockName,
+        secondaryStockName: formData.secondaryStockName,
+        saleStockLocation: formData.saleStockLocation,
+      } : formData;
+      if (!(await updateSettings(settingsToSave, successMessage, isStockSettings ? 'stock' : 'all'))) {
+        setIsFormDirty(false);
+        return;
+      }
       if (isOwner) {
         applyAccessSettings(await savePOSRolePermissions({ manager: permissions.manager, cashier: permissions.cashier }));
       }

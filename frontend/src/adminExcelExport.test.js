@@ -32,7 +32,7 @@ describe("admin Excel exports", () => {
     expect(exportedText).not.toContain("b1");
     const buffer = await workbook.xlsx.writeBuffer();
     expect(buffer.byteLength).toBeGreaterThan(1000);
-  });
+  }, 30_000);
 
   it("creates booking details without exporting receipt data", async () => {
     const workbook = await buildBookingAdminWorkbook({

@@ -10,6 +10,8 @@ function availability() {
       closeTime: "19:00",
       intervalMinutes: 60,
       allowOvernight: false,
+      promptPayReceiverName: "สนามแบด QA",
+      logoUrl: "/api/public-booking/tenant-token/logo?v=qa-logo",
     },
     courts: [
       { id: "court-1", name: "สนาม 1", pricePerInterval: 100 },
@@ -102,6 +104,7 @@ describe("PublicBookingPage", () => {
       expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1"),
     );
     const summary = wrapper.get('[data-testid="guest-availability-summary"]');
+    expect(wrapper.get('img[alt="โลโก้สนาม"]').attributes('src')).toBe('/api/public-booking/tenant-token/logo?v=qa-logo');
     expect(summary.text()).toContain("ว่าง 7 ช่วง");
     expect(summary.text()).toContain("16:00");
     expect(summary.text()).toContain("กำลังจอง");
@@ -150,6 +153,37 @@ describe("PublicBookingPage", () => {
     await flushPromises();
     wrapper.unmount();
     vi.useRealTimers();
+  });
+
+  it("shows the closure reason directly without the closed prefix", async () => {
+    const payload = availability();
+    payload.closures = [{
+      id: "closure-repair",
+      courtId: "court-1",
+      startAt: "2026-07-22T16:00:00+07:00",
+      endAt: "2026-07-22T17:00:00+07:00",
+      note: "ซ่อมพื้นสนาม",
+    }];
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(payload);
+      if (url.includes("/public-auth/me")) {
+        const error = new Error("unauthorized");
+        error.status = 401;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+
+    await vi.waitFor(() =>
+      expect(wrapper.get('[data-testid="guest-booking-table"]').text()).toContain("ซ่อมพื้นสนาม"),
+    );
+    const closedSlot = wrapper.get('[data-testid="guest-booking-table"]').find(".public-slot--closed");
+    expect(closedSlot.text()).toBe("ซ่อมพื้นสนาม");
+    expect(closedSlot.text()).not.toContain("ปิด");
+    wrapper.unmount();
   });
 
   it("lists an active booking before the schedule and reopens its payment QR", async () => {
@@ -308,6 +342,33 @@ describe("PublicBookingPage", () => {
     await wrapper.get('[data-testid="slot-court-1-1020"]').trigger('click');
     expect(wrapper.findAll('.public-slot--selected')).toHaveLength(1);
     expect(wrapper.get('[data-testid="slot-court-1-1020"]').classes()).toContain('public-slot--selected');
+    wrapper.unmount();
+  });
+
+  it("uses the uploaded bank payment QR when that mode is selected", async () => {
+    const data = availability();
+    data.settings.paymentQrMode = "uploaded";
+    data.settings.paymentQrImageUrl = "/api/public-booking/tenant-token/payment-qr-image?v=qr1";
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(data);
+      if (url.includes("/mine")) return Promise.resolve({ items: [{
+        id: "uploaded-qr-booking",
+        status: "hold",
+        holdExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        totalPriceThb: 100,
+        promptPayPayload: "",
+        courtNames: ["สนาม 1"],
+        startAt: "2026-07-22T16:00:00+07:00",
+        endAt: "2026-07-22T17:00:00+07:00",
+      }] });
+      if (url.includes("/public-auth/me")) return Promise.resolve({ user: { name: "User" }, member: { name: "สมาชิก", phone: "0882250419" } });
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+    await vi.waitFor(() => expect(wrapper.text()).toContain("รายการจองที่กำลังดำเนินการ"));
+    const button = wrapper.get('[data-testid="active-booking-queues"]').findAll('button').find((item) => item.text().includes('แสดง QR'));
+    await button.trigger('click');
+    expect(wrapper.get('img[alt="QR PromptPay"]').attributes('src')).toBe('/api/public-booking/tenant-token/payment-qr-image?v=qr1');
     wrapper.unmount();
   });
 

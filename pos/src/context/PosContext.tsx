@@ -57,6 +57,7 @@ import {
   listPOSSales,
   POSMember,
   POSSale,
+  POSSettingsRecord,
   savePOSSettings,
   settlePOSAccount,
   voidPOSSale,
@@ -79,7 +80,7 @@ interface PosContextType {
 
   // Settings
   settings: StoreSettings;
-  updateSettings: (newSettings: Partial<StoreSettings>, successMessage?: string) => Promise<boolean>;
+  updateSettings: (newSettings: Partial<StoreSettings>, successMessage?: string, remoteScope?: 'all' | 'stock') => Promise<boolean>;
   setHardwareKeyboardMode: (enabled: boolean) => void;
   members: POSMember[];
 
@@ -818,14 +819,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 	};
   }, [isBillingPollingActive]);
 
-  const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว'): Promise<boolean> => {
+  const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว', remoteScope: 'all' | 'stock' = 'all'): Promise<boolean> => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
     if (newSettings.theme) {
       setThemeState(newSettings.theme);
     }
     try {
       const merged = { ...settings, ...newSettings };
-      await savePOSSettings({
+      const remoteSettings: Partial<POSSettingsRecord> = remoteScope === 'stock' ? {
+        secondaryStockEnabled: merged.secondaryStockEnabled,
+        primaryStockName: merged.primaryStockName,
+        secondaryStockName: merged.secondaryStockName,
+        saleStockLocation: merged.saleStockLocation,
+      } : {
         promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
         receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
         theme: merged.theme || 'light', language: 'th', taxRatePercent: merged.vatEnabled ? merged.vatRate : 0,
@@ -838,7 +844,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customerDisplayCtaText: merged.customerDisplayCtaText,
         secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
         secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
-      });
+      };
+      await savePOSSettings(remoteSettings);
       const persisted = await getPOSSettings();
       setSettings((current) => ({
         ...current,

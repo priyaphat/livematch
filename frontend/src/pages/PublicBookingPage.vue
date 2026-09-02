@@ -281,7 +281,7 @@ function status(court, minute) {
   );
   if (closure)
     return {
-      text: closure.note ? `ปิด · ${closure.note}` : "ปิดสนาม",
+      text: closure.note || "ปิดสนาม",
       tone: "closed",
     };
   return { text: "ว่าง", tone: "free" };
@@ -402,6 +402,16 @@ function queueCountdown(queue) {
   );
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
+async function paymentQRSource(promptPayPayload = "") {
+  if (
+    state.settings.paymentQrMode === "uploaded" &&
+    state.settings.paymentQrImageUrl
+  )
+    return state.settings.paymentQrImageUrl;
+  return promptPayPayload
+    ? QRCode.toDataURL(promptPayPayload, { width: 300, margin: 1 })
+    : "";
+}
 async function openQueuePayment(queue) {
   payment.value = {
     id: queue.id,
@@ -409,9 +419,7 @@ async function openQueuePayment(queue) {
     totalPriceThb: queue.totalPriceThb,
     holdExpiresAt: queue.holdExpiresAt,
   };
-  qr.value = queue.promptPayPayload
-    ? await QRCode.toDataURL(queue.promptPayPayload, { width: 300, margin: 1 })
-    : "";
+  qr.value = await paymentQRSource(queue.promptPayPayload);
 }
 async function claimMember() {
   if (actionBusy.claim) return;
@@ -529,9 +537,7 @@ async function hold() {
       { method: "POST", body: JSON.stringify(selection) },
     );
     payment.value = data.booking;
-    qr.value = data.promptPayPayload
-      ? await QRCode.toDataURL(data.promptPayPayload, { width: 300, margin: 1 })
-      : "";
+    qr.value = await paymentQRSource(data.promptPayPayload);
     await load();
     showToast("ล็อกช่วงเวลาจองแล้ว กรุณาชำระเงินภายใน 5 นาที", "success");
   } catch (error) {
@@ -570,9 +576,7 @@ async function holdBatch() {
         data.booking?.holdExpiresAt ||
         new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     };
-    qr.value = data.promptPayPayload
-      ? await QRCode.toDataURL(data.promptPayPayload, { width: 300, margin: 1 })
-      : "";
+    qr.value = await paymentQRSource(data.promptPayPayload);
     clearSelection();
     await load();
     showToast("ล็อกช่วงเวลาจองแล้ว กรุณาชำระเงินภายใน 5 นาที", "success");
@@ -668,8 +672,8 @@ onUnmounted(() => {
     <header class="public-booking-header">
       <div class="flex min-w-0 items-center gap-3">
         <img
-          v-if="state.settings.logoData"
-          :src="state.settings.logoData"
+          v-if="state.settings.logoUrl || state.settings.logoData"
+          :src="state.settings.logoUrl || state.settings.logoData"
           alt="โลโก้สนาม"
           class="h-12 w-12 rounded-xl object-contain"
         />
@@ -1151,10 +1155,7 @@ onUnmounted(() => {
             alt="QR PromptPay"
             class="mx-auto mt-5 h-64 w-64 rounded-2xl border bg-white p-3"
           />
-          <p
-            v-else
-            class="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-800"
-          >
+          <p v-else class="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-800">
             ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแล
           </p>
           <label class="booking-primary-button mt-5 h-12" :class="actionBusy.slip ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"

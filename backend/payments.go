@@ -405,6 +405,15 @@ func normalizePromptPayTarget(settings promptPaySettings) (string, string, error
 	}
 }
 
+func supportedPromptPayType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "", "mobile", "national_id", "ewallet":
+		return true
+	default:
+		return false
+	}
+}
+
 func emv(tag, value string) string {
 	return fmt.Sprintf("%s%02d%s", tag, len(value), value)
 }

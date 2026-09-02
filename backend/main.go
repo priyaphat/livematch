@@ -929,6 +929,9 @@ func (a *app) migrate(ctx context.Context) error {
 			updated_at timestamptz not null default now()
 		);
 		alter table booking_settings add column if not exists public_token text not null default '';
+		alter table booking_settings add column if not exists bank_account_number text not null default '';
+		alter table booking_settings add column if not exists payment_qr_mode text not null default 'generated';
+		alter table booking_settings add column if not exists payment_qr_image text not null default '';
 		alter table booking_settings add column if not exists telegram_bot_fingerprint text not null default '';
 		alter table booking_settings add column if not exists booking_acceptance_enabled boolean not null default false;
 		alter table booking_settings add column if not exists booking_acceptance_open_time time;

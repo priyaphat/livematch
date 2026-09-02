@@ -227,7 +227,7 @@ export function getPOSSettings() {
   return posRequest<POSSettingsRecord>('/api/admin/pos/settings');
 }
 
-export function savePOSSettings(input: POSSettingsRecord) {
+export function savePOSSettings(input: Partial<POSSettingsRecord>) {
   return posRequest<unknown>('/api/admin/pos/settings', { method: 'PUT', body: JSON.stringify(input) });
 }
 

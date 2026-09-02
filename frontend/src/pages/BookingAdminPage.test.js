@@ -14,7 +14,7 @@ function overview(settings = {}) {
   return {
     settings: {
       openTime: '16:00', closeTime: '22:00', intervalMinutes: 60, allowOvernight: false,
-      useSamePrice: true, promptPayType: 'mobile', promptPayId: '', promptPayReceiverName: '',
+      useSamePrice: true, paymentQrMode: 'generated', promptPayType: 'mobile', promptPayId: '', promptPayReceiverName: '',
       publicToken: 'public-token', ...settings
     },
     courts: [{ id: 'court-1', name: 'สนาม 1', pricePerInterval: 100, active: true }],
@@ -79,6 +79,47 @@ describe('BookingAdminPage', () => {
     const payload = JSON.parse(saveCall[1].body)
     expect(payload).not.toHaveProperty('logoData')
     expect(payload.popupImage).toBe('')
+    wrapper.unmount()
+  })
+
+  it('hides removed bank-account and merchant QR types and clears legacy values', async () => {
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/slipok-quota')) return Promise.resolve({})
+      return Promise.resolve(structuredClone(overview({ promptPayType: 'merchant', promptPayId: '123456789012345' })))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('การรับชำระ')).trigger('click')
+
+    const options = wrapper.get('[data-testid="booking-payment-qr-type"]').findAll('option').map((option) => option.element.value)
+    expect(options).toEqual(['mobile', 'national_id', 'ewallet'])
+    expect(wrapper.get('[data-testid="booking-payment-qr-type"]').element.value).toBe('mobile')
+    expect(wrapper.get('[data-testid="booking-payment-qr-id"]').element.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('uploads and selects a bank-generated payment QR image', async () => {
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/slipok-quota')) return Promise.resolve({})
+      return Promise.resolve(structuredClone(overview()))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('การรับชำระ')).trigger('click')
+    await wrapper.get('[data-testid="booking-payment-qr-mode"]').setValue('uploaded')
+    const input = wrapper.get('[data-testid="booking-payment-qr-upload"]')
+    const file = new File(['qr-image'], 'payment-qr.png', { type: 'image/png' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await vi.waitFor(() => expect(wrapper.find('img[alt="ตัวอย่าง QR รับเงินที่อัปโหลด"]').exists()).toBe(true))
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า')).trigger('click')
+
+    const saveCall = apiRequest.mock.calls.find(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')
+    const payload = JSON.parse(saveCall[1].body)
+    expect(payload.paymentQrMode).toBe('uploaded')
+    expect(payload.paymentQrImage).toMatch(/^data:image\/png;base64,/)
     wrapper.unmount()
   })
 
@@ -186,6 +227,7 @@ describe('BookingAdminPage', () => {
     const refresh = wrapper.findAll('button').find((button) => button.text().includes('รีเฟรชตาราง'))
     await refresh.trigger('click')
     await vi.waitFor(() => expect(apiRequest.mock.calls.length).toBeGreaterThan(1))
+    expect(apiRequest.mock.calls.some(([url]) => url.includes('includeConfiguration=false'))).toBe(true)
     expect(openTime.element.value).toBe('17:30')
     expect(wrapper.findAll('tbody tr')).toHaveLength(6)
 

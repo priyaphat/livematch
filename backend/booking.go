@@ -360,7 +360,12 @@ type bookingSettingsRecord struct {
 	PromptPayType              string `json:"promptPayType"`
 	PromptPayID                string `json:"promptPayId"`
 	PromptPayReceiverName      string `json:"promptPayReceiverName"`
+	BankAccountNumber          string `json:"-"`
+	PaymentQRMode              string `json:"paymentQrMode"`
+	PaymentQRImage             string `json:"paymentQrImage,omitempty"`
+	PaymentQRImageURL          string `json:"paymentQrImageUrl,omitempty"`
 	LogoData                   string `json:"logoData,omitempty"`
+	LogoURL                    string `json:"logoUrl,omitempty"`
 	TelegramChatID             string `json:"telegramChatId"`
 	TelegramConfigured         bool   `json:"telegramConfigured"`
 	TelegramWebhookURL         string `json:"telegramWebhookUrl"`
@@ -1127,7 +1132,7 @@ func (a *app) ensureBookingSettings(ctx context.Context, adminID string) (bookin
 	var s bookingSettingsRecord
 	var open, close string
 	var tokenHash, botToken, webhookID, secretHash, acceptanceOpen, acceptanceClose, slipKey string
-	err := a.db.QueryRowContext(ctx, `select public_token_hash,public_token,to_char(open_time,'HH24:MI'),to_char(close_time,'HH24:MI'),interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name,logo_data,telegram_bot_token,telegram_chat_id,telegram_webhook_id,telegram_secret_hash,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),''),single_slot_purchase_enabled,popup_enabled,popup_image,popup_revision,slipok_enabled,slipok_branch_id,slipok_api_key,slipok_monthly_cap,block_account_enabled,block_ip_enabled,block_duration_minutes from booking_settings where admin_id=$1`, adminID).Scan(&tokenHash, &s.PublicToken, &open, &close, &s.IntervalMinutes, &s.AllowOvernight, &s.UseSamePrice, &s.PromptPayType, &s.PromptPayID, &s.PromptPayReceiverName, &s.LogoData, &botToken, &s.TelegramChatID, &webhookID, &secretHash, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose, &s.SingleSlotPurchaseEnabled, &s.PopupEnabled, &s.PopupImage, &s.PopupRevision, &s.SlipOKEnabled, &s.SlipOKBranchID, &slipKey, &s.SlipOKMonthlyCap, &s.BlockAccountEnabled, &s.BlockIPEnabled, &s.BlockDurationMinutes)
+	err := a.db.QueryRowContext(ctx, `select public_token_hash,public_token,to_char(open_time,'HH24:MI'),to_char(close_time,'HH24:MI'),interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name,bank_account_number,payment_qr_mode,payment_qr_image,logo_data,telegram_bot_token,telegram_chat_id,telegram_webhook_id,telegram_secret_hash,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),''),single_slot_purchase_enabled,popup_enabled,popup_image,popup_revision,slipok_enabled,slipok_branch_id,slipok_api_key,slipok_monthly_cap,block_account_enabled,block_ip_enabled,block_duration_minutes from booking_settings where admin_id=$1`, adminID).Scan(&tokenHash, &s.PublicToken, &open, &close, &s.IntervalMinutes, &s.AllowOvernight, &s.UseSamePrice, &s.PromptPayType, &s.PromptPayID, &s.PromptPayReceiverName, &s.BankAccountNumber, &s.PaymentQRMode, &s.PaymentQRImage, &s.LogoData, &botToken, &s.TelegramChatID, &webhookID, &secretHash, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose, &s.SingleSlotPurchaseEnabled, &s.PopupEnabled, &s.PopupImage, &s.PopupRevision, &s.SlipOKEnabled, &s.SlipOKBranchID, &slipKey, &s.SlipOKMonthlyCap, &s.BlockAccountEnabled, &s.BlockIPEnabled, &s.BlockDurationMinutes)
 	if errors.Is(err, sql.ErrNoRows) {
 		token := randHex(24)
 		_, err = a.db.ExecContext(ctx, `insert into booking_settings (admin_id,public_token_hash,public_token) values ($1,$2,$3)`, adminID, tokenDigest(token), token)
@@ -1147,6 +1152,10 @@ func (a *app) ensureBookingSettings(ctx context.Context, adminID string) (bookin
 		return a.ensureBookingSettings(ctx, adminID)
 	}
 	s.AdminID = adminID
+	if !supportedPromptPayType(s.PromptPayType) {
+		s.PromptPayType = "mobile"
+		s.PromptPayID = ""
+	}
 	s.OpenTime = open
 	s.CloseTime = close
 	s.BookingAcceptanceOpenTime = acceptanceOpen
@@ -1212,6 +1221,8 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 		a.writeBookingExport(w, r, user.ID)
 	case r.Method == http.MethodPut && path == "/settings":
 		a.saveBookingSettings(w, r, user)
+	case r.Method == http.MethodPost && path == "/payment-qr-test":
+		a.testBookingPaymentQR(w, r)
 	case r.Method == http.MethodPost && path == "/telegram-check":
 		a.checkBookingTelegram(w, r, user)
 	case r.Method == http.MethodGet && path == "/slipok-quota":
@@ -1242,6 +1253,28 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) testBookingPaymentQR(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		PromptPayType string `json:"promptPayType"`
+		PromptPayID   string `json:"promptPayId"`
+		AmountTHB     int    `json:"amountThb"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลทดสอบ QR ไม่ถูกต้อง"})
+		return
+	}
+	if body.AmountTHB <= 0 || body.AmountTHB > 1_000_000 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ยอดทดสอบต้องอยู่ระหว่าง 1–1,000,000 บาท"})
+		return
+	}
+	payload, err := promptPayPayload(promptPaySettings{ID: body.PromptPayID, Type: body.PromptPayType}, body.AmountTHB)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลสำหรับสร้าง QR ไม่ถูกต้อง"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"promptPayPayload": payload, "amountThb": body.AmountTHB})
 }
 
 func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminID string) {
@@ -1527,8 +1560,10 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 		OpenTime, CloseTime                                                                                                                                 string
 		IntervalMinutes                                                                                                                                     int
 		AllowOvernight, UseSamePrice, BookingAcceptanceEnabled, SingleSlotPurchaseEnabled, PopupEnabled, SlipOKEnabled, BlockAccountEnabled, BlockIPEnabled bool
-		PromptPayType, PromptPayID, PromptPayReceiverName, TelegramBotToken, TelegramChatID                                                                 string
+		PromptPayType, PromptPayID, PromptPayReceiverName, BankAccountNumber, TelegramBotToken, TelegramChatID                                              string
 		LogoData                                                                                                                                            *string `json:"logoData"`
+		PaymentQRMode                                                                                                                                       string
+		PaymentQRImage                                                                                                                                      *string `json:"paymentQrImage"`
 		BookingAcceptanceOpenTime, BookingAcceptanceCloseTime, PopupRevision                                                                                string
 		PopupImage                                                                                                                                          *string `json:"popupImage"`
 		SlipOKBranchID, SlipOKAPIKey                                                                                                                        string
@@ -1553,6 +1588,43 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 	}
 	if b.IntervalMinutes <= 0 || b.IntervalMinutes%10 != 0 {
 		writeJSON(w, 400, map[string]string{"error": "ช่วงเวลาต้องเพิ่มทีละ 10 นาที"})
+		return
+	}
+	b.PromptPayType = strings.TrimSpace(b.PromptPayType)
+	b.PromptPayID = strings.TrimSpace(b.PromptPayID)
+	b.PaymentQRMode = strings.TrimSpace(b.PaymentQRMode)
+	if b.PaymentQRMode == "" {
+		b.PaymentQRMode = "generated"
+	}
+	if b.PaymentQRMode != "generated" && b.PaymentQRMode != "uploaded" {
+		writeJSON(w, 400, map[string]string{"error": "รูปแบบ QR รับชำระไม่ถูกต้อง"})
+		return
+	}
+	if b.PromptPayType == "" {
+		b.PromptPayType = "mobile"
+	}
+	if !supportedPromptPayType(b.PromptPayType) {
+		writeJSON(w, 400, map[string]string{"error": "ประเภทรหัสรับชำระไม่รองรับ"})
+		return
+	}
+	if b.PaymentQRMode == "generated" && b.PromptPayID != "" {
+		if _, _, promptPayErr := normalizePromptPayTarget(promptPaySettings{ID: b.PromptPayID, Type: b.PromptPayType}); promptPayErr != nil {
+			writeJSON(w, 400, map[string]string{"error": "ข้อมูล PromptPay ไม่ถูกต้อง"})
+			return
+		}
+	}
+	// Preserve the former standalone account value for backward compatibility.
+	b.BankAccountNumber = current.BankAccountNumber
+	paymentQRImage := current.PaymentQRImage
+	if b.PaymentQRImage != nil {
+		paymentQRImage = *b.PaymentQRImage
+	}
+	if len(paymentQRImage) > 2_800_000 || !validImageData(paymentQRImage, true) {
+		writeJSON(w, 400, map[string]string{"error": "QR รับเงินต้องเป็น PNG/JPEG/WebP ไม่เกิน 2 MB"})
+		return
+	}
+	if b.PaymentQRMode == "uploaded" && paymentQRImage == "" {
+		writeJSON(w, 400, map[string]string{"error": "กรุณาอัปโหลดรูป QR รับเงินก่อนเลือกใช้งาน"})
 		return
 	}
 	logoData := current.LogoData
@@ -1638,7 +1710,7 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 			return
 		}
 	}
-	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,logo_data=$10,telegram_bot_token=$11,telegram_chat_id=$12,telegram_webhook_id=$13,telegram_secret_hash=$14,telegram_bot_fingerprint=$15,booking_acceptance_enabled=$16,booking_acceptance_open_time=nullif($17,'')::time,booking_acceptance_close_time=nullif($18,'')::time,single_slot_purchase_enabled=$19,popup_enabled=$20,popup_image=$21,popup_revision=$22,slipok_enabled=$23,slipok_branch_id=$24,slipok_api_key=$25,slipok_monthly_cap=$26,block_account_enabled=$27,block_ip_enabled=$28,block_duration_minutes=$29,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName), logoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint, b.BookingAcceptanceEnabled, strings.TrimSpace(b.BookingAcceptanceOpenTime), strings.TrimSpace(b.BookingAcceptanceCloseTime), b.SingleSlotPurchaseEnabled, b.PopupEnabled, popupImage, popupRevision, b.SlipOKEnabled, normalizeSlipOKBranchID(b.SlipOKBranchID), slipOKEncrypted, b.SlipOKMonthlyCap, b.BlockAccountEnabled, b.BlockIPEnabled, b.BlockDurationMinutes)
+	_, err = a.db.ExecContext(r.Context(), `update booking_settings set open_time=$2,close_time=$3,interval_minutes=$4,allow_overnight=$5,use_same_price=$6,promptpay_type=$7,promptpay_id=$8,promptpay_receiver_name=$9,bank_account_number=$10,logo_data=$11,telegram_bot_token=$12,telegram_chat_id=$13,telegram_webhook_id=$14,telegram_secret_hash=$15,telegram_bot_fingerprint=$16,booking_acceptance_enabled=$17,booking_acceptance_open_time=nullif($18,'')::time,booking_acceptance_close_time=nullif($19,'')::time,single_slot_purchase_enabled=$20,popup_enabled=$21,popup_image=$22,popup_revision=$23,slipok_enabled=$24,slipok_branch_id=$25,slipok_api_key=$26,slipok_monthly_cap=$27,block_account_enabled=$28,block_ip_enabled=$29,block_duration_minutes=$30,payment_qr_mode=$31,payment_qr_image=$32,updated_at=now() where admin_id=$1`, user.ID, b.OpenTime, b.CloseTime, b.IntervalMinutes, b.AllowOvernight, b.UseSamePrice, b.PromptPayType, b.PromptPayID, strings.TrimSpace(b.PromptPayReceiverName), b.BankAccountNumber, logoData, botEncrypted, strings.TrimSpace(b.TelegramChatID), webhookID, secretHash, botFingerprint, b.BookingAcceptanceEnabled, strings.TrimSpace(b.BookingAcceptanceOpenTime), strings.TrimSpace(b.BookingAcceptanceCloseTime), b.SingleSlotPurchaseEnabled, b.PopupEnabled, popupImage, popupRevision, b.SlipOKEnabled, normalizeSlipOKBranchID(b.SlipOKBranchID), slipOKEncrypted, b.SlipOKMonthlyCap, b.BlockAccountEnabled, b.BlockIPEnabled, b.BlockDurationMinutes, b.PaymentQRMode, paymentQRImage)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_booking_settings_telegram_bot") {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "Telegram bot นี้ถูกใช้กับ admin อื่นแล้ว"})
@@ -1654,7 +1726,7 @@ func (a *app) saveBookingSettings(w http.ResponseWriter, r *http.Request, user a
 			_, _ = a.db.ExecContext(r.Context(), `update booking_courts set price_per_interval=$2,updated_at=now() where admin_id=$1 and deleted_at is null`, user.ID, price)
 		}
 	}
-	a.insertActivityLog(r.Context(), "admin", user.ID, "update_booking_settings", "booking_settings", user.ID, map[string]any{"intervalMinutes": b.IntervalMinutes, "allowOvernight": b.AllowOvernight, "useSamePrice": b.UseSamePrice, "telegramConfigured": botEncrypted != ""})
+	a.insertActivityLog(r.Context(), "admin", user.ID, "update_booking_settings", "booking_settings", user.ID, map[string]any{"intervalMinutes": b.IntervalMinutes, "allowOvernight": b.AllowOvernight, "useSamePrice": b.UseSamePrice, "promptPayType": b.PromptPayType, "paymentQRMode": b.PaymentQRMode, "telegramConfigured": botEncrypted != ""})
 	a.writeBookingOverview(w, r, user.ID, true)
 }
 
@@ -2269,15 +2341,28 @@ func (a *app) deleteClosure(w http.ResponseWriter, r *http.Request, user adminUs
 
 func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, adminID string, admin bool) {
 	a.expireHolds(r.Context(), adminID)
-	s, err := a.ensureBookingSettings(r.Context(), adminID)
+	includeConfiguration := !admin || r.URL.Query().Get("includeConfiguration") != "false"
+	var s bookingSettingsRecord
+	var err error
+	if includeConfiguration {
+		s, err = a.ensureBookingSettings(r.Context(), adminID)
+	} else {
+		var acceptanceOpen, acceptanceClose string
+		err = a.db.QueryRowContext(r.Context(), `select allow_overnight,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),'') from booking_settings where admin_id=$1`, adminID).Scan(&s.AllowOvernight, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose)
+		s.BookingAcceptanceOpenTime = acceptanceOpen
+		s.BookingAcceptanceCloseTime = acceptanceClose
+	}
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	courts, err := a.bookingCourts(r.Context(), adminID, !admin)
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"error": err.Error()})
-		return
+	courts := []bookingCourt{}
+	if includeConfiguration {
+		courts, err = a.bookingCourts(r.Context(), adminID, !admin)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
 	}
 	date := r.URL.Query().Get("date")
 	if date == "" {
@@ -2331,13 +2416,26 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		}
 	}
 	today := time.Now().In(bangkokLocation).Format("2006-01-02")
-	payload := map[string]any{"settings": s, "courts": courts, "bookings": bookings, "closures": closures, "date": date, "serverNow": time.Now().Format(time.RFC3339), "bookingDateAllowed": s.AllowOvernight || date == today, "bookingAcceptanceOpen": bookingAcceptanceOpen(s, time.Now())}
+	payload := map[string]any{"bookings": bookings, "closures": closures, "date": date, "serverNow": time.Now().Format(time.RFC3339), "bookingDateAllowed": s.AllowOvernight || date == today, "bookingAcceptanceOpen": bookingAcceptanceOpen(s, time.Now())}
+	if includeConfiguration {
+		payload["settings"] = s
+		payload["courts"] = courts
+	}
 	if admin {
 		payload["pendingReviews"] = pendingReviews
 	}
 	if !admin {
+		if s.LogoData != "" {
+			s.LogoURL = "/api/public-booking/" + url.PathEscape(s.PublicToken) + "/logo?v=" + shortHash(s.LogoData)
+		}
+		if s.PaymentQRImage != "" {
+			s.PaymentQRImageURL = "/api/public-booking/" + url.PathEscape(s.PublicToken) + "/payment-qr-image?v=" + shortHash(s.PaymentQRImage)
+		}
 		s.PublicToken = ""
 		s.PromptPayID = ""
+		s.BankAccountNumber = ""
+		s.PaymentQRImage = ""
+		s.LogoData = ""
 		s.TelegramChatID = ""
 		s.TelegramConfigured = false
 		s.TelegramWebhookURL = ""
@@ -2454,7 +2552,9 @@ func (a *app) writePublicBookingQueues(w http.ResponseWriter, r *http.Request, a
 	}
 	for i := range items {
 		if items[i].Status == "hold" {
-			items[i].PromptPayPayload, _ = promptPayPayload(promptPaySettings{ID: s.PromptPayID, Type: s.PromptPayType, ReceiverName: s.PromptPayReceiverName}, items[i].TotalPriceTHB)
+			if s.PaymentQRMode != "uploaded" {
+				items[i].PromptPayPayload, _ = promptPayPayload(promptPaySettings{ID: s.PromptPayID, Type: s.PromptPayType, ReceiverName: s.PromptPayReceiverName}, items[i].TotalPriceTHB)
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "serverNow": time.Now().Format(time.RFC3339)})
@@ -2654,6 +2754,63 @@ func (a *app) handlePublicBooking(w http.ResponseWriter, r *http.Request) {
 		a.writeBookingOverview(w, r, adminID, false)
 	case r.Method == http.MethodGet && action == "mine":
 		a.writePublicBookingQueues(w, r, adminID)
+	case r.Method == http.MethodGet && action == "logo":
+		s, err := a.ensureBookingSettings(r.Context(), adminID)
+		if err != nil || s.LogoData == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "logo not found"})
+			return
+		}
+		comma := strings.IndexByte(s.LogoData, ',')
+		if comma < 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "logo not found"})
+			return
+		}
+		raw, decodeErr := base64.StdEncoding.DecodeString(s.LogoData[comma+1:])
+		if decodeErr != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "logo not found"})
+			return
+		}
+		contentType := strings.TrimPrefix(s.LogoData[:comma], "data:")
+		contentType = strings.TrimSuffix(contentType, ";base64")
+		etag := `"` + shortHash(s.LogoData) + `"`
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
+	case r.Method == http.MethodGet && action == "payment-qr-image":
+		s, err := a.ensureBookingSettings(r.Context(), adminID)
+		if err != nil || s.PaymentQRMode != "uploaded" || s.PaymentQRImage == "" {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment QR not found"})
+			return
+		}
+		comma := strings.IndexByte(s.PaymentQRImage, ',')
+		if comma < 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment QR not found"})
+			return
+		}
+		raw, decodeErr := base64.StdEncoding.DecodeString(s.PaymentQRImage[comma+1:])
+		if decodeErr != nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "payment QR not found"})
+			return
+		}
+		contentType := strings.TrimSuffix(strings.TrimPrefix(s.PaymentQRImage[:comma], "data:"), ";base64")
+		etag := `"` + shortHash(s.PaymentQRImage) + `"`
+		w.Header().Set("Cache-Control", "public, max-age=86400, immutable")
+		w.Header().Set("ETag", etag)
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(raw)
 	case r.Method == http.MethodPost && action == "hold":
 		a.createPublicHold(w, r, adminID, token)
 	case r.Method == http.MethodGet && action == "popup":
@@ -2775,7 +2932,10 @@ func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, 
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
-	payload, _ := promptPayPayload(promptPaySettings{ID: s.PromptPayID, Type: s.PromptPayType, ReceiverName: s.PromptPayReceiverName}, totalAmount)
+	payload := ""
+	if s.PaymentQRMode != "uploaded" {
+		payload, _ = promptPayPayload(promptPaySettings{ID: s.PromptPayID, Type: s.PromptPayType, ReceiverName: s.PromptPayReceiverName}, totalAmount)
+	}
 	a.insertActivityLog(r.Context(), "public_user", u.ID, "create_booking_hold", "booking_batch", batchID, map[string]any{"adminId": adminID, "items": len(records), "total": totalAmount})
 	writeJSON(w, 201, map[string]any{"batchId": batchID, "bookings": records, "totalPriceThb": totalAmount, "promptPayPayload": payload, "receiverName": s.PromptPayReceiverName})
 }
