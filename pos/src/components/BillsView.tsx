@@ -582,8 +582,6 @@ export const BillsView: React.FC = () => {
                           &quot;{held.note}&quot;
                         </div>
                       )}
-					  {held.splitAllocations && held.splitAllocations.length > 0 && <div className="space-y-1.5">{held.splitAllocations.map((split) => <div key={`${held.id}-${split.saleId}`} className="flex items-center justify-between gap-3 rounded-xl border border-yellow-300 bg-yellow-50 px-3 py-2 text-[11px] font-bold text-yellow-900 dark:border-yellow-500/30 dark:bg-yellow-500/10 dark:text-yellow-300"><span>บิลหาร {split.count} คน · ส่วนที่ {split.position}/{split.count}{split.paidCount > 0 ? ` · จ่ายแล้ว ${split.paidCount}/${split.count}` : ''}</span><span className="shrink-0 font-mono text-sm font-black">คนนี้ {formatCurrency(split.share, settings.currencySymbol, 2)}</span></div>)}</div>}
-
                       {/* Items List Preview */}
                       <div className="bg-slate-50 dark:bg-slate-950/60 rounded-2xl p-3 border border-slate-200 dark:border-slate-800/80 space-y-1.5 max-h-36 overflow-y-auto custom-scrollbar">
                         {held.items.map((item, idx) => (
@@ -596,7 +594,7 @@ export const BillsView: React.FC = () => {
                             </span>
                             <span className="font-mono text-slate-600 dark:text-slate-400 shrink-0">
                               {formatCurrency(
-                                item.product.price * item.quantity,
+                                item.allocatedTotal ?? item.product.price * item.quantity,
                                 settings.currencySymbol,
                                 settings.decimalPlaces
                               )}
@@ -1142,7 +1140,6 @@ export const BillsView: React.FC = () => {
                           <p className="mt-0.5 text-[10px] text-slate-400">
                             Match {formatCurrency(held.matchTotal || 0, settings.currencySymbol, 2)} · POS {formatCurrency(held.posTotal ?? held.items.reduce((sum, item) => sum + item.product.price * item.quantity, 0), settings.currencySymbol, 2)}
                           </p>
-						  {held.splitAllocations && held.splitAllocations.length > 0 && <div className="mt-1.5 flex flex-wrap gap-1.5">{held.splitAllocations.map((split) => <span key={`${held.id}-${split.saleId}`} className="rounded-md bg-yellow-100 px-2 py-1 text-[10px] font-black text-yellow-800 dark:bg-yellow-500/15 dark:text-yellow-300">หาร {split.count} คน · คนนี้ {formatCurrency(split.share, settings.currencySymbol, 2)}</span>)}</div>}
                         </div>
                         <span className="shrink-0 font-mono font-bold text-slate-900 dark:text-white">
                           {formatCurrency(held.total, settings.currencySymbol, settings.decimalPlaces)}
@@ -1159,10 +1156,13 @@ export const BillsView: React.FC = () => {
                         {held.items.map((item, index) => (
                           <div key={`${held.id}:${item.product.id}:${index}`} className="flex items-start justify-between gap-3 border-t border-slate-100 py-1.5 first:border-t-0 dark:border-slate-800/70">
                             <div className="min-w-0">
-                              <p className="truncate font-semibold text-slate-700 dark:text-slate-300">{item.product.name}</p>
-                              <p className="text-[10px] text-slate-400">{item.quantity} {item.product.unit} × {formatCurrency(item.product.price, settings.currencySymbol, 2)}</p>
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <p className="min-w-0 truncate font-semibold text-slate-700 dark:text-slate-300">{item.product.name}</p>
+                                {item.splitAllocation && <span className="shrink-0 rounded-md bg-yellow-100 px-1.5 py-0.5 text-[9px] font-black text-yellow-800 dark:bg-yellow-500/15 dark:text-yellow-300">หาร {item.splitAllocation.count} คน · คนนี้ {formatCurrency(item.splitAllocation.share, settings.currencySymbol, 2)}</span>}
+                              </div>
+                              <p className="text-[10px] text-slate-400">{item.quantity} {item.product.unit} × {formatCurrency((item.allocatedTotal ?? item.product.price * item.quantity) / Math.max(1, item.quantity), settings.currencySymbol, 2)}</p>
                             </div>
-                            <span className="shrink-0 font-mono font-semibold text-slate-800 dark:text-slate-200">{formatCurrency(item.product.price * item.quantity, settings.currencySymbol, 2)}</span>
+                            <span className="shrink-0 font-mono font-semibold text-slate-800 dark:text-slate-200">{formatCurrency(item.allocatedTotal ?? item.product.price * item.quantity, settings.currencySymbol, 2)}</span>
                           </div>
                         ))}
                         {held.items.length === 0 && (!held.matchTotal || held.matchTotal <= 0) && (

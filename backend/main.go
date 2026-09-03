@@ -151,10 +151,11 @@ type PlayerPaymentItem struct {
 }
 
 type PlayerPaymentDetail struct {
-	Key           string  `json:"key"`
-	Label         string  `json:"label"`
-	Quantity      int     `json:"quantity"`
-	UnitAmountTHB float64 `json:"unitAmountThb"`
+	Key              string  `json:"key"`
+	Label            string  `json:"label"`
+	Quantity         int     `json:"quantity"`
+	UnitAmountTHB    float64 `json:"unitAmountThb"`
+	UnitAmountSatang int64   `json:"unitAmountSatang"`
 }
 
 type PlayerMatchHistoryItem struct {
@@ -191,13 +192,19 @@ type ShuttleBrand struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Price        int    `json:"price"`
+	PriceSatang  int64  `json:"priceSatang"`
 	Active       bool   `json:"active"`
 	POSProductID string `json:"posProductId,omitempty"`
 }
 
 type ShuttleSeqItem struct {
-	BrandID string `json:"brandId"`
-	Number  int    `json:"number"`
+	BrandID         string `json:"brandId"`
+	Number          int    `json:"number"`
+	UnitPriceSatang int64  `json:"unitPriceSatang,omitempty"`
+	PriceSource     string `json:"priceSource,omitempty"`
+	POSProductID    string `json:"posProductId,omitempty"`
+	ProductName     string `json:"productName,omitempty"`
+	ProductSKU      string `json:"productSku,omitempty"`
 }
 
 type ReturnedShuttle struct {
@@ -529,6 +536,8 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add column if not exists shuttle_pricing_mode text not null default 'legacy_per_player';
 		alter table matches add column if not exists shuttle_price_snapshot jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists legacy_shuttle_fee integer not null default 0;
+		update matches set shuttle_price_snapshot='[]'::jsonb where jsonb_typeof(shuttle_price_snapshot) is distinct from 'array';
+		update matches set shuttle_sequence_items='[]'::jsonb where jsonb_typeof(shuttle_sequence_items) is distinct from 'array';
 		alter table matches drop constraint if exists matches_shuttle_pricing_mode_check;
 		alter table matches add constraint matches_shuttle_pricing_mode_check check (shuttle_pricing_mode in ('legacy_per_player','split_per_match'));
 		update matches m
@@ -1434,11 +1443,19 @@ func (a *app) migrate(ctx context.Context) error {
 			shuttle_number integer not null,
 			product_id text not null references pos_products(id) on delete restrict,
 			stock_location text not null default 'primary' check (stock_location in ('primary','secondary')),
+			unit_price_satang bigint not null default 0 check (unit_price_satang >= 0),
+			price_source text not null default '',
+			product_name text not null default '',
+			product_sku text not null default '',
 			active boolean not null default true,
 			created_at timestamptz not null default now(),
 			returned_at timestamptz,
 			unique (session_id,match_id,brand_id,shuttle_number)
 		);
+		alter table match_shuttle_stock_usage add column if not exists unit_price_satang bigint not null default 0 check (unit_price_satang >= 0);
+		alter table match_shuttle_stock_usage add column if not exists price_source text not null default '';
+		alter table match_shuttle_stock_usage add column if not exists product_name text not null default '';
+		alter table match_shuttle_stock_usage add column if not exists product_sku text not null default '';
 		create index if not exists idx_match_shuttle_stock_usage_session on match_shuttle_stock_usage(session_id,active);
 		create table if not exists billing_payment_allocations (
 			id bigserial primary key,
@@ -1519,7 +1536,10 @@ func (a *app) migrate(ctx context.Context) error {
 	`); err != nil {
 		return err
 	}
-	return a.backfillJSONStates(ctx)
+	if err := a.backfillJSONStates(ctx); err != nil {
+		return err
+	}
+	return a.backfillMatchShuttlePriceSnapshots(ctx)
 }
 
 func (a *app) seedBackofficeSuperadmin(ctx context.Context) error {
@@ -1591,6 +1611,60 @@ func (a *app) backfillJSONStates(ctx context.Context) error {
 	}
 	for _, state := range states {
 		if err := a.saveState(ctx, state); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *app) backfillMatchShuttlePriceSnapshots(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `select m.session_id,m.id,m.shuttle_pricing_mode,m.shuttle_sequence_items,m.shuttle_price_snapshot,m.legacy_shuttle_fee,s.shuttle_fee,s.shuttle_brands from matches m join session_settings s on s.session_id=m.session_id`)
+	if err != nil {
+		return err
+	}
+	type update struct {
+		sessionID string
+		matchID   int
+		items     []ShuttleSeqItem
+	}
+	updates := []update{}
+	for rows.Next() {
+		var sessionID, pricingMode string
+		var matchID, legacyFee, shuttleFee int
+		var itemsRaw, snapshotRaw, brandsRaw []byte
+		if err = rows.Scan(&sessionID, &matchID, &pricingMode, &itemsRaw, &snapshotRaw, &legacyFee, &shuttleFee, &brandsRaw); err != nil {
+			rows.Close()
+			return err
+		}
+		var items []ShuttleSeqItem
+		var brands, snapshots []ShuttleBrand
+		_ = json.Unmarshal(itemsRaw, &items)
+		_ = json.Unmarshal(brandsRaw, &brands)
+		_ = json.Unmarshal(snapshotRaw, &snapshots)
+		state := SessionState{Settings: Settings{ShuttleFee: shuttleFee, ShuttleBrands: brands}}
+		match := Match{ID: matchID, ShuttlePricingMode: pricingMode, ShuttlePriceSnapshot: snapshots, LegacyShuttleFee: legacyFee}
+		changed := false
+		for index := range items {
+			if items[index].PriceSource != "" {
+				continue
+			}
+			items[index].UnitPriceSatang = shuttleItemPriceSatang(state, match, items[index])
+			items[index].PriceSource = "legacy"
+			changed = true
+		}
+		if changed {
+			updates = append(updates, update{sessionID: sessionID, matchID: matchID, items: items})
+		}
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		raw, marshalErr := json.Marshal(item.items)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, err = a.db.ExecContext(ctx, `update matches set shuttle_sequence_items=$3 where session_id=$1 and id=$2`, item.sessionID, item.matchID, raw); err != nil {
 			return err
 		}
 	}
@@ -2554,27 +2628,20 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state SessionState) {
-	if err := a.saveState(r.Context(), state); err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "สต็อกลูกแบดใน POS ไม่เพียงพอ") {
-			status = http.StatusConflict
-		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
+	if err := a.saveStateResolved(r.Context(), &state); err != nil {
+		a.writeStateSaveError(w, err)
 		return
 	}
+	refreshPlayerOutstandingAmounts(&state)
 	writeJSON(w, http.StatusOK, state)
 }
 
 func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, state SessionState, action, targetType, targetID string, details map[string]any) {
-	refreshPlayerOutstandingAmounts(&state)
-	if err := a.saveState(r.Context(), state); err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "สต็อกลูกแบดใน POS ไม่เพียงพอ") {
-			status = http.StatusConflict
-		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
+	if err := a.saveStateResolved(r.Context(), &state); err != nil {
+		a.writeStateSaveError(w, err)
 		return
 	}
+	refreshPlayerOutstandingAmounts(&state)
 	if user, ok := a.currentAdmin(r.Context(), r); ok {
 		if details == nil {
 			details = map[string]any{}
@@ -2613,6 +2680,18 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, state)
 }
 
+func (a *app) writeStateSaveError(w http.ResponseWriter, err error) {
+	var stockErr *shuttleStockError
+	if errors.As(err, &stockErr) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": stockErr.Error(), "code": stockErr.Code, "productId": stockErr.ProductID,
+			"productName": stockErr.ProductName, "availableQuantity": stockErr.AvailableQuantity,
+		})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+}
+
 type matchShuttleStockKey struct {
 	MatchID int
 	BrandID string
@@ -2620,12 +2699,55 @@ type matchShuttleStockKey struct {
 }
 
 type matchShuttleStockUsage struct {
-	ID        int64
-	ProductID string
-	Location  string
+	ID              int64
+	ProductID       string
+	Location        string
+	UnitPriceSatang int64
+	PriceSource     string
+	ProductName     string
+	ProductSKU      string
 }
 
-func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID string, state SessionState) error {
+type shuttleStockError struct {
+	Code              string
+	ProductID         string
+	ProductName       string
+	AvailableQuantity int
+}
+
+func (e *shuttleStockError) Error() string {
+	name := strings.TrimSpace(e.ProductName)
+	if name == "" {
+		name = strings.TrimSpace(e.ProductID)
+	}
+	switch e.Code {
+	case "POS_SHUTTLE_PRODUCT_INACTIVE":
+		return fmt.Sprintf("สินค้า POS %s ที่เชื่อมกับลูกแบดถูกปิดใช้งาน", name)
+	case "POS_SHUTTLE_TRACKING_DISABLED":
+		return fmt.Sprintf("สินค้า POS %s ที่เชื่อมกับลูกแบดไม่ได้เปิดติดตามสต็อก", name)
+	case "POS_SHUTTLE_PRODUCT_NOT_FOUND":
+		return fmt.Sprintf("ไม่พบสินค้า POS %s ที่เชื่อมกับลูกแบด", name)
+	default:
+		return fmt.Sprintf("สต็อกลูกแบดใน POS ไม่เพียงพอสำหรับ %s (คงเหลือ %d)", name, e.AvailableQuantity)
+	}
+}
+
+type desiredMatchShuttle struct {
+	ProductID string
+	Live      bool
+	Item      *ShuttleSeqItem
+	Match     *Match
+}
+
+func copyShuttlePriceSnapshot(target *ShuttleSeqItem, source ShuttleSeqItem) {
+	target.UnitPriceSatang = source.UnitPriceSatang
+	target.PriceSource = source.PriceSource
+	target.POSProductID = source.POSProductID
+	target.ProductName = source.ProductName
+	target.ProductSKU = source.ProductSKU
+}
+
+func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID string, state *SessionState) error {
 	if adminID == "" {
 		return nil
 	}
@@ -2638,76 +2760,136 @@ func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID s
 			brandProducts[normalizedBrandID(brand.ID)] = strings.TrimSpace(brand.POSProductID)
 		}
 	}
-	desired := map[matchShuttleStockKey]string{}
-	// New deductions are created only for live matches. Historical matches are
-	// retained below only when they already have a ledger row, so linking a POS
-	// product never retroactively consumes stock for old sessions.
-	for _, match := range state.Live {
-		if isCancelledMatch(match) && match.ShuttleReturned {
-			continue
+
+	// Price fields are server-owned. Recover committed snapshots before applying
+	// the incoming state so an older browser tab cannot erase or rewrite them.
+	committedSnapshots := map[matchShuttleStockKey]ShuttleSeqItem{}
+	committedRows, err := tx.QueryContext(ctx, `select id,shuttle_sequence_items from matches where session_id=$1`, state.Session.ID)
+	if err != nil {
+		return err
+	}
+	for committedRows.Next() {
+		var matchID int
+		var raw []byte
+		if err = committedRows.Scan(&matchID, &raw); err != nil {
+			committedRows.Close()
+			return err
 		}
-		for _, item := range normalizedShuttleSeqItems(match, state) {
-			key := matchShuttleStockKey{MatchID: match.ID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
-			desired[key] = brandProducts[key.BrandID]
+		var items []ShuttleSeqItem
+		_ = json.Unmarshal(raw, &items)
+		for _, item := range items {
+			if item.Number > 0 && item.PriceSource != "" {
+				key := matchShuttleStockKey{MatchID: matchID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
+				committedSnapshots[key] = item
+			}
 		}
 	}
+	committedRows.Close()
+
+	desired := map[matchShuttleStockKey]desiredMatchShuttle{}
+	collect := func(matches []Match, live bool) {
+		for matchIndex := range matches {
+			match := &matches[matchIndex]
+			if isCancelledMatch(*match) && match.ShuttleReturned {
+				continue
+			}
+			match.ShuttleSeqItems = normalizedShuttleSeqItems(*match, *state)
+			for itemIndex := range match.ShuttleSeqItems {
+				item := &match.ShuttleSeqItems[itemIndex]
+				key := matchShuttleStockKey{MatchID: match.ID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
+				if committed, ok := committedSnapshots[key]; ok {
+					copyShuttlePriceSnapshot(item, committed)
+				}
+				desired[key] = desiredMatchShuttle{ProductID: brandProducts[key.BrandID], Live: live, Item: item, Match: match}
+			}
+		}
+	}
+	collect(state.Live, true)
+	collect(state.History, false)
+
 	existing := map[matchShuttleStockKey]matchShuttleStockUsage{}
-	rows, err := tx.QueryContext(ctx, `select id,match_id,brand_id,shuttle_number,product_id,stock_location from match_shuttle_stock_usage where session_id=$1 and active for update`, state.Session.ID)
+	rows, err := tx.QueryContext(ctx, `select id,match_id,brand_id,shuttle_number,product_id,stock_location,unit_price_satang,price_source,product_name,product_sku from match_shuttle_stock_usage where session_id=$1 and active for update`, state.Session.ID)
 	if err != nil {
 		return err
 	}
 	for rows.Next() {
 		var usage matchShuttleStockUsage
 		var key matchShuttleStockKey
-		if err = rows.Scan(&usage.ID, &key.MatchID, &key.BrandID, &key.Number, &usage.ProductID, &usage.Location); err != nil {
+		if err = rows.Scan(&usage.ID, &key.MatchID, &key.BrandID, &key.Number, &usage.ProductID, &usage.Location, &usage.UnitPriceSatang, &usage.PriceSource, &usage.ProductName, &usage.ProductSKU); err != nil {
 			rows.Close()
 			return err
 		}
 		existing[key] = usage
 	}
 	rows.Close()
-	for _, match := range state.History {
-		if isCancelledMatch(match) && match.ShuttleReturned {
-			continue
-		}
-		for _, item := range normalizedShuttleSeqItems(match, state) {
-			key := matchShuttleStockKey{MatchID: match.ID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
-			if usage, ok := existing[key]; ok {
-				desired[key] = usage.ProductID
-			}
-		}
-	}
 	location := "primary"
 	_ = tx.QueryRowContext(ctx, `select case when secondary_stock_enabled then sale_stock_location else 'primary' end from pos_settings where admin_id=$1`, adminID).Scan(&location)
 	if !validStockLocation(location) {
 		location = "primary"
 	}
-	for key, productID := range desired {
-		if _, already := existing[key]; already {
+	for key, wanted := range desired {
+		if usage, already := existing[key]; already {
+			if usage.PriceSource != "" {
+				copyShuttlePriceSnapshot(wanted.Item, ShuttleSeqItem{UnitPriceSatang: usage.UnitPriceSatang, PriceSource: usage.PriceSource, POSProductID: usage.ProductID, ProductName: usage.ProductName, ProductSKU: usage.ProductSKU})
+			}
 			delete(existing, key)
 			continue
 		}
-		if productID == "" {
+		if !wanted.Live {
+			if wanted.Item.PriceSource == "" {
+				wanted.Item.UnitPriceSatang = shuttleItemPriceSatang(*state, *wanted.Match, *wanted.Item)
+				wanted.Item.PriceSource = "legacy"
+			}
 			continue
 		}
-		var balance int
-		var unitCost int64
-		if location == "secondary" {
-			err = tx.QueryRowContext(ctx, `update pos_products set secondary_stock_quantity=secondary_stock_quantity-1,updated_at=now() where id=$1 and admin_id=$2 and active and deleted_at is null and track_stock and secondary_stock_quantity>=1 returning secondary_stock_quantity,cost_satang`, productID, adminID).Scan(&balance, &unitCost)
-		} else {
-			err = tx.QueryRowContext(ctx, `update pos_products set stock_quantity=stock_quantity-1,updated_at=now() where id=$1 and admin_id=$2 and active and deleted_at is null and track_stock and stock_quantity>=1 returning stock_quantity,cost_satang`, productID, adminID).Scan(&balance, &unitCost)
+		if wanted.ProductID == "" {
+			if wanted.Item.PriceSource == "" {
+				wanted.Item.UnitPriceSatang = shuttleBrandPriceSatang(*state, key.BrandID)
+				wanted.Item.PriceSource = "match"
+			}
+			continue
 		}
+		var productName, productSKU string
+		var unitPrice, unitCost int64
+		var primaryStock, secondaryStock int
+		var active, available, trackStock bool
+		err = tx.QueryRowContext(ctx, `select name,sku,price_satang,cost_satang,stock_quantity,secondary_stock_quantity,active,deleted_at is null,track_stock from pos_products where id=$1 and admin_id=$2 for update`, wanted.ProductID, adminID).Scan(&productName, &productSKU, &unitPrice, &unitCost, &primaryStock, &secondaryStock, &active, &available, &trackStock)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("สต็อกลูกแบดใน POS ไม่เพียงพอสำหรับ %s", key.BrandID)
+			return &shuttleStockError{Code: "POS_SHUTTLE_PRODUCT_NOT_FOUND", ProductID: wanted.ProductID}
 		}
 		if err != nil {
 			return err
 		}
-		note := fmt.Sprintf("Match %s เกม %d · %s #%d", state.Session.ID, key.MatchID, key.BrandID, key.Number)
-		if _, err = tx.ExecContext(ctx, `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,-1,$3,'match_use',$4,$5,'system','LiveMatch',$6,$6,$6,$6,$6,$7)`, adminID, productID, balance, note, state.Session.ID, unitCost, location); err != nil {
+		if !available {
+			return &shuttleStockError{Code: "POS_SHUTTLE_PRODUCT_NOT_FOUND", ProductID: wanted.ProductID, ProductName: productName}
+		}
+		if !active {
+			return &shuttleStockError{Code: "POS_SHUTTLE_PRODUCT_INACTIVE", ProductID: wanted.ProductID, ProductName: productName}
+		}
+		if !trackStock {
+			return &shuttleStockError{Code: "POS_SHUTTLE_TRACKING_DISABLED", ProductID: wanted.ProductID, ProductName: productName}
+		}
+		stockAvailable := primaryStock
+		if location == "secondary" {
+			stockAvailable = secondaryStock
+		}
+		if stockAvailable < 1 {
+			return &shuttleStockError{Code: "POS_SHUTTLE_OUT_OF_STOCK", ProductID: wanted.ProductID, ProductName: productName, AvailableQuantity: stockAvailable}
+		}
+		balance := stockAvailable - 1
+		stockColumn := "stock_quantity"
+		if location == "secondary" {
+			stockColumn = "secondary_stock_quantity"
+		}
+		if _, err = tx.ExecContext(ctx, `update pos_products set `+stockColumn+`=`+stockColumn+`-1,updated_at=now() where id=$1 and admin_id=$2`, wanted.ProductID, adminID); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `insert into match_shuttle_stock_usage (admin_id,session_id,match_id,brand_id,shuttle_number,product_id,stock_location) values ($1,$2,$3,$4,$5,$6,$7) on conflict (session_id,match_id,brand_id,shuttle_number) do update set product_id=excluded.product_id,stock_location=excluded.stock_location,active=true,returned_at=null`, adminID, state.Session.ID, key.MatchID, key.BrandID, key.Number, productID, location); err != nil {
+		copyShuttlePriceSnapshot(wanted.Item, ShuttleSeqItem{UnitPriceSatang: unitPrice, PriceSource: "pos", POSProductID: wanted.ProductID, ProductName: productName, ProductSKU: productSKU})
+		note := fmt.Sprintf("Match %s เกม %d · %s #%d", state.Session.ID, key.MatchID, key.BrandID, key.Number)
+		if _, err = tx.ExecContext(ctx, `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,-1,$3,'match_use',$4,$5,'system','LiveMatch',$6,$6,$6,$6,$6,$7)`, adminID, wanted.ProductID, balance, note, state.Session.ID, unitCost, location); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `insert into match_shuttle_stock_usage (admin_id,session_id,match_id,brand_id,shuttle_number,product_id,stock_location,unit_price_satang,price_source,product_name,product_sku) values ($1,$2,$3,$4,$5,$6,$7,$8,'pos',$9,$10) on conflict (session_id,match_id,brand_id,shuttle_number) do update set product_id=excluded.product_id,stock_location=excluded.stock_location,unit_price_satang=excluded.unit_price_satang,price_source=excluded.price_source,product_name=excluded.product_name,product_sku=excluded.product_sku,active=true,returned_at=null`, adminID, state.Session.ID, key.MatchID, key.BrandID, key.Number, wanted.ProductID, location, unitPrice, productName, productSKU); err != nil {
 			return err
 		}
 	}
@@ -2734,9 +2916,13 @@ func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID s
 }
 
 func (a *app) saveState(ctx context.Context, state SessionState) error {
-	normalizeLiveShareState(&state)
+	return a.saveStateResolved(ctx, &state)
+}
+
+func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error {
+	normalizeLiveShareState(state)
 	state.UpdatedAt = time.Now().UTC()
-	usageStarted := sessionUsageStarted(state)
+	usageStarted := sessionUsageStarted(*state)
 	courtNames, err := json.Marshal(state.Settings.CourtNames)
 	if err != nil {
 		return err
@@ -2769,7 +2955,7 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			admin_passcode = excluded.admin_passcode,
 			updated_at = now(),
 			usage_started_at = case when $5 then coalesce(sessions.usage_started_at, now()) else sessions.usage_started_at end
-	`, state.Session.ID, state.Session.Name, sessionType(state), state.Session.AdminPasscode, usageStarted); err != nil {
+	`, state.Session.ID, state.Session.Name, sessionType(*state), state.Session.AdminPasscode, usageStarted); err != nil {
 		return err
 	}
 
@@ -2887,7 +3073,7 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	}
 
 	insertMatch := func(phase string, match Match) error {
-		seqItems, err := json.Marshal(normalizedShuttleSeqItems(match, state))
+		seqItems, err := json.Marshal(normalizedShuttleSeqItems(match, *state))
 		if err != nil {
 			return err
 		}
@@ -4256,23 +4442,49 @@ func playerEntryFee(state SessionState, player Player) int {
 }
 
 func shuttleBrandPrice(state SessionState, brandID string) int {
+	return roundedBaht(shuttleBrandPriceSatang(state, brandID))
+}
+
+func shuttleBrandPriceSatang(state SessionState, brandID string) int64 {
 	brandID = normalizedBrandID(brandID)
 	for _, brand := range state.Settings.ShuttleBrands {
 		if normalizedBrandID(brand.ID) == brandID {
-			return brand.Price
+			if brand.PriceSatang != 0 || brand.Price == 0 {
+				return max(int64(0), brand.PriceSatang)
+			}
+			return int64(max(0, brand.Price)) * 100
 		}
 	}
-	return state.Settings.ShuttleFee
+	return int64(max(0, state.Settings.ShuttleFee)) * 100
 }
 
-func shuttleBrandPriceFromSnapshot(match Match, brandID string) int {
+func shuttleBrandPriceFromSnapshotSatang(match Match, brandID string) int64 {
 	brandID = normalizedBrandID(brandID)
 	for _, brand := range match.ShuttlePriceSnapshot {
 		if normalizedBrandID(brand.ID) == brandID {
-			return brand.Price
+			if brand.PriceSatang != 0 || brand.Price == 0 {
+				return max(int64(0), brand.PriceSatang)
+			}
+			return int64(max(0, brand.Price)) * 100
 		}
 	}
-	return match.LegacyShuttleFee
+	return int64(max(0, match.LegacyShuttleFee)) * 100
+}
+
+func shuttleBrandPriceFromSnapshot(match Match, brandID string) int {
+	return roundedBaht(shuttleBrandPriceFromSnapshotSatang(match, brandID))
+}
+
+func shuttleItemPriceSatang(state SessionState, match Match, item ShuttleSeqItem) int64 {
+	if item.PriceSource != "" {
+		return max(int64(0), item.UnitPriceSatang)
+	}
+	if match.ShuttlePricingMode != shuttlePricingSplit {
+		if price := shuttleBrandPriceFromSnapshotSatang(match, item.BrandID); price > 0 {
+			return price
+		}
+	}
+	return shuttleBrandPriceSatang(state, item.BrandID)
 }
 
 func matchShuttleTotalSatang(state SessionState, match Match) int64 {
@@ -4282,14 +4494,7 @@ func matchShuttleTotalSatang(state SessionState, match Match) int64 {
 	items := normalizedShuttleSeqItems(match, state)
 	var total int64
 	for _, item := range items {
-		price := shuttleBrandPrice(state, item.BrandID)
-		if match.ShuttlePricingMode != shuttlePricingSplit {
-			price = shuttleBrandPriceFromSnapshot(match, item.BrandID)
-			if price == 0 {
-				price = shuttleBrandPrice(state, item.BrandID)
-			}
-		}
-		total += int64(price) * 100
+		total += shuttleItemPriceSatang(state, match, item)
 	}
 	if len(items) == 0 && match.Shuttles > 0 {
 		price := state.Settings.ShuttleFee
@@ -4451,23 +4656,26 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 	summary.Total += entryFee
 
 	type shuttleLine struct {
-		brandID string
-		count   int
+		brandID     string
+		label       string
+		priceSatang int64
+		count       int
 	}
 	lines := []shuttleLine{}
 	lineIndex := map[string]int{}
 	hasSplitPricing := false
-	addShuttles := func(brandID string, count int) {
+	addShuttles := func(brandID, label string, priceSatang int64, count int) {
 		if count <= 0 {
 			return
 		}
 		brandID = normalizedBrandID(brandID)
-		if index, ok := lineIndex[brandID]; ok {
+		key := brandID + ":" + strconv.FormatInt(priceSatang, 10) + ":" + label
+		if index, ok := lineIndex[key]; ok {
 			lines[index].count += count
 			return
 		}
-		lineIndex[brandID] = len(lines)
-		lines = append(lines, shuttleLine{brandID: brandID, count: count})
+		lineIndex[key] = len(lines)
+		lines = append(lines, shuttleLine{brandID: brandID, label: label, priceSatang: priceSatang, count: count})
 	}
 	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
 		if !slices.Contains(matchPlayers(match), player.ID) || (isCancelledMatch(match) && match.ShuttleReturned) {
@@ -4478,11 +4686,19 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		}
 		items := normalizedShuttleSeqItems(match, state)
 		if len(items) == 0 {
-			addShuttles(defaultShuttleBrandID, match.Shuttles)
+			priceSatang := int64(max(0, state.Settings.ShuttleFee)) * 100
+			if match.ShuttlePricingMode != shuttlePricingSplit && match.LegacyShuttleFee > 0 {
+				priceSatang = int64(match.LegacyShuttleFee) * 100
+			}
+			addShuttles(defaultShuttleBrandID, shuttleBrandNameForPayment(state, defaultShuttleBrandID), priceSatang, match.Shuttles)
 			continue
 		}
 		for _, item := range items {
-			addShuttles(item.BrandID, 1)
+			label := shuttleBrandNameForPayment(state, item.BrandID)
+			if strings.TrimSpace(item.ProductName) != "" {
+				label = strings.TrimSpace(item.ProductName)
+			}
+			addShuttles(item.BrandID, label, shuttleItemPriceSatang(state, match, item), 1)
 		}
 	}
 	allocatedShuttleSatang := playerShuttleCostSatang(state, player.ID)
@@ -4490,8 +4706,8 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		details := make([]PlayerPaymentDetail, 0, len(lines))
 		for _, line := range lines {
 			details = append(details, PlayerPaymentDetail{
-				Key: "shuttle-detail-" + line.brandID, Label: shuttleBrandNameForPayment(state, line.brandID),
-				Quantity: line.count, UnitAmountTHB: float64(shuttleBrandPrice(state, line.brandID)),
+				Key: "shuttle-detail-" + line.brandID + "-" + strconv.FormatInt(line.priceSatang, 10), Label: line.label,
+				Quantity: line.count, UnitAmountTHB: thbFromSatang(line.priceSatang), UnitAmountSatang: line.priceSatang,
 			})
 		}
 		amount := int((allocatedShuttleSatang + 99) / 100)
@@ -4506,11 +4722,11 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		if hasSplitPricing {
 			continue
 		}
-		unitAmount := shuttleBrandPrice(state, line.brandID)
-		amount := line.count * unitAmount
-		unitAmountSatang := int64(unitAmount) * 100
-		amountSatang := int64(amount) * 100
-		label := "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID)
+		unitAmountSatang := line.priceSatang
+		amountSatang := int64(line.count) * unitAmountSatang
+		unitAmount := roundedBaht(unitAmountSatang)
+		amount := roundedBaht(amountSatang)
+		label := "ค่าลูกแบด " + line.label
 		quantity := line.count
 		summary.Items = append(summary.Items, PlayerPaymentItem{
 			Key: "shuttle-" + line.brandID, Label: label,
@@ -4844,7 +5060,7 @@ func defaultShuttleBrand(settings Settings) ShuttleBrand {
 	if price <= 0 {
 		price = 85
 	}
-	return ShuttleBrand{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: price, Active: true}
+	return ShuttleBrand{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: price, PriceSatang: int64(price) * 100, Active: true}
 }
 
 func activeShuttleBrands(settings Settings) []ShuttleBrand {
@@ -4885,7 +5101,8 @@ func normalizedShuttleSeqItems(match Match, state SessionState) []ShuttleSeqItem
 	items := []ShuttleSeqItem{}
 	for _, item := range match.ShuttleSeqItems {
 		if item.Number > 0 {
-			items = append(items, ShuttleSeqItem{BrandID: normalizedBrandID(item.BrandID), Number: item.Number})
+			item.BrandID = normalizedBrandID(item.BrandID)
+			items = append(items, item)
 		}
 	}
 	if len(items) > 0 {
@@ -5071,6 +5288,13 @@ func normalizeSettings(settings *Settings) {
 		if brand.Price < 0 {
 			brand.Price = 0
 		}
+		if brand.PriceSatang < 0 {
+			brand.PriceSatang = 0
+		}
+		if brand.PriceSatang == 0 && brand.Price > 0 {
+			brand.PriceSatang = int64(brand.Price) * 100
+		}
+		brand.Price = roundedBaht(brand.PriceSatang)
 		seenBrands[brand.ID] = true
 		brands = append(brands, brand)
 	}
@@ -5081,7 +5305,7 @@ func normalizeSettings(settings *Settings) {
 		brands[0].Active = true
 	}
 	settings.ShuttleBrands = brands
-	settings.ShuttleFee = settings.ShuttleBrands[0].Price
+	settings.ShuttleFee = roundedBaht(settings.ShuttleBrands[0].PriceSatang)
 	if settings.SessionFee < 0 {
 		settings.SessionFee = 0
 	}

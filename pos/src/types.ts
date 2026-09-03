@@ -45,6 +45,8 @@ export interface CartItem {
   quantity: number;
   note?: string;
   discount?: number; // percentage or fixed
+  allocatedTotal?: number;
+  splitAllocation?: { count: number; position: number; paidCount: number; share: number };
 }
 
 export interface OrderItem {

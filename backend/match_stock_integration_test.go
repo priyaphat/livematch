@@ -3,11 +3,13 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestMatchShuttlePOSStockIntegration verifies the complete contract between a
@@ -26,12 +28,16 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	defer db.Close()
 
 	a := &app{db: db}
+	if err = a.migrate(t.Context()); err != nil {
+		t.Fatalf("migrate test database: %v", err)
+	}
 	adminID := "match-stock-contract-" + randHex(8)
 	if _, err = db.Exec(`insert into admin_users(id,email,name,password_hash,verified_at) values($1,$2,'Match stock contract','unused',now())`, adminID, adminID+"@example.invalid"); err != nil {
 		t.Fatal(err)
 	}
 	defer func() {
 		_, _ = db.Exec(`delete from activity_logs where actor_id=$1 or details like '%'||$1||'%'`, adminID)
+		_, _ = db.Exec(`delete from sessions where admin_id=$1`, adminID)
 		_, _ = db.Exec(`delete from admin_users where id=$1`, adminID)
 	}()
 	if _, err = db.Exec(`insert into pos_settings(admin_id,secondary_stock_enabled,sale_stock_location) values($1,true,'primary')`, adminID); err != nil {
@@ -41,18 +47,29 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	productA := "shuttle-a-" + randHex(8)
 	productB := "shuttle-b-" + randHex(8)
 	productEmpty := "shuttle-empty-" + randHex(8)
+	productZero := "shuttle-zero-" + randHex(8)
 	productSecondary := "shuttle-secondary-" + randHex(8)
-	insertProduct := func(id, sku, name string, primary, secondary int) {
+	insertProduct := func(id, sku, name string, priceSatang int64, primary, secondary int) {
 		t.Helper()
-		if _, insertErr := db.Exec(`insert into pos_products(id,admin_id,sku,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,secondary_stock_quantity,track_stock,active) values($1,$2,$3,$4,85,8500,45,4500,$5,$6,true,true)`, id, adminID, sku, name, primary, secondary); insertErr != nil {
+		if _, insertErr := db.Exec(`insert into pos_products(id,admin_id,sku,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,secondary_stock_quantity,track_stock,active) values($1,$2,$3,$4,$5,$6,45,4500,$7,$8,true,true)`, id, adminID, sku, name, roundedBaht(priceSatang), priceSatang, primary, secondary); insertErr != nil {
 			t.Fatal(insertErr)
 		}
 	}
-	insertProduct(productA, "A-"+randHex(4), "Shuttle A", 3, 0)
-	insertProduct(productB, "B-"+randHex(4), "Shuttle B", 5, 0)
-	insertProduct(productEmpty, "EMPTY-"+randHex(4), "Shuttle out of stock", 0, 0)
-	insertProduct(productSecondary, "SECONDARY-"+randHex(4), "Shuttle secondary", 9, 2)
+	insertProduct(productA, "A-"+randHex(4), "Shuttle A", 10000, 3, 0)
+	insertProduct(productB, "B-"+randHex(4), "Shuttle B", 9950, 5, 0)
+	insertProduct(productEmpty, "EMPTY-"+randHex(4), "Shuttle out of stock", 5000, 0, 0)
+	insertProduct(productZero, "ZERO-"+randHex(4), "Shuttle free", 0, 2, 0)
+	insertProduct(productSecondary, "SECONDARY-"+randHex(4), "Shuttle secondary", 9950, 9, 2)
 
+	// The server, rather than a stale or forged client value, owns the price in
+	// saved admin defaults whenever a POS product is linked.
+	linkedDefaults := Settings{ShuttleBrands: []ShuttleBrand{{ID: "brand-1", Name: "ลูกแบดทดสอบ", Price: 85, PriceSatang: 8500, Active: true, POSProductID: productA}}}
+	if err = a.hydrateLinkedShuttleBrandPrices(t.Context(), adminID, &linkedDefaults, true); err != nil {
+		t.Fatalf("hydrate linked default price: %v", err)
+	}
+	if got := linkedDefaults.ShuttleBrands[0].PriceSatang; got != 10000 {
+		t.Fatalf("server-owned linked default price=%d, want 10000", got)
+	}
 	stock := func(productID, location string) int {
 		t.Helper()
 		column := "stock_quantity"
@@ -86,25 +103,37 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 		for number := 1; number <= count; number++ {
 			items = append(items, ShuttleSeqItem{BrandID: "brand-1", Number: number})
 		}
-		return Match{ID: 1, Court: "สนาม 1", Status: "playing", Shuttles: count, ShuttleSeqItems: items}
+		return Match{ID: 1, Court: "สนาม 1", A1: 1, A2: 2, B1: 3, B2: 4, Status: "playing", ShuttlePricingMode: shuttlePricingSplit, Shuttles: count, ShuttleSeqItems: items}
 	}
 
 	_, state := createSession("Primary stock contract")
 	state.Settings.ShuttleBrands = []ShuttleBrand{{ID: "brand-1", Name: "ลูกแบดทดสอบ", Price: 85, Active: true, POSProductID: productA}}
 	state.Live = []Match{matchWithShuttles(1)}
-	if err = a.saveState(t.Context(), state); err != nil {
+	if err = a.saveStateResolved(t.Context(), &state); err != nil {
 		t.Fatalf("deduct first linked shuttle: %v", err)
 	}
 	if got := stock(productA, "primary"); got != 2 {
 		t.Fatalf("stock A after first shuttle = %d, want 2", got)
 	}
+	if item := state.Live[0].ShuttleSeqItems[0]; item.PriceSource != "pos" || item.UnitPriceSatang != 10000 || item.POSProductID != productA {
+		t.Fatalf("first POS price snapshot=%#v", item)
+	}
+	if got := matchShuttleTotalSatang(state, state.Live[0]); got != 10000 || playerMatchShuttleCostSatang(state, state.Live[0], 1) != 2500 {
+		t.Fatalf("first shuttle total/share=%d/%d, want 10000/2500", got, playerMatchShuttleCostSatang(state, state.Live[0], 1))
+	}
 
+	if _, err = db.Exec(`update pos_products set price_thb=105,price_satang=10500 where id=$1`, productA); err != nil {
+		t.Fatal(err)
+	}
 	state.Live[0] = matchWithShuttles(2)
-	if err = a.saveState(t.Context(), state); err != nil {
+	if err = a.saveStateResolved(t.Context(), &state); err != nil {
 		t.Fatalf("deduct second linked shuttle: %v", err)
 	}
 	if got := stock(productA, "primary"); got != 1 {
 		t.Fatalf("stock A after second shuttle = %d, want 1", got)
+	}
+	if items := state.Live[0].ShuttleSeqItems; items[0].UnitPriceSatang != 10000 || items[1].UnitPriceSatang != 10500 || matchShuttleTotalSatang(state, state.Live[0]) != 20500 {
+		t.Fatalf("price change must only affect new shuttle: %#v total=%d", items, matchShuttleTotalSatang(state, state.Live[0]))
 	}
 	if err = a.saveState(t.Context(), state); err != nil {
 		t.Fatalf("repeat identical state: %v", err)
@@ -137,6 +166,27 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	}
 	if aUsages != 2 || bUsages != 1 {
 		t.Fatalf("usage snapshot after relink = A:%d B:%d, want A:2 B:1", aUsages, bUsages)
+	}
+	loadedAfterRelink, loadErr := a.loadState(t.Context(), state.Session.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if items := loadedAfterRelink.Live[0].ShuttleSeqItems; len(items) != 3 || items[0].UnitPriceSatang != 10000 || items[1].UnitPriceSatang != 10500 || items[2].UnitPriceSatang != 9950 || matchShuttleTotalSatang(loadedAfterRelink, loadedAfterRelink.Live[0]) != 30450 {
+		t.Fatalf("relinked price snapshots=%#v total=%d", items, matchShuttleTotalSatang(loadedAfterRelink, loadedAfterRelink.Live[0]))
+	}
+	wantShares := []int64{7613, 7613, 7612, 7612}
+	for index, playerID := range []int{1, 2, 3, 4} {
+		if got := playerMatchShuttleCostSatang(loadedAfterRelink, loadedAfterRelink.Live[0], playerID); got != wantShares[index] {
+			t.Fatalf("player %d share=%d want %d", playerID, got, wantShares[index])
+		}
+	}
+	specialSnapshot := buildPOSSpecialSession(loadedAfterRelink, time.Now())
+	if specialSnapshot["shuttleTotalSatang"] != int64(30450) || len(specialSnapshot["shuttles"].([]map[string]any)) != 3 {
+		t.Fatalf("POS Match report did not separate snapshotted prices: %#v", specialSnapshot["shuttles"])
+	}
+	paymentSummary := playerPaymentSummary(loadedAfterRelink, Player{ID: 1, Name: "Player 1"})
+	if len(paymentSummary.Items) < 2 || len(paymentSummary.Items[1].Details) != 3 || paymentSummary.Items[1].AmountSatang != 7613 {
+		t.Fatalf("member payment details did not use exact snapshots: %#v", paymentSummary.Items)
 	}
 
 	// Returning the latest shuttle restores the recorded product, not the old
@@ -183,20 +233,64 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	if err = json.NewDecoder(summaryRecorder.Body).Decode(&summary); err != nil {
 		t.Fatal(err)
 	}
-	if summary.TotalUnits != 15 || summary.MovementCount != 4 { // 1+5+0+9, A use x2, B use+return
-		t.Fatalf("stock summary = units:%d movements:%d, want 15 and 4", summary.TotalUnits, summary.MovementCount)
+	if summary.TotalUnits != 17 || summary.MovementCount != 4 { // 1+5+0+2+9, A use x2, B use+return
+		t.Fatalf("stock summary = units:%d movements:%d, want 17 and 4", summary.TotalUnits, summary.MovementCount)
+	}
+
+	// A zero POS price is authoritative and must not fall back to the Match price.
+	state.Settings.ShuttleBrands[0].POSProductID = productZero
+	state.Live[0] = matchWithShuttles(3)
+	if err = a.saveStateResolved(t.Context(), &state); err != nil {
+		t.Fatalf("deduct zero-price shuttle: %v", err)
+	}
+	if item := state.Live[0].ShuttleSeqItems[2]; item.PriceSource != "pos" || item.UnitPriceSatang != 0 || stock(productZero, "primary") != 1 {
+		t.Fatalf("zero-price POS snapshot=%#v stock=%d", item, stock(productZero, "primary"))
+	}
+	state.Live[0] = matchWithShuttles(2)
+	if err = a.saveState(t.Context(), state); err != nil || stock(productZero, "primary") != 2 {
+		t.Fatalf("return zero-price shuttle err=%v stock=%d", err, stock(productZero, "primary"))
 	}
 
 	// An out-of-stock link must reject and roll back the entire state save.
 	state.Settings.ShuttleBrands[0].POSProductID = productEmpty
 	state.Live[0] = matchWithShuttles(3)
 	err = a.saveState(t.Context(), state)
-	if err == nil || !strings.Contains(err.Error(), "ไม่เพียงพอ") {
+	var stockProblem *shuttleStockError
+	if err == nil || !strings.Contains(err.Error(), "ไม่เพียงพอ") || !errors.As(err, &stockProblem) || stockProblem.Code != "POS_SHUTTLE_OUT_OF_STOCK" || stockProblem.AvailableQuantity != 0 {
 		t.Fatalf("out-of-stock save error = %v, want insufficient stock error", err)
+	}
+	errorRecorder := httptest.NewRecorder()
+	a.writeStateSaveError(errorRecorder, stockProblem)
+	var errorPayload struct {
+		Code              string `json:"code"`
+		AvailableQuantity int    `json:"availableQuantity"`
+	}
+	if errorRecorder.Code != http.StatusConflict || json.NewDecoder(errorRecorder.Body).Decode(&errorPayload) != nil || errorPayload.Code != "POS_SHUTTLE_OUT_OF_STOCK" || errorPayload.AvailableQuantity != 0 {
+		t.Fatalf("structured stock error status=%d payload=%#v", errorRecorder.Code, errorPayload)
 	}
 	if got := stock(productEmpty, "primary"); got != 0 || movementCount(productEmpty, "match_use") != 0 {
 		t.Fatalf("out-of-stock save changed stock/ledger: stock=%d movements=%d", got, movementCount(productEmpty, "match_use"))
 	}
+	assertProductProblem := func(productID, code string) {
+		t.Helper()
+		candidate := state
+		candidate.Settings.ShuttleBrands[0].POSProductID = productID
+		candidate.Live[0] = matchWithShuttles(3)
+		problemErr := a.saveState(t.Context(), candidate)
+		var problem *shuttleStockError
+		if !errors.As(problemErr, &problem) || problem.Code != code {
+			t.Fatalf("product %s error=%v problem=%#v, want %s", productID, problemErr, problem, code)
+		}
+	}
+	if _, err = db.Exec(`update pos_products set stock_quantity=1,active=false where id=$1`, productEmpty); err != nil {
+		t.Fatal(err)
+	}
+	assertProductProblem(productEmpty, "POS_SHUTTLE_PRODUCT_INACTIVE")
+	if _, err = db.Exec(`update pos_products set active=true,track_stock=false where id=$1`, productEmpty); err != nil {
+		t.Fatal(err)
+	}
+	assertProductProblem(productEmpty, "POS_SHUTTLE_TRACKING_DISABLED")
+	assertProductProblem("missing-"+randHex(8), "POS_SHUTTLE_PRODUCT_NOT_FOUND")
 	var activeUsages int
 	if err = db.QueryRow(`select count(*) from match_shuttle_stock_usage where session_id=$1 and active`, state.Session.ID).Scan(&activeUsages); err != nil || activeUsages != 2 {
 		t.Fatalf("out-of-stock save changed active usages: count=%d err=%v", activeUsages, err)
@@ -264,5 +358,27 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	}
 	if got := stock(productB, "primary"); got != 5 || movementCount(productB, "match_use") != 1 {
 		t.Fatalf("historical link deducted retroactively: stock=%d use movements=%d", got, movementCount(productB, "match_use"))
+	}
+
+	// Migration locks the amount that old Match data displayed before this
+	// feature; a linked POS product must not reprice historical data.
+	legacySessionID, _ := createSession("Legacy price backfill")
+	legacyBrands, _ := json.Marshal([]ShuttleBrand{{ID: "brand-1", Name: "ราคาเดิม", Price: 85, Active: true, POSProductID: productB}})
+	if _, err = db.Exec(`insert into session_settings(session_id,shuttle_fee,shuttle_brands) values($1,85,$2)`, legacySessionID, legacyBrands); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,shuttle_pricing_mode) values($1,1,'history','สนาม 1','middle',1,2,3,4,1,'[{"brandId":"brand-1","number":1}]'::jsonb,'finished','split_per_match')`, legacySessionID); err != nil {
+		t.Fatal(err)
+	}
+	if err = a.backfillMatchShuttlePriceSnapshots(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	legacyState, err := a.loadState(t.Context(), legacySessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyItem := legacyState.History[0].ShuttleSeqItems[0]
+	if legacyItem.PriceSource != "legacy" || legacyItem.UnitPriceSatang != 8500 || matchShuttleTotalSatang(legacyState, legacyState.History[0]) != 8500 {
+		t.Fatalf("legacy price was repriced during backfill: %#v", legacyItem)
 	}
 }

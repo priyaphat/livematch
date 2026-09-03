@@ -6,7 +6,7 @@ const props = defineProps({
   modelValue: { type: String, default: '' },
   apiRequest: { type: Function, default: null }
 })
-const emit = defineEmits(['update:modelValue'])
+const emit = defineEmits(['update:modelValue', 'selected-product'])
 
 const root = ref(null)
 const input = ref(null)
@@ -19,6 +19,7 @@ let requestNumber = 0
 
 const productLabel = (product) => [product.name, product.sku ? `SKU ${product.sku}` : '', product.barcode ? `บาร์โค้ด ${product.barcode}` : ''].filter(Boolean).join(' · ')
 const stockLabel = (product) => `${Number(product.saleStockQuantity ?? product.stockQuantity ?? 0).toLocaleString('th-TH')} ${product.unit || 'หน่วย'}`
+const priceLabel = (product) => new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', minimumFractionDigits: Number(product.priceSatang || 0) % 100 ? 2 : 0 }).format(Number(product.priceSatang || 0) / 100)
 
 async function searchProducts(search = '') {
   if (!props.apiRequest) {
@@ -50,12 +51,14 @@ function handleInput(event) {
 
 function selectProduct(product) {
   emit('update:modelValue', product.id)
+  emit('selected-product', product)
   query.value = productLabel(product)
   open.value = false
 }
 
 function clearProduct() {
   emit('update:modelValue', '')
+  emit('selected-product', null)
   query.value = ''
   open.value = true
   void searchProducts('')
@@ -93,7 +96,7 @@ onBeforeUnmount(() => {
   <div ref="root" class="relative min-w-0">
     <div class="relative">
       <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
-      <input ref="input" :value="query" role="combobox" :aria-expanded="open" autocomplete="off" class="h-10 w-full rounded-md border border-stone-200 bg-white pl-9 pr-16 text-sm font-semibold dark:border-stone-700 dark:bg-stone-900" placeholder="ค้นหาชื่อ, SKU หรือบาร์โค้ด" @focus="open=true; searchProducts(query.trim())" @input="handleInput" />
+      <input ref="input" :value="query" role="combobox" :aria-expanded="open" autocomplete="off" class="h-11 w-full rounded-lg border border-stone-200 bg-white pl-9 pr-16 text-sm font-semibold dark:border-stone-700 dark:bg-stone-900" placeholder="ค้นหาชื่อ, SKU หรือบาร์โค้ด" @focus="open=true; searchProducts(modelValue || query.trim())" @input="handleInput" />
       <div class="absolute right-2 top-1/2 flex -translate-y-1/2 items-center gap-1">
         <Loader2 v-if="loading" class="h-4 w-4 animate-spin text-court-600" />
         <button v-if="modelValue || query" type="button" class="grid h-7 w-7 place-items-center rounded text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-800" aria-label="ยกเลิกการเชื่อมสินค้า" @click="clearProduct"><X class="h-4 w-4" /></button>
@@ -103,7 +106,7 @@ onBeforeUnmount(() => {
       <button type="button" class="w-full rounded-md px-3 py-2 text-left text-sm font-bold text-stone-500 hover:bg-paper-100 dark:hover:bg-stone-800" @click="clearProduct">ไม่เชื่อมสต็อก POS</button>
       <button v-for="product in options" :key="product.id" type="button" class="grid w-full grid-cols-[1fr_auto] gap-3 rounded-md px-3 py-2 text-left hover:bg-court-500/10" @click="selectProduct(product)">
         <span class="min-w-0"><b class="block truncate text-sm">{{ product.name }}</b><small class="block truncate font-semibold text-stone-500">{{ [product.sku, product.barcode].filter(Boolean).join(' · ') || 'ไม่มี SKU/บาร์โค้ด' }}</small></span>
-        <span class="self-center whitespace-nowrap text-xs font-black text-court-700 dark:text-court-300">คงเหลือ {{ stockLabel(product) }}</span>
+        <span class="self-center whitespace-nowrap text-right text-xs font-black text-court-700 dark:text-court-300"><b class="block">{{ priceLabel(product) }}</b><small>คงเหลือ {{ stockLabel(product) }}</small></span>
       </button>
       <p v-if="!loading && !options.length" class="px-3 py-5 text-center text-sm font-bold text-stone-500">ไม่พบสินค้าที่เปิดติดตามสต็อก</p>
     </div>

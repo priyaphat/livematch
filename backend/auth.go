@@ -427,10 +427,40 @@ func (a *app) adminDefaultSettings(ctx context.Context, adminID string) (Setting
 		_ = json.Unmarshal(raw, &settings)
 	}
 	normalizeAdminDefaultSettings(&settings)
+	if err := a.hydrateLinkedShuttleBrandPrices(ctx, adminID, &settings, false); err != nil {
+		return settings, err
+	}
 	if types, typeErr := a.memberTypesForAdmin(ctx, adminID, false); typeErr == nil {
 		mergeMemberEntryFees(&settings, types)
 	}
 	return settings, nil
+}
+
+func (a *app) hydrateLinkedShuttleBrandPrices(ctx context.Context, adminID string, settings *Settings, strict bool) error {
+	for index := range settings.ShuttleBrands {
+		productID := strings.TrimSpace(settings.ShuttleBrands[index].POSProductID)
+		if productID == "" {
+			continue
+		}
+		var priceSatang int64
+		var active, available, trackStock bool
+		err := a.db.QueryRowContext(ctx, `select price_satang,active,deleted_at is null,track_stock from pos_products where id=$1 and admin_id=$2`, productID, adminID).Scan(&priceSatang, &active, &available, &trackStock)
+		if errors.Is(err, sql.ErrNoRows) || err == nil && (!available || !active || !trackStock) {
+			if strict {
+				return errors.New("สินค้าที่เชื่อมกับลูกแบดต้องเป็นสินค้า POS ที่เปิดขายและเปิดติดตามสต็อก")
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		settings.ShuttleBrands[index].PriceSatang = priceSatang
+		settings.ShuttleBrands[index].Price = roundedBaht(priceSatang)
+	}
+	if len(settings.ShuttleBrands) > 0 {
+		settings.ShuttleFee = roundedBaht(settings.ShuttleBrands[0].PriceSatang)
+	}
+	return nil
 }
 
 func (a *app) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
@@ -663,20 +693,9 @@ func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	normalizeAdminDefaultSettings(&settings)
-	for _, brand := range settings.ShuttleBrands {
-		productID := strings.TrimSpace(brand.POSProductID)
-		if productID == "" {
-			continue
-		}
-		var valid bool
-		if err := a.db.QueryRowContext(r.Context(), `select exists(select 1 from pos_products where id=$1 and admin_id=$2 and deleted_at is null and track_stock)`, productID, user.ID).Scan(&valid); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
-		}
-		if !valid {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "สินค้าที่เชื่อมกับลูกแบดต้องเป็นสินค้า POS ของบัญชีนี้และเปิดติดตามสต็อก"})
-			return
-		}
+	if err := a.hydrateLinkedShuttleBrandPrices(r.Context(), user.ID, &settings, true); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
 	}
 	memberTypes, typeErr := a.memberTypesForAdmin(r.Context(), user.ID, false)
 	if typeErr != nil {
@@ -990,12 +1009,15 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 	providerStatus := "not_checked"
 	providerErrorCode := 0
 	slipOK := a.slipOKSettings(r.Context())
-	if slipOK.ready() {
+	slipLogMeta := slipOKLogMeta{AdminID: user.ID, AdminEmail: user.Email, SourceSystem: "coin_shop", ReferenceID: id}
+	if !slipOK.Enabled {
+		a.recordSlipOKDecision(slipLogMeta, slipOK, order.PriceTHB, "disabled", "ไม่ได้ส่งตรวจ: ปิดใช้งาน OKSlip", map[string]any{"enabled": false})
+	} else if !slipOK.ready() {
+		a.recordSlipOKDecision(slipLogMeta, slipOK, order.PriceTHB, "config_not_ready", "ไม่ได้ส่งตรวจ: การตั้งค่า OKSlip ไม่ครบหรือวงเงินรายเดือนเป็น 0", map[string]any{"hasBranchId": slipOK.BranchID != "", "hasApiKey": slipOK.APIKey != "", "monthlyCap": slipOK.MonthlyCap})
+	} else {
 		quota := a.fetchSlipOKQuota(r.Context(), slipOK)
 		if quota.Available && !quota.CapReached {
-			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, order.PriceTHB, slipOKLogMeta{
-				AdminID: user.ID, AdminEmail: user.Email, SourceSystem: "coin_shop", ReferenceID: id,
-			})
+			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, order.PriceTHB, slipLogMeta)
 			provider = "slipok"
 			providerStatus = checked.Status
 			providerErrorCode = checked.ErrorCode
@@ -1021,8 +1043,11 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 			providerStatus = "cap_reached"
 			slipCheck.VerificationStatus = "manual_review"
 			slipCheck.VerificationNote = "Auto Slip ถึงขีดจำกัดรายเดือน ใช้การตรวจสอบด้วยผู้ดูแล"
+			a.recordSlipOKDecision(slipLogMeta, slipOK, order.PriceTHB, "cap_reached", slipCheck.VerificationNote, map[string]any{"limit": quota.Limit, "used": quota.Used, "remaining": quota.Remaining, "overQuota": quota.OverQuota})
 		} else {
 			provider = "slipok"
+			providerStatus = "quota_error"
+			a.recordSlipOKDecision(slipLogMeta, slipOK, order.PriceTHB, "quota_error", "ไม่ได้ส่งตรวจ: ตรวจสอบโควตา OKSlip ไม่สำเร็จ", map[string]any{"error": quota.Error, "limit": quota.Limit})
 			providerStatus = "quota_unavailable"
 			slipCheck.VerificationStatus = "manual_review"
 			slipCheck.VerificationNote = "ตรวจสอบโควตา Auto Slip ไม่สำเร็จ: " + quota.Error

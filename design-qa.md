@@ -40,6 +40,49 @@
 
 final result: passed
 
+## POS split-share bill presentation addendum — 2026-09-03
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-bed719ce-530c-4906-9c74-605f96e7b55b.png` and `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-3b70b54c-ff58-4694-9576-dd1e8073c3ca.png`
+- Implementation: `pos/src/context/PosContext.tsx`, `pos/src/components/BillsView.tsx`, and `pos/src/types.ts`
+- Implementation screenshots: Codex in-app Browser final dark-theme captures in this task, tab 2, for held-bill and batch-checkout states
+- Viewport: 690 × 740 CSS px, device scale factor 1.2; document `scrollWidth === clientWidth === 690`
+- Source pixels: 573 × 526 and 480 × 440. The source crops and implementation captures were compared by the same card/modal regions without scaling the surrounding POS shell.
+- State: one member owes water ฿20, one shuttle share of ฿50 from a two-person split, and one shuttle share of ฿25 from a four-person split; total ฿95
+
+### Full-view and focused comparison evidence
+
+- Held bill: the two standalone split explanation banners are gone. The item list directly shows ฿20, ฿50, and ฿25, matching the member's payable total of ฿95.
+- Batch checkout: each split badge sits beside its related shuttle item, showing “หาร 2 คน · คนนี้ ฿50.00” and “หาร 4 คน · คนนี้ ฿25.00”. The row amount and quantity detail use the same allocated amount.
+- The dark-theme implementation preserves the source hierarchy, yellow split emphasis, green payable total, compact item card, and visible checkout actions.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing Thai POS typography, monospace currency, bold item labels, and compact metadata remain consistent; allocation badges do not wrap at this viewport.
+- Spacing and layout rhythm: badges are attached to their item names instead of occupying separate full-width rows, reducing ambiguity and vertical noise.
+- Colors and visual tokens: amber remains the split/allocation signal, emerald remains the payable-total signal, and slate dark surfaces match the existing POS design system.
+- Image quality and asset fidelity: no raster assets were needed; existing Lucide operational icons remain unchanged.
+- Copy and content: the held card communicates allocation through the actual line amount without extra “บิลหาร” text; batch checkout retains the split count only where it identifies the affected shuttle line.
+
+### Interaction and responsive checks
+
+- [x] Held-bill item amounts sum exactly to the member total.
+- [x] Batch checkout split badges are attached to the correct shuttle rows.
+- [x] A non-split item remains unbadged and keeps its original price.
+- [x] Selecting the held bill and opening batch checkout works end to end.
+- [x] No horizontal document overflow at the captured viewport.
+- [x] Browser console warning/error log is empty.
+- [x] POS TypeScript check and production build pass.
+
+### Comparison history
+
+- Earlier finding [P1]: held cards displayed full product prices and separate split banners, so three visible lines could total ฿220 while the member owed ฿95.
+- Fix: allocate the saved sale total proportionally in satang and render each member's allocated line amount directly.
+- Earlier finding [P1]: batch checkout placed split badges above the item list, leaving it unclear which shuttle each split belonged to.
+- Fix: move each split badge inline with its corresponding shuttle item and repeat the exact allocated amount in the row.
+- Post-fix evidence: final held-bill and batch-checkout browser captures in this task. No actionable P0/P1/P2 findings remain.
+
+final result: passed
+
 - Source visual truth: `C:/Users/OTAMOS/Desktop/livematch-pos/` rendered from the Stitch React app at `http://localhost:3000`
 - Implementation: `frontend/src/pages/POSPage.vue` rendered from the production Vue component with realistic mock API data
 - Mobile viewport: 390 × 844 CSS px, device scale factor 1
@@ -204,3 +247,46 @@ final result: passed
 ## Final result
 
 passed
+
+## Admin default shuttle-brand layout addendum — 2026-09-03
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-eea17c0b-0beb-444a-a40d-582e25f32cc7.png`
+- Implementation: `frontend/src/pages/AdminSupervisorPage.vue` and `frontend/src/components/ProductStockCombobox.vue`
+- Implementation screenshot: Codex in-app Browser final capture in this task, tab 1, with the linked-product ComboBox expanded
+- Viewport: 678 × 727 CSS px, device scale factor 1
+- Source pixels: 873 × 293; implementation pixels: 678 × 727. The comparison focuses on the same shuttle-brand form region rather than scaling the full modal because the source is a cropped component.
+- State: light theme, Admin default settings modal open, “ค่าใช้จ่ายและลูกแบด” selected, one POS-linked brand and one Match-fallback brand
+
+### Full-view and focused comparison evidence
+
+- The source compressed five controls into one row, truncating the POS product label and making price ownership difficult to scan.
+- The final browser capture groups each brand into a card: name and actions occupy the first row; price and POS stock link occupy a labeled second row. The modal has no horizontal scrollbar at the narrower 678 px viewport.
+- The expanded ComboBox visibly contains the linked product, SKU/barcode, exact POS price, and available stock without changing the card width or hiding the Save footer.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing LiveMatch Thai font, weights, and hierarchy are preserved. Explicit field labels replace placeholder-only meaning and “active” is localized to “ใช้งาน”.
+- Spacing and layout rhythm: 11 px touch controls, 12 px card padding, 12 px internal gaps, and responsive one/two-column field rows remove crowding while staying consistent with the surrounding modal.
+- Colors and visual tokens: paper, stone, court-green, and rose semantic colors reuse the existing theme in light and dark modes.
+- Image quality and asset fidelity: this form contains no raster imagery. Delete and Add actions use the existing Lucide icon set; no custom SVG or CSS-drawn asset was introduced.
+- Copy and content: price ownership, Match fallback behavior, POS stock requirements, and enabled state are all visible in Thai.
+
+### Interaction and responsive checks
+
+- [x] Linked price is disabled and clearly states that the POS price is used.
+- [x] Unlinked price remains editable as the Match fallback.
+- [x] Existing linked product reopens by Product ID and appears in search results with price and stock.
+- [x] Add-brand controls stack safely on narrow screens.
+- [x] Delete has an accessible Thai label and the enabled checkbox remains reachable.
+- [x] Sticky Cancel/Save actions remain visible.
+- [x] Browser console warning/error log is empty.
+
+### Comparison history
+
+- Earlier finding [P1]: name, price, product ComboBox, enabled state, and delete action were compressed into one row and the selected product text was truncated.
+- Fix: changed each brand to a two-level labeled card and changed the add form to its own dashed card.
+- Earlier finding [P1]: reopening an already linked ComboBox searched using its formatted display label and returned an empty result.
+- Fix: selected ComboBoxes now query by Product ID; the final capture shows the linked product, ฿100 price, and 89 remaining units.
+- Post-fix evidence: final in-app Browser capture in this task. No actionable P0/P1/P2 findings remain.
+
+final result: passed

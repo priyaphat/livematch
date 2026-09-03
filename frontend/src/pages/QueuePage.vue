@@ -22,6 +22,7 @@ const props = defineProps([
 ])
 
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+const shuttlePrice = (brand) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: Number(brand.priceSatang || 0) % 100 ? 2 : 0, maximumFractionDigits: 2 }).format(Number(brand.priceSatang ?? Math.round(Number(brand.price || 0) * 100)) / 100)
 if (!props.state.settings) props.state.settings = {}
 if (props.state.settings.showWaitingOnQueueShare === undefined) props.state.settings.showWaitingOnQueueShare = false
 const waitClock = useWaitClock()
@@ -178,7 +179,7 @@ function confirmStartMatch() {
         >
           <span>
             <span class="block font-black">{{ brand.name }}</span>
-            <span class="mt-0.5 block text-xs font-semibold text-stone-500 dark:text-stone-400">{{ Number(brand.price || 0).toLocaleString('th-TH') }} บาท / ลูก</span>
+            <span class="mt-0.5 block text-xs font-semibold text-stone-500 dark:text-stone-400">{{ shuttlePrice(brand) }} บาท / ลูก</span>
           </span>
           <CheckCircle2 v-if="startMatchBrandId === brand.id" class="h-5 w-5 shrink-0 text-court-600 dark:text-court-300" />
         </button>

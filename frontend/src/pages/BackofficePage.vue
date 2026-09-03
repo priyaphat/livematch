@@ -194,7 +194,7 @@ function activityDetails(details) {
 }
 
 function slipOKStatusText(status) {
-  return { passed: 'ผ่าน', failed: 'ไม่ผ่าน', manual_review: 'ตรวจ Manual' }[status] || status || '-'
+  return { passed: 'ผ่าน', failed: 'ไม่ผ่าน', manual_review: 'ตรวจ Manual', disabled: 'ปิดใช้งาน', config_not_ready: 'ตั้งค่าไม่ครบ', quota_error: 'ตรวจโควตาไม่ได้', cap_reached: 'โควตาเต็ม' }[status] || status || '-'
 }
 
 function slipOKStatusClass(status) {
@@ -868,7 +868,7 @@ function closeSlipPreview() {
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div>
               <h2 class="text-lg font-black">OKSlip request / response log</h2>
-              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เรียงรายการล่าสุดก่อนและไม่เก็บไฟล์รูปสลิป เก็บเฉพาะขนาดกับ SHA-256 สำหรับใช้อ้างอิงหลักฐาน</p>
+              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">แสดงทั้งเหตุผลก่อนส่ง, การตรวจ quota และผลตอบกลับจาก OKSlip โดยไม่เก็บไฟล์รูปสลิป เก็บเฉพาะขนาดกับ SHA-256 สำหรับใช้อ้างอิงหลักฐาน</p>
             </div>
             <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ slipOKLogsPagination.total }} รายการ</span>
           </div>
@@ -888,6 +888,10 @@ function closeSlipPreview() {
               <option value="passed">ผ่าน</option>
               <option value="failed">ไม่ผ่าน</option>
               <option value="manual_review">Manual/Error</option>
+              <option value="disabled">ปิดใช้งาน</option>
+              <option value="config_not_ready">ตั้งค่าไม่ครบ</option>
+              <option value="quota_error">ตรวจโควตาไม่ได้</option>
+              <option value="cap_reached">โควตาเต็ม</option>
             </select>
             <input v-model="forms.backofficeSlipOKLogsSearch" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" placeholder="ค้นหา code, transRef, error หรือเลขอ้างอิง" />
             <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white"><Search class="h-4 w-4" />กรอง</button>

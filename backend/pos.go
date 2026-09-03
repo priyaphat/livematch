@@ -1665,12 +1665,11 @@ func buildPOSSpecialSession(state SessionState, occurredAt time.Time) map[string
 			}
 		}
 		for _, item := range items {
-			price := shuttleBrandPriceFromSnapshot(match, item.BrandID)
-			if price <= 0 {
-				price = shuttleBrandPrice(state, item.BrandID)
-			}
-			priceSatang := int64(max(0, price)) * 100
+			priceSatang := shuttleItemPriceSatang(state, match, item)
 			name := specialShuttleBrandName(state, match, item.BrandID)
+			if strings.TrimSpace(item.ProductName) != "" {
+				name = strings.TrimSpace(item.ProductName)
+			}
 			key := normalizedBrandID(item.BrandID) + ":" + strconv.FormatInt(priceSatang, 10) + ":" + name
 			group := shuttleGroups[key]
 			if group == nil {

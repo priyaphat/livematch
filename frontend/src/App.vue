@@ -601,8 +601,9 @@ function normalizeClientSettings() {
     state.settings.clubEntryFee = state.settings.entryFee || 0
   }
   if (!Array.isArray(state.settings.shuttleBrands) || !state.settings.shuttleBrands.length) {
-    state.settings.shuttleBrands = [{ id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), active: true }]
+    state.settings.shuttleBrands = [{ id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), priceSatang: Number(state.settings.shuttleFee || 0) * 100, active: true }]
   }
+  state.settings.shuttleBrands = state.settings.shuttleBrands.map((brand) => ({ ...brand, priceSatang: brand.priceSatang == null ? Math.round(Number(brand.price || 0) * 100) : Math.max(0, Number(brand.priceSatang || 0)) }))
   if (!activeShuttleBrands().length) {
     state.settings.shuttleBrands[0].active = true
   }
@@ -1812,7 +1813,7 @@ function activeShuttleBrands() {
 }
 
 function defaultShuttleBrand() {
-  return activeShuttleBrands()[0] || state.settings.shuttleBrands?.[0] || { id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), active: true }
+  return activeShuttleBrands()[0] || state.settings.shuttleBrands?.[0] || { id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), priceSatang: Math.round(Number(state.settings.shuttleFee || 0) * 100), active: true }
 }
 
 function shuttleBrandById(brandId) {
@@ -1841,9 +1842,10 @@ function matchShuttleItems(match) {
 function matchShuttleSummary(match) {
   const counts = new Map()
   for (const item of matchShuttleItems(match)) {
-    counts.set(item.brandId, (counts.get(item.brandId) || 0) + 1)
+    const name = item.productName || shuttleBrandName(item.brandId)
+    counts.set(name, (counts.get(name) || 0) + 1)
   }
-  return Array.from(counts.entries()).map(([brandId, count]) => `${shuttleBrandName(brandId)} ${count}`).join(' · ')
+  return Array.from(counts.entries()).map(([name, count]) => `${name} ${count}`).join(' · ')
 }
 
 function matchShuttleSequenceText(match) {
@@ -1859,14 +1861,15 @@ function playerShuttleCost(playerId) {
     if (isCancelledMatch(match) && match.shuttleReturned) continue
     const items = matchShuttleItems(match)
     const legacy = match.shuttlePricingMode !== 'split_per_match'
-    const priceFor = (brandId) => {
-      if (!legacy) return Number(shuttleBrandById(brandId).price || 0)
-      const snapshot = (match.shuttlePriceSnapshot || []).find((brand) => brand.id === brandId)
-      return Number(snapshot?.price ?? match.legacyShuttleFee ?? shuttleBrandById(brandId).price ?? 0)
+    const priceSatangFor = (item) => {
+      if (item?.priceSource) return Number(item.unitPriceSatang || 0)
+      if (!legacy) return Number(shuttleBrandById(item.brandId).priceSatang ?? Math.round(Number(shuttleBrandById(item.brandId).price || 0) * 100))
+      const snapshot = (match.shuttlePriceSnapshot || []).find((brand) => brand.id === item.brandId)
+      return Number(snapshot?.priceSatang ?? Math.round(Number(snapshot?.price ?? match.legacyShuttleFee ?? shuttleBrandById(item.brandId).price ?? 0) * 100))
     }
     let matchSatang = 0
     if (items.length) {
-      matchSatang = items.reduce((sum, item) => sum + priceFor(item.brandId) * 100, 0)
+      matchSatang = items.reduce((sum, item) => sum + priceSatangFor(item), 0)
     } else {
       const fallbackPrice = legacy ? Number(match.legacyShuttleFee ?? state.settings.shuttleFee ?? 0) : Number(state.settings.shuttleFee || 0)
       matchSatang = Number(match.shuttles || 0) * fallbackPrice * 100
@@ -2077,7 +2080,8 @@ function normalizeSessionDefaults(input = {}) {
     shuttleBrands: Array.isArray(input.shuttleBrands) ? input.shuttleBrands.map((brand) => ({
       id: String(brand.id || brand.name || `brand-${Date.now()}`).trim() || `brand-${Date.now()}`,
       name: String(brand.name || '').trim(),
-      price: Math.max(0, Number(brand.price || 0)),
+	  price: Math.max(0, Number(brand.price || 0)),
+	  priceSatang: brand.priceSatang == null ? Math.round(Math.max(0, Number(brand.price || 0)) * 100) : Math.max(0, Number(brand.priceSatang || 0)),
 	  active: Boolean(brand.active),
 	  posProductId: String(brand.posProductId || '')
     })).filter((brand) => brand.name) : base.shuttleBrands,
@@ -2971,7 +2975,7 @@ function addShuttleBrand() {
     id = `${idBase}-${suffix}`
     suffix += 1
   }
-  state.settings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.newShuttleBrandPrice || 0)), active: true })
+  state.settings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.newShuttleBrandPrice || 0)), priceSatang: Math.round(Math.max(0, Number(forms.newShuttleBrandPrice || 0)) * 100), active: true })
   forms.newShuttleBrandName = ''
   forms.newShuttleBrandPrice = 0
   saveSettings().catch(() => {})
@@ -2987,7 +2991,7 @@ function addAdminDefaultShuttleBrand() {
     id = `${idBase}-${suffix}`
     suffix += 1
   }
-  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), active: true, posProductId: '' })
+  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), priceSatang: Math.round(Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)) * 100), active: true, posProductId: '' })
   forms.adminDefaultNewShuttleBrandName = ''
   forms.adminDefaultNewShuttleBrandPrice = 0
 }

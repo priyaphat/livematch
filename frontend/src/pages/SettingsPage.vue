@@ -126,7 +126,10 @@ watch(settingsTabs, (tabs) => {
           <div class="grid gap-2">
             <div v-for="brand in state.settings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[minmax(10rem,1fr)_7rem_auto]">
               <input v-model.trim="brand.name" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
-              <input v-model.number="brand.price" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
+              <div class="grid gap-1">
+                <input v-model.number="brand.price" type="number" min="0" step="0.01" :disabled="Boolean(brand.posProductId)" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" @input="brand.priceSatang = Math.round(Math.max(0, Number(brand.price || 0)) * 100)" @change="saveSettings" />
+                <small v-if="brand.posProductId" class="font-bold text-court-700 dark:text-court-300">ใช้ราคา POS {{ Number(brand.priceSatang || 0) / 100 }} บาท</small>
+              </div>
               <label class="flex h-10 items-center gap-2 text-sm font-bold">
                 <input v-model="brand.active" type="checkbox" @change="saveSettings" />
                 ใช้งาน
@@ -135,7 +138,7 @@ watch(settingsTabs, (tabs) => {
           </div>
           <div class="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
             <input v-model="forms.newShuttleBrandName" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ยี่ห้อลูกแบดใหม่" @keyup.enter="addShuttleBrand" />
-            <input v-model.number="forms.newShuttleBrandPrice" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ราคา" @keyup.enter="addShuttleBrand" />
+            <input v-model.number="forms.newShuttleBrandPrice" type="number" min="0" step="0.01" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ราคา" @keyup.enter="addShuttleBrand" />
             <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-shuttle-400 px-4 font-bold text-stone-950" @click="addShuttleBrand">
               <Plus class="h-4 w-4" />
               เพิ่ม

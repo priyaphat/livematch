@@ -3058,12 +3058,15 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	providerErrorCode := 0
 	autoApproved, definitiveFailure := false, false
 	slipSettings := a.bookingSlipOKSettings(r.Context(), adminID)
-	if slipSettings.ready() {
+	slipLogMeta := slipOKLogMeta{AdminID: adminID, SourceSystem: "booking", ReferenceID: primaryBookingID}
+	if !slipSettings.Enabled {
+		a.recordSlipOKDecision(slipLogMeta, slipSettings, amount, "disabled", "ไม่ได้ส่งตรวจ: ผู้ใช้งานปิด OKSlip สำหรับระบบจอง", map[string]any{"enabled": false})
+	} else if !slipSettings.ready() {
+		a.recordSlipOKDecision(slipLogMeta, slipSettings, amount, "config_not_ready", "ไม่ได้ส่งตรวจ: การตั้งค่า OKSlip ของผู้ใช้งานไม่ครบหรือวงเงินรายเดือนเป็น 0", map[string]any{"hasBranchId": slipSettings.BranchID != "", "hasApiKey": slipSettings.APIKey != "", "monthlyCap": slipSettings.MonthlyCap})
+	} else {
 		quota := a.fetchSlipOKQuota(r.Context(), slipSettings)
 		if quota.Available && !quota.CapReached {
-			checked := a.checkSlipOK(r.Context(), slipSettings, slipDataURL, amount, slipOKLogMeta{
-				AdminID: adminID, SourceSystem: "booking", ReferenceID: primaryBookingID,
-			})
+			checked := a.checkSlipOK(r.Context(), slipSettings, slipDataURL, amount, slipLogMeta)
 			provider = "slipok"
 			providerErrorCode = checked.ErrorCode
 			if checked.TransRef != "" {
@@ -3084,6 +3087,11 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		} else {
 			provider = "slipok"
 			verificationNote = "Auto Slip ใช้งานไม่ได้หรือโควตาหมด ส่งให้ผู้ดูแลตรวจสอบเอง"
+			if quota.CapReached {
+				a.recordSlipOKDecision(slipLogMeta, slipSettings, amount, "cap_reached", verificationNote, map[string]any{"limit": quota.Limit, "used": quota.Used, "remaining": quota.Remaining, "overQuota": quota.OverQuota})
+			} else {
+				a.recordSlipOKDecision(slipLogMeta, slipSettings, amount, "quota_error", "ไม่ได้ส่งตรวจ: ตรวจสอบโควตา OKSlip ไม่สำเร็จ", map[string]any{"error": quota.Error, "limit": quota.Limit})
+			}
 		}
 	}
 

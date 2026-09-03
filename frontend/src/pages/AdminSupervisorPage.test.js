@@ -35,7 +35,7 @@ function mountDashboard(features) {
 
 describe('AdminSupervisorPage feature cards', () => {
 	it('searches and stores a tracked POS product in admin default shuttle settings', async () => {
-	  const apiRequest = vi.fn().mockResolvedValue({ items: [{ id: 'product-yonex', name: 'Yonex AS-30', sku: 'SH-030', barcode: '88500030', trackStock: true, active: true, stockQuantity: 24, unit: 'ลูก' }] })
+	  const apiRequest = vi.fn().mockResolvedValue({ items: [{ id: 'product-yonex', name: 'Yonex AS-30', sku: 'SH-030', barcode: '88500030', priceSatang: 9950, trackStock: true, active: true, stockQuantity: 24, unit: 'ลูก' }] })
 	  const auth = {
 		user: { name: 'Admin', email: 'admin@example.com', coins: 100 }, sessions: [], features: { posEnabled: true }, memberTypes: [], liveMatchSessionCost: 1, liveShareSessionCost: 1,
 		defaultSettings: { memberEntryFees: {}, shuttleBrands: [{ id: 'yonex', name: 'Yonex', price: 85, active: true }], courtNames: ['สนาม 1'], levels: ['กลาง'], dashboardAnnouncements: [] }
@@ -49,6 +49,10 @@ describe('AdminSupervisorPage feature cards', () => {
 	  await vi.waitFor(() => expect(wrapper.text()).toContain('Yonex AS-30'))
 	  await wrapper.findAll('button').find((button) => button.text().includes('Yonex AS-30')).trigger('click')
 	  expect(auth.defaultSettings.shuttleBrands[0].posProductId).toBe('product-yonex')
+	  expect(auth.defaultSettings.shuttleBrands[0].priceSatang).toBe(9950)
+	  expect(auth.defaultSettings.shuttleBrands[0].price).toBe(99.5)
+	  expect(wrapper.text()).toContain('ใช้ราคา POS')
+	  expect(wrapper.findAll('input[type="number"]').some((input) => input.attributes('disabled') !== undefined)).toBe(true)
 	  expect(combobox.element.value).toContain('Yonex AS-30')
 	})
 

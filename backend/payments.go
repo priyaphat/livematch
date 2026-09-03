@@ -14,6 +14,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -187,7 +188,7 @@ func (a *app) fetchSlipOKQuota(ctx context.Context, settings slipOKSettings) sli
 	return result
 }
 
-func (a *app) recordSlipOKLog(meta slipOKLogMeta, endpoint string, expectedAmount int, requestPayload string, httpStatus int, responsePayload string, result slipOKResult, startedAt time.Time) {
+func (a *app) recordSlipOKLog(meta slipOKLogMeta, requestMethod, endpoint string, expectedAmount int, requestPayload string, httpStatus int, responsePayload string, result slipOKResult, startedAt time.Time) {
 	if a == nil || a.db == nil {
 		return
 	}
@@ -206,18 +207,41 @@ func (a *app) recordSlipOKLog(meta slipOKLogMeta, endpoint string, expectedAmoun
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, _ = a.db.ExecContext(ctx, `insert into slipok_logs (
+	_, err := a.db.ExecContext(ctx, `insert into slipok_logs (
 		admin_id,admin_email,source_system,reference_id,request_method,request_url,expected_amount_thb,request_payload,
 		http_status,provider_code,result_status,result_note,response_payload,trans_ref,detected_amount_thb,detected_paid_at,detected_receiver,duration_ms
-	) values ($1,$2,$3,$4,'POST',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
-		meta.AdminID, meta.AdminEmail, strings.TrimSpace(meta.SourceSystem), strings.TrimSpace(meta.ReferenceID), endpoint, expectedAmount, requestPayload,
+	) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		meta.AdminID, meta.AdminEmail, strings.TrimSpace(meta.SourceSystem), strings.TrimSpace(meta.ReferenceID), requestMethod, endpoint, expectedAmount, requestPayload,
 		httpStatus, result.ErrorCode, logStatus, result.Note, responsePayload, result.TransRef, detectedAmount, result.PaidAt, result.Receiver, time.Since(startedAt).Milliseconds())
+	if err != nil {
+		log.Printf("record SlipOK log: %v", err)
+	}
+}
+
+func slipOKVerificationEndpoint(settings slipOKSettings) string {
+	return strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
+}
+
+// recordSlipOKDecision records why a payment did not reach the verification
+// POST. Without these rows an intentionally disabled integration, incomplete
+// credentials, and a provider quota failure all look like a missing audit log.
+func (a *app) recordSlipOKDecision(meta slipOKLogMeta, settings slipOKSettings, expectedAmount int, status, note string, details map[string]any) {
+	requestPayload, _ := json.Marshal(map[string]any{"amount": expectedAmount, "preflight": true})
+	responsePayload, _ := json.Marshal(details)
+	requestMethod, endpoint := "PRECHECK", slipOKVerificationEndpoint(settings)
+	if status == "quota_error" || status == "cap_reached" {
+		requestMethod, endpoint = http.MethodGet, endpoint+"/quota"
+	}
+	a.recordSlipOKLog(meta, requestMethod, endpoint, expectedAmount, string(requestPayload), 0, string(responsePayload), slipOKResult{
+		Status: status,
+		Note:   note,
+	}, time.Now())
 }
 
 func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipDataURL string, expectedAmount int, logMeta ...slipOKLogMeta) (result slipOKResult) {
 	result = slipOKResult{Status: "manual_review"}
 	startedAt := time.Now()
-	endpoint := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
+	endpoint := slipOKVerificationEndpoint(settings)
 	httpStatus := 0
 	requestPayload := fmt.Sprintf(`{"amount":%d,"log":true}`, expectedAmount)
 	responsePayload := ""
@@ -226,7 +250,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		meta = logMeta[0]
 	}
 	defer func() {
-		a.recordSlipOKLog(meta, endpoint, expectedAmount, requestPayload, httpStatus, responsePayload, result, startedAt)
+		a.recordSlipOKLog(meta, http.MethodPost, endpoint, expectedAmount, requestPayload, httpStatus, responsePayload, result, startedAt)
 	}()
 	raw, err := decodeDataURL(slipDataURL)
 	if err != nil {
