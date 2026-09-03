@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -319,6 +320,46 @@ func TestPOSSaleIntegration(t *testing.T) {
 	}
 	owner := adminUser{ID: adminID, Name: "POS Sale Test", POSRole: "owner", POSActorID: adminID, POSActorName: "POS Sale Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
 
+	// Match shuttle usage and returns share the POS stock ledger. Saving the
+	// same state twice must be idempotent.
+	stockSessionID := "match-stock-" + randHex(8)
+	if _, err = db.Exec(`insert into sessions(id,name,admin_id,admin_passcode,state) values($1,'Match stock',$2,'','{}'::jsonb)`, stockSessionID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	stockState := defaultState(stockSessionID, "Match stock", "")
+	stockState.Settings.ShuttleBrands = []ShuttleBrand{{ID: "linked", Name: "Linked shuttle", Price: 85, Active: true, POSProductID: productID}}
+	stockState.Live = []Match{{ID: 1, Court: "สนาม 1", Status: "playing", Shuttles: 1, ShuttleSeq: "1", ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "linked", Number: 1}}}}
+	if err = a.saveState(t.Context(), stockState); err != nil {
+		t.Fatal(err)
+	}
+	var stock int
+	if err = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock); err != nil || stock != 9 {
+		t.Fatalf("match stock after first use=%d err=%v", stock, err)
+	}
+	if err = a.saveState(t.Context(), stockState); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 9 {
+		t.Fatalf("duplicate match state deducted stock again: %d", stock)
+	}
+	returnedMatch := stockState.Live[0]
+	returnedMatch.Status = "cancelled"
+	returnedMatch.ShuttleReturned = true
+	stockState.Live = nil
+	stockState.History = []Match{returnedMatch}
+	if err = a.saveState(t.Context(), stockState); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 10 {
+		t.Fatalf("cancelled match did not restore stock: %d", stock)
+	}
+	var matchMovementCount int
+	if err = db.QueryRow(`select count(*) from pos_stock_movements where admin_id=$1 and product_id=$2 and reason in ('match_use','match_return')`, adminID, productID).Scan(&matchMovementCount); err != nil || matchMovementCount != 2 {
+		t.Fatalf("match stock ledger rows=%d err=%v", matchMovementCount, err)
+	}
+
 	// A registered member with Match charges must appear in POS receivables even
 	// when the member has never held or purchased a POS product.
 	matchSessionID := "match-receivable-" + randHex(8)
@@ -388,7 +429,6 @@ func TestPOSSaleIntegration(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first hold status=%d body=%s", first.Code, first.Body.String())
 	}
-	var stock int
 	if err = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock); err != nil || stock != 8 {
 		t.Fatalf("stock after hold=%d err=%v", stock, err)
 	}
@@ -480,12 +520,128 @@ func TestPOSSaleIntegration(t *testing.T) {
 		t.Fatalf("payment method filter total=%d items=%#v err=%v", filteredTotal, filteredHistory, err)
 	}
 
+	// One physical sale can be split equally across several member ledgers while
+	// stock is deducted exactly once.
+	splitMemberIDs := []string{memberID}
+	for index := 0; index < 2; index++ {
+		id := "split-member-" + randHex(8)
+		if _, err = db.Exec(`insert into members(id,admin_id,name,phone,active,profile_token_hash,profile_token) values($1,$2,$3,$4,true,$5,$6)`, id, adminID, fmt.Sprintf("Split Member %d", index+2), "09"+randHex(4), tokenDigest(id), id); err != nil {
+			t.Fatal(err)
+		}
+		splitMemberIDs = append(splitMemberIDs, id)
+	}
+	splitResponse := requestSale(map[string]any{"requestId": "split-request-" + randHex(8), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": splitMemberIDs, "discountType": "amount", "expectedTotalSatang": 1070, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if splitResponse.Code != http.StatusCreated {
+		t.Fatalf("split hold status=%d body=%s", splitResponse.Code, splitResponse.Body.String())
+	}
+	var splitPayload struct {
+		SaleID string `json:"saleId"`
+	}
+	if err = json.NewDecoder(splitResponse.Body).Decode(&splitPayload); err != nil {
+		t.Fatal(err)
+	}
+	var splitSum int64
+	var splitRows int
+	if err = db.QueryRow(`select count(*),coalesce(sum(share_satang),0) from pos_sale_splits where sale_id=$1`, splitPayload.SaleID).Scan(&splitRows, &splitSum); err != nil || splitRows != 3 || splitSum != 1070 {
+		t.Fatalf("split rows=%d sum=%d err=%v", splitRows, splitSum, err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 6 {
+		t.Fatalf("split sale deducted stock more than once: %d", stock)
+	}
+	accountRows, err := db.Query(`select billing_account_id,share_satang from pos_sale_splits where sale_id=$1 order by position`, splitPayload.SaleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type splitAccount struct {
+		id    string
+		share int64
+	}
+	splitAccounts := []splitAccount{}
+	for accountRows.Next() {
+		var item splitAccount
+		_ = accountRows.Scan(&item.id, &item.share)
+		splitAccounts = append(splitAccounts, item)
+	}
+	accountRows.Close()
+	for _, item := range splitAccounts {
+		if _, err = a.settleBillingAccount(t.Context(), owner, item.id, "cash", item.share, item.share, "", true, "pos"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var splitStatus string
+	if err = db.QueryRow(`select status from pos_sales where id=$1`, splitPayload.SaleID).Scan(&splitStatus); err != nil || splitStatus != "paid" {
+		t.Fatalf("split parent status=%q err=%v", splitStatus, err)
+	}
+	var firstSplitID string
+	var firstSplitShare int64
+	if err = db.QueryRow(`select sp.id,sp.share_satang from pos_sale_splits sp join billing_accounts ba on ba.id=sp.billing_account_id where sp.sale_id=$1 and ba.member_id=$2`, splitPayload.SaleID, splitMemberIDs[0]).Scan(&firstSplitID, &firstSplitShare); err != nil {
+		t.Fatal(err)
+	}
+	memberItems := a.memberPaymentDetailItems(t.Context(), adminID, splitMemberIDs[0], "pos_split", firstSplitID)
+	var memberItemTotal int64
+	for _, detail := range memberItems {
+		memberItemTotal += detail["amountSatang"].(int64)
+	}
+	if len(memberItems) == 0 || memberItemTotal != firstSplitShare {
+		t.Fatalf("member split detail total=%d share=%d items=%#v", memberItemTotal, firstSplitShare, memberItems)
+	}
+	if leaked := a.memberPaymentDetailItems(t.Context(), adminID, splitMemberIDs[1], "pos_split", firstSplitID); len(leaked) != 0 {
+		t.Fatalf("split payment detail leaked to another member: %#v", leaked)
+	}
+
+	voidSale := func(saleID string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/pos/sales/"+saleID+"/void", bytes.NewReader([]byte(`{"note":"integration test"}`)))
+		recorder := httptest.NewRecorder()
+		a.voidPOSSale(recorder, req, owner, saleID)
+		return recorder
+	}
+	voidableSplit := requestSale(map[string]any{"requestId": "split-void-" + randHex(8), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": splitMemberIDs, "expectedTotalSatang": 1070, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if voidableSplit.Code != http.StatusCreated {
+		t.Fatalf("voidable split status=%d body=%s", voidableSplit.Code, voidableSplit.Body.String())
+	}
+	var voidablePayload struct {
+		SaleID string `json:"saleId"`
+	}
+	_ = json.NewDecoder(voidableSplit.Body).Decode(&voidablePayload)
+	if recorder := voidSale(voidablePayload.SaleID); recorder.Code != http.StatusOK {
+		t.Fatalf("void split status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 6 {
+		t.Fatalf("void split did not restore stock exactly once: %d", stock)
+	}
+
+	partiallyPaid := requestSale(map[string]any{"requestId": "split-partial-" + randHex(8), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": splitMemberIDs, "expectedTotalSatang": 1070, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if partiallyPaid.Code != http.StatusCreated {
+		t.Fatalf("partial split status=%d body=%s", partiallyPaid.Code, partiallyPaid.Body.String())
+	}
+	var partialPayload struct {
+		SaleID string `json:"saleId"`
+	}
+	_ = json.NewDecoder(partiallyPaid.Body).Decode(&partialPayload)
+	var partialAccount string
+	var partialShare int64
+	if err = db.QueryRow(`select billing_account_id,share_satang from pos_sale_splits where sale_id=$1 order by position limit 1`, partialPayload.SaleID).Scan(&partialAccount, &partialShare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.settleBillingAccount(t.Context(), owner, partialAccount, "cash", partialShare, partialShare, "", true, "pos"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := voidSale(partialPayload.SaleID); recorder.Code != http.StatusConflict {
+		t.Fatalf("partially paid split void status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 5 {
+		t.Fatalf("blocked split void changed stock: %d", stock)
+	}
+
 	insufficient := requestSale(map[string]any{"requestId": "sale-request-" + randHex(8), "action": "pay", "buyerType": "anonymous", "method": "cash", "discountType": "amount", "expectedTotalSatang": 10700, "cashReceivedSatang": 10700, "items": []map[string]any{{"productId": productID, "quantity": 10}}})
 	if insufficient.Code != http.StatusConflict {
 		t.Fatalf("insufficient status=%d body=%s", insufficient.Code, insufficient.Body.String())
 	}
 	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
-	if stock != 7 {
+	if stock != 5 {
 		t.Fatalf("failed sale changed stock: %d", stock)
 	}
 }

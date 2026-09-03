@@ -2028,6 +2028,10 @@ onUnmounted(() => {
             <p v-if="!historyDetail.items?.length" class="rounded-xl bg-paper-100 p-5 text-center text-sm font-bold text-stone-500 dark:bg-stone-800">ไม่พบรายละเอียดช่วงเวลา</p>
           </div>
           <p v-if="historyDetail.note" class="mt-4 rounded-xl bg-paper-100 p-3 text-sm font-semibold dark:bg-stone-800"><b>หมายเหตุ:</b> {{ historyDetail.note }}</p>
+		  <section v-if="historyDetail.slipUrl" class="mt-4 rounded-xl border p-3 dark:border-stone-700">
+			<h3 class="font-black">สลิปที่ลูกค้าอัปโหลด</h3>
+			<img :src="historyDetail.slipUrl" alt="สลิปชำระเงินของการจอง" class="mt-3 max-h-96 w-full rounded-lg bg-paper-100 object-contain dark:bg-stone-800" />
+		  </section>
         </div>
         <footer class="border-t p-3 dark:border-stone-700"><button type="button" class="booking-primary-button h-11 w-full justify-center" @click="historyDetail = null">ปิด</button></footer>
       </section>

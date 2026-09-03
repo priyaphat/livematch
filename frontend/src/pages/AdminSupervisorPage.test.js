@@ -34,6 +34,24 @@ function mountDashboard(features) {
 }
 
 describe('AdminSupervisorPage feature cards', () => {
+	it('searches and stores a tracked POS product in admin default shuttle settings', async () => {
+	  const apiRequest = vi.fn().mockResolvedValue({ items: [{ id: 'product-yonex', name: 'Yonex AS-30', sku: 'SH-030', barcode: '88500030', trackStock: true, active: true, stockQuantity: 24, unit: 'ลูก' }] })
+	  const auth = {
+		user: { name: 'Admin', email: 'admin@example.com', coins: 100 }, sessions: [], features: { posEnabled: true }, memberTypes: [], liveMatchSessionCost: 1, liveShareSessionCost: 1,
+		defaultSettings: { memberEntryFees: {}, shuttleBrands: [{ id: 'yonex', name: 'Yonex', price: 85, active: true }], courtNames: ['สนาม 1'], levels: ['กลาง'], dashboardAnnouncements: [] }
+	  }
+	  const wrapper = mount(AdminSupervisorPage, { props: {
+		auth, apiRequest, forms: { sessionCreateType: 'liveMatch' }, ui: { showAdminDefaultSettingsModal: true, showCreateSessionModal: false },
+		createSession: vi.fn(), openOwnedSession: vi.fn(), refreshAdminSupervisor: vi.fn(), saveAdminDefaultSettings: vi.fn(), addAdminDefaultShuttleBrand: vi.fn(), removeAdminDefaultShuttleBrand: vi.fn(), addAdminDefaultCourt: vi.fn(), removeAdminDefaultCourt: vi.fn(), addAdminDefaultLevel: vi.fn(), removeAdminDefaultLevel: vi.fn()
+	  } })
+	  const combobox = wrapper.get('input[role="combobox"]')
+	  await combobox.trigger('focus')
+	  await vi.waitFor(() => expect(wrapper.text()).toContain('Yonex AS-30'))
+	  await wrapper.findAll('button').find((button) => button.text().includes('Yonex AS-30')).trigger('click')
+	  expect(auth.defaultSettings.shuttleBrands[0].posProductId).toBe('product-yonex')
+	  expect(combobox.element.value).toContain('Yonex AS-30')
+	})
+
   it('hides member and booking cards when both flags are disabled', () => {
     const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false })
     expect(wrapper.text()).not.toContain('ระบบสมาชิก')

@@ -188,10 +188,11 @@ type PlayerPaymentSummary struct {
 }
 
 type ShuttleBrand struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Price  int    `json:"price"`
-	Active bool   `json:"active"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Price        int    `json:"price"`
+	Active       bool   `json:"active"`
+	POSProductID string `json:"posProductId,omitempty"`
 }
 
 type ShuttleSeqItem struct {
@@ -760,6 +761,28 @@ func (a *app) migrate(ctx context.Context) error {
 			details text not null default '{}',
 			created_at timestamptz not null default now()
 		);
+		create table if not exists slipok_logs (
+			id bigserial primary key,
+			admin_id text not null default '',
+			admin_email text not null default '',
+			source_system text not null default '',
+			reference_id text not null default '',
+			request_method text not null default 'POST',
+			request_url text not null default '',
+			expected_amount_thb integer not null default 0,
+			request_payload text not null default '{}',
+			http_status integer not null default 0,
+			provider_code integer not null default 0,
+			result_status text not null default 'manual_review',
+			result_note text not null default '',
+			response_payload text not null default '',
+			trans_ref text not null default '',
+			detected_amount_thb integer,
+			detected_paid_at text not null default '',
+			detected_receiver text not null default '',
+			duration_ms bigint not null default 0,
+			created_at timestamptz not null default now()
+		);
 		create extension if not exists btree_gist;
 		create table if not exists admin_features (
 			admin_id text primary key references admin_users(id) on delete cascade,
@@ -1281,10 +1304,27 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_sales add column if not exists prices_include_tax boolean not null default true;
 		alter table pos_sales add column if not exists total_satang bigint not null default 0 check (total_satang >= 0);
 		alter table pos_sales add column if not exists stock_location text not null default 'primary';
+		alter table pos_sales add column if not exists split_mode text not null default 'none';
+		alter table pos_sales add column if not exists split_count integer not null default 1 check (split_count > 0);
+		do $$ begin alter table pos_sales add constraint pos_sales_split_mode_check check (split_mode in ('none','equal')); exception when duplicate_object then null; end $$;
 		do $$ begin alter table pos_sales add constraint pos_sales_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_sales set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
 		update pos_sales set subtotal_satang=total_thb::bigint*100,net_before_vat_satang=total_thb::bigint*100,total_satang=total_thb::bigint*100 where total_satang=0 and total_thb<>0;
 		create unique index if not exists idx_pos_sales_request on pos_sales(admin_id,request_id) where request_id<>'';
+		create table if not exists pos_sale_splits (
+			id text primary key,
+			sale_id text not null references pos_sales(id) on delete cascade,
+			billing_account_id text not null references billing_accounts(id) on delete restrict,
+			position integer not null check (position >= 0),
+			share_satang bigint not null check (share_satang >= 0),
+			status text not null default 'open' check (status in ('open','paid','void')),
+			payment_id text references billing_payments(id) on delete set null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique (sale_id,billing_account_id),
+			unique (sale_id,position)
+		);
+		create index if not exists idx_pos_sale_splits_account on pos_sale_splits(billing_account_id,status,created_at desc);
 		create table if not exists pos_sale_items (
 			id bigserial primary key,
 			sale_id text not null references pos_sales(id) on delete cascade,
@@ -1376,7 +1416,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_movements add column if not exists actor_name text not null default '';
 		alter table pos_stock_movements add column if not exists stock_location text not null default 'primary';
 		alter table pos_stock_movements drop constraint if exists pos_stock_movements_reason_check;
-		alter table pos_stock_movements add constraint pos_stock_movements_reason_check check (reason in ('sale','void','restock','adjustment','transfer_out','transfer_in'));
+		alter table pos_stock_movements add constraint pos_stock_movements_reason_check check (reason in ('sale','void','restock','adjustment','transfer_out','transfer_in','match_use','match_return'));
 		do $$ begin alter table pos_stock_movements add constraint pos_stock_movements_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_stock_movements set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
 		update pos_stock_movements set gross_total_satang=total_cost_thb::bigint*100 where gross_total_satang=0 and total_cost_thb<>0;
@@ -1385,6 +1425,21 @@ func (a *app) migrate(ctx context.Context) error {
 		update pos_stock_movements set resulting_cost_satang=resulting_cost_thb::bigint*100 where resulting_cost_satang=0 and resulting_cost_thb<>0;
 		create index if not exists idx_pos_stock_product on pos_stock_movements(product_id, created_at desc);
 		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
+		create table if not exists match_shuttle_stock_usage (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			session_id text not null references sessions(id) on delete cascade,
+			match_id integer not null,
+			brand_id text not null,
+			shuttle_number integer not null,
+			product_id text not null references pos_products(id) on delete restrict,
+			stock_location text not null default 'primary' check (stock_location in ('primary','secondary')),
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			returned_at timestamptz,
+			unique (session_id,match_id,brand_id,shuttle_number)
+		);
+		create index if not exists idx_match_shuttle_stock_usage_session on match_shuttle_stock_usage(session_id,active);
 		create table if not exists billing_payment_allocations (
 			id bigserial primary key,
 			payment_id text not null references billing_payments(id) on delete cascade,
@@ -1422,6 +1477,8 @@ func (a *app) migrate(ctx context.Context) error {
 		create unique index if not exists idx_coin_purchase_orders_subscription on coin_purchase_orders(subscription_id) where subscription_id is not null;
 		create unique index if not exists idx_coin_purchase_orders_pending_subscription on coin_purchase_orders(admin_id) where product_type = 'subscription' and status = 'pending';
 		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
+		create index if not exists idx_slipok_logs_created on slipok_logs(created_at desc, id desc);
+		create index if not exists idx_slipok_logs_admin_created on slipok_logs(admin_id, created_at desc, id desc);
 		create table if not exists support_issues (
 			id text primary key,
 			title text not null,
@@ -2498,7 +2555,11 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 
 func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state SessionState) {
 	if err := a.saveState(r.Context(), state); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "สต็อกลูกแบดใน POS ไม่เพียงพอ") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, state)
@@ -2507,7 +2568,11 @@ func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state Session
 func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, state SessionState, action, targetType, targetID string, details map[string]any) {
 	refreshPlayerOutstandingAmounts(&state)
 	if err := a.saveState(r.Context(), state); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "สต็อกลูกแบดใน POS ไม่เพียงพอ") {
+			status = http.StatusConflict
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 	if user, ok := a.currentAdmin(r.Context(), r); ok {
@@ -2546,6 +2611,126 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 		}
 	}
 	writeJSON(w, http.StatusOK, state)
+}
+
+type matchShuttleStockKey struct {
+	MatchID int
+	BrandID string
+	Number  int
+}
+
+type matchShuttleStockUsage struct {
+	ID        int64
+	ProductID string
+	Location  string
+}
+
+func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID string, state SessionState) error {
+	if adminID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `select pg_advisory_xact_lock(hashtextextended($1,0))`, "match-shuttle-stock:"+state.Session.ID); err != nil {
+		return err
+	}
+	brandProducts := map[string]string{}
+	for _, brand := range state.Settings.ShuttleBrands {
+		if strings.TrimSpace(brand.POSProductID) != "" {
+			brandProducts[normalizedBrandID(brand.ID)] = strings.TrimSpace(brand.POSProductID)
+		}
+	}
+	desired := map[matchShuttleStockKey]string{}
+	// New deductions are created only for live matches. Historical matches are
+	// retained below only when they already have a ledger row, so linking a POS
+	// product never retroactively consumes stock for old sessions.
+	for _, match := range state.Live {
+		if isCancelledMatch(match) && match.ShuttleReturned {
+			continue
+		}
+		for _, item := range normalizedShuttleSeqItems(match, state) {
+			key := matchShuttleStockKey{MatchID: match.ID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
+			desired[key] = brandProducts[key.BrandID]
+		}
+	}
+	existing := map[matchShuttleStockKey]matchShuttleStockUsage{}
+	rows, err := tx.QueryContext(ctx, `select id,match_id,brand_id,shuttle_number,product_id,stock_location from match_shuttle_stock_usage where session_id=$1 and active for update`, state.Session.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var usage matchShuttleStockUsage
+		var key matchShuttleStockKey
+		if err = rows.Scan(&usage.ID, &key.MatchID, &key.BrandID, &key.Number, &usage.ProductID, &usage.Location); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[key] = usage
+	}
+	rows.Close()
+	for _, match := range state.History {
+		if isCancelledMatch(match) && match.ShuttleReturned {
+			continue
+		}
+		for _, item := range normalizedShuttleSeqItems(match, state) {
+			key := matchShuttleStockKey{MatchID: match.ID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
+			if usage, ok := existing[key]; ok {
+				desired[key] = usage.ProductID
+			}
+		}
+	}
+	location := "primary"
+	_ = tx.QueryRowContext(ctx, `select case when secondary_stock_enabled then sale_stock_location else 'primary' end from pos_settings where admin_id=$1`, adminID).Scan(&location)
+	if !validStockLocation(location) {
+		location = "primary"
+	}
+	for key, productID := range desired {
+		if _, already := existing[key]; already {
+			delete(existing, key)
+			continue
+		}
+		if productID == "" {
+			continue
+		}
+		var balance int
+		var unitCost int64
+		if location == "secondary" {
+			err = tx.QueryRowContext(ctx, `update pos_products set secondary_stock_quantity=secondary_stock_quantity-1,updated_at=now() where id=$1 and admin_id=$2 and active and deleted_at is null and track_stock and secondary_stock_quantity>=1 returning secondary_stock_quantity,cost_satang`, productID, adminID).Scan(&balance, &unitCost)
+		} else {
+			err = tx.QueryRowContext(ctx, `update pos_products set stock_quantity=stock_quantity-1,updated_at=now() where id=$1 and admin_id=$2 and active and deleted_at is null and track_stock and stock_quantity>=1 returning stock_quantity,cost_satang`, productID, adminID).Scan(&balance, &unitCost)
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("สต็อกลูกแบดใน POS ไม่เพียงพอสำหรับ %s", key.BrandID)
+		}
+		if err != nil {
+			return err
+		}
+		note := fmt.Sprintf("Match %s เกม %d · %s #%d", state.Session.ID, key.MatchID, key.BrandID, key.Number)
+		if _, err = tx.ExecContext(ctx, `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,-1,$3,'match_use',$4,$5,'system','LiveMatch',$6,$6,$6,$6,$6,$7)`, adminID, productID, balance, note, state.Session.ID, unitCost, location); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `insert into match_shuttle_stock_usage (admin_id,session_id,match_id,brand_id,shuttle_number,product_id,stock_location) values ($1,$2,$3,$4,$5,$6,$7) on conflict (session_id,match_id,brand_id,shuttle_number) do update set product_id=excluded.product_id,stock_location=excluded.stock_location,active=true,returned_at=null`, adminID, state.Session.ID, key.MatchID, key.BrandID, key.Number, productID, location); err != nil {
+			return err
+		}
+	}
+	for key, usage := range existing {
+		var balance int
+		var unitCost int64
+		if usage.Location == "secondary" {
+			err = tx.QueryRowContext(ctx, `update pos_products set secondary_stock_quantity=secondary_stock_quantity+1,updated_at=now() where id=$1 and admin_id=$2 returning secondary_stock_quantity,cost_satang`, usage.ProductID, adminID).Scan(&balance, &unitCost)
+		} else {
+			err = tx.QueryRowContext(ctx, `update pos_products set stock_quantity=stock_quantity+1,updated_at=now() where id=$1 and admin_id=$2 returning stock_quantity,cost_satang`, usage.ProductID, adminID).Scan(&balance, &unitCost)
+		}
+		if err != nil {
+			return err
+		}
+		note := fmt.Sprintf("คืนจาก Match %s เกม %d · %s #%d", state.Session.ID, key.MatchID, key.BrandID, key.Number)
+		if _, err = tx.ExecContext(ctx, `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,1,$3,'match_return',$4,$5,'system','LiveMatch',$6,$6,$6,$6,$6,$7)`, adminID, usage.ProductID, balance, note, state.Session.ID, unitCost, usage.Location); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `update match_shuttle_stock_usage set active=false,returned_at=now() where id=$1`, usage.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *app) saveState(ctx context.Context, state SessionState) error {
@@ -2640,6 +2825,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 				return accountErr
 			}
 			state.Players[index].BillingAccountID = accountID
+		}
+		if err = a.syncMatchShuttleStockTx(ctx, tx, sessionAdminID.String, state); err != nil {
+			return err
 		}
 	}
 

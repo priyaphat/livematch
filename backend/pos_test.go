@@ -33,6 +33,24 @@ func TestValidPOSPaymentMethod(t *testing.T) {
 	}
 }
 
+func TestEqualSplitSharesPreservesEverySatang(t *testing.T) {
+	shares := equalSplitShares(10000, 3)
+	want := []int64{3334, 3333, 3333}
+	var total int64
+	for index, share := range shares {
+		if share != want[index] {
+			t.Fatalf("share %d=%d want %d", index, share, want[index])
+		}
+		total += share
+	}
+	if total != 10000 {
+		t.Fatalf("split total=%d want 10000", total)
+	}
+	if got := equalSplitShares(100, 0); len(got) != 0 {
+		t.Fatalf("invalid count returned %#v", got)
+	}
+}
+
 func TestPromptPayPayloadSatangIncludesDecimalAmount(t *testing.T) {
 	payload, err := promptPayPayloadSatang(promptPaySettings{ID: "0812345678", Type: "mobile"}, 2033)
 	if err != nil {

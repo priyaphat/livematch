@@ -36,6 +36,7 @@ const uploadingId = ref("");
 const uploadStatus = ref("");
 const loggingOut = ref(false);
 const toastMessage = ref("");
+const paymentDetail = ref(null);
 const historyPages = reactive({ bookings: 1, payments: 1, matches: 1, pageSize: 10 });
 let clock;
 let toastTimer;
@@ -404,7 +405,7 @@ onUnmounted(() => {
               <div>
                 <p class="font-black">
                   {{
-                    payment.kind === "booking" ? "ค่าจองสนาม" : "ค่าเล่น Match"
+                    payment.kind === "booking" ? "ค่าจองสนาม" : payment.kind.startsWith("pos") ? "สินค้า POS" : "ค่าเล่น Match"
                   }}
                 </p>
                 <p class="mt-1 text-sm text-stone-500">
@@ -416,6 +417,7 @@ onUnmounted(() => {
                   statusText(payment.status)
                 }}</span>
                 <p class="mt-2 font-black">฿{{ payment.amountThb }}</p>
+				<button type="button" class="mt-2 rounded-lg border px-2.5 py-1.5 text-xs font-black dark:border-stone-600" @click="paymentDetail=payment">ดูเพิ่มเติม</button>
               </div>
             </article>
             <p v-if="!state.payments.length" class="profile-empty">
@@ -440,7 +442,7 @@ onUnmounted(() => {
                   {{ match.sessionName }} · เกม {{ match.matchId }}
                 </p>
                 <p class="mt-1 text-sm text-stone-500">
-                  {{ match.startedAt }}–{{ match.endedAt }}
+				  {{ match.startedAt }}–{{ match.endedAt }} · ลูกแบด {{ match.shuttles || 0 }} ลูก
                 </p>
               </div>
               <div class="text-right">
@@ -460,5 +462,15 @@ onUnmounted(() => {
         </section>
       </div>
     </template>
+	<div v-if="paymentDetail" class="fixed inset-0 z-[80] grid place-items-end bg-black/60 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-label="รายละเอียดการชำระเงิน" @click.self="paymentDetail=null">
+	  <section class="max-h-[88dvh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl dark:bg-stone-900">
+		<div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black text-court-700">รายละเอียดการชำระเงิน</p><h2 class="text-xl font-black">{{ paymentDetail.kind==='booking'?'ค่าจองสนาม':paymentDetail.kind.startsWith('pos')?'สินค้า POS':'ค่าแข่งขัน' }}</h2></div><button aria-label="ปิด" @click="paymentDetail=null"><X class="h-5 w-5" /></button></div>
+		<div class="mt-4 divide-y rounded-xl border dark:border-stone-700 dark:divide-stone-700">
+		  <div v-for="(item,index) in paymentDetail.detailItems || []" :key="index" class="grid grid-cols-[1fr_auto] gap-3 p-3 text-sm"><div><p class="font-black">{{ item.label || item.name || '-' }}</p><p v-if="item.description" class="mt-1 text-xs text-stone-500">{{ item.description }}</p><p class="mt-1 text-xs text-stone-500">จำนวน {{ item.quantity || 1 }}</p></div><b>฿{{ (Number(item.amountSatang || item.amountThb*100 || 0)/100).toLocaleString('th-TH',{minimumFractionDigits:2}) }}</b></div>
+		  <p v-if="!paymentDetail.detailItems?.length" class="p-5 text-center text-sm font-bold text-stone-500">ไม่มีรายละเอียดรายการเพิ่มเติม</p>
+		</div>
+		<div class="mt-4 flex items-center justify-between rounded-xl bg-paper-100 p-3 dark:bg-stone-800"><b>ยอดชำระรวม</b><b class="text-lg text-court-700">฿{{ Number(paymentDetail.amountThb || 0).toLocaleString('th-TH') }}</b></div>
+	  </section>
+	</div>
   </main>
 </template>

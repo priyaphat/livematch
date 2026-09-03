@@ -326,6 +326,14 @@ const forms = reactive({
   backofficeActivitySessionId: '',
   backofficeActivitySessionOptions: [],
   backofficeActivityPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+  backofficeSlipOKLogs: [],
+  backofficeSlipOKLogsPage: 1,
+  backofficeSlipOKLogsPageSize: 20,
+  backofficeSlipOKLogsUserId: '',
+  backofficeSlipOKLogsSystem: '',
+  backofficeSlipOKLogsStatus: '',
+  backofficeSlipOKLogsSearch: '',
+  backofficeSlipOKLogsPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
   backofficeSupportIssues: [],
   backofficeSupportIssueDetail: null,
   backofficeSupportStatus: '',
@@ -986,7 +994,7 @@ async function restoreBackoffice() {
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
     syncBackofficeCoinShopForms()
-    await Promise.all([loadBackofficeCoinOrders(), loadBackofficeCoinLedger(), loadBackofficeActivityLogs(), loadBackofficeSupportIssues()])
+    await Promise.all([loadBackofficeCoinOrders(), loadBackofficeCoinLedger(), loadBackofficeActivityLogs(), loadBackofficeSlipOKLogs(), loadBackofficeSupportIssues()])
     backoffice.unlocked = true
   } catch (error) {
     backoffice.unlocked = false
@@ -1010,6 +1018,7 @@ async function loadBackoffice() {
       loadBackofficeCoinOrders(),
       loadBackofficeCoinLedger(),
       loadBackofficeActivityLogs(),
+      loadBackofficeSlipOKLogs(),
       loadBackofficeSupportIssues()
     ])
     backoffice.unlocked = true
@@ -1294,6 +1303,26 @@ async function saveBackofficeSettings() {
 	} finally {
 		forms.backofficeSettingsSaving = false
 	}
+}
+
+async function loadBackofficeSlipOKLogs(page = forms.backofficeSlipOKLogsPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeSlipOKLogsPageSize)
+  })
+  if (forms.backofficeSlipOKLogsUserId) params.set('userId', forms.backofficeSlipOKLogsUserId)
+  if (forms.backofficeSlipOKLogsSystem) params.set('system', forms.backofficeSlipOKLogsSystem)
+  if (forms.backofficeSlipOKLogsStatus) params.set('status', forms.backofficeSlipOKLogsStatus)
+  if (forms.backofficeSlipOKLogsSearch.trim()) params.set('search', forms.backofficeSlipOKLogsSearch.trim())
+  const payload = await api(`/api/backoffice/slipok-logs?${params}`, { headers: backofficeAuthHeaders() })
+  forms.backofficeSlipOKLogs = payload.items || []
+  forms.backofficeSlipOKLogsPagination = payload.pagination || { page: 1, pageSize: forms.backofficeSlipOKLogsPageSize, total: 0, totalPages: 0 }
+  forms.backofficeSlipOKLogsPage = forms.backofficeSlipOKLogsPagination.page || 1
+}
+
+function applyBackofficeSlipOKLogFilters() {
+  forms.backofficeSlipOKLogsPage = 1
+  return loadBackofficeSlipOKLogs(1)
 }
 
 async function saveBackofficeCoinShop() {
@@ -2049,7 +2078,8 @@ function normalizeSessionDefaults(input = {}) {
       id: String(brand.id || brand.name || `brand-${Date.now()}`).trim() || `brand-${Date.now()}`,
       name: String(brand.name || '').trim(),
       price: Math.max(0, Number(brand.price || 0)),
-      active: Boolean(brand.active)
+	  active: Boolean(brand.active),
+	  posProductId: String(brand.posProductId || '')
     })).filter((brand) => brand.name) : base.shuttleBrands,
     dashboardAnnouncements: Array.isArray(input.dashboardAnnouncements)
       ? input.dashboardAnnouncements.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5)
@@ -2957,7 +2987,7 @@ function addAdminDefaultShuttleBrand() {
     id = `${idBase}-${suffix}`
     suffix += 1
   }
-  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), active: true })
+  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), active: true, posProductId: '' })
   forms.adminDefaultNewShuttleBrandName = ''
   forms.adminDefaultNewShuttleBrandPrice = 0
 }
@@ -3372,7 +3402,11 @@ async function startMatchApi(match, court = '') {
       body: JSON.stringify({ court, brandId })
     }))
     state.tab = 'liveboard'
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'เริ่มการแข่งขันไม่สำเร็จ')
+      throw error
+    }
     startMatch(match, court, brandId)
   }
 }
@@ -3429,7 +3463,11 @@ async function adjustShuttleApi(match, delta, brandId = defaultShuttleBrand().id
       method: 'PATCH',
       body: JSON.stringify({ delta, brandId })
     }))
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'บันทึกการใช้ลูกแบดไม่สำเร็จ')
+      throw error
+    }
     adjustShuttle(match, delta, brandId)
   }
 }
@@ -3440,7 +3478,11 @@ async function returnShuttleApi(match) {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/shuttles/return`, {
       method: 'POST'
     }))
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'คืนลูกแบดไม่สำเร็จ')
+      throw error
+    }
     returnLatestShuttle(match)
   }
 }
@@ -3453,7 +3495,11 @@ async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned
       body: JSON.stringify({ note, winner: forms.finishWinner, scores, shuttleReturned })
     }))
     forms.finishNote = ''
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'บันทึกผลการแข่งขันไม่สำเร็จ')
+      throw error
+    }
     closeLive(match, cancelled, note, shuttleReturned, scores)
   }
 }
@@ -3714,6 +3760,8 @@ const pageProps = computed(() => ({
   loadBackofficeActivityLogs,
   applyBackofficeActivityFilters,
   changeBackofficeActivityUser,
+  loadBackofficeSlipOKLogs,
+  applyBackofficeSlipOKLogFilters,
   openBackofficeAdminDetail,
   deleteBackofficeAdminSession,
   saveBackofficeAdminDiscount,

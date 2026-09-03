@@ -49,6 +49,8 @@ export interface POSSale {
   changeSatang?: number;
   referenceNumber?: string;
   stockLocation: 'primary' | 'secondary';
+  splitMode?: 'none' | 'equal';
+  splitCount?: number;
 }
 
 export interface POSSettingsRecord {
@@ -88,6 +90,7 @@ export interface POSSettingsRecord {
 }
 
 export interface POSBillingSummary {
+  paymentId?: string;
   billingAccountId: string;
   memberId: string;
   displayName: string;
@@ -171,6 +174,8 @@ export function createPOSSale(input: {
   action: 'hold' | 'pay';
   buyerType: 'member' | 'anonymous';
   buyerId?: string;
+  buyerIds?: string[];
+  splitMode?: 'none' | 'equal';
   method?: 'cash' | 'promptpay';
   discountType: 'amount' | 'percent';
   discountAmountSatang: number;

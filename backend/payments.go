@@ -78,6 +78,13 @@ type slipOKResult struct {
 	Receiver   string
 }
 
+type slipOKLogMeta struct {
+	AdminID      string
+	AdminEmail   string
+	SourceSystem string
+	ReferenceID  string
+}
+
 var slipOKAPIBaseURL = "https://api.slipok.com"
 
 func (a *app) slipOKSettings(ctx context.Context) slipOKSettings {
@@ -180,13 +187,55 @@ func (a *app) fetchSlipOKQuota(ctx context.Context, settings slipOKSettings) sli
 	return result
 }
 
-func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipDataURL string, expectedAmount int) slipOKResult {
-	result := slipOKResult{Status: "manual_review"}
+func (a *app) recordSlipOKLog(meta slipOKLogMeta, endpoint string, expectedAmount int, requestPayload string, httpStatus int, responsePayload string, result slipOKResult, startedAt time.Time) {
+	if a == nil || a.db == nil {
+		return
+	}
+	meta.AdminID = strings.TrimSpace(meta.AdminID)
+	meta.AdminEmail = strings.TrimSpace(meta.AdminEmail)
+	if meta.AdminEmail == "" && meta.AdminID != "" {
+		_ = a.db.QueryRow(`select email from admin_users where id=$1`, meta.AdminID).Scan(&meta.AdminEmail)
+	}
+	var detectedAmount any
+	if result.AmountTHB != nil {
+		detectedAmount = *result.AmountTHB
+	}
+	logStatus := result.Status
+	if !result.Passed && result.Definitive {
+		logStatus = "failed"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, _ = a.db.ExecContext(ctx, `insert into slipok_logs (
+		admin_id,admin_email,source_system,reference_id,request_method,request_url,expected_amount_thb,request_payload,
+		http_status,provider_code,result_status,result_note,response_payload,trans_ref,detected_amount_thb,detected_paid_at,detected_receiver,duration_ms
+	) values ($1,$2,$3,$4,'POST',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		meta.AdminID, meta.AdminEmail, strings.TrimSpace(meta.SourceSystem), strings.TrimSpace(meta.ReferenceID), endpoint, expectedAmount, requestPayload,
+		httpStatus, result.ErrorCode, logStatus, result.Note, responsePayload, result.TransRef, detectedAmount, result.PaidAt, result.Receiver, time.Since(startedAt).Milliseconds())
+}
+
+func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipDataURL string, expectedAmount int, logMeta ...slipOKLogMeta) (result slipOKResult) {
+	result = slipOKResult{Status: "manual_review"}
+	startedAt := time.Now()
+	endpoint := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
+	httpStatus := 0
+	requestPayload := fmt.Sprintf(`{"amount":%d,"log":true}`, expectedAmount)
+	responsePayload := ""
+	meta := slipOKLogMeta{}
+	if len(logMeta) > 0 {
+		meta = logMeta[0]
+	}
+	defer func() {
+		a.recordSlipOKLog(meta, endpoint, expectedAmount, requestPayload, httpStatus, responsePayload, result, startedAt)
+	}()
 	raw, err := decodeDataURL(slipDataURL)
 	if err != nil {
 		result.Note = "แปลงรูปสลิปเพื่อส่ง Auto Slip ไม่สำเร็จ"
 		return result
 	}
+	digest := sha256.Sum256(raw)
+	requestSummary, _ := json.Marshal(map[string]any{"amount": expectedAmount, "log": true, "fileName": "slip.png", "fileSize": len(raw), "sha256": hex.EncodeToString(digest[:])})
+	requestPayload = string(requestSummary)
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("log", "true")
@@ -204,8 +253,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		result.Note = err.Error()
 		return result
 	}
-	url := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
 	if err != nil {
 		result.Note = err.Error()
 		return result
@@ -218,7 +266,9 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		return result
 	}
 	defer resp.Body.Close()
+	httpStatus = resp.StatusCode
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	responsePayload = string(responseBody)
 	var payload struct {
 		Success bool   `json:"success"`
 		Code    int    `json:"code"`

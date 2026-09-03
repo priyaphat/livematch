@@ -674,7 +674,7 @@ export const ProductsView: React.FC = () => {
         </aside>
 
         {/* RIGHT MAIN AREA: Search Bar & Products Table */}
-        <section className="flex-1 flex flex-col min-h-0 p-3 sm:p-5 overflow-y-auto custom-scrollbar space-y-4">
+        <section className="flex-1 flex flex-col min-h-0 gap-4 overflow-hidden p-3 sm:p-5">
           {/* Search & Stats Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
             <div className="relative flex-1 max-w-md">
@@ -704,8 +704,8 @@ export const ProductsView: React.FC = () => {
           </div>
 
           {/* Products Table Card */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
-            <div className="overflow-x-auto">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs dark:border-slate-800 dark:bg-slate-900">
+            <div className="min-h-0 flex-1 overflow-auto custom-scrollbar">
               <table className="w-full text-left text-xs text-slate-700 dark:text-slate-300">
                 <thead className="bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 font-bold border-b border-slate-200 dark:border-slate-800 uppercase tracking-wider text-[11px]">
                   <tr>
@@ -865,7 +865,7 @@ export const ProductsView: React.FC = () => {
               </table>
             </div>
             {filteredProducts.length > 0 && (
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-5 py-4 border-t border-slate-200 dark:border-slate-800">
+              <div className="flex shrink-0 flex-col items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-3 sm:flex-row dark:border-slate-800 dark:bg-slate-900">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   แสดง {firstProductIndex + 1}–
                   {Math.min(firstProductIndex + productsPerPage, filteredProducts.length)} จาก{' '}

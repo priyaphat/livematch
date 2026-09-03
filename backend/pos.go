@@ -215,6 +215,8 @@ type posSaleRecord struct {
 	ChangeSatang       int64               `json:"changeSatang,omitempty"`
 	ReferenceNumber    string              `json:"referenceNumber,omitempty"`
 	StockLocation      string              `json:"stockLocation"`
+	SplitMode          string              `json:"splitMode"`
+	SplitCount         int                 `json:"splitCount"`
 }
 
 func validStockLocation(value string) bool { return value == "primary" || value == "secondary" }
@@ -242,6 +244,7 @@ type billingLine struct {
 }
 
 type billingSummary struct {
+	PaymentID        string        `json:"paymentId,omitempty"`
 	BillingAccountID string        `json:"billingAccountId,omitempty"`
 	MemberID         string        `json:"memberId,omitempty"`
 	DisplayName      string        `json:"displayName"`
@@ -590,7 +593,7 @@ func (a *app) writePOSProducts(w http.ResponseWriter, r *http.Request, adminID s
 
 	var total int
 	filter := `admin_id=$1 and deleted_at is null
-		and ($2='' or name ilike '%%'||$2||'%%' or sku ilike '%%'||$2||'%%' or barcode ilike '%%'||$2||'%%')
+		and ($2='' or id ilike '%%'||$2||'%%' or name ilike '%%'||$2||'%%' or sku ilike '%%'||$2||'%%' or barcode ilike '%%'||$2||'%%')
 		and ($3='' or lower(category)=lower($3))
 		and ($4='all' or active=($4='active'))`
 	if err := a.db.QueryRowContext(r.Context(), `select count(*) from pos_products where `+filter, adminID, search, category, status).Scan(&total); err != nil {
@@ -628,7 +631,7 @@ func (a *app) listPOSSales(ctx context.Context, adminID, status string, limit, o
 		offset = 0
 	}
 	items := []posSaleRecord{}
-	rows, err := a.db.QueryContext(ctx, `select s.id,coalesce(s.billing_account_id,''),s.buyer_name,s.status,s.total_thb,s.cost_thb,s.cost_satang,coalesce(s.payment_id,''),s.note,to_char(s.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.created_by,s.created_by_type,s.created_by_name,s.subtotal_satang,s.discount_type,s.discount_rate_bps,s.discount_satang,s.net_before_vat_satang,s.vat_rate_bps,s.vat_satang,s.prices_include_tax,s.total_satang,coalesce(bp.method,''),coalesce(bp.cash_received_satang,0),coalesce(bp.change_satang,0),coalesce(bp.reference_number,''),s.stock_location from pos_sales s left join billing_payments bp on bp.id=s.payment_id where s.admin_id=$1 and ($2='' or $2='all' or s.status=$2) order by s.created_at desc limit $3 offset $4`, adminID, status, limit, offset)
+	rows, err := a.db.QueryContext(ctx, `select s.id,coalesce(s.billing_account_id,''),s.buyer_name,s.status,s.total_thb,s.cost_thb,s.cost_satang,coalesce(s.payment_id,''),s.note,to_char(s.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.created_by,s.created_by_type,s.created_by_name,s.subtotal_satang,s.discount_type,s.discount_rate_bps,s.discount_satang,s.net_before_vat_satang,s.vat_rate_bps,s.vat_satang,s.prices_include_tax,s.total_satang,coalesce(bp.method,''),coalesce(bp.cash_received_satang,0),coalesce(bp.change_satang,0),coalesce(bp.reference_number,''),s.stock_location,s.split_mode,s.split_count from pos_sales s left join billing_payments bp on bp.id=s.payment_id where s.admin_id=$1 and ($2='' or $2='all' or s.status=$2) order by s.created_at desc limit $3 offset $4`, adminID, status, limit, offset)
 	if err != nil {
 		return items, err
 	}
@@ -637,7 +640,7 @@ func (a *app) listPOSSales(ctx context.Context, adminID, status string, limit, o
 	for rows.Next() {
 		var sale posSaleRecord
 		sale.Items = []posSaleItemRecord{}
-		if err = rows.Scan(&sale.ID, &sale.BillingAccountID, &sale.BuyerName, &sale.Status, &sale.TotalTHB, &sale.CostTHB, &sale.CostSatang, &sale.PaymentID, &sale.Note, &sale.CreatedAt, &sale.CreatedBy, &sale.CreatedByType, &sale.CreatedByName, &sale.SubtotalSatang, &sale.DiscountType, &sale.DiscountRateBPS, &sale.DiscountSatang, &sale.NetBeforeVATSatang, &sale.VATRateBPS, &sale.VATSatang, &sale.PricesIncludeTax, &sale.TotalSatang, &sale.PaymentMethod, &sale.CashReceivedSatang, &sale.ChangeSatang, &sale.ReferenceNumber, &sale.StockLocation); err != nil {
+		if err = rows.Scan(&sale.ID, &sale.BillingAccountID, &sale.BuyerName, &sale.Status, &sale.TotalTHB, &sale.CostTHB, &sale.CostSatang, &sale.PaymentID, &sale.Note, &sale.CreatedAt, &sale.CreatedBy, &sale.CreatedByType, &sale.CreatedByName, &sale.SubtotalSatang, &sale.DiscountType, &sale.DiscountRateBPS, &sale.DiscountSatang, &sale.NetBeforeVATSatang, &sale.VATRateBPS, &sale.VATSatang, &sale.PricesIncludeTax, &sale.TotalSatang, &sale.PaymentMethod, &sale.CashReceivedSatang, &sale.ChangeSatang, &sale.ReferenceNumber, &sale.StockLocation, &sale.SplitMode, &sale.SplitCount); err != nil {
 			return items, err
 		}
 		items = append(items, sale)
@@ -1192,6 +1195,8 @@ func (a *app) writePOSReports(w http.ResponseWriter, r *http.Request, adminID st
 	}
 	stockLocation := reportStockLocation(r.URL.Query())
 	stockClause := reportSaleStockClause("s", stockLocation)
+	topSearch := strings.TrimSpace(r.URL.Query().Get("topSearch"))
+	vatSearch := strings.TrimSpace(r.URL.Query().Get("vatSearch"))
 	var totalSales, totalSubtotal, totalDiscount, totalVAT, totalCOGS int64
 	var completedBills int
 	err = a.db.QueryRowContext(r.Context(), `
@@ -1207,8 +1212,9 @@ func (a *app) writePOSReports(w http.ResponseWriter, r *http.Request, adminID st
 	var topSellersTotal int
 	err = a.db.QueryRowContext(r.Context(), `select count(*) from (
 		select 1 from pos_sales s join pos_sale_items i on i.sale_id=s.id left join billing_payments bp on bp.id=s.payment_id
-		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3`+stockClause+`
-		group by i.product_id,i.product_name,i.sku) ranked`, adminID, start, end).Scan(&topSellersTotal)
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		and ($4='' or i.product_name ilike '%%'||$4||'%%' or i.sku ilike '%%'||$4||'%%')`+stockClause+`
+		group by i.product_id,i.product_name,i.sku) ranked`, adminID, start, end, topSearch).Scan(&topSellersTotal)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -1218,8 +1224,9 @@ func (a *app) writePOSReports(w http.ResponseWriter, r *http.Request, adminID st
 		select coalesce(i.product_id,''),i.product_name,i.sku,coalesce(sum(i.quantity),0)::bigint,
 			coalesce(sum(i.line_total_satang),0)::bigint,coalesce(sum(i.unit_cost_satang*i.quantity),0)::bigint
 		from pos_sales s join pos_sale_items i on i.sale_id=s.id left join billing_payments bp on bp.id=s.payment_id
-		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3`+stockClause+`
-		group by i.product_id,i.product_name,i.sku order by 4 desc,5 desc,lower(i.product_name) limit $4 offset $5`, adminID, start, end, topPageSize, (topPage-1)*topPageSize)
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		and ($4='' or i.product_name ilike '%%'||$4||'%%' or i.sku ilike '%%'||$4||'%%')`+stockClause+`
+		group by i.product_id,i.product_name,i.sku order by 4 desc,5 desc,lower(i.product_name) limit $5 offset $6`, adminID, start, end, topSearch, topPageSize, (topPage-1)*topPageSize)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -1252,14 +1259,23 @@ func (a *app) writePOSReports(w http.ResponseWriter, r *http.Request, adminID st
 	}
 	paymentStats["cashSatang"], paymentStats["promptPaySatang"] = cashSatang, promptPaySatang
 
+	var vatSalesTotal int
+	err = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales s left join billing_payments bp on bp.id=s.payment_id
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		and ($4='' or s.buyer_name ilike '%%'||$4||'%%' or s.created_by_name ilike '%%'||$4||'%%')`+stockClause, adminID, start, end, vatSearch).Scan(&vatSalesTotal)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
 	salesRows := []map[string]any{}
 	saleRows, err := a.db.QueryContext(r.Context(), `
 		select s.id,coalesce(s.payment_id,''),to_char(coalesce(bp.created_at,s.updated_at,s.created_at) at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
 			s.subtotal_satang,s.discount_satang,s.net_before_vat_satang,s.vat_satang,s.total_satang,s.vat_rate_bps,s.prices_include_tax,
 			coalesce(bp.method,'cash'),coalesce(sum(i.quantity),0)::bigint,s.created_by_name,s.buyer_name
 		from pos_sales s left join billing_payments bp on bp.id=s.payment_id left join pos_sale_items i on i.sale_id=s.id
-		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3`+stockClause+`
-		group by s.id,bp.created_at,bp.method order by coalesce(bp.created_at,s.updated_at,s.created_at),s.id limit $4 offset $5`, adminID, start, end, vatPageSize, (vatPage-1)*vatPageSize)
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		and ($4='' or s.buyer_name ilike '%%'||$4||'%%' or s.created_by_name ilike '%%'||$4||'%%')`+stockClause+`
+		group by s.id,bp.created_at,bp.method order by coalesce(bp.created_at,s.updated_at,s.created_at),s.id limit $5 offset $6`, adminID, start, end, vatSearch, vatPageSize, (vatPage-1)*vatPageSize)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -1292,7 +1308,7 @@ func (a *app) writePOSReports(w http.ResponseWriter, r *http.Request, adminID st
 		"summary":    map[string]any{"totalSalesSatang": totalSales, "totalSubtotalSatang": totalSubtotal, "totalDiscountSatang": totalDiscount, "totalVatSatang": totalVAT, "totalCogsSatang": totalCOGS, "grossProfitSatang": profit, "completedBills": completedBills, "averageBillSatang": averageBill},
 		"topSellers": topSellers, "paymentStats": paymentStats, "sales": salesRows,
 		"topSellersPagination": map[string]any{"page": topPage, "pageSize": topPageSize, "total": topSellersTotal, "totalPages": (topSellersTotal + topPageSize - 1) / topPageSize},
-		"salesPagination":      map[string]any{"page": vatPage, "pageSize": vatPageSize, "total": completedBills, "totalPages": (completedBills + vatPageSize - 1) / vatPageSize},
+		"salesPagination":      map[string]any{"page": vatPage, "pageSize": vatPageSize, "total": vatSalesTotal, "totalPages": (vatSalesTotal + vatPageSize - 1) / vatPageSize},
 	})
 }
 
@@ -1392,7 +1408,8 @@ func (a *app) writePOSPurchasesReport(w http.ResponseWriter, r *http.Request, ad
 	base := `from pos_stock_batches b
 		left join pos_suppliers s on s.id=b.supplier_id and s.admin_id=b.admin_id
 		where b.admin_id=$1 and b.mode='in' and b.supplier_name<>'' and b.created_at>=$2 and b.created_at<$3
-		and ($4='' or b.name ilike '%%'||$4||'%%' or b.external_reference_no ilike '%%'||$4||'%%' or b.supplier_name ilike '%%'||$4||'%%' or coalesce(s.code,'') ilike '%%'||$4||'%%')
+		and ($4='' or b.name ilike '%%'||$4||'%%' or b.external_reference_no ilike '%%'||$4||'%%' or b.supplier_name ilike '%%'||$4||'%%' or coalesce(s.code,'') ilike '%%'||$4||'%%' or b.actor_name ilike '%%'||$4||'%%'
+			or exists(select 1 from pos_stock_movements sm join pos_products sp on sp.id=sm.product_id where sm.batch_id=b.id and (sp.name ilike '%%'||$4||'%%' or sp.sku ilike '%%'||$4||'%%')))
 		and ($5='' or b.supplier_id=$5)`
 	if validStockLocation(stockLocation) {
 		base += " and b.stock_location='" + stockLocation + "'"
@@ -1539,7 +1556,8 @@ func (a *app) writePOSStockTransfersReport(w http.ResponseWriter, r *http.Reques
 	}
 	page, pageSize := posReportPagination(r.URL.Query(), "page", 25)
 	search, location := strings.TrimSpace(r.URL.Query().Get("search")), reportStockLocation(r.URL.Query())
-	filter := `b.admin_id=$1 and b.mode='transfer' and b.created_at>=$2 and b.created_at<$3 and ($4='' or b.name ilike '%%'||$4||'%%' or b.note ilike '%%'||$4||'%%')`
+	filter := `b.admin_id=$1 and b.mode='transfer' and b.created_at>=$2 and b.created_at<$3 and ($4='' or b.name ilike '%%'||$4||'%%' or b.note ilike '%%'||$4||'%%' or b.actor_name ilike '%%'||$4||'%%'
+		or exists(select 1 from pos_stock_movements sm join pos_products sp on sp.id=sm.product_id where sm.batch_id=b.id and (sp.name ilike '%%'||$4||'%%' or sp.sku ilike '%%'||$4||'%%')))`
 	if validStockLocation(location) {
 		filter += " and (b.source_stock_location='" + location + "' or b.destination_stock_location='" + location + "')"
 	}
@@ -1692,16 +1710,18 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 		posPage, sessionPage = 1, 1
 	}
 	stockLocation := reportStockLocation(r.URL.Query())
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	base := `from pos_sales s join pos_sale_items i on i.sale_id=s.id left join billing_payments bp on bp.id=s.payment_id
-		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3` + reportSaleStockClause("s", stockLocation)
+		where s.admin_id=$1 and s.status='paid' and coalesce(bp.created_at,s.updated_at,s.created_at)>=$2 and coalesce(bp.created_at,s.updated_at,s.created_at)<$3
+		and ($4='' or i.product_name ilike '%%'||$4||'%%' or i.sku ilike '%%'||$4||'%%')` + reportSaleStockClause("s", stockLocation)
 	var posTotal int
-	if err = a.db.QueryRowContext(r.Context(), `select count(*) from (select 1 `+base+` group by i.product_id,i.product_name) q`, adminID, start, end).Scan(&posTotal); err != nil {
+	if err = a.db.QueryRowContext(r.Context(), `select count(*) from (select 1 `+base+` group by i.product_id,i.product_name) q`, adminID, start, end, search).Scan(&posTotal); err != nil {
 		writePOSInternalError(w, r, err)
 		return
 	}
 	posItems := []map[string]any{}
 	rows, err := a.db.QueryContext(r.Context(), `select coalesce(i.product_id,''),i.product_name,sum(i.quantity)::bigint,count(distinct s.id)::bigint,coalesce(sum(round(i.line_total_satang::numeric*s.total_satang/nullif(s.subtotal_satang,0))),0)::bigint `+base+`
-		group by i.product_id,i.product_name order by sum(i.quantity) desc,lower(i.product_name) limit $4 offset $5`, adminID, start, end, pageSize, (posPage-1)*pageSize)
+		group by i.product_id,i.product_name order by sum(i.quantity) desc,lower(i.product_name) limit $5 offset $6`, adminID, start, end, search, pageSize, (posPage-1)*pageSize)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -1718,7 +1738,7 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 	}
 	rows.Close()
 	var posQuantity, posRevenue int64
-	if err = a.db.QueryRowContext(r.Context(), `select coalesce(sum(i.quantity),0)::bigint `+base, adminID, start, end).Scan(&posQuantity); err != nil {
+	if err = a.db.QueryRowContext(r.Context(), `select coalesce(sum(i.quantity),0)::bigint `+base, adminID, start, end, search).Scan(&posQuantity); err != nil {
 		writePOSInternalError(w, r, err)
 		return
 	}
@@ -1732,7 +1752,7 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 		occurredAt time.Time
 	}
 	refs := []sessionRef{}
-	sessionRows, err := a.db.QueryContext(r.Context(), `select id,coalesce(usage_started_at,created_at) from sessions where admin_id=$1 and coalesce(session_type,'liveMatch')='liveMatch' and coalesce(usage_started_at,created_at)>=$2 and coalesce(usage_started_at,created_at)<$3 order by coalesce(usage_started_at,created_at),id`, adminID, start, end)
+	sessionRows, err := a.db.QueryContext(r.Context(), `select id,coalesce(usage_started_at,created_at) from sessions where admin_id=$1 and coalesce(session_type,'liveMatch')='liveMatch' and coalesce(usage_started_at,created_at)>=$2 and coalesce(usage_started_at,created_at)<$3 and ($4='' or name ilike '%%'||$4||'%%') order by coalesce(usage_started_at,created_at),id`, adminID, start, end, search)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -2867,21 +2887,23 @@ func (a *app) createPOSGuest(w http.ResponseWriter, r *http.Request, user adminU
 }
 
 type posSaleRequest struct {
-	RequestID            string `json:"requestId"`
-	BuyerType            string `json:"buyerType"`
-	BuyerID              string `json:"buyerId"`
-	BuyerName            string `json:"buyerName"`
-	Phone                string `json:"phone"`
-	Action               string `json:"action"`
-	Method               string `json:"method"`
-	Note                 string `json:"note"`
-	ExpectedTotalTHB     int    `json:"expectedTotalThb"`
-	ExpectedTotalSatang  int64  `json:"expectedTotalSatang"`
-	DiscountType         string `json:"discountType"`
-	DiscountAmountSatang int64  `json:"discountAmountSatang"`
-	DiscountRateBPS      int    `json:"discountRateBps"`
-	CashReceivedSatang   int64  `json:"cashReceivedSatang"`
-	ReferenceNumber      string `json:"referenceNumber"`
+	RequestID            string   `json:"requestId"`
+	BuyerType            string   `json:"buyerType"`
+	BuyerID              string   `json:"buyerId"`
+	BuyerName            string   `json:"buyerName"`
+	BuyerIDs             []string `json:"buyerIds"`
+	SplitMode            string   `json:"splitMode"`
+	Phone                string   `json:"phone"`
+	Action               string   `json:"action"`
+	Method               string   `json:"method"`
+	Note                 string   `json:"note"`
+	ExpectedTotalTHB     int      `json:"expectedTotalThb"`
+	ExpectedTotalSatang  int64    `json:"expectedTotalSatang"`
+	DiscountType         string   `json:"discountType"`
+	DiscountAmountSatang int64    `json:"discountAmountSatang"`
+	DiscountRateBPS      int      `json:"discountRateBps"`
+	CashReceivedSatang   int64    `json:"cashReceivedSatang"`
+	ReferenceNumber      string   `json:"referenceNumber"`
 	Items                []struct {
 		ProductID string `json:"productId"`
 		Quantity  int    `json:"quantity"`
@@ -2898,13 +2920,28 @@ func roundDivHalfUp(value, divisor int64) int64 {
 	return (value + divisor/2) / divisor
 }
 
+func equalSplitShares(total int64, count int) []int64 {
+	if total < 0 || count < 1 {
+		return []int64{}
+	}
+	shares := make([]int64, count)
+	base, remainder := total/int64(count), total%int64(count)
+	for index := range shares {
+		shares[index] = base
+		if int64(index) < remainder {
+			shares[index]++
+		}
+	}
+	return shares
+}
+
 func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUser) {
 	var b posSaleRequest
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 128<<10)).Decode(&b) != nil || len(b.Items) == 0 || len(b.Items) > 100 || len(b.Note) > 500 {
 		writeJSON(w, 400, map[string]string{"error": "invalid sale"})
 		return
 	}
-	b.RequestID, b.BuyerType, b.BuyerID, b.BuyerName, b.Action, b.Method = strings.TrimSpace(b.RequestID), strings.TrimSpace(b.BuyerType), strings.TrimSpace(b.BuyerID), strings.TrimSpace(b.BuyerName), strings.TrimSpace(b.Action), strings.TrimSpace(b.Method)
+	b.RequestID, b.BuyerType, b.BuyerID, b.BuyerName, b.Action, b.Method, b.SplitMode = strings.TrimSpace(b.RequestID), strings.TrimSpace(b.BuyerType), strings.TrimSpace(b.BuyerID), strings.TrimSpace(b.BuyerName), strings.TrimSpace(b.Action), strings.TrimSpace(b.Method), strings.TrimSpace(b.SplitMode)
 	if b.Action == "open" {
 		b.Action = "hold"
 	}
@@ -2912,7 +2949,16 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		writeJSON(w, 400, map[string]string{"error": "invalid sale action"})
 		return
 	}
-	if b.Action == "hold" && (b.BuyerType != "member" || b.BuyerID == "") {
+	isSplit := b.Action == "hold" && b.SplitMode == "equal"
+	if b.SplitMode != "" && b.SplitMode != "none" && b.SplitMode != "equal" {
+		writeJSON(w, 400, map[string]string{"error": "รูปแบบการหารบิลไม่ถูกต้อง"})
+		return
+	}
+	if isSplit && (b.BuyerType != "member" || len(b.BuyerIDs) < 2 || len(b.BuyerIDs) > 50) {
+		writeJSON(w, 400, map[string]string{"error": "บิลหารต้องเลือกสมาชิกอย่างน้อย 2 คน"})
+		return
+	}
+	if b.Action == "hold" && !isSplit && (b.BuyerType != "member" || b.BuyerID == "") {
 		writeJSON(w, 400, map[string]string{"error": "บิลพักยอดต้องเลือกสมาชิกในระบบ"})
 		return
 	}
@@ -2954,7 +3000,29 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		}
 	}
 	accountID, buyerName := "", b.BuyerName
-	if b.BuyerType == "member" {
+	splitAccountIDs := []string{}
+	splitNames := []string{}
+	if isSplit {
+		seen := map[string]bool{}
+		for _, rawID := range b.BuyerIDs {
+			memberID := strings.TrimSpace(rawID)
+			if memberID == "" || seen[memberID] {
+				err = errors.New("duplicate split member")
+				break
+			}
+			seen[memberID] = true
+			var splitAccountID string
+			splitAccountID, err = ensureBillingAccountTx(r.Context(), tx, user.ID, "member", memberID, "", "")
+			if err != nil {
+				break
+			}
+			var splitName string
+			_ = tx.QueryRowContext(r.Context(), `select display_name from billing_accounts where id=$1`, splitAccountID).Scan(&splitName)
+			splitAccountIDs = append(splitAccountIDs, splitAccountID)
+			splitNames = append(splitNames, splitName)
+		}
+		buyerName = "หารร่วม · " + strings.Join(splitNames, ", ")
+	} else if b.BuyerType == "member" {
 		accountID, err = ensureBillingAccountTx(r.Context(), tx, user.ID, "member", b.BuyerID, "", "")
 	} else if b.BuyerType != "anonymous" {
 		err = errors.New("invalid buyer")
@@ -3043,7 +3111,11 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		_, err = tx.ExecContext(r.Context(), `insert into billing_payments (id,admin_id,billing_account_id,amount_thb,amount_satang,method,received_by,received_by_type,received_by_name,cash_received_satang,change_satang,reference_number,receiver_name,origin_system) values ($1,$2,nullif($3,''),$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pos')`, paymentID, user.ID, accountID, roundedBaht(totalSatang), totalSatang, b.Method, posActorID(user), posActorType(user), posActorName(user), b.CashReceivedSatang, changeSatang, strings.TrimSpace(b.ReferenceNumber), effective.ReceiverName)
 	}
 	if err == nil {
-		_, err = tx.ExecContext(r.Context(), `insert into pos_sales (id,admin_id,billing_account_id,buyer_name,status,total_thb,cost_thb,cost_satang,payment_id,note,created_by,created_by_type,created_by_name,request_id,subtotal_satang,discount_type,discount_rate_bps,discount_satang,net_before_vat_satang,vat_rate_bps,vat_satang,prices_include_tax,total_satang,stock_location) values ($1,$2,nullif($3,''),$4,$5,$6,$7,$8,nullif($9,''),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`, saleID, user.ID, accountID, buyerName, status, roundedBaht(totalSatang), roundedBaht(costSatang), costSatang, paymentID, strings.TrimSpace(b.Note), posActorID(user), posActorType(user), posActorName(user), b.RequestID, subtotalSatang, b.DiscountType, b.DiscountRateBPS, discountSatang, netBeforeVATSatang, vatRateBPS, vatSatang, settings.PricesIncludeTax, totalSatang, saleStockLocation)
+		splitMode, splitCount := "none", 1
+		if isSplit {
+			splitMode, splitCount = "equal", len(splitAccountIDs)
+		}
+		_, err = tx.ExecContext(r.Context(), `insert into pos_sales (id,admin_id,billing_account_id,buyer_name,status,total_thb,cost_thb,cost_satang,payment_id,note,created_by,created_by_type,created_by_name,request_id,subtotal_satang,discount_type,discount_rate_bps,discount_satang,net_before_vat_satang,vat_rate_bps,vat_satang,prices_include_tax,total_satang,stock_location,split_mode,split_count) values ($1,$2,nullif($3,''),$4,$5,$6,$7,$8,nullif($9,''),$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)`, saleID, user.ID, accountID, buyerName, status, roundedBaht(totalSatang), roundedBaht(costSatang), costSatang, paymentID, strings.TrimSpace(b.Note), posActorID(user), posActorType(user), posActorName(user), b.RequestID, subtotalSatang, b.DiscountType, b.DiscountRateBPS, discountSatang, netBeforeVATSatang, vatRateBPS, vatSatang, settings.PricesIncludeTax, totalSatang, saleStockLocation, splitMode, splitCount)
 	}
 	if err == nil && paymentID != "" {
 		snapshot, _ := json.Marshal(map[string]any{"saleId": saleID, "buyerName": buyerName, "subtotalSatang": subtotalSatang, "discountSatang": discountSatang, "vatSatang": vatSatang, "totalSatang": totalSatang, "pricesIncludeTax": settings.PricesIncludeTax, "items": items})
@@ -3077,6 +3149,16 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 			return
 		}
 	}
+	if err == nil && isSplit {
+		shares := equalSplitShares(totalSatang, len(splitAccountIDs))
+		for index, splitAccountID := range splitAccountIDs {
+			share := shares[index]
+			_, err = tx.ExecContext(r.Context(), `insert into pos_sale_splits (id,sale_id,billing_account_id,position,share_satang) values ($1,$2,$3,$4,$5)`, "split-"+randHex(8), saleID, splitAccountID, index, share)
+			if err != nil {
+				break
+			}
+		}
+	}
 	auditSaleItems := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		auditSaleItems = append(auditSaleItems, map[string]any{"productId": item.ProductID, "quantity": item.Quantity, "unitPriceSatang": item.UnitPriceSatang, "unitCostSatang": item.UnitCostSatang, "lineTotalSatang": item.LineTotalSatang})
@@ -3088,6 +3170,7 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		"pricesIncludeTax": settings.PricesIncludeTax, "totalSatang": totalSatang, "costSatang": costSatang,
 		"paymentMethod": b.Method, "paymentId": paymentID, "cashReceivedSatang": b.CashReceivedSatang,
 		"hasReference": strings.TrimSpace(b.ReferenceNumber) != "", "items": auditSaleItems,
+		"splitMode": b.SplitMode, "splitCount": len(splitAccountIDs),
 	}); err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -3096,7 +3179,7 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		writePOSInternalError(w, r, err)
 		return
 	}
-	writeJSON(w, 201, map[string]any{"saleId": saleID, "status": status, "totalThb": roundedBaht(totalSatang), "totalSatang": totalSatang, "paymentId": paymentID, "billingAccountId": accountID})
+	writeJSON(w, 201, map[string]any{"saleId": saleID, "status": status, "totalThb": roundedBaht(totalSatang), "totalSatang": totalSatang, "paymentId": paymentID, "billingAccountId": accountID, "splitMode": b.SplitMode, "splitCount": len(splitAccountIDs)})
 }
 
 func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser, saleID string) {
@@ -3118,6 +3201,34 @@ func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser
 	}
 	if err != nil || status != "open" {
 		writeJSON(w, 409, map[string]string{"error": "ยกเลิกได้เฉพาะบิลที่ยังไม่ชำระ"})
+		return
+	}
+	var splitCount, paidSplitCount int
+	splitRows, splitErr := tx.QueryContext(r.Context(), `select status from pos_sale_splits where sale_id=$1 for update`, saleID)
+	if splitErr != nil {
+		writePOSInternalError(w, r, splitErr)
+		return
+	}
+	for splitRows.Next() {
+		var splitStatus string
+		if err = splitRows.Scan(&splitStatus); err != nil {
+			splitRows.Close()
+			writePOSInternalError(w, r, err)
+			return
+		}
+		splitCount++
+		if splitStatus == "paid" {
+			paidSplitCount++
+		}
+	}
+	err = splitRows.Err()
+	splitRows.Close()
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if paidSplitCount > 0 {
+		writeJSON(w, 409, map[string]string{"error": "บิลหารมีสมาชิกชำระแล้ว ต้องคืนเงินก่อนยกเลิกทั้งชุด"})
 		return
 	}
 	rows, err := tx.QueryContext(r.Context(), `select product_id,quantity,unit_cost_satang,stock_tracked from pos_sale_items where sale_id=$1 and product_id is not null for update`, saleID)
@@ -3160,6 +3271,9 @@ func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser
 		}
 	}
 	_, err = tx.ExecContext(r.Context(), `update pos_sales set status='void',note=case when $3='' then note else $3 end,voided_at=now(),updated_at=now() where id=$1 and admin_id=$2`, saleID, user.ID, strings.TrimSpace(b.Note))
+	if err == nil && splitCount > 0 {
+		_, err = tx.ExecContext(r.Context(), `update pos_sale_splits set status='void',updated_at=now() where sale_id=$1 and status='open'`, saleID)
+	}
 	returnItems := make([]map[string]any, 0, len(returns))
 	for _, item := range returns {
 		returnItems = append(returnItems, map[string]any{"productId": item.id, "quantityReturned": item.quantity, "unitCostSatang": item.unitCostSatang})
@@ -3210,6 +3324,29 @@ func (a *app) posSaleBillingSnapshot(ctx context.Context, adminID, saleID string
 	}
 	raw, _ := json.Marshal(sale)
 	return raw
+}
+
+func splitPOSSourceID(splitID string) string { return "split:" + splitID }
+
+func parseSplitPOSSourceID(sourceID string) (string, bool) {
+	if !strings.HasPrefix(sourceID, "split:") {
+		return "", false
+	}
+	id := strings.TrimSpace(strings.TrimPrefix(sourceID, "split:"))
+	return id, id != ""
+}
+
+func splitPOSBillingSnapshot(raw json.RawMessage, splitID string, position, count, paidCount int, share int64) json.RawMessage {
+	value := map[string]any{}
+	_ = json.Unmarshal(raw, &value)
+	value["splitId"] = splitID
+	value["splitMode"] = "equal"
+	value["splitPosition"] = position + 1
+	value["splitCount"] = count
+	value["splitPaidCount"] = paidCount
+	value["shareSatang"] = share
+	encoded, _ := json.Marshal(value)
+	return encoded
 }
 
 func billingLinePaymentLabel(line billingLine) (string, string) {
@@ -3293,6 +3430,23 @@ func (a *app) billingSummaryForAccount(ctx context.Context, adminID, accountID s
 			result.Lines = append(result.Lines, billingLine{SourceType: "pos", SourceID: id, Label: "สินค้า · " + id, AmountTHB: amount, AmountSatang: amountSatang, Snapshot: a.posSaleBillingSnapshot(ctx, adminID, id)})
 		}
 		rows.Close()
+		splitRows, queryErr := a.db.QueryContext(ctx, `select sp.id,sp.sale_id,sp.position,sp.share_satang,s.split_count,(select count(*) from pos_sale_splits paid where paid.sale_id=sp.sale_id and paid.status='paid') from pos_sale_splits sp join pos_sales s on s.id=sp.sale_id where s.admin_id=$1 and sp.billing_account_id=$2 and sp.status='open' and s.status='open' order by s.created_at,sp.position`, adminID, accountID)
+		if queryErr != nil {
+			return result, queryErr
+		}
+		for splitRows.Next() {
+			var splitID, saleID string
+			var position, count, paidCount int
+			var share int64
+			if err = splitRows.Scan(&splitID, &saleID, &position, &share, &count, &paidCount); err != nil {
+				splitRows.Close()
+				return result, err
+			}
+			raw := a.posSaleBillingSnapshot(ctx, adminID, saleID)
+			result.POSTotalSatang += share
+			result.Lines = append(result.Lines, billingLine{SourceType: "pos", SourceID: splitPOSSourceID(splitID), Label: fmt.Sprintf("สินค้าแบ่งจ่าย · %s · ส่วนที่ %d/%d", saleID, position+1, count), AmountTHB: roundedBaht(share), AmountSatang: share, Snapshot: splitPOSBillingSnapshot(raw, splitID, position, count, paidCount, share)})
+		}
+		splitRows.Close()
 	}
 	result.TotalSatang = result.MatchTotalSatang + result.POSTotalSatang
 	result.MatchTotalTHB = roundedBaht(result.MatchTotalSatang)
@@ -3362,7 +3516,7 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 		pageSize = 50
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
-	filter := `ba.admin_id=$1 and ba.kind='member' and ba.active and m.active and m.deleted_at is null and ($2='' or ba.display_name ilike '%%'||$2||'%%' or m.phone ilike '%%'||$2||'%%') and (exists(select 1 from pos_sales ps where ps.billing_account_id=ba.id and ps.status='open') or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id)))`
+	filter := `ba.admin_id=$1 and ba.kind='member' and ba.active and m.active and m.deleted_at is null and ($2='' or ba.display_name ilike '%%'||$2||'%%' or m.phone ilike '%%'||$2||'%%') and (exists(select 1 from pos_sales ps where ps.billing_account_id=ba.id and ps.status='open') or exists(select 1 from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id where sp.billing_account_id=ba.id and sp.status='open' and ps.status='open') or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id)))`
 	var total int
 	if err := a.db.QueryRowContext(r.Context(), `select count(*) from billing_accounts ba join members m on m.id=ba.member_id where `+filter, adminID, search).Scan(&total); err != nil {
 		writePOSInternalError(w, r, err)
@@ -3575,7 +3729,12 @@ func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountI
 	for _, line := range summary.Lines {
 		if line.SourceType == "pos" {
 			var status string
-			if err = tx.QueryRowContext(ctx, `select status from pos_sales where id=$1 and admin_id=$2 for update`, line.SourceID, user.ID).Scan(&status); err != nil || status != "open" {
+			if splitID, split := parseSplitPOSSourceID(line.SourceID); split {
+				err = tx.QueryRowContext(ctx, `select sp.status from pos_sale_splits sp join pos_sales s on s.id=sp.sale_id where sp.id=$1 and s.admin_id=$2 and s.status='open' for update of sp,s`, splitID, user.ID).Scan(&status)
+			} else {
+				err = tx.QueryRowContext(ctx, `select status from pos_sales where id=$1 and admin_id=$2 for update`, line.SourceID, user.ID).Scan(&status)
+			}
+			if err != nil || status != "open" {
 				return summary, errors.New("ยอด POS เปลี่ยนแปลง กรุณาลองใหม่")
 			}
 		} else {
@@ -3619,7 +3778,15 @@ func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountI
 			return summary, err
 		}
 		if line.SourceType == "pos" {
-			_, err = tx.ExecContext(ctx, `update pos_sales set status='paid',payment_id=$2,updated_at=now() where id=$1 and status='open'`, line.SourceID, paymentID)
+			if splitID, split := parseSplitPOSSourceID(line.SourceID); split {
+				var saleID string
+				err = tx.QueryRowContext(ctx, `update pos_sale_splits set status='paid',payment_id=$2,updated_at=now() where id=$1 and status='open' returning sale_id`, splitID, paymentID).Scan(&saleID)
+				if err == nil {
+					_, err = tx.ExecContext(ctx, `update pos_sales set status='paid',payment_id=$2,updated_at=now() where id=$1 and status='open' and not exists(select 1 from pos_sale_splits where sale_id=$1 and status='open')`, saleID, paymentID)
+				}
+			} else {
+				_, err = tx.ExecContext(ctx, `update pos_sales set status='paid',payment_id=$2,updated_at=now() where id=$1 and status='open'`, line.SourceID, paymentID)
+			}
 		} else {
 			parts := strings.Split(line.SourceID, ":")
 			playerID, _ := strconv.Atoi(parts[1])
@@ -3650,6 +3817,7 @@ func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountI
 	if err = tx.Commit(); err != nil {
 		return summary, err
 	}
+	summary.PaymentID = paymentID
 	return summary, nil
 }
 

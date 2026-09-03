@@ -124,7 +124,7 @@ watch(settingsTabs, (tabs) => {
             <p class="text-sm font-bold text-amber-700 dark:text-amber-300">กรุณาใส่ราคาเต็มต่อลูก</p>
           </div>
           <div class="grid gap-2">
-            <div v-for="brand in state.settings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[1fr_7rem_auto]">
+            <div v-for="brand in state.settings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[minmax(10rem,1fr)_7rem_auto]">
               <input v-model.trim="brand.name" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
               <input v-model.number="brand.price" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
               <label class="flex h-10 items-center gap-2 text-sm font-bold">

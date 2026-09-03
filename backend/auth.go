@@ -663,6 +663,21 @@ func (a *app) handleAdminDefaultSettings(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	normalizeAdminDefaultSettings(&settings)
+	for _, brand := range settings.ShuttleBrands {
+		productID := strings.TrimSpace(brand.POSProductID)
+		if productID == "" {
+			continue
+		}
+		var valid bool
+		if err := a.db.QueryRowContext(r.Context(), `select exists(select 1 from pos_products where id=$1 and admin_id=$2 and deleted_at is null and track_stock)`, productID, user.ID).Scan(&valid); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if !valid {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "สินค้าที่เชื่อมกับลูกแบดต้องเป็นสินค้า POS ของบัญชีนี้และเปิดติดตามสต็อก"})
+			return
+		}
+	}
 	memberTypes, typeErr := a.memberTypesForAdmin(r.Context(), user.ID, false)
 	if typeErr != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": typeErr.Error()})
@@ -967,6 +982,7 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 	}
+	id := "coin-order-" + randHex(8)
 	promptPay := a.promptPaySettings(r.Context())
 	slipCheck := inspectSlipImage(body.SlipImage, order.PriceTHB, promptPay, time.Now())
 	orderStatus := "pending"
@@ -977,7 +993,9 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 	if slipOK.ready() {
 		quota := a.fetchSlipOKQuota(r.Context(), slipOK)
 		if quota.Available && !quota.CapReached {
-			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, order.PriceTHB)
+			checked := a.checkSlipOK(r.Context(), slipOK, body.SlipImage, order.PriceTHB, slipOKLogMeta{
+				AdminID: user.ID, AdminEmail: user.Email, SourceSystem: "coin_shop", ReferenceID: id,
+			})
 			provider = "slipok"
 			providerStatus = checked.Status
 			providerErrorCode = checked.ErrorCode
@@ -1034,7 +1052,6 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 			return
 		}
 	}
-	id := "coin-order-" + randHex(8)
 	order.ID = id
 	order.Status = orderStatus
 	order.TransRef = slipCheck.TransRef
@@ -1195,6 +1212,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeTelegramWebhookSetup(w, r, backofficeUser)
 	case r.Method == http.MethodGet && action == "slipok-quota":
 		a.handleBackofficeSlipOKQuota(w, r)
+	case r.Method == http.MethodGet && action == "slipok-logs":
+		a.handleBackofficeSlipOKLogs(w, r)
 	case r.Method == http.MethodPost && action == "coins":
 		a.handleBackofficeCoinAdjust(w, r, backofficeUser)
 	case r.Method == http.MethodPost && strings.HasPrefix(action, "coin-orders/") && strings.HasSuffix(action, "/telegram"):
@@ -1806,6 +1825,52 @@ func (a *app) handleBackofficeSlipOKQuota(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, quota)
+}
+
+func (a *app) handleBackofficeSlipOKLogs(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, _ := paginationParams(r, 20, 100)
+	adminID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	sourceSystem := strings.TrimSpace(r.URL.Query().Get("system"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	filter := `where ($1='' or admin_id=$1) and ($2='' or source_system=$2) and ($3='' or result_status=$3)
+		and ($4='' or admin_email ilike '%%'||$4||'%%' or reference_id ilike '%%'||$4||'%%' or result_note ilike '%%'||$4||'%%'
+			or response_payload ilike '%%'||$4||'%%' or trans_ref ilike '%%'||$4||'%%' or provider_code::text=$4 or http_status::text=$4)`
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `select count(*) from slipok_logs `+filter, adminID, sourceSystem, status, search).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `select id,admin_id,admin_email,source_system,reference_id,request_method,request_url,expected_amount_thb,request_payload,
+		http_status,provider_code,result_status,result_note,response_payload,trans_ref,detected_amount_thb,detected_paid_at,detected_receiver,duration_ms,
+		to_char(created_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI:SS') from slipok_logs `+filter+` order by created_at desc,id desc limit $5 offset $6`,
+		adminID, sourceSystem, status, search, pageSize, (page-1)*pageSize)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	items := []map[string]any{}
+	for rows.Next() {
+		var id, duration int64
+		var expectedAmount, httpStatus, providerCode int
+		var rowAdminID, email, system, referenceID, method, requestURL, requestPayload, resultStatus, resultNote, responsePayload, transRef, detectedPaidAt, detectedReceiver, createdAt string
+		var detectedAmount sql.NullInt64
+		if err = rows.Scan(&id, &rowAdminID, &email, &system, &referenceID, &method, &requestURL, &expectedAmount, &requestPayload, &httpStatus, &providerCode, &resultStatus, &resultNote, &responsePayload, &transRef, &detectedAmount, &detectedPaidAt, &detectedReceiver, &duration, &createdAt); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		var detected any
+		if detectedAmount.Valid {
+			detected = detectedAmount.Int64
+		}
+		items = append(items, map[string]any{"id": id, "adminId": rowAdminID, "adminEmail": email, "sourceSystem": system, "referenceId": referenceID, "requestMethod": method, "requestUrl": requestURL, "expectedAmountThb": expectedAmount, "requestPayload": requestPayload, "httpStatus": httpStatus, "providerCode": providerCode, "resultStatus": resultStatus, "resultNote": resultNote, "responsePayload": responsePayload, "transRef": transRef, "detectedAmountThb": detected, "detectedPaidAt": detectedPaidAt, "detectedReceiver": detectedReceiver, "durationMs": duration, "createdAt": createdAt})
+	}
+	if err = rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "pagination": paginationPayload(page, pageSize, total)})
 }
 
 func (a *app) handleBackofficeCoinAdjust(w http.ResponseWriter, r *http.Request, actor string) {

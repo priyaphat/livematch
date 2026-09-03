@@ -186,6 +186,33 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 	if bookingStatus != "confirmed" || paymentStatus != "paid" || paymentReviewStatus != "approved" || bookingTotal != 150 || paymentTotal != 150 {
 		t.Fatalf("approved state booking=%s/%s/%d payment=%s/%d", bookingStatus, paymentStatus, bookingTotal, paymentReviewStatus, paymentTotal)
 	}
+	if _, err = db.Exec(`update booking_payments set slip_data='data:image/png;base64,aGVsbG8=',slip_mime_type='image/png' where id=$1`, paymentID); err != nil {
+		t.Fatal(err)
+	}
+	historyURL := "/api/admin/booking/history?startDate=" + day.Format("2006-01-02") + "&endDate=" + day.Format("2006-01-02")
+	historyRecorder := httptest.NewRecorder()
+	a.writeBookingHistory(historyRecorder, httptest.NewRequest(http.MethodGet, historyURL, nil), adminID)
+	if historyRecorder.Code != http.StatusOK {
+		t.Fatalf("booking history status=%d body=%s", historyRecorder.Code, historyRecorder.Body.String())
+	}
+	var historyPayload struct {
+		Items []struct {
+			ID      string `json:"id"`
+			SlipURL string `json:"slipUrl"`
+		} `json:"items"`
+	}
+	if err = json.NewDecoder(historyRecorder.Body).Decode(&historyPayload); err != nil {
+		t.Fatal(err)
+	}
+	foundSlip := false
+	for _, item := range historyPayload.Items {
+		if item.ID == pending.ID && item.SlipURL == "/api/admin/booking/payments/"+paymentID+"/slip" {
+			foundSlip = true
+		}
+	}
+	if !foundSlip {
+		t.Fatalf("booking history did not expose the uploaded slip URL: %s", historyRecorder.Body.String())
+	}
 
 	rejected, err := a.createBookingTx(t.Context(), adminID, courtB, memberID, "member", "สมาชิก Booking Ledger", at(20, 0), at(20, 30), "hold")
 	if err != nil {

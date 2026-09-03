@@ -19,6 +19,7 @@ import {
   Sparkles,
   Eye,
   FileSpreadsheet,
+  Search,
   X,
 } from 'lucide-react';
 
@@ -59,6 +60,10 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   const [specialReport, setSpecialReport] = useState<POSSpecialReport | null>(null);
   const [transfersReport, setTransfersReport] = useState<POSTransfersReport | null>(null);
   const [transferSearch, setTransferSearch] = useState('');
+  const [topSearch, setTopSearch] = useState('');
+  const [vatSearch, setVatSearch] = useState('');
+  const [soldSearch, setSoldSearch] = useState('');
+  const [specialSearch, setSpecialSearch] = useState('');
   const [printLines, setPrintLines] = useState<string[] | null>(null);
   const [inventoryFilters, setInventoryFilters] = useState<POSInventoryFilters>({ status: 'all', stockStatus: 'all', packStatus: 'all' });
   const [extraLoading, setExtraLoading] = useState(false);
@@ -78,7 +83,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       setExtraLoading(true);
       try {
         if (reportType === 'sold_products') {
-          const result = await getPOSSoldProductsReport(dateRange, startDate, endDate, soldPage, false, stockLocation);
+          const result = await getPOSSoldProductsReport(dateRange, startDate, endDate, soldPage, false, stockLocation, soldSearch);
           if (!cancelled) setSoldReport(result);
         } else if (reportType === 'purchases') {
           const result = await getPOSPurchasesReport(dateRange, startDate, endDate, purchasesPage, false, { search: purchaseSearch, supplierId: purchaseSupplierId }, stockLocation);
@@ -87,7 +92,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
           const result = await getPOSInventoryReport(inventoryFilters, inventoryPage, false, stockLocation);
           if (!cancelled) setInventoryReport(result);
         } else if (reportType === 'special') {
-          const result = await getPOSSpecialReport(dateRange, startDate, endDate, specialPOSPage, specialSessionPage, false, stockLocation);
+          const result = await getPOSSpecialReport(dateRange, startDate, endDate, specialPOSPage, specialSessionPage, false, stockLocation, specialSearch);
           if (!cancelled) setSpecialReport(result);
         } else if (reportType === 'transfers') {
           const result = await getPOSTransfersReport(dateRange, startDate, endDate, transfersPage, false, stockLocation, transferSearch);
@@ -101,7 +106,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
     };
     void load();
     return () => { cancelled = true; };
-  }, [reportType, dateRange, startDate, endDate, soldPage, purchasesPage, purchaseSearch, purchaseSupplierId, inventoryPage, inventoryFilters, specialPOSPage, specialSessionPage, transfersPage, transferSearch, stockLocation]);
+  }, [reportType, dateRange, startDate, endDate, soldPage, soldSearch, purchasesPage, purchaseSearch, purchaseSupplierId, inventoryPage, inventoryFilters, specialPOSPage, specialSessionPage, specialSearch, transfersPage, transferSearch, stockLocation]);
 
   useEffect(() => {
     if (dateRange === 'custom' && (!startDate || !endDate || startDate > endDate)) {
@@ -112,7 +117,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
     let cancelled = false;
     setIsLoading(true);
     setLoadError('');
-    void getPOSReports(dateRange, startDate, endDate, topPage, vatPage, false, stockLocation, reportType).then((result) => {
+    void getPOSReports(dateRange, startDate, endDate, topPage, vatPage, false, stockLocation, reportType, { topSearch, vatSearch }).then((result) => {
       if (!cancelled) setReport(result);
     }).catch((error) => {
       if (!cancelled) setLoadError(error instanceof Error ? error.message : 'โหลดรายงานไม่สำเร็จ');
@@ -120,7 +125,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       if (!cancelled) setIsLoading(false);
     });
     return () => { cancelled = true; };
-  }, [dateRange, startDate, endDate, topPage, vatPage, stockLocation, reportType]);
+  }, [dateRange, startDate, endDate, topPage, vatPage, stockLocation, reportType, topSearch, vatSearch]);
 
   const summary = report?.summary;
   const totalSales = (summary?.totalSalesSatang || 0) / 100;
@@ -182,6 +187,13 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
     </div>
   );
 
+  const nameFilter = (value: string, onChange: (value: string) => void, placeholder: string) => (
+    <div className="relative max-w-md">
+      <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+      <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-900" />
+    </div>
+  );
+
   const stockLabel = stockLocation === 'primary' ? settings.primaryStockName : stockLocation === 'secondary' ? settings.secondaryStockName : 'ทุกสต็อก';
   const handlePrintReport = async () => {
     try { await authorizePOSReportExport({ operation: 'print', reportType, stockLocation }); } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่มีสิทธิ์พิมพ์รายงาน', 'error'); return; }
@@ -237,12 +249,12 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
           pagination: { page: 1, pageSize: 1, total: 1, totalPages: 1 },
         };
       } else {
-        exportReport = await getPOSReports(dateRange, startDate, endDate, 1, 1, true, stockLocation, reportType);
-        if (reportType === 'sold_products') exportSold = await getPOSSoldProductsReport(dateRange, startDate, endDate, 1, true, stockLocation);
+        exportReport = await getPOSReports(dateRange, startDate, endDate, 1, 1, true, stockLocation, reportType, { topSearch, vatSearch });
+        if (reportType === 'sold_products') exportSold = await getPOSSoldProductsReport(dateRange, startDate, endDate, 1, true, stockLocation, soldSearch);
         if (reportType === 'purchases') exportPurchases = await getPOSPurchasesReport(dateRange, startDate, endDate, 1, true, { search: purchaseSearch, supplierId: purchaseSupplierId }, stockLocation);
         if (reportType === 'inventory') exportInventory = await getPOSInventoryReport(inventoryFilters, 1, true, stockLocation);
         if (reportType === 'transfers') exportTransfers = await getPOSTransfersReport(dateRange, startDate, endDate, 1, true, stockLocation, transferSearch);
-        if (reportType === 'special') exportSpecial = await getPOSSpecialReport(dateRange, startDate, endDate, 1, 1, true, stockLocation);
+        if (reportType === 'special') exportSpecial = await getPOSSpecialReport(dateRange, startDate, endDate, 1, 1, true, stockLocation, specialSearch);
       }
     } catch (error) {
       setIsExporting(false);
@@ -792,6 +804,9 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       {/* TAB 2: TOP SELLERS */}
       {reportType === 'top_sellers' && (
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden shadow-md">
+          <div className="border-b border-slate-200 p-4 dark:border-slate-800">
+            {nameFilter(topSearch, (value) => { setTopPage(1); setTopSearch(value); }, 'กรองชื่อสินค้า หรือ SKU')}
+          </div>
           <table className="w-full text-left text-xs text-slate-700 dark:text-slate-300">
             <thead className="bg-slate-100 dark:bg-slate-950/80 text-slate-600 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800">
               <tr>
@@ -867,11 +882,14 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
             </div>
           </div>
 
+          {nameFilter(vatSearch, (value) => { setVatPage(1); setVatSearch(value); }, 'กรองชื่อลูกค้า หรือผู้ทำรายการ')}
+
           <table className="w-full text-left text-xs text-slate-700 dark:text-slate-300">
             <thead className="bg-slate-100 dark:bg-slate-950/80 text-slate-600 dark:text-slate-400 font-semibold border-b border-slate-200 dark:border-slate-800">
               <tr>
                 <th className="p-3">เลขที่ใบกำกับ/บิล</th>
                 <th className="p-3">วันที่</th>
+                <th className="p-3">ลูกค้า / ผู้ทำรายการ</th>
                 <th className="p-3 text-right">มูลค่าสินค้า</th>
                 <th className="p-3 text-right">ส่วนลด</th>
                 <th className="p-3 text-right">มูลค่าก่อนภาษี</th>
@@ -884,6 +902,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
                 <tr key={o.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                   <td className="p-3 font-bold text-slate-900 dark:text-white">{o.id}</td>
                   <td className="p-3 text-slate-500 dark:text-slate-400">{formatThaiDateShort(o.createdAt)}</td>
+                  <td className="p-3 font-sans"><strong className="block text-slate-900 dark:text-white">{o.buyerName || 'ลูกค้าหน้าร้าน'}</strong><span className="text-slate-500">{o.actorName || '-'}</span></td>
                   <td className="p-3 text-right">{formatCurrency(o.subtotalSatang / 100, '', settings.decimalPlaces)}</td>
                   <td className="p-3 text-right text-rose-600 dark:text-rose-400">
                     {o.discountSatang > 0 ? `-${formatCurrency(o.discountSatang / 100, '', settings.decimalPlaces)}` : '0.00'}
@@ -946,6 +965,9 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
             <div><h3 className="text-sm font-bold">{dateRange === 'day' ? 'สินค้าที่ขายในวันนี้' : 'สินค้าที่ขายในช่วงที่เลือก'}</h3><p className="text-xs text-slate-500">นับเฉพาะบิล POS ที่ชำระสำเร็จ</p></div>
             <div className="text-right text-xs text-slate-500">ขาย {soldReport?.summary.totalQuantity || 0} ชิ้น · <strong className="text-emerald-600">{formatCurrency((soldReport?.summary.totalRevenueSatang || 0) / 100, settings.currencySymbol, 2)}</strong></div>
           </div>
+          <div className="border-b border-slate-200 p-4 dark:border-slate-800">
+            {nameFilter(soldSearch, (value) => { setSoldPage(1); setSoldSearch(value); }, 'กรองชื่อสินค้า')}
+          </div>
           <div className="overflow-x-auto"><table className="w-full min-w-[640px] text-left text-xs"><thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-4">สินค้า</th><th className="p-4 text-right">จำนวนขาย</th><th className="p-4 text-right">จำนวนบิล</th><th className="p-4 text-right">ยอดขาย</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(soldReport?.items || []).map((item) => <tr key={`${item.productId}:${item.name}`}><td className="p-4 font-bold">{item.name}</td><td className="p-4 text-right font-mono">{item.quantity}</td><td className="p-4 text-right font-mono">{item.billCount}</td><td className="p-4 text-right font-mono font-bold text-emerald-600">{formatCurrency(item.revenueSatang / 100, settings.currencySymbol, 2)}</td></tr>)}</tbody></table></div>
           {soldReport && paginationBar(soldReport.pagination.page, soldReport.pagination.totalPages, soldReport.pagination.total, setSoldPage)}
         </div>
@@ -958,7 +980,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
               id="purchase-report-search"
               value={purchaseSearch}
               onChange={(event) => { setPurchasesPage(1); setPurchaseSearch(event.target.value); }}
-              placeholder="ค้นหาชื่อเอกสาร เลขอ้างอิง หรือซัพพลายเออร์"
+              placeholder="กรองชื่อสินค้า ซัพพลายเออร์ ผู้บันทึก หรือเลขอ้างอิง"
               className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950"
             />
             <select
@@ -1056,6 +1078,9 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       {reportType === 'special' && (
         <div className="space-y-4">
           <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">ยอด LiveMatch เป็น “ยอดเกิดจริง” ตาม Session และอาจยังไม่ได้รับชำระ รายงานนี้ไม่รวมค่าบริการ Session, ค่าสนามรายชั่วโมง, LiveShare และ VAT ของ Match</div>
+          <div className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+            {nameFilter(specialSearch, (value) => { setSpecialPOSPage(1); setSpecialSessionPage(1); setSpecialSearch(value); }, 'กรองชื่อสินค้า POS หรือชื่อ Session')}
+          </div>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{[
             ['สินค้า POS', `${specialReport?.summary.posQuantity || 0} ชิ้น`, specialReport?.summary.posRevenueSatang || 0],
             ['ค่าเข้าสนาม', `${specialReport?.summary.matchPlayerCount || 0} คน`, specialReport?.summary.matchEntryFeeSatang || 0],
@@ -1066,7 +1091,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
           <div className="space-y-3">{(specialReport?.sessions || []).map((session) => <div key={session.id} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="flex flex-wrap justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800"><div><h3 className="font-bold">{session.name}</h3><p className="text-xs text-slate-500">{formatThaiDateShort(session.occurredAt)} · {session.gameCount} เกม · {session.playerCount} คน</p></div><strong className="text-emerald-600">{formatCurrency(session.totalSatang / 100, settings.currencySymbol, 2)}</strong></div><div className="mt-3 grid gap-4 lg:grid-cols-2"><div><p className="mb-2 text-xs font-bold">ค่าเข้าสนามตามประเภทสมาชิก</p>{session.entryFees.map((item) => <div key={`${item.memberTypeId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.memberTypeName} · {item.quantity} คน × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div><div><p className="mb-2 text-xs font-bold">ลูกแบดที่ใช้จริง</p>{session.shuttles.map((item) => <div key={`${item.brandId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.brandName} · {item.quantity} ลูก × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div></div></div>)}{specialReport && paginationBar(specialReport.sessionPagination.page, specialReport.sessionPagination.totalPages, specialReport.sessionPagination.total, setSpecialSessionPage)}</div>
         </div>
       )}
-      {reportType === 'transfers' && <div className="space-y-4"><div className="flex gap-2 rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"><input value={transferSearch} onChange={(e) => { setTransfersPage(1); setTransferSearch(e.target.value); }} placeholder="ค้นหาเลขที่หรือหมายเหตุ" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950" /></div><div className="rounded-3xl border border-slate-200 bg-white shadow-md overflow-hidden dark:border-slate-800 dark:bg-slate-900"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950"><tr><th className="p-3 text-left">เอกสาร</th><th className="p-3 text-left">ต้นทาง → ปลายทาง</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-left">ผู้ทำรายการ / เวลา</th></tr></thead><tbody>{(transfersReport?.items || []).map((item) => <tr key={item.id} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3"><b>{item.referenceNo}</b><div className="text-slate-500">{item.note || '-'}</div></td><td className="p-3">{item.sourceStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName} → {item.destinationStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName}</td><td className="p-3 text-right font-mono font-bold">{item.totalQuantity}</td><td className="p-3">{item.actorName || '-'}<div className="text-slate-500">{item.createdAt}</div></td></tr>)}</tbody></table></div>{transfersReport && paginationBar(transfersReport.pagination.page, transfersReport.pagination.totalPages, transfersReport.pagination.total, setTransfersPage)}</div></div>}
+      {reportType === 'transfers' && <div className="space-y-4"><div className="flex gap-2 rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"><input value={transferSearch} onChange={(e) => { setTransfersPage(1); setTransferSearch(e.target.value); }} placeholder="กรองชื่อสินค้า ผู้ทำรายการ เลขที่ หรือหมายเหตุ" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950" /></div><div className="rounded-3xl border border-slate-200 bg-white shadow-md overflow-hidden dark:border-slate-800 dark:bg-slate-900"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950"><tr><th className="p-3 text-left">เอกสาร</th><th className="p-3 text-left">ต้นทาง → ปลายทาง</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-left">ผู้ทำรายการ / เวลา</th></tr></thead><tbody>{(transfersReport?.items || []).map((item) => <tr key={item.id} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3"><b>{item.referenceNo}</b><div className="text-slate-500">{item.note || '-'}</div></td><td className="p-3">{item.sourceStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName} → {item.destinationStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName}</td><td className="p-3 text-right font-mono font-bold">{item.totalQuantity}</td><td className="p-3">{item.actorName || '-'}<div className="text-slate-500">{item.createdAt}</div></td></tr>)}</tbody></table></div>{transfersReport && paginationBar(transfersReport.pagination.page, transfersReport.pagination.totalPages, transfersReport.pagination.total, setTransfersPage)}</div></div>}
       {printLines && <pre id="printable-report-slip" className={settings.printerType === 'thermal_58mm' ? 'print-58mm' : 'print-80mm'}>{printLines.join('\n')}</pre>}
       {extraLoading && (reportType === 'sold_products' || reportType === 'purchases' || reportType === 'inventory' || reportType === 'transfers' || reportType === 'special') && <div className="text-center text-xs text-slate-500">กำลังโหลดข้อมูลรายงาน...</div>}
     </div>

@@ -56,6 +56,7 @@ import {
   listPOSReceivables,
   listPOSSales,
   POSMember,
+	POSBillingSummary,
   POSSale,
   POSSettingsRecord,
   savePOSSettings,
@@ -136,7 +137,7 @@ interface PosContextType {
 
   // Held Orders
   heldOrders: HeldOrder[];
-  holdCurrentCart: (memberId: string, customerName: string) => Promise<boolean>;
+  holdCurrentCart: (memberIds: string[], customerNames: string[]) => Promise<boolean>;
   resumeHeldOrder: (heldId: string) => void;
   deleteHeldOrder: (heldId: string) => void;
   batchDeleteHeldOrders: (heldIds: string[]) => void;
@@ -198,6 +199,8 @@ interface PosContextType {
   // Receipt Modal State
   selectedOrderForReceipt: Order | null;
   setSelectedOrderForReceipt: (order: Order | null) => void;
+  receiptBatch: Order[];
+  setReceiptBatch: (orders: Order[]) => void;
 
   // Audio & Toast Helpers
   playBeep: (type?: 'beep' | 'success' | 'alert' | 'info') => void;
@@ -333,6 +336,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
   const [selectedOrderForReceipt, setSelectedOrderForReceipt] = useState<Order | null>(null);
+  const [receiptBatch, setReceiptBatch] = useState<Order[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' | 'warning' } | null>(null);
   const checkoutRequestIDRef = useRef('');
   const holdRequestIDRef = useRef('');
@@ -568,18 +572,23 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const openSales = apiSales.filter((sale) => sale.status === 'open');
     setHeldOrders(apiReceivables.map((receivable) => {
       const accountSales = openSales.filter((sale) => sale.billingAccountId === receivable.billingAccountId);
-      const posItems = accountSales.flatMap((sale) => sale.items.map((item) => ({ product: saleItemProduct(item), quantity: item.quantity, note: item.note })));
-      const matchItems = receivable.lines.filter((line) => line.sourceType === 'match').map((line) => ({
-        product: { id: `billing-match-${line.sourceId}`, sku: '', name: line.label, category: '', price: line.amountSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const },
-        quantity: 1,
-      }));
+	  const splitSaleIds = receivable.lines.filter((line) => line.sourceType === 'pos').map((line) => String(line.snapshot?.saleId || '')).filter(Boolean);
+	  const splitAllocations = receivable.lines.filter((line) => line.sourceType === 'pos' && line.snapshot?.splitMode === 'equal').map((line) => ({ saleId: String(line.snapshot?.saleId || line.sourceId), count: Number(line.snapshot?.splitCount || 1), position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 }));
+	  const splitSales = openSales.filter((sale) => splitSaleIds.includes(sale.id));
+	  const visibleSales = [...accountSales, ...splitSales.filter((sale) => !accountSales.some((item) => item.id === sale.id))];
+	  const posItems = visibleSales.flatMap((sale) => sale.items.map((item) => ({ product: saleItemProduct(item), quantity: item.quantity, note: sale.splitMode === 'equal' ? `${item.note || ''}${item.note ? ' · ' : ''}สินค้าหารร่วม ${sale.splitCount || 1} คน` : item.note })));
+	  const matchItems = receivable.lines.filter((line) => line.sourceType === 'match').flatMap((line) => {
+		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+		const chargeItems = entries.length === 0 ? [{ product: { id: `billing-match-${line.sourceId}`, sku: '', name: line.label, category: '', price: line.amountSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const }, quantity: 1 }] : entries.map((entry: any, index: number) => ({ product: { id: `billing-match-${line.sourceId}-${index}`, sku: '', name: String(entry.label || line.label), category: 'Match', price: Number(entry.amountSatang ?? (Number(entry.amountThb || 0) * 100)) / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const }, quantity: Number(entry.quantity || 1), note: entry.description || (Array.isArray(entry.details) ? entry.details.map((detail: any) => `${detail.label} ${detail.quantity}`).join(' · ') : undefined) }));
+		return chargeItems;
+	  });
       return {
         id: receivable.billingAccountId,
         heldNumber: `รวม ${receivable.lineCount} รายการ`,
         customerName: receivable.displayName,
         memberId: receivable.memberId,
         billingAccountId: receivable.billingAccountId,
-        sourceSaleIds: accountSales.map((sale) => sale.id),
+		sourceSaleIds: visibleSales.map((sale) => sale.id),
         items: [...matchItems, ...posItems],
         subtotal: receivable.totalSatang / 100,
         discount: 0,
@@ -589,6 +598,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         total: receivable.totalSatang / 100,
         matchTotal: receivable.matchTotalSatang / 100,
         posTotal: receivable.posTotalSatang / 100,
+		splitAllocations,
       } satisfies HeldOrder;
     }));
     setOrders(apiPayments.map((payment) => {
@@ -1402,19 +1412,21 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [cart, cartTotals, discount, discountType]);
 
   // Held Orders (พักยอดบิล)
-  const holdCurrentCart = async (memberId: string, customerName: string): Promise<boolean> => {
+  const holdCurrentCart = async (memberIds: string[], customerNames: string[]): Promise<boolean> => {
     if (cart.length === 0) {
       showToast('ไม่มีสินค้าในตะกร้าสำหรับพักยอด', 'warning');
       return false;
     }
-    if (!memberId) {
+    if (memberIds.length === 0) {
       showToast('กรุณาเลือกสมาชิกจากระบบ', 'warning');
       return false;
     }
+	const isSplit = memberIds.length > 1;
     try {
       const requestId = holdRequestIDRef.current || crypto.randomUUID(); holdRequestIDRef.current = requestId;
       const result = await createPOSSale({
-        requestId, action: 'hold', buyerType: 'member', buyerId: memberId,
+        requestId, action: 'hold', buyerType: 'member', buyerId: isSplit ? undefined : memberIds[0],
+		buyerIds: isSplit ? memberIds : undefined, splitMode: isSplit ? 'equal' : 'none',
         discountType, discountAmountSatang: discountType === 'amount' ? Math.round(discount * 100) : 0,
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
@@ -1424,7 +1436,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       holdRequestIDRef.current = '';
       await Promise.all([refreshPOSCatalog(), refreshPOSSales(), refreshPOSStock()]);
       playBeep('success');
-      showToast(`พักยอดของ ${customerName} เรียบร้อยแล้ว (${result.saleId})`, 'success');
+      showToast(`${isSplit ? `พักยอดแบบหาร ${memberIds.length} คน` : `พักยอดของ ${customerNames[0]}`} เรียบร้อยแล้ว (${result.saleId})`, 'success');
       return true;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'พักยอดไม่สำเร็จ', 'error');
@@ -1435,6 +1447,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const resumeHeldOrder = (heldId: string) => {
     const found = heldOrders.find((h) => h.id === heldId);
     if (!found) return;
+	if (found.splitAllocations?.some((split) => split.paidCount > 0)) {
+	  showToast('ดึงบิลหารกลับไม่ได้ เพราะมีสมาชิกบางคนชำระแล้ว กรุณาคืนเงินให้ครบก่อนแก้ไขทั้งชุด', 'error');
+	  return;
+	}
     if (cart.length > 0 && !window.confirm('มีสินค้าอยู่ในตะกร้า ต้องการแทนที่ด้วยรายการพักยอดนี้หรือไม่?')) return;
     void (async () => {
       try {
@@ -1460,7 +1476,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const batchDeleteHeldOrders = (heldIds: string[]) => {
     if (heldIds.length === 0) return;
-	const saleIds = heldOrders.filter((item) => heldIds.includes(item.id)).flatMap((item) => item.sourceSaleIds || []);
+	const saleIds = [...new Set(heldOrders.filter((item) => heldIds.includes(item.id)).flatMap((item) => item.sourceSaleIds || []))];
 	if (saleIds.length === 0) { showToast('รายการที่เลือกมีเฉพาะยอด Match', 'warning'); return; }
 	void Promise.all(saleIds.map((id) => voidPOSSale(id, 'ยกเลิกรายการพักยอดหลายรายการ'))).then(async () => {
       await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
@@ -1473,7 +1489,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (targets.length === 0) return;
     void (async () => {
       try {
-		const saleIds = targets.flatMap((item) => item.sourceSaleIds || []);
+		const saleIds = [...new Set(targets.flatMap((item) => item.sourceSaleIds || []))];
 		if (saleIds.length === 0) { showToast('รายการที่เลือกมีเฉพาะยอด Match', 'warning'); return; }
 		await Promise.all(saleIds.map((id) => voidPOSSale(id, 'รวมกลับเข้าตะกร้า')));
 		setCart(targets.flatMap((item) => item.items).filter((item) => !item.product.id.startsWith('billing-match-'))); setDiscountState(0); setDiscountTypeState('amount'); setActiveTab('pos');
@@ -1516,25 +1532,50 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return null;
       }
       let allocatedCashSatang = 0;
+	  const settledSummaries: POSBillingSummary[] = [];
       for (let index = 0; index < summaries.length; index += 1) {
         const summary = summaries[index];
         const isLast = index === summaries.length - 1;
         const accountCashSatang = paymentMethod === 'cash'
           ? (isLast ? receivedSatang - allocatedCashSatang : summary.totalSatang)
           : 0;
-        await settlePOSAccount({
+		const settlement = await settlePOSAccount({
           billingAccountId: summary.billingAccountId,
           method: paymentMethod === 'promptpay' ? 'promptpay' : 'cash',
           expectedTotalSatang: summary.totalSatang,
           cashReceivedSatang: accountCashSatang,
           referenceNumber,
         });
+		settledSummaries.push(settlement.summary);
         allocatedCashSatang += accountCashSatang;
       }
       await refreshPOSSales();
       const customerNames = summaries.map((summary) => summary.displayName).join(', ');
       showToast(`รับชำระยอดรวม ${summaries.length} สมาชิกเรียบร้อยแล้ว`, 'success');
-      return { id: `payment-${Date.now()}`, orderNumber: `PAY-${Date.now()}`, items: [], subtotal: totalSatang / 100, discount: 0, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: totalSatang / 100, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived, change: Math.max(0, (cashReceived || 0) - totalSatang / 100), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || `ชำระยอดรวม Match + POS · ${customerNames}`, referenceNumber };
+	  const itemsForSummary = (summary: POSBillingSummary): OrderItem[] => (summary.lines || []).flatMap((line) => {
+		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+		if (entries.length === 0) return [{ productId: line.sourceId, name: line.label, sku: '', price: line.amountSatang / 100, cost: 0, quantity: 1, total: line.amountSatang / 100 }];
+		const sourceAmounts = entries.map((entry: any) => Number(entry.amountSatang ?? entry.lineTotalSatang ?? 0));
+		const sourceTotal = sourceAmounts.reduce((sum, amount) => sum + amount, 0);
+		const allocated = sourceAmounts.map((amount) => sourceTotal > 0 ? Math.floor(amount * line.amountSatang / sourceTotal) : 0);
+		if (allocated.length > 0) allocated[0] += line.amountSatang - allocated.reduce((sum, amount) => sum + amount, 0);
+		const chargeItems = entries.map((entry: any, index: number) => {
+		  const quantity = Number(entry.quantity || 1);
+		  return { productId: String(entry.productId || `${line.sourceId}-${index}`), name: String(entry.name || entry.productName || entry.label || line.label), sku: String(entry.sku || ''), price: allocated[index] / 100 / quantity, cost: Number(entry.unitCostSatang || 0) / 100, quantity, total: allocated[index] / 100, note: entry.note };
+		});
+		return chargeItems;
+	  });
+	  let receiptCashAllocated = 0;
+	  const receipts = settledSummaries.map((summary, index): Order => {
+		const accountTotal = summary.totalSatang / 100;
+		const isLast = index === settledSummaries.length - 1;
+		const accountCash = paymentMethod === 'cash' ? (isLast ? (cashReceived || accountTotal) - receiptCashAllocated : accountTotal) : undefined;
+		receiptCashAllocated += accountCash || 0;
+		return { id: summary.paymentId || `payment-${Date.now()}-${index}`, orderNumber: summary.paymentId || `PAY-${Date.now()}-${index + 1}`, items: itemsForSummary(summary), subtotal: accountTotal, discount: 0, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: accountTotal, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived: accountCash, change: Math.max(0, (accountCash || 0) - accountTotal), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || summary.displayName, referenceNumber, matchTotal: summary.matchTotalSatang / 100, posTotal: summary.posTotalSatang / 100, billingLines: summary.lines };
+	  });
+	  setReceiptBatch(receipts);
+	  setSelectedOrderForReceipt(receipts[0] || null);
+	  return receipts[0] || null;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'รับชำระยอดรวมไม่สำเร็จ', 'error');
       return null;
@@ -2026,6 +2067,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteSupplier,
         selectedOrderForReceipt,
         setSelectedOrderForReceipt,
+        receiptBatch,
+        setReceiptBatch,
         playBeep,
         toast,
         showToast,

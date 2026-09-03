@@ -575,6 +575,72 @@ func pageMeta(page, pageSize, total int) map[string]int {
 	return map[string]int{"page": page, "pageSize": pageSize, "total": total}
 }
 
+func (a *app) memberPaymentDetailItems(ctx context.Context, adminID, memberID, kind, id string) []map[string]any {
+	items := []map[string]any{}
+	switch kind {
+	case "booking":
+		rows, err := a.db.QueryContext(ctx, `select c.name,to_char(b.start_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI'),to_char(b.end_at at time zone 'Asia/Bangkok','HH24:MI'),b.total_price_thb from booking_payments bp join bookings paid on paid.id=bp.booking_id join bookings b on b.admin_id=paid.admin_id and (b.id=paid.id or (paid.booking_batch_id is not null and b.booking_batch_id=paid.booking_batch_id)) join booking_courts c on c.id=b.court_id where bp.id=$1 and bp.member_id=$2 and b.admin_id=$3 order by b.start_at,c.sort_order`, id, memberID, adminID)
+		if err != nil {
+			return items
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name, start, end string
+			var amount int
+			if rows.Scan(&name, &start, &end, &amount) == nil {
+				items = append(items, map[string]any{"label": "จอง " + name, "description": start + "–" + end, "quantity": 1, "amountSatang": int64(amount) * 100})
+			}
+		}
+	case "match":
+		var raw []byte
+		_ = a.db.QueryRowContext(ctx, `select coalesce(a.snapshot,'{}'::jsonb) from player_payment_events e join sessions s on s.id=e.session_id left join billing_payment_allocations a on a.payment_id=e.billing_payment_id and a.source_type='match' where e.id::text=$1 and e.member_id=$2 and s.admin_id=$3 order by a.id limit 1`, id, memberID, adminID).Scan(&raw)
+		var snapshot struct {
+			Items []map[string]any `json:"items"`
+		}
+		if json.Unmarshal(raw, &snapshot) == nil {
+			items = snapshot.Items
+		}
+	case "pos":
+		rows, err := a.db.QueryContext(ctx, `select i.product_name,i.quantity,i.line_total_satang,i.note from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id join pos_sale_items i on i.sale_id=ps.id where ps.id=$1 and ba.member_id=$2 and ps.admin_id=$3 order by i.id`, id, memberID, adminID)
+		if err != nil {
+			return items
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name, note string
+			var quantity int
+			var amount int64
+			if rows.Scan(&name, &quantity, &amount, &note) == nil {
+				items = append(items, map[string]any{"label": name, "quantity": quantity, "amountSatang": amount, "description": note})
+			}
+		}
+	case "pos_split":
+		rows, err := a.db.QueryContext(ctx, `select i.product_name,i.quantity,i.line_total_satang,i.note,sp.share_satang,ps.total_satang from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id join billing_accounts ba on ba.id=sp.billing_account_id join pos_sale_items i on i.sale_id=ps.id where sp.id=$1 and ba.member_id=$2 and ps.admin_id=$3 order by i.id`, id, memberID, adminID)
+		if err != nil {
+			return items
+		}
+		defer rows.Close()
+		var share, saleTotal, allocated int64
+		for rows.Next() {
+			var name, note string
+			var quantity int
+			var lineTotal int64
+			if rows.Scan(&name, &quantity, &lineTotal, &note, &share, &saleTotal) == nil {
+				amount := int64(0)
+				if saleTotal > 0 {
+					amount = lineTotal * share / saleTotal
+				}
+				allocated += amount
+				items = append(items, map[string]any{"label": name, "quantity": quantity, "amountSatang": amount, "description": note})
+			}
+		}
+		if len(items) > 0 && allocated < share {
+			items[0]["amountSatang"] = items[0]["amountSatang"].(int64) + share - allocated
+		}
+	}
+	return items
+}
+
 func phoneSearchDigits(raw string) string {
 	var digits strings.Builder
 	for _, char := range raw {
@@ -991,29 +1057,29 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	}
 
 	payments := []map[string]any{}
-	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)+(select count(*) from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
-	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2 union all select 'pos',ps.id,ps.total_thb,ps.status,to_char(ps.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
+	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)+(select count(*) from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2)+(select count(*) from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id join billing_accounts ba on ba.id=sp.billing_account_id where ba.member_id=$1 and ps.admin_id=$2)`, memberID, adminID).Scan(&paymentTotal)
+	paymentRows, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_satang,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb::bigint*100 as amount_satang,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb::bigint*100,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2 union all select 'pos',ps.id,ps.total_satang,ps.status,to_char(ps.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2 union all select 'pos_split',sp.id,sp.share_satang,sp.status,to_char(sp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id join billing_accounts ba on ba.id=sp.billing_account_id where ba.member_id=$1 and ps.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, memberID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if paymentRows != nil {
 		defer paymentRows.Close()
 		for paymentRows.Next() {
 			var kind, id, status, created, sessionName string
-			var amount int
-			if paymentRows.Scan(&kind, &id, &amount, &status, &created, &sessionName) == nil {
-				payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": amount, "status": status, "createdAt": created, "sessionName": sessionName})
+			var amountSatang int64
+			if paymentRows.Scan(&kind, &id, &amountSatang, &status, &created, &sessionName) == nil {
+				payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": float64(amountSatang) / 100, "amountSatang": amountSatang, "status": status, "createdAt": created, "sessionName": sessionName, "detailItems": a.memberPaymentDetailItems(r.Context(), adminID, memberID, kind, id)})
 			}
 		}
 	}
 
 	matches := []map[string]any{}
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history'`, memberID, adminID).Scan(&matchTotal)
-	matchRows, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit $3 offset $4`, memberID, adminID, pageSize, (matchPage-1)*pageSize)
+	matchRows, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id,mt.shuttles from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit $3 offset $4`, memberID, adminID, pageSize, (matchPage-1)*pageSize)
 	if matchRows != nil {
 		defer matchRows.Close()
 		for matchRows.Next() {
 			var session, court, started, ended, status, winner string
-			var matchID, playerID int
-			if matchRows.Scan(&session, &matchID, &court, &started, &ended, &status, &winner, &playerID) == nil {
-				matches = append(matches, map[string]any{"sessionName": session, "matchId": matchID, "court": court, "startedAt": started, "endedAt": ended, "status": status, "winner": winner, "playerId": playerID})
+			var matchID, playerID, shuttles int
+			if matchRows.Scan(&session, &matchID, &court, &started, &ended, &status, &winner, &playerID, &shuttles) == nil {
+				matches = append(matches, map[string]any{"sessionName": session, "matchId": matchID, "court": court, "startedAt": started, "endedAt": ended, "status": status, "winner": winner, "playerId": playerID, "shuttles": shuttles})
 			}
 		}
 	}
@@ -1333,6 +1399,7 @@ func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminI
 			coalesce(to_char(max(hold_expires_at),'YYYY-MM-DD"T"HH24:MI:SSOF'),''),
 			coalesce(string_agg(distinct nullif(note,''),' · '),''),min(member_phone),
 			to_char(max(created_at) at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),count(*),
+			coalesce((select bp.id from booking_payments bp join bookings pb on pb.id=bp.booking_id where pb.admin_id=$1 and coalesce(nullif(pb.booking_batch_id,''),pb.id)=group_id order by bp.created_at desc limit 1),''),
 			json_agg(json_build_object('id',id,'courtId',court_id,'courtName',court_name,'startAt',start_at,'endAt',end_at,'totalPriceThb',total_price_thb) order by start_at,court_name)::text
 		from filtered
 		group by group_id
@@ -1347,20 +1414,24 @@ func (a *app) writeBookingHistory(w http.ResponseWriter, r *http.Request, adminI
 	for rows.Next() {
 		var rec bookingRecord
 		var startAt, endAt time.Time
-		var phoneValue, detailsText string
+		var phoneValue, detailsText, paymentID string
 		var bookingCount int
-		if err = rows.Scan(&rec.ID, &rec.CourtID, &rec.CourtName, &rec.MemberID, &rec.BookerName, &rec.BookedBy, &startAt, &endAt, &rec.Interval, &rec.UnitPrice, &rec.TotalPrice, &rec.Status, &rec.PaymentStatus, &rec.HoldExpiresAt, &rec.Note, &phoneValue, &rec.CreatedAt, &bookingCount, &detailsText); err != nil {
+		if err = rows.Scan(&rec.ID, &rec.CourtID, &rec.CourtName, &rec.MemberID, &rec.BookerName, &rec.BookedBy, &startAt, &endAt, &rec.Interval, &rec.UnitPrice, &rec.TotalPrice, &rec.Status, &rec.PaymentStatus, &rec.HoldExpiresAt, &rec.Note, &phoneValue, &rec.CreatedAt, &bookingCount, &paymentID, &detailsText); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"id": rec.ID, "courtId": rec.CourtID, "courtName": rec.CourtName,
 			"memberId": rec.MemberID, "bookerName": rec.BookerName, "bookedBy": rec.BookedBy,
 			"phone": displayPhone(phoneValue), "startAt": startAt.Format(time.RFC3339), "endAt": endAt.Format(time.RFC3339),
 			"intervalMinutes": rec.Interval, "unitPriceThb": rec.UnitPrice, "totalPriceThb": rec.TotalPrice,
 			"status": rec.Status, "paymentStatus": rec.PaymentStatus, "note": rec.Note, "createdAt": rec.CreatedAt,
 			"batchId": rec.ID, "bookingCount": bookingCount, "items": json.RawMessage(detailsText),
-		})
+		}
+		if paymentID != "" {
+			item["slipUrl"] = "/api/admin/booking/payments/" + url.PathEscape(paymentID) + "/slip"
+		}
+		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -2990,7 +3061,9 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	if slipSettings.ready() {
 		quota := a.fetchSlipOKQuota(r.Context(), slipSettings)
 		if quota.Available && !quota.CapReached {
-			checked := a.checkSlipOK(r.Context(), slipSettings, slipDataURL, amount)
+			checked := a.checkSlipOK(r.Context(), slipSettings, slipDataURL, amount, slipOKLogMeta{
+				AdminID: adminID, SourceSystem: "booking", ReferenceID: primaryBookingID,
+			})
 			provider = "slipok"
 			providerErrorCode = checked.ErrorCode
 			if checked.TransRef != "" {
@@ -3457,27 +3530,27 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	payments := []map[string]any{}
-	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)`, m.ID, adminID).Scan(&paymentTotal)
-	pr, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_thb,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2) events order by created_at desc, id desc limit $3 offset $4`, m.ID, adminID, pageSize, (paymentPage-1)*pageSize)
+	_ = a.db.QueryRowContext(r.Context(), `select (select count(*) from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2)+(select count(*) from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2)+(select count(*) from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2 and ps.status='paid')+(select count(*) from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id join billing_accounts ba on ba.id=sp.billing_account_id where ba.member_id=$1 and ps.admin_id=$2 and sp.status='paid')`, m.ID, adminID).Scan(&paymentTotal)
+	pr, _ := a.db.QueryContext(r.Context(), `select kind,id,amount_satang,status,created_at,session_name from (select 'booking' as kind,p.id,p.amount_thb::bigint*100 as amount_satang,p.status,to_char(p.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') as created_at,'' as session_name from booking_payments p join bookings b on b.id=p.booking_id where p.member_id=$1 and b.admin_id=$2 union all select 'match',e.id::text,e.amount_thb::bigint*100,case when e.paid then 'paid' else 'unpaid' end,to_char(e.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),s.name from player_payment_events e join sessions s on s.id=e.session_id where e.member_id=$1 and s.admin_id=$2 union all select 'pos',ps.id,ps.total_satang,ps.status,to_char(ps.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sales ps join billing_accounts ba on ba.id=ps.billing_account_id where ba.member_id=$1 and ps.admin_id=$2 and ps.status='paid' union all select 'pos_split',sp.id,sp.share_satang,sp.status,to_char(sp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),'' from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id join billing_accounts ba on ba.id=sp.billing_account_id where ba.member_id=$1 and ps.admin_id=$2 and sp.status='paid') events order by created_at desc, id desc limit $3 offset $4`, m.ID, adminID, pageSize, (paymentPage-1)*pageSize)
 	if pr != nil {
 		defer pr.Close()
 		for pr.Next() {
 			var kind, id, status, created, sessionName string
-			var amount int
-			_ = pr.Scan(&kind, &id, &amount, &status, &created, &sessionName)
-			payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": amount, "status": status, "createdAt": created, "sessionName": sessionName})
+			var amountSatang int64
+			_ = pr.Scan(&kind, &id, &amountSatang, &status, &created, &sessionName)
+			payments = append(payments, map[string]any{"kind": kind, "id": id, "amountThb": float64(amountSatang) / 100, "amountSatang": amountSatang, "status": status, "createdAt": created, "sessionName": sessionName, "detailItems": a.memberPaymentDetailItems(r.Context(), adminID, m.ID, kind, id)})
 		}
 	}
 	matches := []map[string]any{}
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history'`, m.ID, adminID).Scan(&matchTotal)
-	mr, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit $3 offset $4`, m.ID, adminID, pageSize, (matchPage-1)*pageSize)
+	mr, _ := a.db.QueryContext(r.Context(), `select s.name,mt.id,mt.court,mt.started_at,mt.ended_at,mt.status,mt.winner,p.id,mt.shuttles from players p join sessions s on s.id=p.session_id join matches mt on mt.session_id=p.session_id and p.id in (mt.a1,mt.a2,mt.b1,mt.b2) where p.member_id=$1 and s.admin_id=$2 and mt.phase='history' order by s.updated_at desc,mt.id desc limit $3 offset $4`, m.ID, adminID, pageSize, (matchPage-1)*pageSize)
 	if mr != nil {
 		defer mr.Close()
 		for mr.Next() {
 			var session, court, started, ended, status, winner string
-			var matchID, playerID int
-			_ = mr.Scan(&session, &matchID, &court, &started, &ended, &status, &winner, &playerID)
-			matches = append(matches, map[string]any{"sessionName": session, "matchId": matchID, "court": court, "startedAt": started, "endedAt": ended, "status": status, "winner": winner, "playerId": playerID})
+			var matchID, playerID, shuttles int
+			_ = mr.Scan(&session, &matchID, &court, &started, &ended, &status, &winner, &playerID, &shuttles)
+			matches = append(matches, map[string]any{"sessionName": session, "matchId": matchID, "court": court, "startedAt": started, "endedAt": ended, "status": status, "winner": winner, "playerId": playerID, "shuttles": shuttles})
 		}
 	}
 	writeJSON(w, 200, map[string]any{

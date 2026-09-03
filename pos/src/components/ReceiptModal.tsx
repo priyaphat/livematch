@@ -1,11 +1,11 @@
 import React, { useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
-import { Printer, X, Check, Copy, Share2 } from 'lucide-react';
+import { Printer, X, Check, Copy, ChevronLeft, ChevronRight, Files } from 'lucide-react';
 import { printIminBitmap } from '../utils/iminPrinter';
 
 export const ReceiptModal: React.FC = () => {
-  const { selectedOrderForReceipt, setSelectedOrderForReceipt, settings, showToast } = usePos();
+  const { selectedOrderForReceipt, setSelectedOrderForReceipt, receiptBatch, setReceiptBatch, settings, showToast } = usePos();
   const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>(() => settings.printerType === 'thermal_58mm' ? '58mm' : '80mm');
   const [copied, setCopied] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
@@ -13,6 +13,29 @@ export const ReceiptModal: React.FC = () => {
   if (!selectedOrderForReceipt) return null;
 
   const order = selectedOrderForReceipt;
+  const activeBatch = receiptBatch.length > 1 && receiptBatch.some((item) => item.id === order.id) ? receiptBatch : [];
+  const receiptIndex = activeBatch.findIndex((item) => item.id === order.id);
+
+  const closeReceipt = () => {
+    setSelectedOrderForReceipt(null);
+    setReceiptBatch([]);
+  };
+
+  const handlePrintAll = () => {
+    if (activeBatch.length < 2) {
+      void handlePrint();
+      return;
+    }
+    const escapeHTML = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character);
+    const printable = activeBatch.map((receipt) => `<section class="receipt"><h1>${escapeHTML(settings.storeName)}</h1><h2>ใบเสร็จรับเงิน</h2><p>เลขที่: ${escapeHTML(receipt.orderNumber)}</p><p>สมาชิก: ${escapeHTML(receipt.customerNote || '-')}</p><p>วันที่: ${escapeHTML(formatThaiDateTime(receipt.createdAt))}</p><hr>${receipt.items.map((item) => `<div class="row"><span>${escapeHTML(item.name)} × ${item.quantity}</span><b>${escapeHTML(formatCurrency(item.total, settings.currencySymbol, settings.decimalPlaces))}</b></div>`).join('')}<hr><div class="row total"><span>ยอดสุทธิ</span><b>${escapeHTML(formatCurrency(receipt.total, settings.currencySymbol, settings.decimalPlaces))}</b></div><p>วิธีชำระ: ${receipt.paymentMethod === 'cash' ? 'เงินสด' : 'PromptPay QR'}</p><footer>${escapeHTML(settings.receiptFooterMessage)}</footer></section>`).join('');
+    const printWindow = window.open('', '_blank', 'width=720,height=900');
+    if (!printWindow) {
+      showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ทั้งหมด กรุณาอนุญาต Pop-up', 'warning');
+      return;
+    }
+    printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>ใบเสร็จทั้งหมด</title><style>@page{size:80mm auto;margin:4mm}body{font-family:Arial,sans-serif;margin:0}.receipt{box-sizing:border-box;width:72mm;margin:0 auto;padding:4mm;page-break-after:always}.receipt:last-child{page-break-after:auto}h1,h2,footer{text-align:center}h1{font-size:18px}h2{font-size:15px}.row{display:flex;justify-content:space-between;gap:12px;margin:7px 0}.total{font-size:16px}p,.row{font-size:12px}hr{border:0;border-top:1px dashed #555}</style></head><body>${printable}<script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}<\/script></body></html>`);
+    printWindow.document.close();
+  };
 
   const handlePrint = async () => {
     if (isPrinting) return;
@@ -107,6 +130,7 @@ export const ReceiptModal: React.FC = () => {
             <h3 className="text-base font-bold text-slate-900 dark:text-white">
               {order.vatRate > 0 ? 'ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ' : 'ใบเสร็จรับเงิน'}
             </h3>
+            {activeBatch.length > 1 && <span className="rounded-full bg-yellow-100 px-2 py-1 text-[10px] font-black text-yellow-800">{receiptIndex + 1}/{activeBatch.length}</span>}
           </div>
 
           <div className="flex items-center gap-2">
@@ -136,7 +160,7 @@ export const ReceiptModal: React.FC = () => {
 
             <button
               id="close-receipt-modal-btn"
-              onClick={() => setSelectedOrderForReceipt(null)}
+              onClick={closeReceipt}
               className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
             >
               <X className="w-5 h-5" />
@@ -322,6 +346,11 @@ export const ReceiptModal: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2">
+            {activeBatch.length > 1 && <>
+              <button type="button" aria-label="ใบเสร็จก่อนหน้า" disabled={receiptIndex <= 0} onClick={() => setSelectedOrderForReceipt(activeBatch[receiptIndex - 1])} className="rounded-xl border border-slate-300 p-2 disabled:opacity-30 dark:border-slate-600"><ChevronLeft className="h-4 w-4" /></button>
+              <button type="button" aria-label="ใบเสร็จถัดไป" disabled={receiptIndex >= activeBatch.length - 1} onClick={() => setSelectedOrderForReceipt(activeBatch[receiptIndex + 1])} className="rounded-xl border border-slate-300 p-2 disabled:opacity-30 dark:border-slate-600"><ChevronRight className="h-4 w-4" /></button>
+              <button type="button" onClick={handlePrintAll} className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-3 py-2 text-xs font-black dark:border-slate-600"><Files className="h-4 w-4" />พิมพ์ทั้งหมด</button>
+            </>}
             <button
               id="print-receipt-btn"
               onClick={() => void handlePrint()}

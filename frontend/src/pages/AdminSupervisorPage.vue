@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, ref } from 'vue'
 import HeroBackground from '../components/HeroBackground.vue'
+import ProductStockCombobox from '../components/ProductStockCombobox.vue'
 import {
   Activity,
   CalendarDays,
@@ -30,6 +31,7 @@ import {
 
 const props = defineProps([
   'auth',
+  'apiRequest',
   'forms',
   'ui',
   'money',
@@ -63,7 +65,7 @@ const announcementBellPlaying = ref(false)
 const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
   { id: 'system', label: 'ตั้งค่าระบบ', hint: 'ชื่อ โลโก้ ผู้ดูแล', icon: ShieldCheck },
-  { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาเริ่มต้น', icon: CreditCard },
+  { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาและสต็อก POS เริ่มต้น', icon: CreditCard },
   { id: 'courts', label: 'สนาม', hint: 'รายชื่อสนาม', icon: Database },
   { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal },
   { id: 'announcements', label: 'ประกาศ', hint: 'ข้อความอ่านออกเสียง', icon: Volume2 }
@@ -399,11 +401,12 @@ function updateDashboardAnnouncement(index, value) {
         <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700 lg:col-span-2">
           <div>
             <p class="font-black">ยี่ห้อลูกแบด</p>
-            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">กำหนดยี่ห้อ ราคา และสถานะที่ใช้กับ Session ใหม่</p>
+            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">กำหนดยี่ห้อ ราคา และสินค้าสต็อก POS ที่ใช้กับ Session ใหม่</p>
           </div>
-          <div v-for="(brand, index) in auth.defaultSettings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md bg-paper-100 p-2 dark:bg-stone-800 sm:grid-cols-[1fr_7rem_auto_auto] sm:items-center">
+          <div v-for="(brand, index) in auth.defaultSettings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md bg-paper-100 p-2 dark:bg-stone-800 sm:grid-cols-[minmax(9rem,1fr)_7rem_minmax(16rem,1.4fr)_auto_auto] sm:items-center">
             <input v-model="brand.name" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ชื่อยี่ห้อ" />
             <input v-model.number="brand.price" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ราคา" />
+            <ProductStockCombobox v-model="brand.posProductId" :api-request="apiRequest" />
             <label class="flex items-center gap-2 text-sm font-bold">
               <input v-model="brand.active" type="checkbox" />
               active
@@ -417,6 +420,7 @@ function updateDashboardAnnouncement(index, value) {
             <input v-model.number="forms.adminDefaultNewShuttleBrandPrice" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ราคา" />
             <button class="h-10 rounded-md bg-stone-900 px-3 text-sm font-black text-white dark:bg-white dark:text-stone-900" @click="addAdminDefaultShuttleBrand">เพิ่ม</button>
           </div>
+          <p class="rounded-md bg-court-500/10 px-3 py-2 text-xs font-semibold text-court-700 dark:text-court-300">สินค้า POS ต้องเปิดติดตามสต็อก เมื่อสร้าง Session ใหม่ การใช้ลูกแบด 1 ลูกจะตัดสินค้าที่เชื่อมไว้ 1 หน่วย</p>
         </div>
 
         <div v-show="adminDefaultSettingsTab === 'match'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
@@ -437,7 +441,6 @@ function updateDashboardAnnouncement(index, value) {
               {{ auth.defaultSettings.announcementBellKey ? 'กำหนดเอง' : 'ค่าเริ่มต้น' }}
             </span>
           </div>
-
           <div class="mx-3 flex min-w-0 items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
             <span class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-court-500 text-white shadow-sm"><Volume2 class="h-5 w-5" /></span>
             <div class="min-w-0 flex-1">

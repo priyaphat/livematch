@@ -385,7 +385,7 @@ describe('BookingAdminPage', () => {
           id: 'batch-1', batchId: 'batch-1', bookingCount: 2,
           courtName: 'สนาม 1, สนาม 2', bookerName: 'Admin', bookedBy: 'admin', phone: '',
           startAt: `${testToday}T16:00:00+07:00`, endAt: `${testToday}T18:00:00+07:00`,
-          status: 'confirmed', paymentStatus: 'unpaid', totalPriceThb: 220, createdAt: '12/08/2026 15:45',
+		  status: 'confirmed', paymentStatus: 'paid', totalPriceThb: 220, createdAt: '12/08/2026 15:45', slipUrl: '/api/admin/booking/payments/pay-1/slip',
           items: [
             { id: 'one', courtName: 'สนาม 1', startAt: `${testToday}T16:00:00+07:00`, endAt: `${testToday}T17:00:00+07:00`, totalPriceThb: 100 },
             { id: 'two', courtName: 'สนาม 2', startAt: `${testToday}T17:00:00+07:00`, endAt: `${testToday}T18:00:00+07:00`, totalPriceThb: 120 },
@@ -411,6 +411,8 @@ describe('BookingAdminPage', () => {
     expect(wrapper.get('[aria-labelledby="booking-history-detail-title"]').text()).toContain('สนาม 1')
     expect(wrapper.get('[aria-labelledby="booking-history-detail-title"]').text()).toContain('สนาม 2')
     expect(wrapper.get('[aria-labelledby="booking-history-detail-title"]').text()).toContain('฿220')
+	const slip = wrapper.get('[aria-labelledby="booking-history-detail-title"] img[alt="สลิปชำระเงินของการจอง"]')
+	expect(slip.attributes('src')).toBe('/api/admin/booking/payments/pay-1/slip')
     wrapper.unmount()
   })
 

@@ -34,6 +34,7 @@ interface CustomerComboboxProps {
   allowCustom?: boolean;
   required?: boolean;
   autoFocus?: boolean;
+  clearOnSelect?: boolean;
 }
 
 export const CustomerCombobox: React.FC<CustomerComboboxProps> = ({
@@ -49,6 +50,7 @@ export const CustomerCombobox: React.FC<CustomerComboboxProps> = ({
   allowCustom = true,
   required = false,
   autoFocus = true,
+  clearOnSelect = false,
 }) => {
   const [inputValue, setInputValue] = useState<string>(value);
   const [debouncedQuery, setDebouncedQuery] = useState<string>(value);
@@ -138,9 +140,10 @@ export const CustomerCombobox: React.FC<CustomerComboboxProps> = ({
   }, []);
 
   const handleSelect = (suggestion: CustomerSuggestion) => {
-    setInputValue(suggestion.name);
-    setDebouncedQuery(suggestion.name);
-    onChange(suggestion.name);
+    const nextValue = clearOnSelect ? '' : suggestion.name;
+    setInputValue(nextValue);
+    setDebouncedQuery(nextValue);
+    onChange(nextValue);
     onSelect?.(suggestion);
     setIsOpen(false);
     setHighlightedIndex(-1);

@@ -101,6 +101,7 @@ export interface HeldOrder {
   sourceSaleIds?: string[];
   matchTotal?: number;
   posTotal?: number;
+  splitAllocations?: Array<{ saleId: string; count: number; position: number; paidCount: number; share: number }>;
 }
 
 export interface StockMovement {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { usePos } from '../context/PosContext';
 import { Product, StockMovement, Supplier, StockBatchSummary } from '../types';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
@@ -26,9 +26,12 @@ import {
   Tag,
   Coins,
   ChevronRight,
+  ChevronLeft,
   ExternalLink,
   Layers,
 } from 'lucide-react';
+
+const STOCK_PAGE_SIZE = 10;
 
 const normalizeWholeNumberInput = (value: string) => {
   if (value === '') return '';
@@ -65,6 +68,7 @@ export const StockView: React.FC = () => {
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'low' | 'out' | 'normal'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [currentPage, setCurrentPage] = useState(1);
 
   // Batch Operation Modal state
   const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | 'transfer' | null>(null);
@@ -177,6 +181,53 @@ export const StockView: React.FC = () => {
       return matchSearch;
     });
   }, [batchSummaries, searchQuery]);
+
+  const filteredSuppliers = useMemo(() => {
+    const search = searchQuery.trim().toLowerCase();
+    if (!search) return suppliers;
+    return suppliers.filter((supplier) =>
+      [supplier.name, supplier.code, supplier.contactPerson, supplier.phone, supplier.email, supplier.address]
+        .some((value) => String(value || '').toLowerCase().includes(search))
+    );
+  }, [suppliers, searchQuery]);
+
+  const activeItems = activeMainTab === 'master'
+    ? filteredProducts
+    : activeMainTab === 'batches'
+      ? filteredBatches
+      : activeMainTab === 'movements'
+        ? filteredMovements
+        : filteredSuppliers;
+  const totalPages = Math.ceil(activeItems.length / STOCK_PAGE_SIZE);
+  const pageStart = (currentPage - 1) * STOCK_PAGE_SIZE;
+  const paginatedProducts = filteredProducts.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+  const paginatedBatches = filteredBatches.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+  const paginatedMovements = filteredMovements.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+  const paginatedSuppliers = filteredSuppliers.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeMainTab, searchQuery, selectedCategory, stockStatusFilter, movementFilterTab, selectedStockLocation]);
+
+  useEffect(() => {
+    if (totalPages > 0 && currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const paginationBar = (total: number) => (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-xs dark:border-slate-800">
+      <span className="text-slate-500 dark:text-slate-400">
+        ทั้งหมด {total.toLocaleString('th-TH')} รายการ · หน้า {totalPages > 0 ? currentPage : 0}/{totalPages}
+      </span>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => page - 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          <ChevronLeft className="h-4 w-4" /> ก่อนหน้า
+        </button>
+        <button type="button" disabled={currentPage >= totalPages || totalPages === 0} onClick={() => setCurrentPage((page) => page + 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          ถัดไป <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
 
   // Open Modal Helpers
   const stockAtSelectedLocation = (product: Product) => selectedStockLocation === 'secondary' ? product.secondaryStock : product.primaryStock;
@@ -622,7 +673,7 @@ export const StockView: React.FC = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ค้นหาชื่อสินค้า, รหัส SKU, เลขที่เอกสาร..."
+              placeholder={activeMainTab === 'suppliers' ? 'ค้นหาชื่อ รหัส ผู้ติดต่อ หรือเบอร์โทร...' : 'ค้นหาชื่อสินค้า, รหัส SKU, เลขที่เอกสาร...'}
               className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pl-9 pr-3.5 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500"
             />
           </div>
@@ -709,7 +760,7 @@ export const StockView: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredProducts.map((p) => {
+                    paginatedProducts.map((p) => {
                       const currentStock = stockAtSelectedLocation(p);
                       const isLow = currentStock > 0 && currentStock <= p.minStockAlert;
                       const isOut = currentStock <= 0;
@@ -811,6 +862,7 @@ export const StockView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {paginationBar(filteredProducts.length)}
           </div>
         )}
 
@@ -832,7 +884,7 @@ export const StockView: React.FC = () => {
                   ไม่มีเอกสารสต็อกรวมในประวัติ
                 </div>
               ) : (
-                filteredBatches.map((batch) => {
+                paginatedBatches.map((batch) => {
                   const isStockIn = batch.type === 'in';
                   const isStockOut = batch.type === 'out';
                   const isAdjust = batch.type === 'adjust';
@@ -940,6 +992,7 @@ export const StockView: React.FC = () => {
                 })
               )}
             </div>
+            {paginationBar(filteredBatches.length)}
           </div>
         )}
 
@@ -1015,7 +1068,7 @@ export const StockView: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredMovements.map((m) => (
+                    paginatedMovements.map((m) => (
                       <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                         <td className="p-3.5 font-mono font-bold text-slate-900 dark:text-white">{m.referenceNo}</td>
                         <td className="p-3.5 text-slate-500 dark:text-slate-400 font-mono">
@@ -1073,6 +1126,7 @@ export const StockView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {paginationBar(filteredMovements.length)}
           </div>
         )}
 
@@ -1093,7 +1147,10 @@ export const StockView: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {suppliers.map((sup) => (
+              {paginatedSuppliers.length === 0 && (
+                <div className="col-span-full rounded-3xl border border-slate-200 bg-slate-50 p-10 text-center text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950/60">ไม่พบซัพพลายเออร์ที่ตรงกับการค้นหา</div>
+              )}
+              {paginatedSuppliers.map((sup) => (
                 <div
                   key={sup.id}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 sm:p-5 flex flex-col justify-between gap-3 hover:border-slate-300 dark:hover:border-slate-700 shadow-xs transition-colors"
@@ -1128,6 +1185,7 @@ export const StockView: React.FC = () => {
                 </div>
               ))}
             </div>
+            {paginationBar(filteredSuppliers.length)}
           </div>
         )}
       </div>
