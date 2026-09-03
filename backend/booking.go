@@ -2637,9 +2637,12 @@ func mustBookingTime(value string) time.Time {
 }
 
 type bookingReviewResult struct {
-	BatchID    string   `json:"batchId,omitempty"`
-	BookingIDs []string `json:"bookingIds"`
+	BatchID         string   `json:"batchId,omitempty"`
+	BookingIDs      []string `json:"bookingIds"`
+	AlreadyReviewed bool     `json:"alreadyReviewed,omitempty"`
 }
+
+var errBookingReviewCompleted = errors.New("ทำรายการเสร็จไปแล้ว")
 
 func cancellableBookingStatus(status string) bool {
 	return status == "hold" || status == "pending_review" || status == "confirmed" || status == "cancelled"
@@ -2708,11 +2711,15 @@ func (a *app) reviewBooking(ctx context.Context, adminID, bookingID, action, not
 			if item.status != "confirmed" || item.payment != "paid" {
 				allDone = false
 			}
+			if item.status == "rejected" {
+				return result, errBookingReviewCompleted
+			}
 			if item.status != "pending_review" && !(item.status == "confirmed" && item.payment == "paid") {
 				return result, errors.New("รายการในชุดนี้ไม่ได้รอตรวจสอบ")
 			}
 		}
 		if allDone {
+			result.AlreadyReviewed = true
 			return result, nil
 		}
 		nextStatus = "confirmed"
@@ -2723,11 +2730,15 @@ func (a *app) reviewBooking(ctx context.Context, adminID, bookingID, action, not
 			if item.status != "rejected" {
 				allDone = false
 			}
+			if item.status == "confirmed" {
+				return result, errBookingReviewCompleted
+			}
 			if item.status != "pending_review" && item.status != "rejected" {
 				return result, errors.New("รายการในชุดนี้ไม่ได้รอตรวจสอบ")
 			}
 		}
 		if allDone {
+			result.AlreadyReviewed = true
 			return result, nil
 		}
 		nextStatus = "rejected"
@@ -3776,7 +3787,7 @@ func (a *app) notifyAdminBooking(ctx context.Context, adminID, bookingID string)
 }
 
 func telegramBotForm(ctx context.Context, token, method string, values url.Values) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.telegram.org/bot"+token+"/"+method, strings.NewReader(values.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(telegramAPIBaseURL, "/")+"/bot"+token+"/"+method, strings.NewReader(values.Encode()))
 	if err != nil {
 		return err
 	}
@@ -3846,8 +3857,25 @@ func (a *app) handleBookingTelegramWebhook(w http.ResponseWriter, r *http.Reques
 	if parts[1] == "reject" {
 		note = "ปฏิเสธผ่าน Telegram"
 	}
-	_, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
+	reviewResult, err := a.reviewBooking(r.Context(), adminID, parts[2], parts[1], note, "telegram", strconv.FormatInt(q.From.ID, 10))
 	token, tokenErr := decryptSecret(encrypted)
+	if errors.Is(err, errBookingReviewCompleted) || (err == nil && reviewResult.AlreadyReviewed) {
+		if tokenErr == nil {
+			_ = telegramBotForm(r.Context(), token, "answerCallbackQuery", url.Values{
+				"callback_query_id": {q.ID},
+				"text":              {errBookingReviewCompleted.Error()},
+				"show_alert":        {"true"},
+			})
+			emptyKeyboard, _ := json.Marshal(map[string]any{"inline_keyboard": [][]map[string]string{}})
+			_ = telegramBotForm(r.Context(), token, "editMessageReplyMarkup", url.Values{
+				"chat_id":      {chatID},
+				"message_id":   {strconv.FormatInt(q.Message.ID, 10)},
+				"reply_markup": {string(emptyKeyboard)},
+			})
+		}
+		writeJSON(w, 200, map[string]string{"status": "already_done"})
+		return
+	}
 	if err != nil {
 		if tokenErr == nil {
 			message := "ดำเนินการไม่สำเร็จ: " + err.Error()

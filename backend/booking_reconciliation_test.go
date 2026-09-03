@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -230,6 +231,94 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 	}
 	if err = db.QueryRow(`select count(*) from booking_occupancies where booking_id=$1 and active`, rejected.ID).Scan(&occupancyCount); err != nil || occupancyCount != 0 {
 		t.Fatalf("rejected booking occupancy=%d err=%v", occupancyCount, err)
+	}
+
+	// Telegram buttons must report an already completed web review without changing it.
+	t.Setenv("APP_ENCRYPTION_KEY", strings.Repeat("k", 32))
+	botToken := "123456:test-booking-bot"
+	encryptedBotToken, encryptErr := encryptSecret(botToken)
+	if encryptErr != nil {
+		t.Fatal(encryptErr)
+	}
+	webhookID := "booking-webhook-" + randHex(8)
+	webhookSecret := "booking-secret-" + randHex(8)
+	telegramChatID := "998877"
+	if _, err = db.Exec(`update booking_settings set telegram_bot_token=$2,telegram_chat_id=$3,telegram_webhook_id=$4,telegram_secret_hash=$5 where admin_id=$1`, adminID, encryptedBotToken, telegramChatID, webhookID, tokenDigest(webhookSecret)); err != nil {
+		t.Fatal(err)
+	}
+	type telegramCall struct {
+		method    string
+		text      string
+		showAlert string
+	}
+	var telegramCallsMu sync.Mutex
+	telegramCalls := []telegramCall{}
+	telegramServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		telegramCallsMu.Lock()
+		telegramCalls = append(telegramCalls, telegramCall{
+			method:    strings.TrimPrefix(r.URL.Path, "/bot"+botToken+"/"),
+			text:      r.Form.Get("text"),
+			showAlert: r.Form.Get("show_alert"),
+		})
+		telegramCallsMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer telegramServer.Close()
+	previousTelegramAPIBaseURL := telegramAPIBaseURL
+	telegramAPIBaseURL = telegramServer.URL
+	defer func() { telegramAPIBaseURL = previousTelegramAPIBaseURL }()
+
+	telegramReview := func(bookingID, action, callbackID string) {
+		t.Helper()
+		raw, _ := json.Marshal(map[string]any{
+			"callback_query": map[string]any{
+				"id": callbackID, "data": "booking:" + action + ":" + bookingID,
+				"from":    map[string]any{"id": 777},
+				"message": map[string]any{"message_id": 456, "chat": map[string]any{"id": 998877}},
+			},
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/booking-telegram/webhook/"+webhookID, bytes.NewReader(raw))
+		req.Header.Set("X-Telegram-Bot-Api-Secret-Token", webhookSecret)
+		recorder := httptest.NewRecorder()
+		a.handleBookingTelegramWebhook(recorder, req)
+		if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"status":"already_done"`) {
+			t.Fatalf("completed Telegram review status=%d body=%s", recorder.Code, recorder.Body.String())
+		}
+	}
+	telegramReview(pending.ID, "approve", "approved-same-action")
+	telegramReview(pending.ID, "reject", "approved-opposite-action")
+	telegramReview(rejected.ID, "reject", "rejected-same-action")
+	telegramReview(rejected.ID, "approve", "rejected-opposite-action")
+
+	telegramCallsMu.Lock()
+	answerCount := 0
+	for _, call := range telegramCalls {
+		if call.method == "sendMessage" {
+			telegramCallsMu.Unlock()
+			t.Fatal("an already reviewed booking must not send a duplicate result message")
+		}
+		if call.method == "answerCallbackQuery" {
+			answerCount++
+			if call.text != "ทำรายการเสร็จไปแล้ว" || call.showAlert != "true" {
+				telegramCallsMu.Unlock()
+				t.Fatalf("unexpected completed callback: %#v", call)
+			}
+		}
+	}
+	telegramCallsMu.Unlock()
+	if answerCount != 4 {
+		t.Fatalf("completed Telegram callback answers=%d, want 4", answerCount)
+	}
+	if err = db.QueryRow(`select status from bookings where id=$1`, pending.ID).Scan(&bookingStatus); err != nil || bookingStatus != "confirmed" {
+		t.Fatalf("approved booking changed after Telegram callback: status=%s err=%v", bookingStatus, err)
+	}
+	if err = db.QueryRow(`select status from bookings where id=$1`, rejected.ID).Scan(&bookingStatus); err != nil || bookingStatus != "rejected" {
+		t.Fatalf("rejected booking changed after Telegram callback: status=%s err=%v", bookingStatus, err)
 	}
 
 	paidBatchRecorder := requestBatch([]map[string]string{
