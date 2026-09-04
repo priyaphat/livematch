@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type posSettingsRecord struct {
@@ -2247,11 +2249,30 @@ func decodePOSProduct(w http.ResponseWriter, r *http.Request) (posProductRecord,
 		p.LowStockThreshold = 0
 		p.UnitsPerPack = 0
 	}
+	if p.SKU == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "กรุณากรอกรหัส SKU", "code": "sku_required"})
+		return p, false
+	}
 	if p.Name == "" || len(p.Name) > 160 || len(p.SKU) > 80 || len(p.Barcode) > 100 || len(p.Description) > 1000 || len(p.Category) > 100 || len(p.Unit) > 40 || !posImageWithinLimit(p.ImageData, 2*1024*1024) || !validImageData(p.ImageData, true) || p.PriceSatang < 0 || p.PriceSatang > 1_000_000_000 || p.CostSatang < 0 || p.CostSatang > 1_000_000_000 || p.StockQuantity < 0 || p.SecondaryStockQuantity < 0 || (!p.TrackStock && (p.StockQuantity != 0 || p.SecondaryStockQuantity != 0)) || p.LowStockThreshold < 0 || p.UnitsPerPack < 0 || p.UnitsPerPack > 1_000_000 {
 		writeJSON(w, 400, map[string]string{"error": "invalid product"})
 		return p, false
 	}
 	return p, true
+}
+
+func posProductConflict(err error) (message, code string, ok bool) {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+		return "", "", false
+	}
+	switch pgErr.ConstraintName {
+	case "idx_pos_products_sku":
+		return "รหัส SKU นี้ถูกใช้แล้ว กรุณาใช้รหัสอื่น", "duplicate_sku", true
+	case "idx_pos_products_barcode":
+		return "บาร์โค้ดนี้ถูกใช้กับสินค้าอื่นแล้ว", "duplicate_barcode", true
+	default:
+		return "ข้อมูลสินค้าซ้ำกับรายการเดิม", "duplicate_product", true
+	}
 }
 
 func roundedBaht(satang int64) int {
@@ -2288,7 +2309,11 @@ func (a *app) createPOSProduct(w http.ResponseWriter, r *http.Request, user admi
 	defer tx.Rollback()
 	_, err = tx.ExecContext(r.Context(), `insert into pos_products (id,admin_id,sku,category,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,secondary_stock_quantity,track_stock,low_stock_threshold,active,unit,units_per_pack,image_data,barcode,description,is_popular) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, p.ID, user.ID, p.SKU, p.Category, p.Name, p.PriceTHB, p.PriceSatang, p.CostTHB, p.CostSatang, p.StockQuantity, p.SecondaryStockQuantity, p.TrackStock, p.LowStockThreshold, p.Active, p.Unit, p.UnitsPerPack, p.ImageData, p.Barcode, p.Description, p.Popular)
 	if err != nil {
-		writeJSON(w, 409, map[string]string{"error": "SKU ซ้ำหรือข้อมูลสินค้าไม่ถูกต้อง"})
+		if message, code, conflict := posProductConflict(err); conflict {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": message, "code": code})
+		} else {
+			writePOSInternalError(w, r, err)
+		}
 		return
 	}
 	for _, initial := range []struct {

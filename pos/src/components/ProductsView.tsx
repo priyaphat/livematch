@@ -32,6 +32,30 @@ import {
 
 const MAX_PRODUCT_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_PRODUCT_IMAGE_DIMENSION = 1280;
+const AUTO_PRODUCT_BARCODE_PREFIX = '885012345';
+
+const nextAvailableProductCodes = (products: Product[]) => {
+  const usedSKUs = new Set(products.map((product) => product.sku.trim().toLocaleLowerCase()));
+  const usedBarcodes = new Set(
+    products.map((product) => product.barcode?.trim()).filter((barcode): barcode is string => Boolean(barcode)),
+  );
+  let sequence = products.reduce((highest, product) => {
+    const matched = /^PROD-(\d+)$/i.exec(product.sku.trim());
+    if (!matched) return highest;
+    const value = Number.parseInt(matched[1], 10);
+    return Number.isSafeInteger(value) ? Math.max(highest, value) : highest;
+  }, 0) + 1;
+
+  while (true) {
+    const suffix = String(sequence).padStart(3, '0');
+    const sku = `PROD-${suffix}`;
+    const barcode = `${AUTO_PRODUCT_BARCODE_PREFIX}${suffix}`;
+    if (!usedSKUs.has(sku.toLocaleLowerCase()) && !usedBarcodes.has(barcode)) {
+      return { sku, barcode };
+    }
+    sequence += 1;
+  }
+};
 
 const normalizeNumberInput = (value: string, allowDecimal: boolean) => {
   if (value === '') return '';
@@ -114,6 +138,7 @@ export const ProductsView: React.FC = () => {
     updateNoteOption,
     deleteNoteOption,
     settings,
+    showToast,
   } = usePos();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -121,6 +146,7 @@ export const ProductsView: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
 
   // Modals for Category, Unit, and Note management
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -271,10 +297,10 @@ export const ProductsView: React.FC = () => {
 
   // Open add product
   const handleOpenAdd = () => {
-    const nextSeq = String(products.length + 1).padStart(3, '0');
+    const generatedCodes = nextAvailableProductCodes(products);
     setFormData({
-      sku: `PROD-${nextSeq}`,
-      barcode: `885012345${nextSeq}`,
+      sku: generatedCodes.sku,
+      barcode: generatedCodes.barcode,
       name: '',
       category: categories[0]?.id || 'coffee',
       price: 80,
@@ -342,10 +368,26 @@ export const ProductsView: React.FC = () => {
     setIsAddProductModalOpen(true);
   };
 
-  const handleSubmitProduct = (e: React.FormEvent) => {
+  const handleSubmitProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingProduct) return;
+    const normalizedSKU = formData.sku.trim();
+    if (!normalizedSKU) {
+      showToast('กรุณากรอกรหัส SKU', 'error');
+      return;
+    }
+    const duplicateSKU = products.find((product) =>
+      product.id !== editingProduct?.id && product.sku.trim().toLocaleLowerCase() === normalizedSKU.toLocaleLowerCase()
+    );
+    if (duplicateSKU) {
+      showToast(`รหัส SKU "${normalizedSKU}" ถูกใช้กับสินค้า "${duplicateSKU.name}" แล้ว`, 'error');
+      return;
+    }
     const productData: Omit<Product, 'id'> = {
       ...formData,
+      sku: normalizedSKU,
+      barcode: formData.barcode?.trim() || '',
+      name: formData.name.trim(),
       price: Number(priceInput) || 0,
       cost: Number(costInput) || 0,
       stock: formData.trackStock ? (settings.saleStockLocation === 'secondary' ? Number.parseInt(secondaryStockInput, 10) || 0 : Number.parseInt(stockInput, 10) || 0) : 0,
@@ -355,12 +397,17 @@ export const ProductsView: React.FC = () => {
       minStockAlert: formData.trackStock ? Number.parseInt(minStockInput, 10) || 0 : 0,
       unitsPerPack: formData.trackStock ? Number.parseInt(unitsPerPackInput, 10) || 0 : 0,
     };
-    if (editingProduct) {
-      updateProduct(editingProduct.id, productData);
-    } else {
-      addProduct(productData);
+    setIsSavingProduct(true);
+    try {
+      const saved = editingProduct
+        ? await updateProduct(editingProduct.id, productData)
+        : await addProduct(productData);
+      if (saved) setIsAddProductModalOpen(false);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกสินค้าไม่สำเร็จ', 'error');
+    } finally {
+      setIsSavingProduct(false);
     }
-    setIsAddProductModalOpen(false);
   };
 
   // Toggle single note option binding on product
@@ -914,6 +961,7 @@ export const ProductsView: React.FC = () => {
               </div>
               <button
                 onClick={() => setIsAddProductModalOpen(false)}
+                disabled={isSavingProduct}
                 className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center justify-center transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -1450,15 +1498,17 @@ export const ProductsView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsAddProductModalOpen(false)}
+                  disabled={isSavingProduct}
                   className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 transition-colors"
                 >
                   ยกเลิก
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-600 text-white text-xs font-black shadow-md shadow-red-600/30 transition-all active:scale-95"
+                  disabled={isSavingProduct}
+                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-600 text-white text-xs font-black shadow-md shadow-red-600/30 transition-all active:scale-95 disabled:cursor-wait disabled:opacity-60"
                 >
-                  {editingProduct ? 'บันทึกการแก้ไข' : 'ยืนยันเพิ่มสินค้า'}
+                  {isSavingProduct ? 'กำลังบันทึก...' : editingProduct ? 'บันทึกการแก้ไข' : 'ยืนยันเพิ่มสินค้า'}
                 </button>
               </div>
             </form>

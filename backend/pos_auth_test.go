@@ -319,6 +319,15 @@ func TestPOSSaleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := adminUser{ID: adminID, Name: "POS Sale Test", POSRole: "owner", POSActorID: adminID, POSActorName: "POS Sale Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
+	duplicateProductBody, _ := json.Marshal(map[string]any{
+		"sku": " sale-1 ", "name": "Duplicate SKU", "priceSatang": 1000, "costSatang": 500,
+		"stockQuantity": 1, "trackStock": true, "lowStockThreshold": 1, "active": true,
+	})
+	duplicateProductRecorder := httptest.NewRecorder()
+	a.createPOSProduct(duplicateProductRecorder, httptest.NewRequest(http.MethodPost, "/api/admin/pos/products", bytes.NewReader(duplicateProductBody)), owner)
+	if duplicateProductRecorder.Code != http.StatusConflict || !strings.Contains(duplicateProductRecorder.Body.String(), `"code":"duplicate_sku"`) || !strings.Contains(duplicateProductRecorder.Body.String(), "รหัส SKU นี้ถูกใช้แล้ว") {
+		t.Fatalf("duplicate SKU response status=%d body=%s", duplicateProductRecorder.Code, duplicateProductRecorder.Body.String())
+	}
 
 	// Match shuttle usage and returns share the POS stock ledger. Saving the
 	// same state twice must be idempotent.

@@ -6,7 +6,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestPOSProductConflictReportsDuplicateFields(t *testing.T) {
+	tests := []struct {
+		constraint string
+		wantCode   string
+		wantText   string
+	}{
+		{"idx_pos_products_sku", "duplicate_sku", "รหัส SKU นี้ถูกใช้แล้ว กรุณาใช้รหัสอื่น"},
+		{"idx_pos_products_barcode", "duplicate_barcode", "บาร์โค้ดนี้ถูกใช้กับสินค้าอื่นแล้ว"},
+	}
+	for _, test := range tests {
+		message, code, ok := posProductConflict(&pgconn.PgError{Code: "23505", ConstraintName: test.constraint})
+		if !ok || code != test.wantCode || message != test.wantText {
+			t.Fatalf("constraint %s = %q/%q/%v, want %q/%q/true", test.constraint, message, code, ok, test.wantText, test.wantCode)
+		}
+	}
+	if _, _, ok := posProductConflict(&pgconn.PgError{Code: "23514", ConstraintName: "stock_check"}); ok {
+		t.Fatal("a non-unique database error must not be reported as duplicate product data")
+	}
+}
 
 func TestBillingLinePaymentLabelUsesProductNames(t *testing.T) {
 	label, description := billingLinePaymentLabel(billingLine{
@@ -65,7 +87,7 @@ func TestPromptPayPayloadSatangIncludesDecimalAmount(t *testing.T) {
 }
 
 func TestDecodePOSProductRejectsNegativeStock(t *testing.T) {
-	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"name":"Water","priceThb":20,"costThb":10,"stockQuantity":-1,"lowStockThreshold":5,"active":true}`))
+	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":"W-NEG","name":"Water","priceThb":20,"costThb":10,"stockQuantity":-1,"lowStockThreshold":5,"active":true}`))
 	recorder := httptest.NewRecorder()
 	if _, ok := decodePOSProduct(recorder, req); ok {
 		t.Fatal("negative stock should be rejected")
@@ -101,7 +123,7 @@ func TestDecodePOSProductNormalizesText(t *testing.T) {
 }
 
 func TestDecodePOSProductClearsStockOnlySettings(t *testing.T) {
-	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"name":"Service","priceThb":100,"costThb":20,"stockQuantity":9,"secondaryStockQuantity":4,"trackStock":false,"lowStockThreshold":7,"unitsPerPack":12,"active":true}`))
+	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":"SERVICE-01","name":"Service","priceThb":100,"costThb":20,"stockQuantity":9,"secondaryStockQuantity":4,"trackStock":false,"lowStockThreshold":7,"unitsPerPack":12,"active":true}`))
 	recorder := httptest.NewRecorder()
 	product, ok := decodePOSProduct(recorder, req)
 	if !ok {
@@ -116,7 +138,7 @@ func TestDecodePOSProductAcceptsResizedImagePayload(t *testing.T) {
 	raw := make([]byte, 70*1024)
 	copy(raw, []byte("\x89PNG\r\n\x1a\n"))
 	imageData := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
-	body := `{"name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
+	body := `{"sku":"W-IMAGE","name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(body))
 	recorder := httptest.NewRecorder()
 	product, ok := decodePOSProduct(recorder, req)
@@ -132,7 +154,7 @@ func TestDecodePOSProductRejectsImageLargerThanTwoMegabytes(t *testing.T) {
 	raw := make([]byte, 2*1024*1024+1)
 	copy(raw, []byte("\x89PNG\r\n\x1a\n"))
 	imageData := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
-	body := `{"name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
+	body := `{"sku":"W-LARGE","name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(body))
 	recorder := httptest.NewRecorder()
 	if _, ok := decodePOSProduct(recorder, req); ok {

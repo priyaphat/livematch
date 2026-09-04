@@ -104,8 +104,8 @@ interface PosContextType {
 
   // Products
   products: Product[];
-  addProduct: (product: Omit<Product, 'id'>) => void;
-  updateProduct: (id: string, updated: Partial<Product>) => void;
+  addProduct: (product: Omit<Product, 'id'>) => Promise<boolean>;
+  updateProduct: (id: string, updated: Partial<Product>) => Promise<boolean>;
   deleteProduct: (id: string) => void;
 
   // Cart
@@ -1302,36 +1302,35 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Products CRUD
-  const addProduct = (productData: Omit<Product, 'id'>) => {
-    const newProduct: Product = {
-      ...productData,
-      image: productData.image || DEFAULT_PRODUCT_IMAGE,
-      id: 'prod-' + Date.now(),
-    };
-    setProducts((prev) => [newProduct, ...prev]);
-    showToast(`เพิ่มสินค้า "${newProduct.name}" สำเร็จ`, 'success');
-    playBeep('success');
-    void createPOSProduct(productPayload(productData))
-      .then(refreshPOSCatalog)
-      .catch((requestError) => {
-        showToast(requestError instanceof Error ? requestError.message : 'เพิ่มสินค้าไม่สำเร็จ', 'error');
-        void refreshPOSCatalog();
-      });
+  const addProduct = async (productData: Omit<Product, 'id'>) => {
+    try {
+      await createPOSProduct(productPayload(productData));
+      await refreshPOSCatalog();
+      showToast(`เพิ่มสินค้า "${productData.name}" สำเร็จ`, 'success');
+      playBeep('success');
+      return true;
+    } catch (requestError) {
+      showToast(requestError instanceof Error ? requestError.message : 'เพิ่มสินค้าไม่สำเร็จ', 'error');
+      await refreshPOSCatalog();
+      return false;
+    }
   };
 
-  const updateProduct = (id: string, updated: Partial<Product>) => {
-    setProducts((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
-    );
-    showToast('อัปเดตข้อมูลสินค้าสำเร็จ', 'success');
+  const updateProduct = async (id: string, updated: Partial<Product>) => {
     const current = products.find((product) => product.id === id);
-    if (current) {
-      void updatePOSProduct(id, productPayload({ ...current, ...updated }))
-        .then(refreshPOSCatalog)
-        .catch((requestError) => {
-          showToast(requestError instanceof Error ? requestError.message : 'อัปเดตสินค้าไม่สำเร็จ', 'error');
-          void refreshPOSCatalog();
-        });
+    if (!current) {
+      showToast('ไม่พบสินค้าที่ต้องการแก้ไข กรุณารีเฟรชแล้วลองใหม่', 'error');
+      return false;
+    }
+    try {
+      await updatePOSProduct(id, productPayload({ ...current, ...updated }));
+      await refreshPOSCatalog();
+      showToast('อัปเดตข้อมูลสินค้าสำเร็จ', 'success');
+      return true;
+    } catch (requestError) {
+      showToast(requestError instanceof Error ? requestError.message : 'อัปเดตสินค้าไม่สำเร็จ', 'error');
+      await refreshPOSCatalog();
+      return false;
     }
   };
 

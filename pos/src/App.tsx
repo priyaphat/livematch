@@ -47,7 +47,7 @@ const ALL_POS_PERMISSIONS: POSPermissions = {
 };
 
 const PosAppContent: React.FC = () => {
-  const { activeTab, setActiveTab } = usePos();
+  const { activeTab, setActiveTab, toast } = usePos();
   const [isStandaloneCustomerDisplay, setIsStandaloneCustomerDisplay] = useState(false);
   const [authUser, setAuthUser] = useState<AdminUser | null>(null);
   const [permissions, setPermissions] = useState<POSPermissions>(ALL_POS_PERMISSIONS);
@@ -196,6 +196,24 @@ const PosAppContent: React.FC = () => {
 
       {/* Global Modals */}
       <ReceiptModal />
+
+      {toast && (
+        <div
+          role="status"
+          aria-live="assertive"
+          className={`fixed left-1/2 top-4 z-[200] w-[min(92vw,28rem)] -translate-x-1/2 rounded-xl border px-4 py-3 text-sm font-bold shadow-2xl ${
+            toast.type === 'error'
+              ? 'border-red-300 bg-red-600 text-white'
+              : toast.type === 'warning'
+                ? 'border-amber-300 bg-amber-400 text-slate-950'
+                : toast.type === 'success'
+                  ? 'border-emerald-300 bg-emerald-600 text-white'
+                  : 'border-sky-300 bg-sky-600 text-white'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 };
