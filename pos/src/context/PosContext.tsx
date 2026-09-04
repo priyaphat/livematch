@@ -81,7 +81,7 @@ interface PosContextType {
 
   // Settings
   settings: StoreSettings;
-  updateSettings: (newSettings: Partial<StoreSettings>, successMessage?: string, remoteScope?: 'all' | 'stock') => Promise<boolean>;
+  updateSettings: (newSettings: Partial<StoreSettings>, successMessage?: string, remoteScope?: 'all' | 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'local') => Promise<boolean>;
   setHardwareKeyboardMode: (enabled: boolean) => void;
   members: POSMember[];
 
@@ -860,32 +860,62 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 	};
   }, [isBillingPollingActive]);
 
-  const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว', remoteScope: 'all' | 'stock' = 'all'): Promise<boolean> => {
+  const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว', remoteScope: 'all' | 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'local' = 'all'): Promise<boolean> => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
     if (newSettings.theme) {
       setThemeState(newSettings.theme);
     }
+    if (remoteScope === 'local') {
+      showToast(successMessage, 'success');
+      return true;
+    }
     try {
       const merged = { ...settings, ...newSettings };
-      const remoteSettings: Partial<POSSettingsRecord> = remoteScope === 'stock' ? {
-        secondaryStockEnabled: merged.secondaryStockEnabled,
-        primaryStockName: merged.primaryStockName,
-        secondaryStockName: merged.secondaryStockName,
-        saleStockLocation: merged.saleStockLocation,
-      } : {
-        promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
-        receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
-        theme: merged.theme || 'light', language: 'th', taxRatePercent: merged.vatEnabled ? merged.vatRate : 0,
-        pricesIncludeTax: merged.vatType === 'included', inheritBookingPromptPay: merged.inheritBookingPromptPay !== false,
-        paymentQrImage: merged.paymentQrImage || '',
-        storeTaxId: merged.taxId, storePhone: merged.phone, storeEmail: merged.email, storeAddress: merged.address,
-        navbarTitle: merged.navbarTitle, navbarIconData: merged.navbarIconData || '',
-        customerDisplayTitle: merged.customerDisplayTitle, customerDisplayHighlight: merged.customerDisplayHighlight,
-        customerDisplaySubtitle: merged.customerDisplaySubtitle, customerDisplayCardText: merged.customerDisplayCardText,
-        customerDisplayCtaText: merged.customerDisplayCtaText,
-        secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
-        secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
-      };
+      let remoteSettings: Partial<POSSettingsRecord>;
+      switch (remoteScope) {
+        case 'store':
+          remoteSettings = {
+            promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
+            receiptHeader: merged.storeName, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
+            inheritBookingPromptPay: merged.inheritBookingPromptPay !== false, paymentQrImage: merged.paymentQrImage || '',
+            storeTaxId: merged.taxId, storePhone: merged.phone, storeEmail: merged.email, storeAddress: merged.address,
+            navbarTitle: merged.navbarTitle, navbarIconData: merged.navbarIconData || '',
+          };
+          break;
+        case 'stock':
+          remoteSettings = {
+            secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
+            secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
+          };
+          break;
+        case 'customer-display':
+          remoteSettings = {
+            customerDisplayTitle: merged.customerDisplayTitle, customerDisplayHighlight: merged.customerDisplayHighlight,
+            customerDisplaySubtitle: merged.customerDisplaySubtitle, customerDisplayCardText: merged.customerDisplayCardText,
+            customerDisplayCtaText: merged.customerDisplayCtaText,
+          };
+          break;
+        case 'printer':
+          remoteSettings = { receiptFooter: merged.receiptFooterMessage };
+          break;
+        case 'tax':
+          remoteSettings = { taxRatePercent: merged.vatEnabled ? merged.vatRate : 0, pricesIncludeTax: merged.vatType === 'included' };
+          break;
+        default:
+          remoteSettings = {
+            promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
+            receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
+            theme: merged.theme || 'light', language: 'th', taxRatePercent: merged.vatEnabled ? merged.vatRate : 0,
+            pricesIncludeTax: merged.vatType === 'included', inheritBookingPromptPay: merged.inheritBookingPromptPay !== false,
+            paymentQrImage: merged.paymentQrImage || '', storeTaxId: merged.taxId, storePhone: merged.phone,
+            storeEmail: merged.email, storeAddress: merged.address, navbarTitle: merged.navbarTitle,
+            navbarIconData: merged.navbarIconData || '', customerDisplayTitle: merged.customerDisplayTitle,
+            customerDisplayHighlight: merged.customerDisplayHighlight, customerDisplaySubtitle: merged.customerDisplaySubtitle,
+            customerDisplayCardText: merged.customerDisplayCardText, customerDisplayCtaText: merged.customerDisplayCtaText,
+            secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
+            secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
+          };
+      }
       await savePOSSettings(remoteSettings);
       const persisted = await getPOSSettings();
       setSettings((current) => ({

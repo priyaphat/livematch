@@ -130,6 +130,37 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const isAndroid = /Android/i.test(navigator.userAgent);
   const browserLabel = /EdgA\//i.test(navigator.userAgent) ? 'Microsoft Edge Android' : /Chrome\//i.test(navigator.userAgent) ? 'Chrome / Chromium' : navigator.userAgent.split(' ').slice(-1)[0] || 'ไม่ทราบ';
 
+  const settingsPayloadForTab = (tab: Exclude<SettingsTab, 'permissions' | 'members' | 'activity'>): Partial<StoreSettings> => {
+    switch (tab) {
+      case 'store':
+        return {
+          storeName: formData.storeName, navbarTitle: formData.navbarTitle, navbarIconData: formData.navbarIconData,
+          inheritBookingPromptPay: formData.inheritBookingPromptPay, promptPayType: formData.promptPayType,
+          promptPayId: formData.promptPayId, promptPayReceiverName: formData.promptPayReceiverName,
+          paymentQrImage: formData.paymentQrImage, email: formData.email, taxId: formData.taxId,
+          phone: formData.phone, defaultLowStock: formData.defaultLowStock, address: formData.address, logoData: formData.logoData,
+        };
+      case 'stock':
+        return {
+          secondaryStockEnabled: formData.secondaryStockEnabled, primaryStockName: formData.primaryStockName,
+          secondaryStockName: formData.secondaryStockName, saleStockLocation: formData.saleStockLocation,
+        };
+      case 'customer-display':
+        return {
+          customerDisplayTitle: formData.customerDisplayTitle, customerDisplayHighlight: formData.customerDisplayHighlight,
+          customerDisplaySubtitle: formData.customerDisplaySubtitle, customerDisplayCardText: formData.customerDisplayCardText,
+          customerDisplayCtaText: formData.customerDisplayCtaText,
+        };
+      case 'printer':
+        return {
+          printerType: formData.printerType, autoPrintReceipt: formData.autoPrintReceipt,
+          receiptFooterMessage: formData.receiptFooterMessage,
+        };
+      case 'tax':
+        return { vatEnabled: formData.vatEnabled, vatRate: formData.vatRate, vatType: formData.vatType };
+    }
+  };
+
   const applyAccessSettings = (payload: Awaited<ReturnType<typeof getPOSAccessSettings>>) => {
     setMembers(payload.items);
     setMaxMembers(payload.maxMembers);
@@ -154,7 +185,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   }, [activeTab, isOwner]);
 
   const testPromptPay = async () => {
-    if (!(await updateSettings(formData))) return;
+    if (!(await updateSettings(settingsPayloadForTab('store'), 'บันทึกข้อมูลร้านแล้ว', 'store'))) return;
     try {
       const result = await getPOSPaymentQR(10000);
       if (result.promptPayPayload) setTestQR(await QRCode.toDataURL(result.promptPayPayload, { width: 240, margin: 1 }));
@@ -240,20 +271,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     if (isSavingSettings) return;
     setIsSavingSettings(true);
     try {
-      const isStockSettings = activeTab === 'stock';
-      const successMessage = isStockSettings ? 'บันทึกการตั้งค่าสต็อกเรียบร้อยแล้ว' : 'บันทึกการตั้งค่าเรียบร้อยแล้ว';
-      const settingsToSave = isStockSettings ? {
-        secondaryStockEnabled: formData.secondaryStockEnabled,
-        primaryStockName: formData.primaryStockName,
-        secondaryStockName: formData.secondaryStockName,
-        saleStockLocation: formData.saleStockLocation,
-      } : formData;
-      if (!(await updateSettings(settingsToSave, successMessage, isStockSettings ? 'stock' : 'all'))) {
-        setIsFormDirty(false);
-        return;
-      }
-      if (isOwner) {
+      if (activeTab === 'permissions') {
+        if (!isOwner) throw new Error('เฉพาะเจ้าของระบบเท่านั้นที่บันทึกสิทธิ์ได้');
         applyAccessSettings(await savePOSRolePermissions({ manager: permissions.manager, cashier: permissions.cashier }));
+        showToast('บันทึกสิทธิ์การใช้งานเรียบร้อยแล้ว', 'success');
+      } else if (activeTab !== 'members' && activeTab !== 'activity') {
+        const labels: Record<typeof activeTab, string> = {
+          store: 'ข้อมูลร้าน', stock: 'การตั้งค่าสต็อก', 'customer-display': 'จอลูกค้า', printer: 'เครื่องพิมพ์', tax: 'ภาษี',
+        };
+        if (!(await updateSettings(settingsPayloadForTab(activeTab), `บันทึก${labels[activeTab]}เรียบร้อยแล้ว`, activeTab))) return;
       }
       setIsFormDirty(false);
       playBeep('success');

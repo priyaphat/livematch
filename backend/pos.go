@@ -2072,6 +2072,15 @@ func (a *app) deletePOSSupplier(w http.ResponseWriter, r *http.Request, user adm
 	writeJSON(w, 200, map[string]bool{"deleted": true})
 }
 
+func posSettingsFieldsInclude(fields map[string]json.RawMessage, keys ...string) bool {
+	for _, key := range keys {
+		if _, present := fields[key]; present {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user adminUser) {
 	previous, err := a.ensurePOSSettings(r.Context(), user.ID)
 	if err != nil {
@@ -2093,54 +2102,61 @@ func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user admin
 		writeJSON(w, 400, map[string]string{"error": "ข้อมูลตั้งค่าไม่ถูกต้อง"})
 		return
 	}
-	stockOnly := true
-	for key := range fields {
-		switch key {
-		case "secondaryStockEnabled", "primaryStockName", "secondaryStockName", "saleStockLocation":
-		default:
-			stockOnly = false
+	storeTouched := posSettingsFieldsInclude(fields, "promptPayType", "promptPayId", "promptPayReceiverName", "receiptHeader", "logoData", "defaultLowStock", "inheritBookingPromptPay", "paymentQrImage", "storeTaxId", "storePhone", "storeEmail", "storeAddress", "navbarTitle", "navbarIconData")
+	stockTouched := posSettingsFieldsInclude(fields, "secondaryStockEnabled", "primaryStockName", "secondaryStockName", "saleStockLocation")
+	displayTouched := posSettingsFieldsInclude(fields, "customerDisplayTitle", "customerDisplayHighlight", "customerDisplaySubtitle", "customerDisplayCardText", "customerDisplayCtaText")
+	printerTouched := posSettingsFieldsInclude(fields, "receiptFooter")
+	taxTouched := posSettingsFieldsInclude(fields, "taxRatePercent", "pricesIncludeTax")
+	promptPayTouched := posSettingsFieldsInclude(fields, "promptPayType", "promptPayId", "promptPayReceiverName", "inheritBookingPromptPay", "paymentQrImage")
+	themeTouched := posSettingsFieldsInclude(fields, "theme", "language")
+
+	if storeTouched {
+		b.ReceiptHeader = strings.TrimSpace(b.ReceiptHeader)
+		b.StoreTaxID, b.StorePhone = strings.TrimSpace(b.StoreTaxID), strings.TrimSpace(b.StorePhone)
+		b.StoreEmail, b.StoreAddress = strings.ToLower(strings.TrimSpace(b.StoreEmail)), strings.TrimSpace(b.StoreAddress)
+		b.NavbarTitle = strings.TrimSpace(b.NavbarTitle)
+	}
+	if printerTouched {
+		b.ReceiptFooter = strings.TrimSpace(b.ReceiptFooter)
+	}
+	if stockTouched {
+		b.PrimaryStockName, b.SecondaryStockName = strings.TrimSpace(b.PrimaryStockName), strings.TrimSpace(b.SecondaryStockName)
+		if b.PrimaryStockName == "" {
+			b.PrimaryStockName = "สต็อกหลัก"
+		}
+		if b.SecondaryStockName == "" {
+			b.SecondaryStockName = "สต็อกที่ 2"
+		}
+		if !validStockLocation(b.SaleStockLocation) || !b.SecondaryStockEnabled {
+			b.SaleStockLocation = "primary"
 		}
 	}
-	b.ReceiptHeader, b.ReceiptFooter = strings.TrimSpace(b.ReceiptHeader), strings.TrimSpace(b.ReceiptFooter)
-	b.StoreTaxID, b.StorePhone, b.StoreEmail, b.StoreAddress = strings.TrimSpace(b.StoreTaxID), strings.TrimSpace(b.StorePhone), strings.ToLower(strings.TrimSpace(b.StoreEmail)), strings.TrimSpace(b.StoreAddress)
-	b.NavbarTitle = strings.TrimSpace(b.NavbarTitle)
-	b.CustomerDisplayTitle, b.CustomerDisplayHighlight = strings.TrimSpace(b.CustomerDisplayTitle), strings.TrimSpace(b.CustomerDisplayHighlight)
-	b.CustomerDisplaySubtitle, b.CustomerDisplayCardText, b.CustomerDisplayCTAText = strings.TrimSpace(b.CustomerDisplaySubtitle), strings.TrimSpace(b.CustomerDisplayCardText), strings.TrimSpace(b.CustomerDisplayCTAText)
-	b.PrimaryStockName, b.SecondaryStockName = strings.TrimSpace(b.PrimaryStockName), strings.TrimSpace(b.SecondaryStockName)
-	if b.PrimaryStockName == "" {
-		b.PrimaryStockName = "สต็อกหลัก"
-	}
-	if b.SecondaryStockName == "" {
-		b.SecondaryStockName = "สต็อกที่ 2"
-	}
-	if !validStockLocation(b.SaleStockLocation) {
-		b.SaleStockLocation = "primary"
-	}
-	if !b.SecondaryStockEnabled {
-		b.SaleStockLocation = "primary"
-	}
-	if b.CustomerDisplayTitle == "" {
-		b.CustomerDisplayTitle = "พร้อมเสิร์ฟความอร่อย"
-	}
-	if b.CustomerDisplayHighlight == "" {
-		b.CustomerDisplayHighlight = "เครื่องดื่ม & เบเกอรี่สดใหม่"
-	}
-	if b.CustomerDisplaySubtitle == "" {
-		b.CustomerDisplaySubtitle = "เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์"
-	}
-	if b.CustomerDisplayCardText == "" {
-		b.CustomerDisplayCardText = "คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด"
-	}
-	if b.CustomerDisplayCTAText == "" {
-		b.CustomerDisplayCTAText = "สั่งรายการได้ที่พนักงานแคชเชียร์"
+	if displayTouched {
+		b.CustomerDisplayTitle, b.CustomerDisplayHighlight = strings.TrimSpace(b.CustomerDisplayTitle), strings.TrimSpace(b.CustomerDisplayHighlight)
+		b.CustomerDisplaySubtitle, b.CustomerDisplayCardText, b.CustomerDisplayCTAText = strings.TrimSpace(b.CustomerDisplaySubtitle), strings.TrimSpace(b.CustomerDisplayCardText), strings.TrimSpace(b.CustomerDisplayCTAText)
+		if b.CustomerDisplayTitle == "" {
+			b.CustomerDisplayTitle = "พร้อมเสิร์ฟความอร่อย"
+		}
+		if b.CustomerDisplayHighlight == "" {
+			b.CustomerDisplayHighlight = "เครื่องดื่ม & เบเกอรี่สดใหม่"
+		}
+		if b.CustomerDisplaySubtitle == "" {
+			b.CustomerDisplaySubtitle = "เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์"
+		}
+		if b.CustomerDisplayCardText == "" {
+			b.CustomerDisplayCardText = "คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด"
+		}
+		if b.CustomerDisplayCTAText == "" {
+			b.CustomerDisplayCTAText = "สั่งรายการได้ที่พนักงานแคชเชียร์"
+		}
 	}
 	validEmail := true
-	if b.StoreEmail != "" {
+	if storeTouched && b.StoreEmail != "" {
 		parsed, err := mail.ParseAddress(b.StoreEmail)
 		validEmail = err == nil && strings.EqualFold(parsed.Address, b.StoreEmail)
 	}
 	validTaxID := b.StoreTaxID == ""
-	if len(b.StoreTaxID) == 13 {
+	if storeTouched && len(b.StoreTaxID) == 13 {
 		validTaxID = true
 		for _, c := range b.StoreTaxID {
 			if c < '0' || c > '9' {
@@ -2149,13 +2165,32 @@ func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user admin
 			}
 		}
 	}
-	invalidStockSettings := len(b.PrimaryStockName) > 80 || len(b.SecondaryStockName) > 80 || (b.SecondaryStockEnabled && b.SaleStockLocation == "secondary" && !validStockLocation(b.SaleStockLocation))
-	invalidStoreSettings := b.ReceiptHeader == "" || b.DefaultLowStock < 0 || b.DefaultLowStock > 1_000_000 || b.TaxRatePercent < 0 || b.TaxRatePercent > 100 || len(b.ReceiptHeader) > 200 || len(b.NavbarTitle) > 80 || len(b.CustomerDisplayTitle) > 120 || len(b.CustomerDisplayHighlight) > 120 || len(b.CustomerDisplaySubtitle) > 300 || len(b.CustomerDisplayCardText) > 300 || len(b.CustomerDisplayCTAText) > 160 || len(b.ReceiptFooter) > 500 || len(b.PromptPayReceiverName) > 200 || len(b.StorePhone) > 30 || len(b.StoreEmail) > 254 || len(b.StoreAddress) > 500 || !validEmail || !validTaxID || !posImageWithinLimit(b.LogoData, 2*1024*1024) || !validImageData(b.LogoData, true) || !posImageWithinLimit(b.NavbarIconData, 2*1024*1024) || !validImageData(b.NavbarIconData, true) || !posImageWithinLimit(b.PaymentQRImage, 2*1024*1024) || !validImageData(b.PaymentQRImage, true)
-	if invalidStockSettings || (!stockOnly && invalidStoreSettings) {
+	invalidStockSettings := stockTouched && (len(b.PrimaryStockName) > 80 || len(b.SecondaryStockName) > 80)
+	invalidStoreSettings := storeTouched && (b.ReceiptHeader == "" || b.DefaultLowStock < 0 || b.DefaultLowStock > 1_000_000 || len(b.ReceiptHeader) > 200 || len(b.NavbarTitle) > 80 || len(b.PromptPayReceiverName) > 200 || len(b.StorePhone) > 30 || len(b.StoreEmail) > 254 || len(b.StoreAddress) > 500 || !validEmail || !validTaxID || !posImageWithinLimit(b.LogoData, 2*1024*1024) || !validImageData(b.LogoData, true) || !posImageWithinLimit(b.NavbarIconData, 2*1024*1024) || !validImageData(b.NavbarIconData, true) || !posImageWithinLimit(b.PaymentQRImage, 2*1024*1024) || !validImageData(b.PaymentQRImage, true))
+	invalidDisplaySettings := displayTouched && (len(b.CustomerDisplayTitle) > 120 || len(b.CustomerDisplayHighlight) > 120 || len(b.CustomerDisplaySubtitle) > 300 || len(b.CustomerDisplayCardText) > 300 || len(b.CustomerDisplayCTAText) > 160)
+	invalidPrinterSettings := printerTouched && len(b.ReceiptFooter) > 500
+	invalidTaxSettings := taxTouched && (b.TaxRatePercent < 0 || b.TaxRatePercent > 100)
+	if invalidStoreSettings {
 		writeJSON(w, 400, map[string]string{"error": "กรุณาตรวจข้อมูลร้าน อีเมล เลขผู้เสียภาษี และรูปภาพอีกครั้ง"})
 		return
 	}
-	if !stockOnly {
+	if invalidStockSettings {
+		writeJSON(w, 400, map[string]string{"error": "กรุณาตรวจชื่อและการตั้งค่าคลังสินค้าอีกครั้ง"})
+		return
+	}
+	if invalidDisplaySettings {
+		writeJSON(w, 400, map[string]string{"error": "กรุณาตรวจข้อความจอลูกค้าอีกครั้ง"})
+		return
+	}
+	if invalidPrinterSettings {
+		writeJSON(w, 400, map[string]string{"error": "ข้อความท้ายใบเสร็จยาวเกิน 500 ตัวอักษร"})
+		return
+	}
+	if invalidTaxSettings {
+		writeJSON(w, 400, map[string]string{"error": "อัตราภาษีต้องอยู่ระหว่าง 0 ถึง 100"})
+		return
+	}
+	if promptPayTouched {
 		b.PromptPayType, b.PromptPayID, b.PromptPayReceiverName = strings.TrimSpace(b.PromptPayType), strings.TrimSpace(b.PromptPayID), strings.TrimSpace(b.PromptPayReceiverName)
 		if b.PromptPayType == "" {
 			b.PromptPayType = "mobile"
@@ -2170,22 +2205,14 @@ func (a *app) savePOSSettings(w http.ResponseWriter, r *http.Request, user admin
 				return
 			}
 		}
+	}
+	if themeTouched {
 		if b.Theme != "dark" {
 			b.Theme = "light"
 		}
 		if b.Language != "en" {
 			b.Language = "th"
 		}
-	} else {
-		secondaryStockEnabled := b.SecondaryStockEnabled
-		primaryStockName := b.PrimaryStockName
-		secondaryStockName := b.SecondaryStockName
-		saleStockLocation := b.SaleStockLocation
-		b = previous
-		b.SecondaryStockEnabled = secondaryStockEnabled
-		b.PrimaryStockName = primaryStockName
-		b.SecondaryStockName = secondaryStockName
-		b.SaleStockLocation = saleStockLocation
 	}
 	if previous.SecondaryStockEnabled && !b.SecondaryStockEnabled {
 		var remaining int64

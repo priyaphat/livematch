@@ -319,6 +319,35 @@ func TestPOSSaleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner := adminUser{ID: adminID, Name: "POS Sale Test", POSRole: "owner", POSActorID: adminID, POSActorName: "POS Sale Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
+
+	// A validation problem in the store tab must not block an unrelated tab.
+	// Partial saves merge with the current settings and validate only the fields
+	// owned by the submitted tab.
+	if _, err = db.Exec(`update pos_settings set store_email='not-an-email' where admin_id=$1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	taxSettingsRecorder := httptest.NewRecorder()
+	a.savePOSSettings(taxSettingsRecorder, httptest.NewRequest(http.MethodPut, "/api/admin/pos/settings", strings.NewReader(`{"taxRatePercent":10,"pricesIncludeTax":true}`)), owner)
+	if taxSettingsRecorder.Code != http.StatusOK {
+		t.Fatalf("tax-only settings save was blocked by store validation: status=%d body=%s", taxSettingsRecorder.Code, taxSettingsRecorder.Body.String())
+	}
+	var savedTaxRate float64
+	var savedStoreEmail string
+	if err = db.QueryRow(`select tax_rate_percent,store_email from pos_settings where admin_id=$1`, adminID).Scan(&savedTaxRate, &savedStoreEmail); err != nil {
+		t.Fatal(err)
+	}
+	if savedTaxRate != 10 || savedStoreEmail != "not-an-email" {
+		t.Fatalf("partial settings save changed unrelated fields: tax=%v email=%q", savedTaxRate, savedStoreEmail)
+	}
+	invalidStoreRecorder := httptest.NewRecorder()
+	a.savePOSSettings(invalidStoreRecorder, httptest.NewRequest(http.MethodPut, "/api/admin/pos/settings", strings.NewReader(`{"storeEmail":"still-not-an-email"}`)), owner)
+	if invalidStoreRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("store settings validation was skipped: status=%d body=%s", invalidStoreRecorder.Code, invalidStoreRecorder.Body.String())
+	}
+	if _, err = db.Exec(`update pos_settings set store_email='',tax_rate_percent=7,prices_include_tax=false where admin_id=$1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+
 	duplicateProductBody, _ := json.Marshal(map[string]any{
 		"sku": " sale-1 ", "name": "Duplicate SKU", "priceSatang": 1000, "costSatang": 500,
 		"stockQuantity": 1, "trackStock": true, "lowStockThreshold": 1, "active": true,

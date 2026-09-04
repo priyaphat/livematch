@@ -199,7 +199,7 @@ export const Navbar: React.FC<NavbarProps> = ({
             onClick={() =>
               updateSettings({
                 enableSoundEffects: !settings.enableSoundEffects,
-              })
+              }, settings.enableSoundEffects ? 'ปิดเสียงเอฟเฟกต์แล้ว' : 'เปิดเสียงเอฟเฟกต์แล้ว', 'local')
             }
             className={`p-2 rounded-xl border transition-colors ${
               settings.enableSoundEffects
