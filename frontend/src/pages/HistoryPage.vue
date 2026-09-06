@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { CreditCard, Download, Plus, Search, Trophy, X } from '@lucide/vue'
 import { exportHistoryExcel, exportPaymentHistoryExcel } from '../excelExport'
 import { emptyMatchScores, matchScoreSummary, validateMatchScores } from '../matchScores.js'
@@ -12,22 +12,40 @@ const props = defineProps([
   'matchShuttleSummary',
   'matchShuttleSequenceText',
   'updateHistoryWinner',
+  'loadMatchHistory',
   'isSessionReadOnly',
   'apiRequest'
 ])
 
-const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
+const historyView = computed(() => props.state.historyView || {
+  items: props.state.history || [],
+  page: 1,
+  pageSize: Math.max(1, props.state.history?.length || 20),
+  total: props.state.history?.length || 0,
+  totalPages: props.state.history?.length ? 1 : 0,
+  search: ''
+})
+const sortedHistory = computed(() => [...(historyView.value.items || [])].sort((a, b) => a.id - b.id))
 const activeTab = ref('matches')
 const paymentEvents = ref([])
 const historyNameFilter = ref('')
 const normalizedNameFilter = computed(() => historyNameFilter.value.trim().toLocaleLowerCase('th-TH'))
 const filteredHistory = computed(() => {
+  if (props.loadMatchHistory) return sortedHistory.value
   if (!normalizedNameFilter.value) return sortedHistory.value
   return sortedHistory.value.filter((match) => (
     [match.a1, match.a2, match.b1, match.b2]
       .filter((id) => Number(id) > 0)
       .some((id) => props.playerName(id).toLocaleLowerCase('th-TH').includes(normalizedNameFilter.value))
   ))
+})
+let searchTimer
+watch(historyNameFilter, (value) => {
+  if (!props.loadMatchHistory || activeTab.value !== 'matches') return
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => {
+    void props.loadMatchHistory(1, value)
+  }, 350)
 })
 const filteredPaymentEvents = computed(() => {
   if (!normalizedNameFilter.value) return paymentEvents.value
@@ -119,7 +137,7 @@ async function loadPaymentEvents(force = false) {
   paymentLoading.value = true
   paymentError.value = ''
   try {
-    const payload = await props.apiRequest(`/api/sessions/${props.state.session.id}/payment-events?all=1`)
+    const payload = await props.apiRequest(`/api/sessions/${props.state.session.id}/payment-events?page=1&pageSize=100`)
     paymentEvents.value = payload?.items || []
     paymentLoaded.value = true
   } catch (error) {
@@ -138,7 +156,10 @@ function handleBillingSync(event) {
 }
 
 onMounted(() => window.addEventListener('livematch:billing-sync', handleBillingSync))
-onUnmounted(() => window.removeEventListener('livematch:billing-sync', handleBillingSync))
+onUnmounted(() => {
+  window.removeEventListener('livematch:billing-sync', handleBillingSync)
+  window.clearTimeout(searchTimer)
+})
 
 function selectTab(tab) {
   activeTab.value = tab
@@ -170,7 +191,7 @@ async function exportExcel() {
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
       <div>
         <h1 class="font-black">ประวัติ</h1>
-        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? filteredHistory.length : filteredPaymentEvents.length }} รายการ</p>
+        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? historyView.total : filteredPaymentEvents.length }} รายการ</p>
       </div>
       <button
         class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-bold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300"
@@ -360,6 +381,17 @@ async function exportExcel() {
         </div>
       </div>
     </article>
+
+    <nav
+      v-if="activeTab === 'matches' && historyView.totalPages > 1"
+      class="flex items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900"
+      aria-label="เปลี่ยนหน้าประวัติการแข่งขัน"
+      data-testid="match-history-pagination"
+    >
+      <button type="button" class="h-10 rounded-md border border-stone-200 px-4 text-sm font-black disabled:opacity-40 dark:border-stone-700" :disabled="historyView.page <= 1" @click="loadMatchHistory(historyView.page - 1, historyNameFilter)">ก่อนหน้า</button>
+      <span class="text-sm font-black">หน้า {{ historyView.page }} / {{ historyView.totalPages }}</span>
+      <button type="button" class="h-10 rounded-md border border-stone-200 px-4 text-sm font-black disabled:opacity-40 dark:border-stone-700" :disabled="historyView.page >= historyView.totalPages" @click="loadMatchHistory(historyView.page + 1, historyNameFilter)">ถัดไป</button>
+    </nav>
 
     <div v-if="editingMatch" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="edit-match-score-title">
       <section class="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-4 shadow-2xl dark:bg-stone-900">

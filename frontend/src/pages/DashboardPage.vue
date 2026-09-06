@@ -37,6 +37,8 @@ const outstandingCost = (player) => props.playerOutstandingCost ? props.playerOu
 
 const exportLoading = ref(false)
 const exportError = ref('')
+const playerReportPage = ref(1)
+const playerReportPageSize = ref(10)
 
 const shuttleBrandSummary = computed(() => {
   const counts = new Map()
@@ -127,6 +129,18 @@ const levelReport = computed(() => {
 })
 const playerReport = computed(() => [...activePlayers.value]
   .sort((a, b) => Number(b.games || 0) - Number(a.games || 0) || String(a.name).localeCompare(String(b.name), 'th')))
+const playerReportTotalPages = computed(() => Math.max(1, Math.ceil(playerReport.value.length / playerReportPageSize.value)))
+const currentPlayerReportPage = computed(() => Math.min(playerReportPage.value, playerReportTotalPages.value))
+const paginatedPlayerReport = computed(() => {
+  const start = (currentPlayerReportPage.value - 1) * playerReportPageSize.value
+  return playerReport.value.slice(start, start + playerReportPageSize.value)
+})
+const playerReportFrom = computed(() => playerReport.value.length ? (currentPlayerReportPage.value - 1) * playerReportPageSize.value + 1 : 0)
+const playerReportTo = computed(() => Math.min(currentPlayerReportPage.value * playerReportPageSize.value, playerReport.value.length))
+
+function changePlayerReportPage(page) {
+  playerReportPage.value = Math.max(1, Math.min(Number(page) || 1, playerReportTotalPages.value))
+}
 const completedPercent = computed(() => {
   const decided = completedMatches.value.length + (props.cancelledMatches || []).length
   return decided ? Math.round((completedMatches.value.length / decided) * 100) : 0
@@ -439,9 +453,19 @@ async function exportExcel() {
     </div>
 
     <section class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900" aria-labelledby="player-report-title">
-      <div class="flex items-end justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700 sm:p-5">
+      <div class="flex flex-wrap items-end justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700 sm:p-5">
         <div><p class="text-sm font-semibold text-stone-500">รายงานสมาชิก</p><h2 id="player-report-title" class="mt-1 text-xl font-black">ผลงานและสถานะชำระทั้งหมด</h2></div>
-        <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ playerReport.length }} คน</span>
+        <div class="flex items-center gap-2">
+          <label class="flex items-center gap-2 text-xs font-bold text-stone-500">
+            แสดง
+            <select v-model.number="playerReportPageSize" aria-label="จำนวนสมาชิกต่อหน้า" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-2 font-black text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100" @change="changePlayerReportPage(1)">
+              <option :value="10">10</option>
+              <option :value="20">20</option>
+              <option :value="50">50</option>
+            </select>
+          </label>
+          <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ playerReport.length }} คน</span>
+        </div>
       </div>
       <div v-if="playerReport.length" class="overflow-x-auto">
         <table class="w-full min-w-[760px] text-left text-sm">
@@ -449,7 +473,7 @@ async function exportExcel() {
             <tr><th class="px-4 py-3">ผู้เล่น</th><th class="px-3 py-3">ระดับมือ</th><th class="px-3 py-3 text-center">เกม</th><th class="px-3 py-3 text-center">ชนะ</th><th class="px-3 py-3 text-center">เสมอ</th><th class="px-3 py-3 text-center">แพ้</th><th class="px-3 py-3 text-right">ค่าใช้จ่าย</th><th class="px-4 py-3 text-right">ชำระเงิน</th></tr>
           </thead>
           <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
-            <tr v-for="player in playerReport" :key="player.id">
+            <tr v-for="player in paginatedPlayerReport" :key="player.id" data-testid="dashboard-player-report-row">
               <td class="px-4 py-3 font-black">{{ player.name }}</td>
               <td class="px-3 py-3 font-bold text-stone-500">{{ levelLabel(player.level) }}</td>
               <td class="px-3 py-3 text-center font-black">{{ player.games || 0 }}</td>
@@ -463,6 +487,14 @@ async function exportExcel() {
         </table>
       </div>
       <p v-else class="p-6 text-center text-sm font-bold text-stone-500">ยังไม่มีข้อมูลสมาชิกสำหรับรายงาน</p>
+      <footer v-if="playerReport.length" class="flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 px-4 py-3 text-sm dark:border-stone-700 sm:px-5" data-testid="dashboard-player-report-pagination">
+        <span class="font-semibold text-stone-500">แสดง {{ playerReportFrom }}–{{ playerReportTo }} จาก {{ playerReport.length }} คน</span>
+        <div class="flex items-center gap-2">
+          <button type="button" class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="currentPlayerReportPage <= 1" @click="changePlayerReportPage(currentPlayerReportPage - 1)">ก่อนหน้า</button>
+          <span class="min-w-20 text-center font-black">หน้า {{ currentPlayerReportPage }} / {{ playerReportTotalPages }}</span>
+          <button type="button" class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="currentPlayerReportPage >= playerReportTotalPages" @click="changePlayerReportPage(currentPlayerReportPage + 1)">ถัดไป</button>
+        </div>
+      </footer>
     </section>
   </section>
 </template>

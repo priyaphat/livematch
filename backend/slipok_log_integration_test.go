@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -33,6 +34,38 @@ func TestSlipOKAuditLogIntegration(t *testing.T) {
 		_, _ = db.Exec(`delete from slipok_logs where admin_id in ($1,$2)`, adminID, otherAdminID)
 		_, _ = db.Exec(`delete from admin_users where id in ($1,$2)`, adminID, otherAdminID)
 	}()
+
+	// The local monthly limit must be reserved atomically, even when several
+	// booking uploads arrive at the same time.
+	limited := slipOKSettings{Enabled: true, BranchID: "branch-test", APIKey: "key", MonthlyCap: 3, LimitEnabled: true}
+	start := make(chan struct{})
+	results := make(chan bool, 10)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			reserved, _, reserveErr := a.reserveSlipOKUsage(t.Context(), adminID, "booking", limited)
+			if reserveErr != nil {
+				t.Errorf("reserve usage: %v", reserveErr)
+			}
+			results <- reserved
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	reservedCount := 0
+	for reserved := range results {
+		if reserved {
+			reservedCount++
+		}
+	}
+	usage := a.slipOKUsage(t.Context(), adminID, "booking", limited, false)
+	if reservedCount != 3 || usage.Used != 3 || !usage.CapReached || usage.Remaining == nil || *usage.Remaining != 0 {
+		t.Fatalf("atomic monthly limit reserved=%d usage=%#v", reservedCount, usage)
+	}
 
 	settings := slipOKSettings{Enabled: true, BranchID: "branch-test", APIKey: "must-not-be-logged", MonthlyCap: 100}
 	meta := slipOKLogMeta{AdminID: adminID, SourceSystem: "booking", ReferenceID: "booking-ref-1"}

@@ -18,7 +18,7 @@ export interface POSPurchaseReportLine { productId: string; productName: string;
 export interface POSPurchaseReportItem { id: string; referenceNo: string; supplierId: string; supplierCode: string; supplierName: string; externalReferenceNo: string; note: string; itemCount: number; totalQuantity: number; grossTotalSatang: number; discountSatang: number; netTotalSatang: number; createdAt: string; actorName: string; products: string; lines: POSPurchaseReportLine[] }
 export interface POSInventoryReport {
   asOf: string;
-  items: Array<{ productId: string; name: string; category: string; unit: string; active: boolean; stockQuantity: number; stockStatus: 'normal' | 'low' | 'out'; unitsPerPack: number; fullPacks: number | null; remainderUnits: number | null; costSatang: number; costValueSatang: number; priceSatang: number; retailValueSatang: number }>;
+  items: Array<{ productId: string; name: string; category: string; unit: string; active: boolean; stockQuantity: number; stockStatus: 'normal' | 'low' | 'out'; unitsPerPack: number; fullPacks: number | null; remainderUnits: number | null; costSatang?: number; costValueSatang?: number; priceSatang?: number; retailValueSatang?: number }>;
   pagination: POSPagination;
 }
 export interface POSSpecialReport {

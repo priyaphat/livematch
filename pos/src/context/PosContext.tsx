@@ -458,7 +458,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     sku: item.sku,
     barcode: item.barcode || '',
     name: item.name,
-    category: catalog.find((category) => category.name.toLowerCase() === item.category.toLowerCase())?.id || item.category,
+    category: catalog.find((category) => category.id === item.category)?.id
+      || catalog.find((category) => category.name.toLowerCase() === item.category.toLowerCase())?.id
+      || item.category,
     price: item.priceSatang / 100,
     cost: item.costSatang / 100,
     stock: item.saleStockQuantity,

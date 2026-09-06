@@ -2,12 +2,15 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestSessionCookieProfiles(t *testing.T) {
@@ -62,6 +65,63 @@ func TestLegacyCookieCanBeReadDuringMigration(t *testing.T) {
 	req.AddCookie(&http.Cookie{Name: adminCookieName, Value: "legacy-token"})
 	if token, ok := readSessionCookie(req, adminSessionKind); !ok || token != "legacy-token" {
 		t.Fatalf("legacy cookie was not accepted: %q %v", token, ok)
+	}
+}
+
+func TestBackofficeRollingDeploymentContractsIntegration(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("LIVEMATCH_TEST_DATABASE_URL"))
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL backoffice integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	username := "backoffice-contract-" + randHex(6)
+	password := "contract-test-password"
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into backoffice_users(username,name,password_hash,active) values($1,'Contract test',$2,true)`, username, string(hash)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from backoffice_sessions where username=$1`, username)
+		_, _ = db.Exec(`delete from backoffice_users where username=$1`, username)
+	}()
+	a := &app{db: db}
+
+	call := func(path string) (map[string]any, []*http.Cookie) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.SetBasicAuth(username, password)
+		rec := httptest.NewRecorder()
+		a.handleBackofficeRoutes(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", path, rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload, rec.Result().Cookies()
+	}
+
+	bootstrap, cookies := call("/api/backoffice/bootstrap")
+	if _, ok := bootstrap["liveMatchSessionCost"]; !ok {
+		t.Fatalf("bootstrap lost system contract: %#v", bootstrap)
+	}
+	if _, ok := bootstrap["users"]; ok {
+		t.Fatal("bootstrap must not eagerly include the admin list")
+	}
+	if len(cookies) == 0 || cookies[0].Value == "" {
+		t.Fatal("successful basic login did not issue a backoffice session cookie")
+	}
+
+	legacy, _ := call("/api/backoffice/summary")
+	if _, ok := legacy["users"]; !ok {
+		t.Fatal("legacy summary contract must remain available during rolling deployment")
 	}
 }
 

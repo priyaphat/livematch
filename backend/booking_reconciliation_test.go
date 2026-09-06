@@ -179,13 +179,20 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 	if _, err = a.reviewBooking(t.Context(), adminID, pending.ID, "approve", "อนุมัติซ้ำ", "admin", adminID); err != nil {
 		t.Fatalf("idempotent approve failed: %v", err)
 	}
-	var bookingStatus, paymentStatus, paymentReviewStatus string
+	var bookingStatus, paymentStatus, paymentReviewStatus, decisionSource, decisionBy string
+	var decisionAt sql.NullTime
 	var bookingTotal, paymentTotal int
 	if err = db.QueryRow(`select b.status,b.payment_status,b.total_price_thb,p.status,p.amount_thb from bookings b join booking_payments p on p.booking_id=b.id where b.id=$1`, pending.ID).Scan(&bookingStatus, &paymentStatus, &bookingTotal, &paymentReviewStatus, &paymentTotal); err != nil {
 		t.Fatal(err)
 	}
 	if bookingStatus != "confirmed" || paymentStatus != "paid" || paymentReviewStatus != "approved" || bookingTotal != 150 || paymentTotal != 150 {
 		t.Fatalf("approved state booking=%s/%s/%d payment=%s/%d", bookingStatus, paymentStatus, bookingTotal, paymentReviewStatus, paymentTotal)
+	}
+	if err = db.QueryRow(`select decision_source,decision_at,decision_by from bookings where id=$1`, pending.ID).Scan(&decisionSource, &decisionAt, &decisionBy); err != nil {
+		t.Fatal(err)
+	}
+	if decisionSource != "web" || !decisionAt.Valid || decisionBy != adminID {
+		t.Fatalf("web decision audit source=%q at=%v by=%q", decisionSource, decisionAt.Valid, decisionBy)
 	}
 	if _, err = db.Exec(`update booking_payments set slip_data='data:image/png;base64,aGVsbG8=',slip_mime_type='image/png' where id=$1`, paymentID); err != nil {
 		t.Fatal(err)
@@ -198,8 +205,11 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 	}
 	var historyPayload struct {
 		Items []struct {
-			ID      string `json:"id"`
-			SlipURL string `json:"slipUrl"`
+			ID             string `json:"id"`
+			SlipURL        string `json:"slipUrl"`
+			DecisionSource string `json:"decisionSource"`
+			DecisionAt     string `json:"decisionAt"`
+			DecisionBy     string `json:"decisionBy"`
 		} `json:"items"`
 	}
 	if err = json.NewDecoder(historyRecorder.Body).Decode(&historyPayload); err != nil {
@@ -207,7 +217,7 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 	}
 	foundSlip := false
 	for _, item := range historyPayload.Items {
-		if item.ID == pending.ID && item.SlipURL == "/api/admin/booking/payments/"+paymentID+"/slip" {
+		if item.ID == pending.ID && item.SlipURL == "/api/admin/booking/payments/"+paymentID+"/slip" && item.DecisionSource == "web" && item.DecisionAt != "" && item.DecisionBy == adminID {
 			foundSlip = true
 		}
 	}
@@ -314,7 +324,7 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 	if answerCount != 4 {
 		t.Fatalf("completed Telegram callback answers=%d, want 4", answerCount)
 	}
-	if err = db.QueryRow(`select status from bookings where id=$1`, pending.ID).Scan(&bookingStatus); err != nil || bookingStatus != "confirmed" {
+	if err = db.QueryRow(`select status,decision_source,decision_by from bookings where id=$1`, pending.ID).Scan(&bookingStatus, &decisionSource, &decisionBy); err != nil || bookingStatus != "confirmed" || decisionSource != "web" || decisionBy != adminID {
 		t.Fatalf("approved booking changed after Telegram callback: status=%s err=%v", bookingStatus, err)
 	}
 	if err = db.QueryRow(`select status from bookings where id=$1`, rejected.ID).Scan(&bookingStatus); err != nil || bookingStatus != "rejected" {

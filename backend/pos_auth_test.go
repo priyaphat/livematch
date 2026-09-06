@@ -120,6 +120,10 @@ func TestNormalizePOSPermissionsMigratesAndEnforcesReportChildren(t *testing.T) 
 	if disabled["report_inventory"] {
 		t.Fatal("report child must be disabled when the reports menu is disabled")
 	}
+	hiddenValues := normalizePOSPermissions(map[string]bool{"reports": true, "report_inventory": true, "report_inventory_values": false})
+	if hiddenValues["report_inventory_values"] {
+		t.Fatal("explicitly hidden inventory values must remain hidden")
+	}
 }
 
 func TestRequirePOSReportPermission(t *testing.T) {

@@ -33,9 +33,9 @@ var dummyPOSCredentialHash = func() string {
 	return string(hash)
 }()
 
-var posReportPermissionKeys = []string{"report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_transfers", "report_special"}
+var posReportPermissionKeys = []string{"report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_inventory_values", "report_transfers", "report_special"}
 
-var posPermissionKeys = []string{"sales", "bills", "products", "stock", "reports", "report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_transfers", "report_special", "settings", "discounts", "void_sales", "stock_adjust", "product_pricing", "report_export", "member_create"}
+var posPermissionKeys = []string{"sales", "bills", "products", "stock", "reports", "report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_inventory_values", "report_transfers", "report_special", "settings", "discounts", "void_sales", "stock_adjust", "product_pricing", "report_export", "member_create"}
 
 type posPrincipal struct {
 	User        adminUser

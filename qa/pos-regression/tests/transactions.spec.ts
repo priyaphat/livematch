@@ -704,8 +704,16 @@ test('POS-STOCK-006 ประวัติใช้สีรับเข้าเ
   await page.getByRole('button', { name: /จัดการสต็อก/ }).click();
   await page.getByRole('button', { name: /ประวัติเคลื่อนไหวรายชิ้น/ }).click();
   const classes = async (label: string) => page.getByText(label, { exact: true }).first().getAttribute('class');
+
+  await page.getByRole('button', { name: 'รับเข้า (In)' }).click();
   expect(await classes('รับเข้า')).toMatch(/green|emerald/);
+
+  await page.getByRole('button', { name: 'จ่ายออก (Out)' }).click();
   expect(await classes('จ่ายออก')).toMatch(/red/);
+
+  // With server pagination, an adjustment can legitimately be beyond page 1
+  // of the unfiltered movement feed. Filter at the server before asserting it.
+  await page.getByRole('button', { name: 'ปรับปรุง (Adjust)' }).click();
   expect(await classes('ปรับยอด')).toMatch(/orange|amber/);
 });
 

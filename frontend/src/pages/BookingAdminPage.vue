@@ -64,6 +64,8 @@ const historyPageSize = ref(20);
 const historyTotal = ref(0);
 const pendingPage = ref(1);
 const pendingPageSize = 10;
+const pendingTotal = ref(0);
+const pendingIsServerPaginated = ref(false);
 const historyFilters = reactive({
   startDate: addDateDays(today, -30),
   endDate: addDateDays(today, 30),
@@ -78,7 +80,7 @@ const exportFilters = reactive({
 const exportLoading = ref(false);
 const exportStatus = ref("");
 const incidents = reactive({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1, search: "", type: "", loading: false });
-const slipOKQuota = reactive({ available: false, used: 0, remaining: 0, limit: 0, capReached: false, error: "" });
+const slipOKQuota = reactive({ month: "", used: 0, remaining: null, limit: 0, limitEnabled: false, capReached: false, provider: {}, error: "" });
 const actionBusy = reactive({ entry: false, reopen: false, review: false, settings: false, addCourt: false });
 const courtBusy = reactive(new Set());
 const blockBusy = reactive(new Set());
@@ -86,6 +88,7 @@ const adminToast = reactive({ message: "", tone: "success" });
 let timer;
 let adminToastTimer;
 let settingsReady = false;
+let fullSettingsReady = false;
 let overviewRequest = 0;
 let memberSearchRequest = 0;
 
@@ -191,9 +194,10 @@ const pendingBookings = computed(() => {
 });
 const activeCourts = computed(() => courts.value.filter((court) => court.active));
 const pendingTotalPages = computed(() =>
-  Math.max(1, Math.ceil(pendingBookings.value.length / pendingPageSize)),
+  Math.max(1, Math.ceil(pendingTotal.value / pendingPageSize)),
 );
 const pagedPendingBookings = computed(() => {
+  if (pendingIsServerPaginated.value) return pendingBookings.value;
   const start = (pendingPage.value - 1) * pendingPageSize;
   return pendingBookings.value.slice(start, start + pendingPageSize);
 });
@@ -422,6 +426,9 @@ function applyOverview(
     (booking) => booking.status === "pending_review",
   );
   state.closures = data.closures || [];
+  pendingIsServerPaginated.value = Boolean(data.pendingPagination);
+  pendingTotal.value = Number(data.pendingPagination?.total ?? pendingBookings.value.length);
+  pendingPage.value = Number(data.pendingPagination?.page || pendingPage.value);
   pendingPage.value = Math.min(pendingPage.value, pendingTotalPages.value);
   if (includeConfiguration || !settingsReady) {
     Object.assign(savedScheduleSettings, data.settings || {});
@@ -446,6 +453,9 @@ async function loadOverview(
     const params = new URLSearchParams({
       date: state.date,
       includeConfiguration: String(includeConfiguration || !settingsReady),
+      configurationScope: replaceSettingsDraft ? "full" : "light",
+      pendingPage: String(pendingPage.value),
+      pendingPageSize: String(pendingPageSize),
     });
     const data = await props.apiRequest(
       `/api/admin/booking/overview?${params.toString()}`,
@@ -498,6 +508,19 @@ function changeTab(tab) {
   review.value = null;
   historyDetail.value = null;
   if (tab === "history") loadHistory();
+  if (tab === "blacklist") loadIncidents(1);
+  if (tab === "settings") {
+    const tasks = [loadSlipOKQuota()];
+    if (!fullSettingsReady) {
+      tasks.push(loadOverview(false, true, true).then(() => { fullSettingsReady = true; }));
+    }
+    Promise.all(tasks);
+  }
+}
+
+function loadPendingPage(page) {
+  pendingPage.value = Math.max(1, Number(page) || 1);
+  return loadOverview(false, false);
 }
 
 function resetHistoryFilters() {
@@ -914,11 +937,14 @@ function fileData(event, key, maxSize) {
   reader.readAsDataURL(file);
 }
 
-const refreshOnFocus = () => loadOverview(true, false);
+const refreshOnFocus = () => {
+  if (activeTab.value === "pending" && document.visibilityState === "visible") loadOverview(true, false);
+};
 onMounted(async () => {
-  await loadOverview(false, true, true);
-  await Promise.all([loadSlipOKQuota(), loadIncidents(1)]);
-  timer = window.setInterval(() => loadOverview(true, false), AUTO_REFRESH_MS);
+  await loadOverview(false, true, false);
+  timer = window.setInterval(() => {
+    if (activeTab.value === "pending" && document.visibilityState === "visible") loadOverview(true, false);
+  }, AUTO_REFRESH_MS);
   window.addEventListener("focus", refreshOnFocus);
 });
 onUnmounted(() => {
@@ -1397,10 +1423,10 @@ onUnmounted(() => {
           ไม่มีรายการรอตรวจสอบ
         </p>
       </div>
-      <div v-if="pendingBookings.length > pendingPageSize" class="mt-4 flex items-center justify-between border-t pt-3 dark:border-stone-700">
-        <button class="booking-secondary-button h-10" :disabled="pendingPage <= 1" @click="pendingPage--">ก่อนหน้า</button>
-        <span class="text-sm font-black">หน้า {{ pendingPage }} / {{ pendingTotalPages }} · {{ pendingBookings.length }} รายการ</span>
-        <button class="booking-secondary-button h-10" :disabled="pendingPage >= pendingTotalPages" @click="pendingPage++">ถัดไป</button>
+      <div v-if="pendingTotal > pendingPageSize" class="mt-4 flex items-center justify-between border-t pt-3 dark:border-stone-700">
+        <button class="booking-secondary-button h-10" :disabled="pendingPage <= 1" @click="loadPendingPage(pendingPage-1)">ก่อนหน้า</button>
+        <span class="text-sm font-black">หน้า {{ pendingPage }} / {{ pendingTotalPages }} · {{ pendingTotal }} รายการ</span>
+        <button class="booking-secondary-button h-10" :disabled="pendingPage >= pendingTotalPages" @click="loadPendingPage(pendingPage+1)">ถัดไป</button>
       </div>
     </section>
 
@@ -1695,8 +1721,9 @@ onUnmounted(() => {
           <div class="grid gap-3 sm:grid-cols-2">
             <label class="grid gap-1 text-sm font-bold">Branch ID<input v-model="settings.slipOKBranchId" class="h-10 rounded-lg border bg-transparent px-3" /></label>
             <label class="grid gap-1 text-sm font-bold">API Key<input v-model="settings.slipOKApiKey" type="password" class="h-10 rounded-lg border bg-transparent px-3" :placeholder="settings.slipOKApiKeyMasked || 'กรอก API Key'" /></label>
-            <label class="grid gap-1 text-sm font-bold">Monthly cap<input v-model.number="settings.slipOKMonthlyCap" type="number" min="0" class="h-10 rounded-lg border bg-transparent px-3" /></label>
-            <div class="rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">ใช้แล้ว {{ slipOKQuota.used || 0 }} · คงเหลือ {{ slipOKQuota.remaining || 0 }} / {{ slipOKQuota.limit || settings.slipOKMonthlyCap || 0 }}<p v-if="slipOKQuota.error" class="mt-1 text-xs text-amber-700">{{ slipOKQuota.error }}</p></div>
+			<label class="flex items-center gap-2 rounded-lg border p-3 text-sm font-black dark:border-stone-700"><input v-model="settings.slipOKLimitEnabled" type="checkbox" />จำกัดการใช้งานต่อเดือน</label>
+			<label class="grid gap-1 text-sm font-bold">จำนวนสูงสุดต่อเดือน<input v-model.number="settings.slipOKMonthlyCap" type="number" :min="Math.max(1, Number(slipOKQuota.used || 0))" :disabled="!settings.slipOKLimitEnabled" class="h-10 rounded-lg border bg-transparent px-3 disabled:opacity-50" /><span class="text-xs text-stone-500">ห้ามต่ำกว่ายอดใช้แล้ว {{ slipOKQuota.used || 0 }} ครั้ง</span></label>
+			<div class="rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">เดือน {{ slipOKQuota.month || '-' }} · ใช้แล้ว {{ slipOKQuota.used || 0 }} ครั้ง<span v-if="slipOKQuota.limitEnabled"> · คงเหลือ {{ slipOKQuota.remaining ?? 0 }} / {{ slipOKQuota.limit }}</span><span v-else> · ไม่จำกัดภายในระบบ</span><p class="mt-1 text-xs text-stone-500">Provider คงเหลือ {{ slipOKQuota.provider?.remaining ?? '-' }} ครั้ง</p><p v-if="slipOKQuota.error || slipOKQuota.provider?.error" class="mt-1 text-xs text-amber-700">{{ slipOKQuota.error || slipOKQuota.provider?.error }}</p></div>
           </div>
           <p class="rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">หาก Auto Slip ใช้งานไม่ได้หรือโควตาหมด ระบบจะส่งให้ Admin ตรวจ Manual</p>
 		</div>
@@ -2013,6 +2040,8 @@ onUnmounted(() => {
             <div><p class="text-xs font-bold text-stone-500">เบอร์โทร</p><p class="mt-1 font-black">{{ historyDetail.phone || '-' }}</p></div>
             <div><p class="text-xs font-bold text-stone-500">สถานะ</p><span class="mt-1 inline-flex rounded-full px-2.5 py-1 text-xs font-black" :class="historyStatusClass(historyDetail.status)">{{ bookingStatusLabel(historyDetail.status) }}</span></div>
             <div><p class="text-xs font-bold text-stone-500">ยอดรวมทั้งชุด</p><p class="mt-1 text-lg font-black text-court-700 dark:text-court-300">฿{{ Number(historyDetail.totalPriceThb || 0).toLocaleString('th-TH') }}</p></div>
+			<div><p class="text-xs font-bold text-stone-500">ยืนยัน/ปฏิเสธจาก</p><p class="mt-1 font-black">{{ ({ web: 'หน้าเว็บ', telegram: 'Telegram', auto_slip: 'Auto Slip', legacy_unknown: 'ข้อมูลเดิม ไม่พบแหล่งที่มา' })[historyDetail.decisionSource] || '-' }}</p></div>
+			<div><p class="text-xs font-bold text-stone-500">เวลาดำเนินการ</p><p class="mt-1 font-black">{{ historyDetail.decisionAt || '-' }}</p><p v-if="historyDetail.decisionBy" class="text-xs text-stone-500">โดย {{ historyDetail.decisionBy }}</p></div>
           </div>
 
           <div class="mt-4 grid gap-2">

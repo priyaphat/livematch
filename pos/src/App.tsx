@@ -35,6 +35,7 @@ const ALL_POS_PERMISSIONS: POSPermissions = {
   report_sold_products: true,
   report_purchases: true,
   report_inventory: true,
+  report_inventory_values: true,
   report_transfers: true,
   report_special: true,
   settings: true,

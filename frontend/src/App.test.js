@@ -512,6 +512,8 @@ describe('LiveMatch app', () => {
             activityLogs: [{ id: 1, action: 'start_match', actorType: 'admin', actorId: 'admin-1', targetType: 'match', targetId: '12', details: '{}', createdAt: '2026-06-28 20:00' }]
           },
           backofficeActivityUserId: '',
+          backofficeActivityUserSearch: '',
+          backofficeAdminOptions: [{ id: 'admin-1', email: 'admin@example.com', name: 'Admin' }],
           backofficeActivitySessionId: '',
           backofficeActivitySessionOptions: [{ id: 'session-1', label: 'Test Session' }],
           backofficeActivityPagination: { page: 2, pageSize: 20, total: 45, totalPages: 3 }
@@ -521,6 +523,7 @@ describe('LiveMatch app', () => {
         loadBackoffice: vi.fn(),
         loadBackofficeCoinOrders: vi.fn(),
         loadBackofficeActivityLogs: loadActivity,
+        loadBackofficeAdminOptions: vi.fn(),
         applyBackofficeActivityFilters: applyFilters,
         changeBackofficeActivityUser: changeUser,
         openBackofficeAdminDetail: vi.fn(),
@@ -537,16 +540,17 @@ describe('LiveMatch app', () => {
       }
     })
 
+    const userFilter = wrapper.get('form input[list="activity-admin-options"]')
     const filters = wrapper.findAll('form select')
-    await filters[0].setValue('admin-1')
-    await filters[1].setValue('session-1')
+    await userFilter.setValue('admin@example.com')
+    await filters[0].setValue('session-1')
     await wrapper.get('form').trigger('submit')
     const paginationButtons = wrapper.findAll('section button').filter((button) => ['ก่อนหน้า', 'ถัดไป'].includes(button.text().trim()))
     await paginationButtons[1].trigger('click')
 
     expect(changeUser).toHaveBeenCalledTimes(1)
     expect(applyFilters).toHaveBeenCalledTimes(1)
-    expect(filters[1].text()).toContain('Test Session')
+    expect(filters[0].text()).toContain('Test Session')
     expect(loadActivity).toHaveBeenCalledWith(3)
     expect(wrapper.text()).toContain('หน้า 2 / 3')
   })
@@ -801,7 +805,8 @@ describe('LiveMatch app', () => {
     for (let index = 0; index < 5; index += 1) await Promise.resolve()
 
     expect(calls.some((call) => call.includes('/api/sessions/test-session/dashboard'))).toBe(true)
-    expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(1)
+    expect(calls.filter((call) => call.includes('/api/sessions/test-session/bootstrap')).length).toBe(1)
+    expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(0)
     expect(wrapper.text()).toContain('Test Session')
 
     wrapper.unmount()
@@ -1108,6 +1113,38 @@ describe('LiveMatch app', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('บันทึกการแก้ไข')).trigger('click')
     expect(saveDiscount).toHaveBeenCalledOnce()
     expect(saveSubscription).toHaveBeenCalledOnce()
+  })
+
+  it('paginates each table in the backoffice admin detail independently', async () => {
+    const loadDetailPage = vi.fn()
+    const pagination = (total) => ({ page: 1, pageSize: 10, total, totalPages: Math.ceil(total / 10) })
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'members',
+          backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeAdminDetail: {
+            user: { id: 'admin-1', name: 'Admin', coins: 10 },
+            sessions: [{ id: 'session-1', name: 'Session 1' }],
+            orders: [{ id: 'order-1', priceThb: 100, coins: 100, status: 'pending' }],
+            coinLedger: [{ id: 1, reason: 'test', delta: 10, balance: 10 }],
+            sessionPagination: pagination(21), orderPagination: pagination(12), ledgerPagination: pagination(31),
+            benefits: {}, features: {}
+          },
+          backofficeBenefitStatus: ''
+        },
+        ui: { showBackofficeAdminModal: true }, backoffice: { unlocked: true },
+        loadBackofficeAdminDetailPage: loadDetailPage,
+        loadBackoffice: vi.fn(), openBackofficeAdminDetail: vi.fn(), deleteBackofficeAdminSession: vi.fn(),
+        saveBackofficeAdminDiscount: vi.fn(), saveBackofficeAdminFeatures: vi.fn(), saveBackofficeAdminSubscription: vi.fn(), cancelBackofficeAdminSubscription: vi.fn(),
+        coinOrderStatusText: () => '', coinOrderStatusClass: () => ''
+      }
+    })
+
+    await wrapper.get('select[aria-label="จำนวน Session ต่อหน้า"]').setValue('20')
+    await wrapper.get('select[aria-label="จำนวนรายการซื้อ Coin ต่อหน้า"]').setValue('20')
+    await wrapper.get('select[aria-label="จำนวน Coin ledger ต่อหน้าในรายละเอียด Admin"]').setValue('20')
+    expect(loadDetailPage.mock.calls).toEqual([['session', 1], ['order', 1], ['ledger', 1]])
   })
 
   it('configures self-service subscription packages beside coin packages', async () => {
@@ -1708,6 +1745,66 @@ describe('LiveMatch app', () => {
     expect(deleted?.id).toBe(player.id)
   })
 
+  it('loads backoffice data only after its tab is selected', async () => {
+    const selectBackofficeTab = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: { backofficeTab: 'overview', backofficeOverviewTab: 'system', backofficeSummary: { ttsUsage: {} } },
+        ui: {},
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        selectBackofficeTab,
+        selectBackofficeOverviewTab: vi.fn(),
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    expect(selectBackofficeTab).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find((button) => button.text().includes('สมาชิก admin')).trigger('click')
+    expect(selectBackofficeTab).toHaveBeenCalledWith('members')
+  })
+
+  it('falls back to legacy backoffice summary only when bootstrap is unavailable', async () => {
+    window.history.replaceState({}, '', '/backoffice')
+    const originalFetch = globalThis.fetch
+    const calls = []
+    globalThis.fetch = vi.fn((url, options = {}) => {
+      const target = String(url)
+      calls.push(target)
+      if (target.includes('/api/backoffice/bootstrap')) {
+        const authenticated = Boolean(options.headers?.Authorization)
+        return Promise.resolve({
+          ok: false,
+          status: authenticated ? 404 : 401,
+          headers: { get: () => null },
+          json: () => Promise.resolve({ error: authenticated ? 'not found' : 'invalid login' })
+        })
+      }
+      if (target.includes('/api/backoffice/summary')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: () => Promise.resolve({ liveMatchSessionCost: 10, liveShareSessionCost: 5, ttsUsage: {} })
+        })
+      }
+      return Promise.resolve({ ok: false, status: 401, headers: { get: () => null }, json: () => Promise.resolve({ error: 'unauthorized' }) })
+    })
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('input[placeholder="superadmin"]').setValue('superadmin')
+    await wrapper.get('input[type="password"]').setValue('secret')
+    await wrapper.findAll('button').find((button) => button.text().includes('เข้าสู่หลังบ้าน')).trigger('click')
+    await flushPromises()
+
+    expect(calls.filter((url) => url.includes('/api/backoffice/summary'))).toHaveLength(1)
+    expect(wrapper.text()).toContain('ตั้งค่าภาพรวม')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
+  })
+
   it('requires explicit yes confirmation before marking a player as paid', async () => {
     const player = { id: 1, name: 'Player A', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
     const togglePayment = vi.fn().mockResolvedValue(undefined)
@@ -2043,6 +2140,64 @@ describe('LiveMatch app', () => {
     expect(wrapper.get('[data-testid="export-dashboard"]').text()).toContain('Export Excel')
   })
 
+  it('paginates the dashboard player performance report without changing its total', async () => {
+    const players = Array.from({ length: 23 }, (_, index) => ({
+      id: index + 1,
+      name: `Player ${String(index + 1).padStart(2, '0')}`,
+      level: 'middle',
+      games: 23 - index,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      paid: false,
+      active: true
+    }))
+    const wrapper = mount(DashboardPage, {
+      props: {
+        state: {
+          session: { name: 'Pagination Session' },
+          queue: [],
+          live: [],
+          history: [],
+          players,
+          settings: { courtNames: [], shuttleBrands: [] }
+        },
+        activePlayerCount: players.length,
+        totalRecordedMatches: 0,
+        cancelledMatches: [],
+        averageGames: 0,
+        minGames: 0,
+        maxGames: 0,
+        totalShuttles: 0,
+        paymentPercent: 0,
+        money: (value) => `${value}`,
+        totalRevenue: 0,
+        paidRevenue: 0,
+        unpaidRevenue: 0,
+        unpaidPlayers: players,
+        topPlayers: [],
+        quietPlayers: [],
+        topWinners: [],
+        playerCost: () => 0,
+        playerScore: () => 0,
+        levelLabel: (level) => level,
+        selectAdminTab: () => {}
+      }
+    })
+
+    expect(wrapper.findAll('[data-testid="dashboard-player-report-row"]')).toHaveLength(10)
+    expect(wrapper.get('[data-testid="dashboard-player-report-pagination"]').text()).toContain('แสดง 1–10 จาก 23 คน')
+    expect(wrapper.text()).toContain('หน้า 1 / 3')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'ถัดไป').trigger('click')
+    expect(wrapper.findAll('[data-testid="dashboard-player-report-row"]')).toHaveLength(10)
+    expect(wrapper.text()).toContain('หน้า 2 / 3')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'ถัดไป').trigger('click')
+    expect(wrapper.findAll('[data-testid="dashboard-player-report-row"]')).toHaveLength(3)
+    expect(wrapper.get('[data-testid="dashboard-player-report-pagination"]').text()).toContain('แสดง 21–23 จาก 23 คน')
+  })
+
   it('shows Excel export actions on members and history even when read-only', () => {
     const memberWrapper = mount(PlayersPage, {
       props: {
@@ -2111,7 +2266,7 @@ describe('LiveMatch app', () => {
     const paymentTab = wrapper.findAll('button').find((button) => button.text().includes('ประวัติการชำระเงิน'))
     await paymentTab.trigger('click')
     await flushPromises()
-    expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/payment-events?all=1')
+    expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/payment-events?page=1&pageSize=100')
     expect(wrapper.text()).toContain('Player A')
     expect(wrapper.text()).toContain('฿125')
   })
@@ -2151,6 +2306,41 @@ describe('LiveMatch app', () => {
     expect(wrapper.findAll('[data-testid="payment-history-item"]')).toHaveLength(1)
     expect(wrapper.get('[data-testid="payment-history-item"]').text()).toContain('Alice')
     expect(wrapper.get('[data-testid="payment-history-item"]').text()).not.toContain('Bob')
+  })
+
+  it('uses server pagination and search for match history', async () => {
+    vi.useFakeTimers()
+    const loadMatchHistory = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          session: { id: 'session-1', type: 'liveMatch' },
+          settings: {},
+          history: [{ id: 999, a1: 9, a2: 10, b1: 11, b2: 12 }],
+          historyView: {
+            items: [{ id: 81, a1: 1, a2: 2, b1: 3, b2: 4, court: '1', status: 'finished', scores: [], shuttles: 0 }],
+            page: 2, pageSize: 20, total: 125, totalPages: 7, search: ''
+          }
+        },
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner: vi.fn(),
+        loadMatchHistory
+      }
+    })
+
+    expect(wrapper.text()).toContain('125 รายการ')
+    expect(wrapper.text()).toContain('หน้า 2 / 7')
+    expect(wrapper.text()).toContain('เกมที่')
+    expect(wrapper.text()).toContain('81')
+    expect(wrapper.text()).not.toContain('999')
+    await wrapper.findAll('[data-testid="match-history-pagination"] button')[1].trigger('click')
+    expect(loadMatchHistory).toHaveBeenCalledWith(3, '')
+
+    await wrapper.get('input[aria-label="กรองประวัติด้วยชื่อ"]').setValue('Alice')
+    await vi.advanceTimersByTimeAsync(350)
+    expect(loadMatchHistory).toHaveBeenCalledWith(1, 'Alice')
+    wrapper.unmount()
+    vi.useRealTimers()
   })
 
   it('refreshes the shared queue every 9 seconds', async () => {

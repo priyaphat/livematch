@@ -410,7 +410,7 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 	case r.Method == http.MethodGet && path == "reports/purchases":
 		a.writePOSPurchasesReport(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "reports/inventory":
-		a.writePOSInventoryReport(w, r, user.ID)
+		a.writePOSInventoryReport(w, r, user.ID, hasPOSPermission(user, "report_inventory_values"))
 	case r.Method == http.MethodGet && path == "reports/transfers":
 		a.writePOSStockTransfersReport(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "reports/special":
@@ -1472,7 +1472,7 @@ func (a *app) writePOSPurchasesReport(w http.ResponseWriter, r *http.Request, ad
 	})
 }
 
-func (a *app) writePOSInventoryReport(w http.ResponseWriter, r *http.Request, adminID string) {
+func (a *app) writePOSInventoryReport(w http.ResponseWriter, r *http.Request, adminID string, includeValues bool) {
 	page, pageSize := posReportPagination(r.URL.Query(), "page", 25)
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
 	category := strings.TrimSpace(r.URL.Query().Get("category"))
@@ -1534,11 +1534,17 @@ func (a *app) writePOSInventoryReport(w http.ResponseWriter, r *http.Request, ad
 		} else if stock <= low {
 			stockLabel = "low"
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"productId": id, "name": name, "category": itemCategory, "unit": unit, "active": active,
 			"stockQuantity": stock, "stockStatus": stockLabel, "unitsPerPack": pack, "fullPacks": fullPacks, "remainderUnits": remainder,
-			"costSatang": cost, "costValueSatang": int64(stock) * cost, "priceSatang": price, "retailValueSatang": int64(stock) * price,
-		})
+		}
+		if includeValues {
+			item["costSatang"] = cost
+			item["costValueSatang"] = int64(stock) * cost
+			item["priceSatang"] = price
+			item["retailValueSatang"] = int64(stock) * price
+		}
+		items = append(items, item)
 	}
 	if err = rows.Err(); err != nil {
 		writePOSInternalError(w, r, err)
@@ -1812,11 +1818,11 @@ func (a *app) listPOSCatalog(ctx context.Context, adminID, kind string) ([]posCa
 	if kind == "unit" {
 		table, productColumn = "pos_units", "unit"
 	}
-	selectFields := `c.id,c.name,c.active,(select count(*) from pos_products p where p.admin_id=c.admin_id and p.deleted_at is null and lower(p.%s)=lower(c.name)),'',''`
+	selectFields := `c.id,c.name,c.active,(select count(*) from pos_products p where p.admin_id=c.admin_id and p.deleted_at is null and (p.%s=c.id or lower(p.%s)=lower(c.name))),'',''`
 	if kind == "category" {
-		selectFields = `c.id,c.name,c.active,(select count(*) from pos_products p where p.admin_id=c.admin_id and p.deleted_at is null and lower(p.%s)=lower(c.name)),c.icon,c.color`
+		selectFields = `c.id,c.name,c.active,(select count(*) from pos_products p where p.admin_id=c.admin_id and p.deleted_at is null and (p.%s=c.id or lower(p.%s)=lower(c.name))),c.icon,c.color`
 	}
-	query := fmt.Sprintf(`select `+selectFields+` from %s c where c.admin_id=$1 order by c.active desc,lower(c.name)`, productColumn, table)
+	query := fmt.Sprintf(`select `+selectFields+` from %s c where c.admin_id=$1 order by c.active desc,lower(c.name)`, productColumn, productColumn, table)
 	rows, err := a.db.QueryContext(ctx, query, adminID)
 	if err != nil {
 		return items, err
@@ -3695,7 +3701,7 @@ func (a *app) sessionPaymentHistory(ctx context.Context, state SessionState) ([]
 	for _, payment := range payments {
 		items = append(items, map[string]any{"id": payment.PaymentID, "paymentId": payment.PaymentID, "playerName": payment.DisplayName, "paid": true, "amount": thbFromSatang(payment.AmountSatang), "amountThb": thbFromSatang(payment.AmountSatang), "amountSatang": payment.AmountSatang, "matchTotalSatang": payment.MatchTotalSatang, "posTotalSatang": payment.POSTotalSatang, "paymentMethod": payment.Method, "originSystem": payment.OriginSystem, "receivedByName": payment.ReceivedByName, "createdAt": payment.CreatedAt, "lines": payment.Lines})
 	}
-	rows, err := a.db.QueryContext(ctx, `select e.id,e.player_id,coalesce(p.name,''),e.paid,e.amount_satang,e.payment_method,to_char(e.created_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI') from player_payment_events e left join players p on p.session_id=e.session_id and p.id=e.player_id where e.session_id=$1 and e.billing_payment_id is null order by e.created_at desc,e.id desc`, state.Session.ID)
+	rows, err := a.db.QueryContext(ctx, `select e.id,e.player_id,coalesce(p.name,''),e.paid,e.amount_satang,e.payment_method,to_char(e.created_at at time zone 'Asia/Bangkok','DD/MM/YYYY HH24:MI') from player_payment_events e left join players p on p.session_id=e.session_id and p.id=e.player_id where e.session_id=$1 and e.billing_payment_id is null order by e.created_at desc,e.id desc limit 100`, state.Session.ID)
 	if err != nil {
 		return nil, err
 	}

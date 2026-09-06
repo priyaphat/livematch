@@ -1012,7 +1012,7 @@ func (a *app) handleCreateCoinOrder(w http.ResponseWriter, r *http.Request, user
 	slipLogMeta := slipOKLogMeta{AdminID: user.ID, AdminEmail: user.Email, SourceSystem: "coin_shop", ReferenceID: id}
 	if !slipOK.Enabled {
 		a.recordSlipOKDecision(slipLogMeta, slipOK, order.PriceTHB, "disabled", "ไม่ได้ส่งตรวจ: ปิดใช้งาน OKSlip", map[string]any{"enabled": false})
-	} else if !slipOK.ready() {
+	} else if !slipOK.ready() || slipOK.MonthlyCap <= 0 {
 		a.recordSlipOKDecision(slipLogMeta, slipOK, order.PriceTHB, "config_not_ready", "ไม่ได้ส่งตรวจ: การตั้งค่า OKSlip ไม่ครบหรือวงเงินรายเดือนเป็น 0", map[string]any{"hasBranchId": slipOK.BranchID != "", "hasApiKey": slipOK.APIKey != "", "monthlyCap": slipOK.MonthlyCap})
 	} else {
 		quota := a.fetchSlipOKQuota(r.Context(), slipOK)
@@ -1186,7 +1186,13 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		backofficeUser, ok = a.authenticateBackoffice(r)
 		if ok {
-			a.issueBackofficeSession(w, r, backofficeUser)
+			if err := a.issueBackofficeSession(w, r, backofficeUser); err != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{
+					"error": "ไม่สามารถสร้าง Session หลังบ้านได้ กรุณาลองใหม่อีกครั้ง",
+					"code":  "backoffice_session_create_failed",
+				})
+				return
+			}
 		}
 	}
 	if !ok {
@@ -1205,8 +1211,19 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && action == "logout":
 		a.clearBackofficeSession(w, r)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case r.Method == http.MethodGet && action == "bootstrap":
+		a.handleBackofficeBootstrap(w, r)
 	case r.Method == http.MethodGet && action == "summary":
+		// Keep the original response contract during rolling deployments. Older
+		// frontend bundles can remain in browser/CDN caches after the backend is
+		// upgraded and still require the complete summary payload.
 		a.handleBackofficeSummary(w, r)
+	case r.Method == http.MethodGet && action == "section":
+		a.handleBackofficeSection(w, r)
+	case r.Method == http.MethodGet && action == "admins":
+		a.handleBackofficeAdmins(w, r)
+	case r.Method == http.MethodGet && action == "admin-options":
+		a.handleBackofficeAdminOptions(w, r)
 	case r.Method == http.MethodGet && action == "activity-logs":
 		a.handleBackofficeActivityLogs(w, r)
 	case r.Method == http.MethodGet && action == "coin-orders":
@@ -1500,6 +1517,7 @@ func (a *app) activitySessionOptions(ctx context.Context, adminID string) ([]map
 		from sessions s
 		where s.admin_id = $1
 		order by s.updated_at desc
+		limit 20
 	`, adminID)
 	if err != nil {
 		return items, err
@@ -1543,9 +1561,12 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	sessions, _ := a.adminSessions(r.Context(), adminID)
-	ledger, _ := a.coinLedger(r.Context(), adminID, 20)
-	orders, _ := a.coinPurchaseOrders(r.Context(), adminID, true, 20)
+	sessionPage, sessionPageSize := backofficeDetailPagination(r, "session", 10)
+	orderPage, orderPageSize := backofficeDetailPagination(r, "order", 10)
+	ledgerPage, ledgerPageSize := backofficeDetailPagination(r, "ledger", 10)
+	sessions, sessionTotal, _ := a.adminSessionsPage(r.Context(), adminID, sessionPage, sessionPageSize)
+	ledger, ledgerTotal, _ := a.coinLedgerPage(r.Context(), adminID, ledgerPage, ledgerPageSize)
+	orders, orderTotal, _ := a.coinPurchaseOrdersPage(r.Context(), adminID, true, orderPage, orderPageSize)
 	benefits, _ := a.adminBenefits(r.Context(), adminID, true)
 	features := a.features(r.Context(), adminID)
 	memberCount, bookingCount, posSaleCount := 0, 0, 0
@@ -1553,16 +1574,31 @@ func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request,
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where admin_id=$1`, adminID).Scan(&bookingCount)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from pos_sales where admin_id=$1`, adminID).Scan(&posSaleCount)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":         user,
-		"sessions":     sessions,
-		"coinLedger":   ledger,
-		"orders":       orders,
-		"benefits":     benefits,
-		"features":     features,
-		"memberCount":  memberCount,
-		"bookingCount": bookingCount,
-		"posSaleCount": posSaleCount,
+		"user":              user,
+		"sessions":          sessions,
+		"coinLedger":        ledger,
+		"orders":            orders,
+		"benefits":          benefits,
+		"features":          features,
+		"memberCount":       memberCount,
+		"bookingCount":      bookingCount,
+		"posSaleCount":      posSaleCount,
+		"sessionPagination": map[string]any{"page": sessionPage, "pageSize": sessionPageSize, "total": sessionTotal, "totalPages": (sessionTotal + sessionPageSize - 1) / sessionPageSize},
+		"orderPagination":   map[string]any{"page": orderPage, "pageSize": orderPageSize, "total": orderTotal, "totalPages": (orderTotal + orderPageSize - 1) / orderPageSize},
+		"ledgerPagination":  map[string]any{"page": ledgerPage, "pageSize": ledgerPageSize, "total": ledgerTotal, "totalPages": (ledgerTotal + ledgerPageSize - 1) / ledgerPageSize},
 	})
+}
+
+func backofficeDetailPagination(r *http.Request, prefix string, defaultSize int) (int, int) {
+	page, _ := strconv.Atoi(r.URL.Query().Get(prefix + "Page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get(prefix + "PageSize"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 5 || pageSize > 100 {
+		pageSize = defaultSize
+	}
+	return page, pageSize
 }
 
 func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
@@ -1636,6 +1672,174 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (a *app) handleBackofficeBootstrap(w http.ResponseWriter, r *http.Request) {
+	liveMatchCost, hasLiveMatchCost, err := a.liveMatchCost(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	liveShareCost, hasLiveShareCost, err := a.liveShareCost(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"liveMatchSessionCost": liveMatchCost,
+		"liveShareSessionCost": liveShareCost,
+		"hasLiveMatchCost":     hasLiveMatchCost,
+		"hasLiveShareCost":     hasLiveShareCost,
+		"ttsUsage":             a.tts.usageSnapshot(r.Context()),
+	})
+}
+
+func (a *app) handleBackofficeSection(w http.ResponseWriter, r *http.Request) {
+	switch strings.TrimSpace(r.URL.Query().Get("name")) {
+	case "integrations":
+		telegramSettings := a.telegramNotifySettings(r.Context())
+		if telegramSettings.WebhookSecret == "" {
+			telegramSettings.WebhookSecret = a.ensureTelegramWebhookSecret(r.Context())
+		}
+		slipSettings := a.slipOKSettings(r.Context())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"telegramBotToken":      telegramSettings.BotToken,
+			"telegramChatId":        telegramSettings.ChatID,
+			"telegramWebhookSecret": telegramSettings.WebhookSecret,
+			"telegramWebhookUrl":    telegramWebhookURL(telegramSettings),
+			"telegramNotifyEnabled": telegramSettings.enabled(),
+			"slipOKEnabled":         slipSettings.Enabled,
+			"slipOKBranchId":        slipSettings.BranchID,
+			"slipOKApiKeyMasked":    maskSecret(slipSettings.APIKey),
+			"slipOKMonthlyCap":      slipSettings.MonthlyCap,
+			"slipOKQuota":           a.fetchSlipOKQuota(r.Context(), slipSettings),
+		})
+	case "promotions":
+		packages, err := a.coinPackages(r.Context(), false)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		subscriptionPackages, err := a.subscriptionPackages(r.Context(), false)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		qrImage, _ := a.systemSetting(r.Context(), "coinPaymentQrImage")
+		promptPay := a.promptPaySettings(r.Context())
+		writeJSON(w, http.StatusOK, map[string]any{
+			"coinPackages":                  packages,
+			"subscriptionPackages":          subscriptionPackages,
+			"coinPaymentQrImage":            qrImage,
+			"promptPayId":                   promptPay.ID,
+			"promptPayType":                 promptPay.Type,
+			"promptPayReceiverName":         promptPay.ReceiverName,
+			"promptPayPayloads":             promptPayPayloadsForPackages(promptPay, packages),
+			"subscriptionPromptPayPayloads": promptPayPayloadsForSubscriptionPackages(promptPay, subscriptionPackages),
+		})
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown backoffice section"})
+	}
+}
+
+func (a *app) handleBackofficeAdmins(w http.ResponseWriter, r *http.Request) {
+	page, pageSize, offset := paginationParams(r, 20, 100)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	pattern := "%" + search + "%"
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `
+		select count(*) from admin_users u
+		where $1 = '' or u.email ilike $2 or u.name ilike $2 or cast(u.pos_admin_number as text) ilike $2
+	`, search, pattern).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	monthStart := slipOKMonthStart(time.Now())
+	rows, err := a.db.QueryContext(r.Context(), `
+		select u.id,u.email,u.name,u.pos_admin_number,u.verified_at is not null,u.coins,
+			coalesce(sc.sessions,0),to_char(u.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),
+			coalesce(d.discount_percent,0),
+			coalesce(bs.slipok_limit_enabled,false),coalesce(bs.slipok_monthly_cap,0),coalesce(su.used,0),
+			coalesce(sub.id,''),coalesce(to_char(sub.start_date,'YYYY-MM-DD'),''),coalesce(to_char(sub.end_date,'YYYY-MM-DD'),''),
+			coalesce(sub.total_sessions,0),coalesce(sub.used_sessions,0)
+		from admin_users u
+		left join (select admin_id,count(*)::int sessions from sessions group by admin_id) sc on sc.admin_id=u.id
+		left join admin_discounts d on d.admin_id=u.id
+		left join booking_settings bs on bs.admin_id=u.id
+		left join slipok_monthly_usage su on su.admin_id=u.id and su.source_system='booking' and su.month_start=$3
+		left join lateral (
+			select s.id,s.start_date,s.end_date,s.total_sessions,s.used_sessions
+			from admin_subscriptions s where s.admin_id=u.id and s.cancelled_at is null
+			order by case when current_date between s.start_date and s.end_date and s.used_sessions<s.total_sessions then 0
+			              when s.start_date>current_date then 1 else 2 end,s.start_date desc limit 1
+		) sub on true
+		where $1='' or u.email ilike $2 or u.name ilike $2 or cast(u.pos_admin_number as text) ilike $2
+		order by u.created_at desc limit $4 offset $5
+	`, search, pattern, monthStart, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	users := []map[string]any{}
+	for rows.Next() {
+		var id, email, name, createdAt, subID, subStart, subEnd string
+		var posAdminNumber int64
+		var verified, limitEnabled bool
+		var coins, sessions, discount, limit, used, subTotal, subUsed int
+		if err := rows.Scan(&id, &email, &name, &posAdminNumber, &verified, &coins, &sessions, &createdAt, &discount, &limitEnabled, &limit, &used, &subID, &subStart, &subEnd, &subTotal, &subUsed); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		var subscription any
+		if subID != "" {
+			item := adminSubscription{ID: subID, StartDate: subStart, EndDate: subEnd, TotalSessions: subTotal, UsedSessions: subUsed, Remaining: max(0, subTotal-subUsed)}
+			item.Status = subscriptionStatus(item, todayBangkok())
+			subscription = item
+		}
+		remaining := any(nil)
+		if limitEnabled {
+			remaining = max(0, limit-used)
+		}
+		users = append(users, map[string]any{
+			"id": id, "email": email, "name": name, "posAdminNumber": posAdminNumber, "verified": verified,
+			"coins": coins, "sessions": sessions, "createdAt": createdAt, "discountPercent": discount, "subscription": subscription,
+			"slipOKUsage": map[string]any{"month": monthStart.Format("2006-01"), "used": used, "limitEnabled": limitEnabled, "limit": limit, "remaining": remaining},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": users, "pagination": paginationPayload(page, pageSize, total)})
+}
+
+func (a *app) handleBackofficeAdminOptions(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 || limit > 50 {
+		limit = 20
+	}
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	rows, err := a.db.QueryContext(r.Context(), `
+		select id,email,name from admin_users
+		where $1='' or email ilike $2 or name ilike $2 or cast(pos_admin_number as text) ilike $2
+		order by created_at desc limit $3
+	`, search, "%"+search+"%", limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	items := []map[string]string{}
+	for rows.Next() {
+		var id, email, name string
+		if err := rows.Scan(&id, &email, &name); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		items = append(items, map[string]string{"id": id, "email": email, "name": name})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, actor string) {
 	var body struct {
 		LiveMatchSessionCost *int `json:"liveMatchSessionCost"`
@@ -1676,7 +1880,7 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	a.handleBackofficeSummary(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "liveMatchSessionCost": *body.LiveMatchSessionCost, "liveShareSessionCost": *body.LiveShareSessionCost})
 }
 
 func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, actor string) {
@@ -1839,7 +2043,7 @@ func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	a.handleBackofficeSummary(w, r)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (a *app) handleBackofficeSlipOKQuota(w http.ResponseWriter, r *http.Request) {
@@ -1944,7 +2148,7 @@ func (a *app) handleBackofficeCoinAdjust(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	a.handleBackofficeSummary(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "adminId": body.AdminID, "balance": next})
 }
 
 func (a *app) handleBackofficeCoinOrderReview(w http.ResponseWriter, r *http.Request, status string, actor string) {
@@ -1973,7 +2177,7 @@ func (a *app) handleBackofficeCoinOrderReview(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	a.handleBackofficeSummary(w, r)
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (a *app) reviewCoinOrder(ctx context.Context, orderID, status, actorType, actorID, note string) error {
@@ -2074,7 +2278,27 @@ func (a *app) adminByEmail(ctx context.Context, email string) (adminUser, string
 }
 
 func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSessionItem, error) {
+	items, _, err := a.adminSessionsQuery(ctx, adminID, 0, 0)
+	return items, err
+}
+
+func (a *app) adminSessionsPage(ctx context.Context, adminID string, page, pageSize int) ([]adminSessionItem, int, error) {
+	var total int
+	if err := a.db.QueryRowContext(ctx, `select count(*) from sessions where admin_id = $1`, adminID).Scan(&total); err != nil {
+		return []adminSessionItem{}, 0, err
+	}
+	items, _, err := a.adminSessionsQuery(ctx, adminID, pageSize, (page-1)*pageSize)
+	return items, total, err
+}
+
+func (a *app) adminSessionsQuery(ctx context.Context, adminID string, limit, offset int) ([]adminSessionItem, int, error) {
 	items := []adminSessionItem{}
+	paginationSQL := ""
+	args := []any{adminID}
+	if limit > 0 {
+		paginationSQL = "limit $2 offset $3"
+		args = append(args, limit, offset)
+	}
 	rows, err := a.db.QueryContext(ctx, `
 		select s.id, coalesce(s.name, s.id), coalesce(s.session_type, 'liveMatch'),
 			(select count(*) from players p where p.session_id = s.id and p.active) as players,
@@ -2115,16 +2339,16 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 		left join session_billing sb on sb.session_id = s.id
 		where s.admin_id = $1
 		order by s.updated_at desc
-	`, adminID)
+		`+paginationSQL, args...)
 	if err != nil {
-		return items, err
+		return items, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item adminSessionItem
 		var subscriptionID string
 		if err := rows.Scan(&item.ID, &item.Name, &item.Type, &item.Players, &item.PaidPlayers, &item.UnpaidPlayers, &item.Matches, &item.QueueMatches, &item.LiveMatches, &item.HistoryMatches, &item.Shuttles, &item.Revenue, &item.UpdatedAt, &item.Deletable, &item.BillingMethod, &item.ChargedCoin, &subscriptionID, &item.RefundAvailable); err != nil {
-			return items, err
+			return items, 0, err
 		}
 		if !item.Deletable {
 			item.DeleteBlocked = "Session เริ่มใช้งานแล้ว ไม่สามารถลบได้"
@@ -2137,7 +2361,7 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return items, err
+		return items, 0, err
 	}
 	rows.Close()
 	for index := range items {
@@ -2145,7 +2369,7 @@ func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSession
 			items[index].Revenue = revenue
 		}
 	}
-	return items, nil
+	return items, len(items), nil
 }
 
 func (a *app) coinLedger(ctx context.Context, adminID string, limit int) ([]coinLedgerItem, error) {
@@ -2544,13 +2768,14 @@ func (a *app) authenticateBackofficeSession(r *http.Request) (string, bool) {
 	return username, err == nil
 }
 
-func (a *app) issueBackofficeSession(w http.ResponseWriter, r *http.Request, username string) {
+func (a *app) issueBackofficeSession(w http.ResponseWriter, r *http.Request, username string) error {
 	token := randHex(24)
 	if err := insertAuthSession(r.Context(), a.db, backofficeSessionKind, username, token); err != nil {
-		return
+		return err
 	}
 	_, _ = a.db.ExecContext(r.Context(), `delete from backoffice_sessions where absolute_expires_at<=now()-interval '1 day' or revoked_at<=now()-interval '1 day'`)
 	setSessionCookie(w, r, backofficeSessionKind, token)
+	return nil
 }
 
 func (a *app) clearBackofficeSession(w http.ResponseWriter, r *http.Request) {

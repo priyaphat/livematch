@@ -201,7 +201,7 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 
 	// Inventory and summary endpoints must report the same committed balances.
 	inventoryRecorder := httptest.NewRecorder()
-	a.writePOSInventoryReport(inventoryRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/pos/reports/inventory?stockLocation=primary&page=1&pageSize=25", nil), adminID)
+	a.writePOSInventoryReport(inventoryRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/pos/reports/inventory?stockLocation=primary&page=1&pageSize=25", nil), adminID, true)
 	if inventoryRecorder.Code != http.StatusOK {
 		t.Fatalf("inventory report status=%d body=%s", inventoryRecorder.Code, inventoryRecorder.Body.String())
 	}
@@ -220,6 +220,14 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	}
 	if reported[productA] != 1 || reported[productB] != 5 || reported[productEmpty] != 0 {
 		t.Fatalf("inventory report balances = A:%d B:%d empty:%d, want 1,5,0", reported[productA], reported[productB], reported[productEmpty])
+	}
+	hiddenInventoryRecorder := httptest.NewRecorder()
+	a.writePOSInventoryReport(hiddenInventoryRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/pos/reports/inventory?stockLocation=primary&page=1&pageSize=25", nil), adminID, false)
+	hiddenBody := hiddenInventoryRecorder.Body.String()
+	for _, privateField := range []string{"costSatang", "costValueSatang", "priceSatang", "retailValueSatang"} {
+		if strings.Contains(hiddenBody, `"`+privateField+`"`) {
+			t.Fatalf("inventory response exposed hidden field %s: %s", privateField, hiddenBody)
+		}
 	}
 	summaryRecorder := httptest.NewRecorder()
 	a.writePOSStockSummary(summaryRecorder, httptest.NewRequest(http.MethodGet, "/api/admin/pos/stock/summary?stockLocation=primary", nil), adminID)
@@ -240,10 +248,14 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	// A zero POS price is authoritative and must not fall back to the Match price.
 	state.Settings.ShuttleBrands[0].POSProductID = productZero
 	state.Live[0] = matchWithShuttles(3)
-	if err = a.saveStateResolved(t.Context(), &state); err != nil {
+	if err = a.saveState(t.Context(), state); err != nil {
 		t.Fatalf("deduct zero-price shuttle: %v", err)
 	}
-	if item := state.Live[0].ShuttleSeqItems[2]; item.PriceSource != "pos" || item.UnitPriceSatang != 0 || stock(productZero, "primary") != 1 {
+	zeroPriceState, loadErr := a.loadState(t.Context(), state.Session.ID)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if item := zeroPriceState.Live[0].ShuttleSeqItems[2]; item.PriceSource != "pos" || item.UnitPriceSatang != 0 || stock(productZero, "primary") != 1 {
 		t.Fatalf("zero-price POS snapshot=%#v stock=%d", item, stock(productZero, "primary"))
 	}
 	state.Live[0] = matchWithShuttles(2)

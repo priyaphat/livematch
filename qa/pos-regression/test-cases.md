@@ -4,6 +4,11 @@
 
 | Case ID | P | Preconditions | Steps | Expected Result | Automation | Browser |
 |---|---:|---|---|---|---|---|
+| POS-QC-001 | P0 | QA Backoffice credentials | ตรวจ bootstrap/summary แล้ว Login ผ่าน UI | API ใหม่และ legacy ใช้ได้พร้อมกันและ Login สำเร็จโดยไม่มี 404/5xx | Playwright | Chromium/WebKit |
+| POS-QC-002 | P0 | Session มีประวัติ 125 เกม | เปิดหน้า 1 ไปหน้า 7 และค้นหาเกมเก่าสุด | SQL pagination เข้าถึงเกมเกิน 100 และค้นหาจาก server ได้ | Playwright | Chromium/WebKit |
+| POS-QC-003 | P1 | Admin มี Match Session | เปิดทุกเมนู Match แบบ read-only | ทุกเมนูโหลดได้และไม่มี unexpected 404/5xx | Playwright | Chromium |
+| POS-QC-004 | P0 | QA Backoffice credentials | Login แล้วเปิดทุกแท็บ Backoffice ตามลำดับ | ไม่โหลดข้อมูลแท็บก่อนคลิก และทุกแท็บเปิดโดยไม่มี 404/5xx | Playwright | Chromium |
+| POS-QC-005 | P0 | QA owner เปิด Booking/Member | เปิดทุกแท็บ Booking และหน้าสมาชิก | History/Blacklist โหลดเมื่อเปิดแท็บ และทุกหน้าเปิดโดยไม่มี 404/5xx | Playwright | Chromium |
 | POS-AUTH-001 | P1 | Owner A, POS enabled | Login ด้วยอีเมลและรหัสผ่าน | เข้า POS ได้และ session เป็น Owner A | Playwright | Chromium/WebKit |
 | POS-AUTH-002 | P1 | Staff active | Login ด้วย Staff email/number + PIN | ทั้งสอง identifier เข้าได้ด้วย actor เดิม | Go | API |
 | POS-AUTH-003 | P1 | Owner A | Login ด้วยอีเมลตัวพิมพ์ต่างกัน | Login สำเร็จ | Go | API |

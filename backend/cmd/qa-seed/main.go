@@ -111,13 +111,15 @@ func main() {
 		insert into sessions(id,name,session_type,admin_passcode,state,admin_id,usage_started_at)
 		values
 		('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '9 hour') at time zone 'Asia/Bangkok'),
-		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '10 hour') at time zone 'Asia/Bangkok')
+		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '10 hour') at time zone 'Asia/Bangkok'),
+		('qa-session-history','QA History 125 Games','liveMatch','qa-history','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')-interval '30 day'+interval '11 hour') at time zone 'Asia/Bangkok')
 	`)
 	mustExec(ctx, tx, `
 		insert into session_settings(session_id,entry_fee,club_entry_fee,member_entry_fees,shuttle_fee,shuttle_brands,court_count,court_names)
 		values
 		('qa-session-a',120,100,'{"qa-member-type-a-general":120,"qa-member-type-a-club":100}'::jsonb,50,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,2,'["สนาม 1","สนาม 2"]'::jsonb),
-		('qa-session-a-2',80,70,'{"qa-member-type-a-general":80,"qa-member-type-a-club":70}'::jsonb,55,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,1,'["สนาม 1"]'::jsonb)
+		('qa-session-a-2',80,70,'{"qa-member-type-a-general":80,"qa-member-type-a-club":70}'::jsonb,55,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,1,'["สนาม 1"]'::jsonb),
+		('qa-session-history',120,100,'{}'::jsonb,85,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":85,"active":true}]'::jsonb,2,'["สนาม 1","สนาม 2"]'::jsonb)
 	`)
 	mustExec(ctx, tx, `
 		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon,member_id,member_type_id,billing_account_id) values
@@ -129,6 +131,13 @@ func main() {
 	mustExec(ctx, tx, `
 		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon,member_id,member_type_id,billing_account_id) values
 		('qa-session-a-2',1,'สมาชิก QA คนที่สาม',1,1,false,false,'middle',true,'qa-member-a-3','qa-member-type-a-general','qa-billing-a-3')
+	`)
+	mustExec(ctx, tx, `
+		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon) values
+		('qa-session-history',1,'Alice History',125,125,false,true,'middle',true),
+		('qa-session-history',2,'History Partner',125,125,false,true,'middle',true),
+		('qa-session-history',3,'History Opponent A',125,125,false,true,'middle',true),
+		('qa-session-history',4,'History Opponent B',125,125,false,true,'middle',true)
 	`)
 	mustExec(ctx, tx, `
 		insert into booking_settings(admin_id,public_token_hash,public_token,open_time,close_time,interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name)
@@ -157,6 +166,14 @@ func main() {
 		insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,shuttle_pricing_mode,shuttle_price_snapshot,legacy_shuttle_fee) values
 		('qa-session-a',1,'history','สนาม 1','middle',1,2,3,4,2,'[{"brandId":"qa-shuttle","number":1},{"brandId":"qa-shuttle","number":2}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,50),
 		('qa-session-a-2',1,'history','สนาม 1','middle',1,1,1,1,1,'[{"brandId":"qa-shuttle","number":1}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,55)
+	`)
+	mustExec(ctx, tx, `
+		insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,note,shuttle_pricing_mode,shuttle_price_snapshot,legacy_shuttle_fee)
+		select 'qa-session-history',n,'history',case when n%2=0 then 'สนาม 2' else 'สนาม 1' end,'middle',1,2,3,4,1,
+		       jsonb_build_array(jsonb_build_object('brandId','qa-shuttle','number',n)),'finished',
+		       case when n=1 then 'oldest-history-marker' else '' end,'legacy_per_player',
+		       '[{"id":"qa-shuttle","name":"ลูกแบด QA","price":85,"active":true}]'::jsonb,85
+		from generate_series(1,125) n
 	`)
 
 	mustExec(ctx, tx, `
@@ -195,7 +212,7 @@ func main() {
 	if err = tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=2")
+	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=3 history=127")
 }
 
 func mustHash(value string) string {

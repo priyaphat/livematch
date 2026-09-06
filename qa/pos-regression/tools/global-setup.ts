@@ -18,11 +18,24 @@ async function saveLogin(baseURL: string, email: string, password: string, targe
   await api.dispose();
 }
 
+async function saveAdminLogin(baseURL: string, email: string, password: string, target: string) {
+  const api = await request.newContext({ baseURL });
+  const response = await api.post('/api/auth/login', {
+    data: { email, password, remember: true },
+  });
+  if (!response.ok()) {
+    throw new Error(`QA admin login failed for ${email}: ${response.status()} ${await response.text()}`);
+  }
+  await api.storageState({ path: target });
+  await api.dispose();
+}
+
 export default async function globalSetup(config: FullConfig) {
   const baseURL = String(config.projects[0]?.use?.baseURL || 'http://localhost:5275');
   const authDir = path.join(root, '.auth');
   await fs.mkdir(authDir, { recursive: true });
   await saveLogin(baseURL, 'qa.owner.a@example.invalid', 'QaPass123!', path.join(authDir, 'owner-a.json'));
   await saveLogin(baseURL, 'qa.owner.b@example.invalid', 'QaPass123!', path.join(authDir, 'owner-b.json'));
+  const frontendBaseURL = process.env.MATCH_QA_BASE_URL || 'http://localhost:5273';
+  await saveAdminLogin(frontendBaseURL, 'qa.owner.a@example.invalid', 'QaPass123!', path.join(authDir, 'match-owner-a.json'));
 }
-

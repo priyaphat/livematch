@@ -1,0 +1,99 @@
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  pos:
+    build:
+      context: ./pos
+      dockerfile: Dockerfile.prod
+    ports:
+      - "5175:80"
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8082:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health | grep -q '\"contractVersion\":\"2026-09-05\"'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    environment:
+      - APP_ENV=production
+      - PORT=8080
+      - DATABASE_URL=postgres://livematch:${POSTGRES_PASSWORD:-livematch}@postgres:5432/livematch?sslmode=disable
+      - APP_BASE_URL=${APP_BASE_URL:-https://badmintonphrae.club}
+      - POS_BASE_URL=${POS_BASE_URL:-https://pos.badmintonphrae.club}
+      - APP_ALLOWED_ORIGINS=${APP_ALLOWED_ORIGINS:-https://badmintonphrae.club,https://pos.badmintonphrae.club}
+      - APP_TRUSTED_PROXY_CIDRS=${APP_TRUSTED_PROXY_CIDRS:-}
+      - COOKIE_SECURE=true
+      - SMTP_HOST=${SMTP_HOST:-}
+      - SMTP_PORT=${SMTP_PORT:-}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM=${SMTP_FROM:-}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-LiveMatch}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET:-}
+      - SLIPOK_BRANCH_ID=${SLIPOK_BRANCH_ID:-}
+      - SLIPOK_API_KEY=${SLIPOK_API_KEY:-}
+      - SLIPOK_MONTHLY_CAP=${SLIPOK_MONTHLY_CAP:-0}
+      - BOOKING_SLIP_STORAGE_DIR=/var/lib/livematch/booking-slips
+      - ANNOUNCEMENT_BELL_STORAGE_DIR=/var/lib/livematch/announcement-bells
+      - GOOGLE_TTS_ENABLED=${GOOGLE_TTS_ENABLED:-false}
+      - GOOGLE_TTS_VOICE=${GOOGLE_TTS_VOICE:-th-TH-Standard-A}
+      - GOOGLE_TTS_SPEAKING_RATE=${GOOGLE_TTS_SPEAKING_RATE:-0.82}
+      - GOOGLE_TTS_CACHE_DIR=/var/cache/livematch-tts
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/google-tts.json
+      - APP_ENCRYPTION_KEY=${APP_ENCRYPTION_KEY:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL:-https://badmintonphrae.club/api/public-auth/google/callback}
+      - GOOGLE_REDIRECT_URLS=${GOOGLE_REDIRECT_URLS:-}
+      - SUPERADMIN_USERNAME=${SUPERADMIN_USERNAME:-superadmin}
+      - SUPERADMIN_PASSWORD=${SUPERADMIN_PASSWORD:?set SUPERADMIN_PASSWORD in .env}
+    volumes:
+      - ./secrets:/run/secrets:ro
+      - tts_cache:/var/cache/livematch-tts
+      - booking_slips:/var/lib/livematch/booking-slips
+      - announcement_bells:/var/lib/livematch/announcement-bells
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=livematch
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-livematch}
+      - POSTGRES_DB=livematch
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U livematch -d livematch"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  tts_cache:
+  booking_slips:
+  announcement_bells:

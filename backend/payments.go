@@ -51,10 +51,11 @@ type slipVerification struct {
 }
 
 type slipOKSettings struct {
-	Enabled    bool   `json:"enabled"`
-	BranchID   string `json:"branchId"`
-	APIKey     string `json:"-"`
-	MonthlyCap int    `json:"monthlyCap"`
+	Enabled      bool   `json:"enabled"`
+	BranchID     string `json:"branchId"`
+	APIKey       string `json:"-"`
+	MonthlyCap   int    `json:"monthlyCap"`
+	LimitEnabled bool   `json:"limitEnabled"`
 }
 
 type slipOKQuota struct {
@@ -68,6 +69,7 @@ type slipOKQuota struct {
 }
 
 type slipOKResult struct {
+	Sent       bool
 	Passed     bool
 	Definitive bool
 	Status     string
@@ -127,7 +129,76 @@ func normalizeSlipOKBranchID(value string) string {
 }
 
 func (settings slipOKSettings) ready() bool {
-	return settings.Enabled && settings.BranchID != "" && settings.APIKey != "" && settings.MonthlyCap > 0
+	return settings.Enabled && settings.BranchID != "" && settings.APIKey != ""
+}
+
+type slipOKMonthlyUsage struct {
+	Month        string      `json:"month"`
+	Used         int         `json:"used"`
+	Limit        int         `json:"limit"`
+	Remaining    *int        `json:"remaining"`
+	LimitEnabled bool        `json:"limitEnabled"`
+	CapReached   bool        `json:"capReached"`
+	Provider     slipOKQuota `json:"provider"`
+}
+
+func slipOKMonthStart(now time.Time) time.Time {
+	local := now.In(bangkokLocation)
+	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, bangkokLocation)
+}
+
+func (a *app) slipOKUsage(ctx context.Context, adminID, source string, settings slipOKSettings, includeProvider bool) slipOKMonthlyUsage {
+	month := slipOKMonthStart(time.Now())
+	result := slipOKMonthlyUsage{Month: month.Format("2006-01"), Limit: max(0, settings.MonthlyCap), LimitEnabled: settings.LimitEnabled}
+	_ = a.db.QueryRowContext(ctx, `select coalesce((select used from slipok_monthly_usage where admin_id=$1 and source_system=$2 and month_start=$3),0)`, adminID, source, month.Format("2006-01-02")).Scan(&result.Used)
+	if result.LimitEnabled {
+		remaining := max(0, result.Limit-result.Used)
+		result.Remaining = &remaining
+		result.CapReached = result.Used >= result.Limit
+	}
+	if includeProvider {
+		result.Provider = a.fetchSlipOKQuota(ctx, settings)
+	}
+	return result
+}
+
+func (a *app) reserveSlipOKUsage(ctx context.Context, adminID, source string, settings slipOKSettings) (bool, slipOKMonthlyUsage, error) {
+	month := slipOKMonthStart(time.Now())
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, slipOKMonthlyUsage{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `insert into slipok_monthly_usage(admin_id,source_system,month_start,used) values($1,$2,$3,0) on conflict do nothing`, adminID, source, month.Format("2006-01-02")); err != nil {
+		return false, slipOKMonthlyUsage{}, err
+	}
+	var used int
+	if err = tx.QueryRowContext(ctx, `select used from slipok_monthly_usage where admin_id=$1 and source_system=$2 and month_start=$3 for update`, adminID, source, month.Format("2006-01-02")).Scan(&used); err != nil {
+		return false, slipOKMonthlyUsage{}, err
+	}
+	usage := slipOKMonthlyUsage{Month: month.Format("2006-01"), Used: used, Limit: max(0, settings.MonthlyCap), LimitEnabled: settings.LimitEnabled}
+	if settings.LimitEnabled && (settings.MonthlyCap <= 0 || used >= settings.MonthlyCap) {
+		remaining := 0
+		usage.Remaining, usage.CapReached = &remaining, true
+		return false, usage, nil
+	}
+	if _, err = tx.ExecContext(ctx, `update slipok_monthly_usage set used=used+1,updated_at=now() where admin_id=$1 and source_system=$2 and month_start=$3`, adminID, source, month.Format("2006-01-02")); err != nil {
+		return false, usage, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, usage, err
+	}
+	usage.Used++
+	if settings.LimitEnabled {
+		remaining := max(0, settings.MonthlyCap-usage.Used)
+		usage.Remaining, usage.CapReached = &remaining, usage.Used >= settings.MonthlyCap
+	}
+	return true, usage, nil
+}
+
+func (a *app) releaseSlipOKUsage(ctx context.Context, adminID, source string) {
+	month := slipOKMonthStart(time.Now()).Format("2006-01-02")
+	_, _ = a.db.ExecContext(ctx, `update slipok_monthly_usage set used=greatest(0,used-1),updated_at=now() where admin_id=$1 and source_system=$2 and month_start=$3`, adminID, source, month)
 }
 
 func maskSecret(value string) string {
@@ -284,6 +355,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("x-authorization", settings.APIKey)
+	result.Sent = true
 	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if err != nil {
 		result.Note = "เรียก Auto Slip ไม่สำเร็จ: " + err.Error()

@@ -152,6 +152,7 @@ const mobileTabs = computed(() => adminTabs.value)
 const currentTab = computed(() => tabs.value.find((tab) => tab.id === state.tab) || tabs.value[0])
 
 const state = reactive({
+  version: 0,
   tab: 'home',
   theme: isPublicBookingSurface ? readStoredPublicTheme() : readStoredTheme(),
   session: {
@@ -221,6 +222,9 @@ const state = reactive({
   history: [
     { id: 49, court: '2', level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 2, winner: 'A', shuttleSequence: '1-2', startedAt: '18:50', endedAt: '19:08', note: 'เกมแรก' }
   ],
+  historyView: {
+    items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: ''
+  },
   liveShare: {
     courtHours: {},
     playerHours: {},
@@ -274,6 +278,13 @@ const forms = reactive({
   backofficeTab: 'overview',
   backofficeOverviewTab: 'system',
   backofficeSummary: null,
+  backofficeAdminsSearch: '',
+  backofficeAdminsPage: 1,
+  backofficeAdminsPageSize: 20,
+  backofficeAdminsPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+  backofficeAdminOptions: [],
+  backofficeSlipOKLogsUserSearch: '',
+  backofficeActivityUserSearch: '',
   backofficeAdminDetail: null,
   backofficeDiscountPercent: 0,
   backofficeSubscriptionId: '',
@@ -452,7 +463,8 @@ watch(
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
   unlocked: false,
-  loading: false
+  loading: false,
+  loaded: {}
 })
 const verifyEmail = reactive({
   isPage: window.location.pathname === '/verify-email',
@@ -526,6 +538,8 @@ function closeToast() {
 async function api(path, options = {}) {
   const isFormData = options.body instanceof FormData
   const csrfToken = document.cookie.split('; ').find((item) => item.startsWith('livematch_csrf='))?.split('=').slice(1).join('=') || ''
+  const method = String(options.method || 'GET').toUpperCase()
+  const isSessionMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && path.startsWith('/api/sessions/')
   const response = await fetch(`${apiUrl}${path}`, {
     ...options,
     credentials: 'include',
@@ -533,6 +547,7 @@ async function api(path, options = {}) {
       ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       'Accept': 'application/json',
       ...(csrfToken ? { 'X-CSRF-Token': decodeURIComponent(csrfToken) } : {}),
+      ...(isSessionMutation && Number.isFinite(Number(state.version)) ? { 'X-Session-Version': String(Number(state.version)) } : {}),
       ...(options.headers || {})
     }
   })
@@ -548,6 +563,10 @@ async function api(path, options = {}) {
     }
     if (terminalSessionCodes.has(requestError.code)) {
       window.dispatchEvent(new CustomEvent('livematch:session-ended', { detail: { code: requestError.code } }))
+    }
+    if (requestError.code === 'SESSION_VERSION_CONFLICT') {
+      showToast('ข้อมูล Session ถูกแก้ไขจากแท็บอื่น ระบบกำลังโหลดข้อมูลล่าสุด')
+      Promise.resolve().then(() => reloadAdminTab(state.tab)).catch(() => {})
     }
     throw requestError
   }
@@ -574,6 +593,7 @@ function applyServerState(nextState) {
 }
 
 function mergeSessionPatch(patch = {}) {
+  if (patch.version !== undefined) state.version = Number(patch.version || 0)
   if (Array.isArray(patch.players)) state.players = patch.players
   if (Array.isArray(patch.couples)) state.couples = patch.couples
   if (Array.isArray(patch.returnedShuttles)) state.returnedShuttles = patch.returnedShuttles
@@ -656,23 +676,33 @@ function normalizeClientSettings() {
   }
 }
 
+let operationalContextSessionId = ''
+async function ensureOperationalContext() {
+  if (operationalContextSessionId === state.session.id) return
+  mergeSessionPatch(await api(`/api/sessions/${state.session.id}/dashboard`))
+  operationalContextSessionId = state.session.id
+}
+
 async function reloadAdminTab(tabId) {
   if (!state.session.id || !state.session.unlocked) return
   switch (tabId) {
   case 'dashboard': {
     const payload = await api(`/api/sessions/${state.session.id}/dashboard`)
     mergeSessionPatch(payload)
+    operationalContextSessionId = state.session.id
     break
   }
   case 'players': {
-    const payload = await api(`/api/sessions/${state.session.id}/players?all=1`)
+    await ensureOperationalContext()
+    const payload = await api(`/api/sessions/${state.session.id}/players?page=1&pageSize=100`)
     mergeSessionPatch({ players: payload.items || [] })
     break
   }
   case 'livematch': {
+    await ensureOperationalContext()
     const [couponsPayload, couplesPayload, queuePayload] = await Promise.all([
-      api(`/api/sessions/${state.session.id}/coupons?all=1`),
-      api(`/api/sessions/${state.session.id}/couples?all=1`),
+      api(`/api/sessions/${state.session.id}/coupons?page=1&pageSize=100`),
+      api(`/api/sessions/${state.session.id}/couples?page=1&pageSize=100`),
       api(`/api/sessions/${state.session.id}/queue`)
     ])
     void couponsPayload
@@ -680,18 +710,22 @@ async function reloadAdminTab(tabId) {
     break
   }
   case 'queue':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/queue`))
     break
   case 'liveboard':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/live`))
     break
   case 'history':
-    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/history`))
+    await loadMatchHistory(state.historyView.page || 1, state.historyView.search || '')
     break
   case 'settings':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/settings`))
     break
   case 'liveShareHours':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/live-share-hours`))
     break
   default:
@@ -715,6 +749,43 @@ async function selectAdminTab(tabId) {
     showToast(error.message || 'โหลดข้อมูลล่าสุดไม่สำเร็จ')
   } finally {
     ui.loadingTab = ''
+  }
+}
+
+let matchHistoryRequest = 0
+async function loadMatchHistory(page = 1, search = state.historyView.search || '') {
+  if (!state.session.id || !state.session.unlocked) return
+  const request = ++matchHistoryRequest
+  const normalizedSearch = String(search || '').trim()
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(Math.max(1, Math.min(100, Number(state.historyView.pageSize || 20))))
+  })
+  if (normalizedSearch) params.set('search', normalizedSearch)
+  const payload = await api(`/api/sessions/${state.session.id}/history?${params}`)
+  if (request !== matchHistoryRequest) return
+  if (Array.isArray(payload.players)) mergeSessionPatch({ players: payload.players })
+  const pagination = payload.pagination || {}
+  state.historyView = {
+    items: payload.history || [],
+    page: Number(pagination.page || payload.page || 1),
+    pageSize: Number(pagination.pageSize || payload.pageSize || state.historyView.pageSize || 20),
+    total: Number(pagination.total ?? payload.total ?? 0),
+    totalPages: Number(pagination.totalPages || 0),
+    search: normalizedSearch
+  }
+  for (const match of state.historyView.items) normalizeMatchShuttleItems(match)
+}
+
+async function loadBackofficeBootstrap(options = {}) {
+  try {
+    return await api('/api/backoffice/bootstrap', options)
+  } catch (error) {
+    // A cached/new frontend can briefly run against the previous backend during
+    // a rolling deployment. Only a missing endpoint is safe to fall back from;
+    // authentication and server errors must remain visible to the operator.
+    if (error?.status !== 404) throw error
+    return api('/api/backoffice/summary', options)
   }
 }
 
@@ -957,12 +1028,21 @@ async function resetPassword() {
 
 async function openOwnedSession(sessionId, requestedTab = 'dashboard') {
   try {
-    const nextState = await api(`/api/sessions/${sessionId}/dashboard?open=1`)
-    mergeSessionPatch(nextState)
-    const fullState = await api(`/api/sessions/${sessionId}/state`)
-    applyServerState(fullState)
+    operationalContextSessionId = ''
+    const bootstrap = await api(`/api/sessions/${sessionId}/bootstrap?open=1`)
+    state.players = []
+    state.couples = []
+    state.returnedShuttles = []
+    state.pending = []
+    state.queue = []
+    state.live = []
+    state.history = []
+    state.historyView = { items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: '' }
+    if (bootstrap.session) state.session = bootstrap.session
+    mergeSessionPatch(bootstrap)
     state.session.unlocked = true
     state.tab = restorableAdminTabs.has(requestedTab) ? requestedTab : 'dashboard'
+    await reloadAdminTab(state.tab)
     persistAdminNavigation(sessionId, state.tab)
     if (state.session.readOnly || state.session.expired) {
       showToast(sessionReadOnlyMessage.value, 'info')
@@ -991,11 +1071,10 @@ async function restoreBackoffice() {
   forms.backofficeError = ''
   backoffice.loading = true
   try {
-    forms.backofficeSummary = await api('/api/backoffice/summary')
+    forms.backofficeSummary = await loadBackofficeBootstrap()
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
-    syncBackofficeCoinShopForms()
-    await Promise.all([loadBackofficeCoinOrders(), loadBackofficeCoinLedger(), loadBackofficeActivityLogs(), loadBackofficeSlipOKLogs(), loadBackofficeSupportIssues()])
+    backoffice.loaded = { system: true }
     backoffice.unlocked = true
   } catch (error) {
     backoffice.unlocked = false
@@ -1009,19 +1088,12 @@ async function loadBackoffice() {
   forms.backofficeError = ''
   backoffice.loading = true
   try {
-  forms.backofficeSummary = await api('/api/backoffice/summary', {
+    forms.backofficeSummary = await loadBackofficeBootstrap({
       headers: backofficeAuthHeaders()
     })
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
-    syncBackofficeCoinShopForms()
-    await Promise.all([
-      loadBackofficeCoinOrders(),
-      loadBackofficeCoinLedger(),
-      loadBackofficeActivityLogs(),
-      loadBackofficeSlipOKLogs(),
-      loadBackofficeSupportIssues()
-    ])
+    backoffice.loaded = { system: true }
     backoffice.unlocked = true
     forms.backofficePassword = ''
   } catch (error) {
@@ -1198,7 +1270,7 @@ function applyBackofficeAdminDetail(payload) {
   const summaryUser = forms.backofficeSummary?.users?.find((item) => item.id === userId)
   if (summaryUser) {
     summaryUser.coins = Number(payload?.user?.coins || 0)
-    summaryUser.sessions = Array.isArray(payload?.sessions) ? payload.sessions.length : summaryUser.sessions
+    summaryUser.sessions = Number(payload?.sessionPagination?.total ?? (Array.isArray(payload?.sessions) ? payload.sessions.length : summaryUser.sessions))
     summaryUser.discountPercent = Number(payload?.benefits?.discountPercent || 0)
     summaryUser.subscription = payload?.benefits?.subscription || null
   }
@@ -1289,7 +1361,7 @@ async function saveBackofficeSettings() {
 	forms.backofficeError = ''
 	forms.backofficeSettingsSaving = true
 	try {
-    forms.backofficeSummary = await api('/api/backoffice/settings', {
+    const payload = await api('/api/backoffice/settings', {
       method: 'PUT',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
@@ -1297,6 +1369,7 @@ async function saveBackofficeSettings() {
         liveShareSessionCost: Number(forms.backofficeLiveShareCost)
       })
 		})
+    mergeBackofficeSummary(payload)
 		showToast('บันทึกราคา Session แล้ว', 'success')
 	} catch (error) {
 		forms.backofficeError = error.message || 'บันทึกราคา coin ไม่สำเร็จ'
@@ -1304,6 +1377,90 @@ async function saveBackofficeSettings() {
 	} finally {
 		forms.backofficeSettingsSaving = false
 	}
+}
+
+function mergeBackofficeSummary(payload) {
+  forms.backofficeSummary = { ...(forms.backofficeSummary || {}), ...(payload || {}) }
+}
+
+async function loadBackofficeSection(name, force = false) {
+  if (!force && backoffice.loaded[name]) return
+  if (name === 'integrations' || name === 'promotions') {
+    mergeBackofficeSummary(await api(`/api/backoffice/section?name=${name}`, { headers: backofficeAuthHeaders() }))
+    syncBackofficeCoinShopForms()
+  } else if (name === 'orders') {
+    await Promise.all([loadBackofficeCoinOrders(1), loadBackofficeCoinLedger(1)])
+  } else if (name === 'members') {
+    await loadBackofficeAdmins(1)
+  } else if (name === 'support') {
+    await loadBackofficeSupportIssues(1)
+  } else if (name === 'slipok_logs') {
+    await Promise.all([loadBackofficeSlipOKLogs(1), loadBackofficeAdminOptions()])
+  } else if (name === 'activity') {
+    await Promise.all([loadBackofficeActivityLogs(1), loadBackofficeAdminOptions()])
+  }
+  backoffice.loaded[name] = true
+}
+
+async function selectBackofficeTab(tabId) {
+  forms.backofficeTab = tabId
+  try {
+    await loadBackofficeSection(tabId)
+  } catch (error) {
+    showToast(error.message || 'โหลดข้อมูลแท็บไม่สำเร็จ')
+  }
+}
+
+async function loadBackofficeAdminDetailPage(section, page = 1) {
+  const detail = forms.backofficeAdminDetail
+  const adminId = detail?.user?.id
+  const sections = ['session', 'order', 'ledger']
+  if (!adminId || !sections.includes(section)) return
+  const params = new URLSearchParams()
+  for (const key of sections) {
+    const pagination = detail?.[`${key}Pagination`] || {}
+    params.set(`${key}Page`, String(key === section ? Math.max(1, Number(page || 1)) : Math.max(1, Number(pagination.page || 1))))
+    params.set(`${key}PageSize`, String(Math.max(5, Number(pagination.pageSize || 10))))
+  }
+  try {
+    applyBackofficeAdminDetail(await api(`/api/backoffice/admins/${adminId}?${params}`, {
+      headers: backofficeAuthHeaders()
+    }))
+  } catch (error) {
+    showToast(error.message || 'โหลดหน้ารายละเอียด admin ไม่สำเร็จ')
+  }
+}
+
+async function selectBackofficeOverviewTab(tabId) {
+  forms.backofficeOverviewTab = tabId
+  if (tabId === 'system' || tabId === 'coins') return
+  try {
+    await loadBackofficeSection(tabId)
+  } catch (error) {
+    showToast(error.message || 'โหลดข้อมูลการเชื่อมต่อไม่สำเร็จ')
+  }
+}
+
+async function loadBackofficeAdmins(page = forms.backofficeAdminsPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeAdminsPageSize)
+  })
+  if (forms.backofficeAdminsSearch.trim()) params.set('search', forms.backofficeAdminsSearch.trim())
+  const payload = await api(`/api/backoffice/admins?${params}`, { headers: backofficeAuthHeaders() })
+  mergeBackofficeSummary({ users: payload.users || [] })
+  forms.backofficeAdminsPagination = payload.pagination || { page: 1, pageSize: forms.backofficeAdminsPageSize, total: 0, totalPages: 0 }
+  forms.backofficeAdminsPage = forms.backofficeAdminsPagination.page || 1
+}
+
+let backofficeAdminOptionsRequest = 0
+async function loadBackofficeAdminOptions(search = '') {
+  const request = ++backofficeAdminOptionsRequest
+  const params = new URLSearchParams({ limit: '50' })
+  if (String(search).trim()) params.set('search', String(search).trim())
+  const payload = await api(`/api/backoffice/admin-options?${params}`, { headers: backofficeAuthHeaders() })
+  if (request !== backofficeAdminOptionsRequest) return
+  forms.backofficeAdminOptions = payload.items || []
 }
 
 async function loadBackofficeSlipOKLogs(page = forms.backofficeSlipOKLogsPage) {
@@ -1331,7 +1488,13 @@ async function saveBackofficeCoinShop() {
   forms.backofficeCoinShopStatus = ''
   forms.backofficeCoinShopSaving = true
   try {
-    forms.backofficeSummary = await api('/api/backoffice/coin-shop', {
+    // The legacy endpoint saves both groups atomically. Load the missing group only
+    // after an explicit Save so an unopened tab can never be overwritten with blanks.
+    await Promise.all([
+      loadBackofficeSection('integrations'),
+      loadBackofficeSection('promotions')
+    ])
+    await api('/api/backoffice/coin-shop', {
       method: 'PUT',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
@@ -1350,7 +1513,9 @@ async function saveBackofficeCoinShop() {
         slipOKMonthlyCap: Number(forms.backofficeSlipOKMonthlyCap)
       })
     })
-    syncBackofficeCoinShopForms()
+    backoffice.loaded.integrations = false
+    backoffice.loaded.promotions = false
+    await loadBackofficeSection(forms.backofficeOverviewTab === 'integrations' ? 'integrations' : 'promotions', true)
     forms.backofficeCoinShopStatus = 'บันทึกการตั้งค่าแล้ว'
   } catch (error) {
     forms.backofficeError = error.message || 'บันทึกโปรโมชัน coin ไม่สำเร็จ'
@@ -1428,7 +1593,7 @@ function removeBackofficeSubscriptionPackage(index) {
 async function adjustBackofficeCoins() {
   forms.backofficeError = ''
   try {
-    forms.backofficeSummary = await api('/api/backoffice/coins', {
+    const payload = await api('/api/backoffice/coins', {
       method: 'POST',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
@@ -1437,6 +1602,8 @@ async function adjustBackofficeCoins() {
         note: forms.backofficeCoinNote
       })
     })
+    const changed = forms.backofficeSummary?.users?.find((item) => item.id === payload.adminId)
+    if (changed) changed.coins = Number(payload.balance || 0)
     forms.backofficeCoinDelta = 0
     forms.backofficeCoinNote = ''
   } catch (error) {
@@ -1447,14 +1614,13 @@ async function adjustBackofficeCoins() {
 async function reviewBackofficeCoinOrder(orderId, status) {
   forms.backofficeError = ''
   try {
-    forms.backofficeSummary = await api(`/api/backoffice/coin-orders/${orderId}/${status === 'approved' ? 'approve' : 'reject'}`, {
+    await api(`/api/backoffice/coin-orders/${orderId}/${status === 'approved' ? 'approve' : 'reject'}`, {
       method: 'POST',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({ note: status === 'rejected' ? forms.backofficeRejectNote : '' })
     })
     forms.backofficeRejectOrderId = ''
     forms.backofficeRejectNote = ''
-    syncBackofficeCoinShopForms()
     await loadBackofficeCoinOrders(forms.backofficeOrdersPage)
   } catch (error) {
     forms.backofficeError = error.message || 'อัปเดตรายการชำระเงินไม่สำเร็จ'
@@ -3515,7 +3681,9 @@ async function updateHistoryWinnerApi(match, winner, scores) {
       method: 'PATCH',
       body: JSON.stringify({ winner, ...(scores !== undefined ? { scores } : {}) })
     }))
-  } catch {
+    await loadMatchHistory(state.historyView.page, state.historyView.search)
+  } catch (error) {
+    if (error?.status) throw error
     if (scores !== undefined) {
       const result = validateMatchScores(scores)
       if (result.error) throw new Error(result.error)
@@ -3704,6 +3872,7 @@ const pageProps = computed(() => ({
   requestCancelMatch,
   confirmCancelMatch: confirmCancelMatchApi,
   updateHistoryWinner: updateHistoryWinnerApi,
+  loadMatchHistory,
   addCouple: addCoupleApi,
   removeCouple: removeCoupleApi,
   addCourt,
@@ -3754,6 +3923,11 @@ const pageProps = computed(() => ({
   createSession: createSessionApi,
   unlockDashboard: unlockDashboardApi,
   loadBackoffice,
+  selectBackofficeTab,
+  selectBackofficeOverviewTab,
+  loadBackofficeAdmins,
+  loadBackofficeAdminOptions,
+  loadBackofficeAdminDetailPage,
   submitSupportIssue,
   loadBackofficeSupportIssues,
   applyBackofficeSupportFilters,

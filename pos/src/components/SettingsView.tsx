@@ -77,9 +77,9 @@ const REPORT_PERMISSION_LABELS = [
 ] as const;
 
 const DEFAULT_PERMISSIONS: Record<MemberRole, POSPermissions> = {
-  owner: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_transfers: true, report_special: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  manager: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_transfers: true, report_special: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, report_overview: false, report_top_sellers: false, report_vat: false, report_payments: false, report_sold_products: false, report_purchases: false, report_inventory: false, report_transfers: false, report_special: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
+  owner: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  manager: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, report_overview: false, report_top_sellers: false, report_vat: false, report_payments: false, report_sold_products: false, report_purchases: false, report_inventory: false, report_inventory_values: false, report_transfers: false, report_special: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
 };
 
 const STAFF_ROLE_OPTIONS: Array<{ value: Exclude<MemberRole, 'owner'>; label: string }> = [
@@ -361,8 +361,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
       const enabled = !current[role][permission];
       const next = { ...current[role], [permission]: enabled };
       if (permission === 'reports') POS_REPORT_PERMISSION_KEYS.forEach((key) => { next[key] = enabled; });
+      if (permission === 'report_inventory' && !enabled) next.report_inventory_values = false;
       if (permission.startsWith('report_') && permission !== 'report_export') {
-        next.reports = enabled || POS_REPORT_PERMISSION_KEYS.some((key) => key !== permission && next[key]);
+        next.reports = enabled || POS_REPORT_PERMISSION_KEYS.some((key) => key !== permission && key !== 'report_inventory_values' && next[key]);
       }
       return { ...current, [role]: next };
     });
@@ -940,10 +941,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                               {REPORT_PERMISSION_LABELS.map(([reportKey, reportLabel]) => {
                                 const reportEnabled = permissions[role][reportKey];
                                 return (
-                                  <label key={reportKey} className={`flex items-center justify-between rounded-lg px-2.5 py-2 ${reportEnabled ? 'bg-emerald-50 text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100' : 'bg-slate-100 text-slate-500 dark:bg-slate-900'}`}>
+                                  <React.Fragment key={reportKey}>
+                                  <label className={`flex items-center justify-between rounded-lg px-2.5 py-2 ${reportEnabled ? 'bg-emerald-50 text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100' : 'bg-slate-100 text-slate-500 dark:bg-slate-900'}`}>
                                     <span className="text-[11px] font-semibold">{reportLabel}</span>
                                     <input type="checkbox" checked={reportEnabled} disabled={role === 'owner' || !isOwner} onChange={() => role !== 'owner' && togglePermission(role, reportKey)} className="h-3.5 w-3.5 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed" />
                                   </label>
+                                  {reportKey === 'report_inventory' && (
+                                    <label className={`ml-3 flex items-center justify-between rounded-lg border border-dashed px-2.5 py-2 ${permissions[role].report_inventory_values ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100' : 'border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-800 dark:bg-slate-900'}`}>
+                                      <span className="text-[10px] font-semibold">แสดงต้นทุนและราคาขาย</span>
+                                      <input type="checkbox" checked={permissions[role].report_inventory_values} disabled={role === 'owner' || !isOwner || !reportEnabled} onChange={() => role !== 'owner' && togglePermission(role, 'report_inventory_values')} className="h-3.5 w-3.5 rounded border-slate-300 accent-amber-500 disabled:cursor-not-allowed" />
+                                    </label>
+                                  )}
+                                  </React.Fragment>
                                 );
                               })}
                             </div>

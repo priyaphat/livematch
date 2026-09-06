@@ -27,6 +27,28 @@ type countingTTSSynthesizer struct {
 	calls int
 }
 
+func TestBackofficeDetailPagination(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		wantPage     int
+		wantPageSize int
+	}{
+		{name: "requested page", url: "/api/backoffice/admins/a?sessionPage=3&sessionPageSize=20", wantPage: 3, wantPageSize: 20},
+		{name: "defaults invalid values", url: "/api/backoffice/admins/a?sessionPage=0&sessionPageSize=500", wantPage: 1, wantPageSize: 10},
+		{name: "allows minimum page size", url: "/api/backoffice/admins/a?sessionPage=2&sessionPageSize=5", wantPage: 2, wantPageSize: 5},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, test.url, nil)
+			page, pageSize := backofficeDetailPagination(req, "session", 10)
+			if page != test.wantPage || pageSize != test.wantPageSize {
+				t.Fatalf("got page=%d pageSize=%d; want page=%d pageSize=%d", page, pageSize, test.wantPage, test.wantPageSize)
+			}
+		})
+	}
+}
+
 func (s *countingTTSSynthesizer) Synthesize(_ context.Context, text, voice string) ([]byte, error) {
 	s.mu.Lock()
 	s.calls++

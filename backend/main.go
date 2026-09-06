@@ -29,11 +29,15 @@ type app struct {
 const defaultAnnouncementTemplate = "บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}"
 const defaultShuttleBrandID = "default"
 const defaultShuttleBrandName = "ลูกแบดทั่วไป"
+const apiContractVersion = "2026-09-05"
+
+var errSessionVersionConflict = errors.New("session version conflict")
 
 type HealthResponse struct {
-	Status    string    `json:"status"`
-	Service   string    `json:"service"`
-	Timestamp time.Time `json:"timestamp"`
+	Status          string    `json:"status"`
+	Service         string    `json:"service"`
+	ContractVersion string    `json:"contractVersion"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 type SessionRecord struct {
@@ -44,6 +48,7 @@ type SessionRecord struct {
 }
 
 type SessionState struct {
+	Version          int64             `json:"version"`
 	Tab              string            `json:"tab"`
 	Theme            string            `json:"theme"`
 	Session          SessionInfo       `json:"session"`
@@ -404,6 +409,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table sessions add column if not exists created_at timestamptz not null default now();
 		alter table sessions add column if not exists updated_at timestamptz not null default now();
 		alter table sessions add column if not exists usage_started_at timestamptz;
+		alter table sessions add column if not exists version bigint not null default 0;
 		alter table sessions alter column name drop not null;
 		alter table sessions alter column admin_passcode drop not null;
 		alter table sessions alter column state drop not null;
@@ -611,6 +617,8 @@ func (a *app) migrate(ctx context.Context) error {
 		update admin_users set pos_admin_number=nextval('pos_admin_number_seq') where pos_admin_number is null;
 		alter table admin_users alter column pos_admin_number set not null;
 		create unique index if not exists idx_admin_users_pos_admin_number on admin_users(pos_admin_number);
+		create index if not exists idx_admin_users_created on admin_users(created_at desc,id);
+		create index if not exists idx_admin_users_email_lower on admin_users(lower(email));
 		select setval('pos_admin_number_seq',greatest(coalesce((select max(pos_admin_number) from admin_users),1000),1000),true);
 		create table if not exists admin_default_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
@@ -979,6 +987,18 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_settings add column if not exists block_account_enabled boolean not null default true;
 		alter table booking_settings add column if not exists block_ip_enabled boolean not null default true;
 		alter table booking_settings add column if not exists block_duration_minutes integer not null default 10;
+		do $$
+		begin
+			if not exists (
+				select 1 from information_schema.columns
+				where table_schema=current_schema()
+				  and table_name='booking_settings'
+				  and column_name='slipok_limit_enabled'
+			) then
+				alter table booking_settings add column slipok_limit_enabled boolean not null default false;
+				update booking_settings set slipok_limit_enabled=true where slipok_monthly_cap>0;
+			end if;
+		end $$;
 		create unique index if not exists idx_booking_settings_telegram_bot on booking_settings(telegram_bot_fingerprint) where telegram_bot_fingerprint <> '';
 		create table if not exists booking_courts (
 			id text primary key,
@@ -1012,6 +1032,9 @@ func (a *app) migrate(ctx context.Context) error {
 			check (end_at > start_at)
 		);
 		alter table bookings add column if not exists booking_batch_id text;
+		alter table bookings add column if not exists decision_source text not null default '';
+		alter table bookings add column if not exists decision_at timestamptz;
+		alter table bookings add column if not exists decision_by text not null default '';
 		create index if not exists idx_bookings_batch on bookings(admin_id, booking_batch_id) where booking_batch_id is not null;
 		create table if not exists booking_occupancies (
 			id bigserial primary key,
@@ -1050,6 +1073,11 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_payments add column if not exists verification_note text not null default '';
 		alter table booking_payments add column if not exists provider_error_code integer not null default 0;
 		alter table booking_payments add column if not exists checked_at timestamptz;
+		update bookings b set decision_source='auto_slip',decision_at=coalesce(p.checked_at,p.created_at),decision_by='Auto Slip'
+		from booking_payments p where p.booking_id=b.id and b.decision_source='' and p.verification_provider='slipok' and p.status in ('approved','rejected');
+		update bookings b set decision_source=case when p.reviewed_by ~ '^[0-9]+$' then 'telegram' else 'web' end,decision_at=p.reviewed_at,decision_by=p.reviewed_by
+		from booking_payments p where p.booking_id=b.id and b.decision_source='' and p.reviewed_at is not null;
+		update bookings set decision_source='web',decision_at=created_at,decision_by='Admin' where decision_source='' and booked_by='admin' and status='confirmed';
 		alter table booking_payments add column if not exists slip_file_key text not null default '';
 		alter table booking_payments add column if not exists slip_mime_type text not null default '';
 		alter table booking_payments add column if not exists slip_size_bytes bigint not null default 0;
@@ -1102,6 +1130,10 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_members_admin on members(admin_id, active, created_at desc);
 		create index if not exists idx_booking_courts_admin on booking_courts(admin_id, active, sort_order);
 		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);
+		create index if not exists idx_bookings_admin_status_created on bookings(admin_id,status,created_at desc,id);
+		create index if not exists idx_matches_session_phase_id on matches(session_id,phase,id desc);
+		create index if not exists idx_players_session_active_id on players(session_id,active,id);
+		create index if not exists idx_payment_events_session_created on player_payment_events(session_id,created_at desc,id desc);
 		create index if not exists idx_booking_payments_booking on booking_payments(booking_id, created_at desc);
 		create index if not exists idx_player_payment_member on player_payment_events(member_id, created_at desc);
 		create table if not exists billing_accounts (
@@ -1249,9 +1281,21 @@ func (a *app) migrate(ctx context.Context) error {
 		update pos_products set price_satang=price_thb::bigint*100 where price_satang=0 and price_thb<>0;
 		drop index if exists idx_pos_products_barcode;
 		create unique index if not exists idx_pos_products_barcode on pos_products(admin_id,lower(barcode)) where barcode<>'' and deleted_at is null;
+		delete from pos_categories generated
+		using pos_categories canonical
+		where generated.admin_id=canonical.admin_id
+		  and generated.id='category-'||substr(md5(generated.admin_id||':'||lower(generated.name)),1,16)
+		  and generated.name=canonical.id
+		  and generated.id<>canonical.id;
 		insert into pos_categories (id,admin_id,name)
-		select 'category-'||substr(md5(admin_id||':'||lower(category)),1,16),admin_id,category
-		from pos_products where category<>'' and deleted_at is null
+		select 'category-'||substr(md5(p.admin_id||':'||lower(p.category)),1,16),p.admin_id,p.category
+		from pos_products p
+		where p.category<>'' and p.deleted_at is null
+		  and not exists (
+			select 1 from pos_categories c
+			where c.admin_id=p.admin_id
+			  and (c.id=p.category or lower(c.name)=lower(p.category))
+		  )
 		on conflict do nothing;
 		insert into pos_units (id,admin_id,name)
 		select 'unit-'||substr(md5(admin_id||':'||lower(unit)),1,16),admin_id,unit
@@ -1496,6 +1540,20 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
 		create index if not exists idx_slipok_logs_created on slipok_logs(created_at desc, id desc);
 		create index if not exists idx_slipok_logs_admin_created on slipok_logs(admin_id, created_at desc, id desc);
+		create index if not exists idx_slipok_logs_usage on slipok_logs(admin_id,source_system,created_at) where request_method='POST';
+		create table if not exists slipok_monthly_usage (
+			admin_id text not null references admin_users(id) on delete cascade,
+			source_system text not null,
+			month_start date not null,
+			used integer not null default 0 check (used >= 0),
+			updated_at timestamptz not null default now(),
+			primary key (admin_id,source_system,month_start)
+		);
+		insert into slipok_monthly_usage(admin_id,source_system,month_start,used)
+		select admin_id,source_system,date_trunc('month',created_at at time zone 'Asia/Bangkok')::date,count(*)::int
+		from slipok_logs where admin_id<>'' and request_method='POST'
+		group by admin_id,source_system,date_trunc('month',created_at at time zone 'Asia/Bangkok')::date
+		on conflict (admin_id,source_system,month_start) do update set used=greatest(slipok_monthly_usage.used,excluded.used);
 		create table if not exists support_issues (
 			id text primary key,
 			title text not null,
@@ -1673,9 +1731,10 @@ func (a *app) backfillMatchShuttlePriceSnapshots(ctx context.Context) error {
 
 func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{
-		Status:    "ok",
-		Service:   "livematch-backend",
-		Timestamp: time.Now().UTC(),
+		Status:          "ok",
+		Service:         "livematch-backend",
+		ContractVersion: apiContractVersion,
+		Timestamp:       time.Now().UTC(),
 	})
 }
 
@@ -2075,21 +2134,11 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
-
-	state, err := a.loadState(r.Context(), id)
-	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, sql.ErrNoRows) {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
 	}
+	var routeUser adminUser
 	if action != "state" {
 		user, ok := a.currentAdmin(r.Context(), r)
 		if !ok {
@@ -2105,13 +2154,45 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "session owner required"})
 			return
 		}
-		if r.Method == http.MethodGet && action == "dashboard" && r.URL.Query().Get("open") == "1" {
+		routeUser = user
+		if r.Method == http.MethodGet && action == "players" && len(parts) == 2 {
+			a.writeSessionPlayersPage(w, r, id)
+			return
+		}
+		if r.Method == http.MethodGet && action == "history" && len(parts) == 2 {
+			a.writeSessionHistoryPage(w, r, id)
+			return
+		}
+	}
+
+	state, err := a.loadState(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	if action != "state" {
+		user := routeUser
+		if r.Method == http.MethodGet && (action == "dashboard" || action == "bootstrap") && r.URL.Query().Get("open") == "1" {
 			a.insertActivityLog(r.Context(), "admin", user.ID, "open_session", "session", id, map[string]any{"name": state.Session.Name, "expired": state.Session.Expired, "readOnly": state.Session.ReadOnly, "readOnlyReason": state.Session.ReadOnlyReason})
 		}
 		if isSessionWrite(r.Method) && action != "unlock" && state.Session.ReadOnly {
 			a.insertActivityLog(r.Context(), "admin", user.ID, "blocked_readonly_session_action", "session", id, map[string]any{"name": state.Session.Name, "method": r.Method, "action": action, "path": r.URL.Path, "reason": state.Session.ReadOnlyReason})
 			writeJSON(w, http.StatusConflict, map[string]string{"error": readOnlySessionMessage(state)})
 			return
+		}
+		if isSessionWrite(r.Method) && action != "unlock" {
+			expectedRaw := strings.TrimSpace(r.Header.Get("X-Session-Version"))
+			if expectedRaw != "" {
+				expected, parseErr := strconv.ParseInt(expectedRaw, 10, 64)
+				if parseErr != nil || expected != state.Version {
+					writeJSON(w, http.StatusConflict, map[string]any{"error": "ข้อมูล Session ถูกแก้ไขจากแท็บอื่น กรุณารีเฟรชก่อนทำรายการอีกครั้ง", "code": "SESSION_VERSION_CONFLICT", "version": state.Version})
+					return
+				}
+			}
 		}
 	}
 
@@ -2124,6 +2205,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, map[string]string{"error": "passcode login removed"})
 	case r.Method == http.MethodGet && action == "state":
 		writeJSON(w, http.StatusOK, state)
+	case r.Method == http.MethodGet && action == "bootstrap":
+		writeJSON(w, http.StatusOK, map[string]any{"version": state.Version, "session": state.Session, "settings": state.Settings, "memberTypes": state.MemberTypes})
 	case r.Method == http.MethodGet && action == "dashboard":
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
@@ -2396,7 +2479,9 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "live":
 		writeJSON(w, http.StatusOK, map[string]any{"live": state.Live, "players": state.Players})
 	case r.Method == http.MethodGet && action == "history":
-		writeJSON(w, http.StatusOK, map[string]any{"history": state.History, "players": state.Players})
+		items := state.History
+		paged, page, pageSize := paginate(items, r)
+		writeJSON(w, http.StatusOK, map[string]any{"history": paged, "players": state.Players, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPut && action == "settings":
 		var body struct {
 			Settings
@@ -2627,6 +2712,86 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	page, pageSize, offset := paginationParams(r, 20, 100)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	pattern := "%" + search + "%"
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `select count(*) from players where session_id=$1 and ($2='' or name ilike $3 or cast(id as text) ilike $3)`, sessionID, search, pattern).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang from players p left join member_types mt on mt.id=p.member_type_id where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	items := []Player{}
+	for rows.Next() {
+		var item Player
+		var wait sql.NullTime
+		if err = rows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if wait.Valid {
+			item.WaitStartedAt = wait.Time.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "pagination": paginationPayload(page, pageSize, total), "total": total, "page": page, "pageSize": pageSize})
+}
+
+func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	page, pageSize, offset := paginationParams(r, 20, 100)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	pattern := "%" + search + "%"
+	filter := `m.session_id=$1 and m.phase='history' and ($2='' or m.court ilike $3 or m.level ilike $3 or m.note ilike $3 or exists(select 1 from players fp where fp.session_id=m.session_id and fp.id in (m.a1,m.a2,m.b1,m.b2) and fp.name ilike $3))`
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `select count(*) from matches m where `+filter, sessionID, search, pattern).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `select m.id,m.court,m.level,m.a1,m.a2,m.b1,m.b2,m.shuttles,m.winner,m.scores,m.shuttle_sequence,m.shuttle_sequence_items,m.shuttle_returned,m.returned_shuttle_brand_id,m.returned_shuttle_number,m.status,m.started_at,m.ended_at,m.note,m.shuttle_pricing_mode,m.shuttle_price_snapshot,m.legacy_shuttle_fee from matches m where `+filter+` order by m.id desc limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	history := []Match{}
+	for rows.Next() {
+		var item Match
+		var scoresRaw, seqItemsRaw, priceRaw []byte
+		if err = rows.Scan(&item.ID, &item.Court, &item.Level, &item.A1, &item.A2, &item.B1, &item.B2, &item.Shuttles, &item.Winner, &scoresRaw, &item.ShuttleSeq, &seqItemsRaw, &item.ShuttleReturned, &item.ReturnedShuttleBrandID, &item.ReturnedShuttleNumber, &item.Status, &item.StartedAt, &item.EndedAt, &item.Note, &item.ShuttlePricingMode, &priceRaw, &item.LegacyShuttleFee); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.Unmarshal(scoresRaw, &item.Scores)
+		_ = json.Unmarshal(seqItemsRaw, &item.ShuttleSeqItems)
+		_ = json.Unmarshal(priceRaw, &item.ShuttlePriceSnapshot)
+		history = append(history, item)
+	}
+	rows.Close()
+	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id order by p.id`, sessionID, search, pattern, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer playerRows.Close()
+	players := []Player{}
+	for playerRows.Next() {
+		var item Player
+		var wait sql.NullTime
+		if err = playerRows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		players = append(players, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": history, "players": players, "pagination": paginationPayload(page, pageSize, total), "total": total, "page": page, "pageSize": pageSize})
+}
+
 func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state SessionState) {
 	if err := a.saveStateResolved(r.Context(), &state); err != nil {
 		a.writeStateSaveError(w, err)
@@ -2681,6 +2846,10 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 }
 
 func (a *app) writeStateSaveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errSessionVersionConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ข้อมูล Session ถูกแก้ไขจากแท็บอื่น กรุณารีเฟรชก่อนทำรายการอีกครั้ง", "code": "SESSION_VERSION_CONFLICT"})
+		return
+	}
 	var stockErr *shuttleStockError
 	if errors.As(err, &stockErr) {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -2916,6 +3085,22 @@ func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID s
 }
 
 func (a *app) saveState(ctx context.Context, state SessionState) error {
+	// saveState is reserved for trusted internal/legacy callers that do not carry
+	// an HTTP X-Session-Version. Refresh the version before saving and retry one
+	// concurrent idempotent write. Request handlers use saveStateResolved and
+	// retain strict optimistic-concurrency behaviour.
+	var currentVersion int64
+	if err := a.db.QueryRowContext(ctx, `select version from sessions where id=$1`, state.Session.ID).Scan(&currentVersion); err == nil {
+		state.Version = currentVersion
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := a.saveStateResolved(ctx, &state); !errors.Is(err, errSessionVersionConflict) {
+		return err
+	}
+	if err := a.db.QueryRowContext(ctx, `select version from sessions where id=$1`, state.Session.ID).Scan(&state.Version); err != nil {
+		return err
+	}
 	return a.saveStateResolved(ctx, &state)
 }
 
@@ -2945,19 +3130,33 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 		return err
 	}
 	defer tx.Rollback()
+	var currentVersion int64
+	versionErr := tx.QueryRowContext(ctx, `select version from sessions where id=$1 for update`, state.Session.ID).Scan(&currentVersion)
+	if versionErr != nil && !errors.Is(versionErr, sql.ErrNoRows) {
+		return versionErr
+	}
+	if versionErr == nil && currentVersion != state.Version {
+		return errSessionVersionConflict
+	}
+	nextVersion := int64(1)
+	if versionErr == nil {
+		nextVersion = currentVersion + 1
+	}
 
 	if _, err = tx.ExecContext(ctx, `
-		insert into sessions (id, name, session_type, admin_passcode, updated_at, usage_started_at)
-		values ($1, $2, $3, $4, now(), case when $5 then now() else null end)
+		insert into sessions (id, name, session_type, admin_passcode, updated_at, usage_started_at, version)
+		values ($1, $2, $3, $4, now(), case when $5 then now() else null end, $6)
 		on conflict (id) do update set
 			name = excluded.name,
 			session_type = excluded.session_type,
 			admin_passcode = excluded.admin_passcode,
 			updated_at = now(),
-			usage_started_at = case when $5 then coalesce(sessions.usage_started_at, now()) else sessions.usage_started_at end
-	`, state.Session.ID, state.Session.Name, sessionType(*state), state.Session.AdminPasscode, usageStarted); err != nil {
+			usage_started_at = case when $5 then coalesce(sessions.usage_started_at, now()) else sessions.usage_started_at end,
+			version = excluded.version
+	`, state.Session.ID, state.Session.Name, sessionType(*state), state.Session.AdminPasscode, usageStarted, nextVersion); err != nil {
 		return err
 	}
+	state.Version = nextVersion
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
@@ -3164,14 +3363,16 @@ func sessionUsageStarted(state SessionState) bool {
 
 func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	var name, sessionTypeValue, passcode, adminID string
+	var stateVersion int64
 	var createdAt, updatedAt time.Time
 	if err := a.db.QueryRowContext(ctx, `
-		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at, coalesce(admin_id,'') from sessions where id = $1
-	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt, &adminID); err != nil {
+		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at, coalesce(admin_id,''),version from sessions where id = $1
+	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt, &adminID, &stateVersion); err != nil {
 		return SessionState{}, err
 	}
 
 	state := defaultState(id, name, passcode)
+	state.Version = stateVersion
 	state.Session.Type = normalizeSessionType(sessionTypeValue)
 	state.Session.Unlocked = true
 	state.UpdatedAt = updatedAt
@@ -4232,6 +4433,7 @@ func realRecordedMatchCount(state SessionState) int {
 
 func dashboardPayload(state SessionState) map[string]any {
 	return map[string]any{
+		"version":  state.Version,
 		"players":  state.Players,
 		"queue":    state.Queue,
 		"live":     state.Live,
