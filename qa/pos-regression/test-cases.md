@@ -61,6 +61,7 @@
 | POS-SALE-008 | P1 | สินค้า active มี barcode และ stock โดยเครื่องอาจตั้งแป้นพิมพ์ภาษาไทย | ยิง barcode จากพื้นที่ใดก็ได้โดยไม่ focus ช่องค้นหา จำลอง key code ที่ระบุไม่ได้, text injection ไม่มี Enter และรหัสตัวอักษรใหญ่ที่เครื่องส่ง Shift คั่น | ช่องรับ scanner แบบซ่อนรับ focus อัตโนมัติ, แปลงแป้นไทย, ไม่ล้าง buffer เมื่อเจอ modifier, จบการอ่านและเพิ่มตะกร้าโดยไม่เกิน stock | Playwright | Chromium |
 | POS-SALE-009 | P0 | Browser เคยมี catalog จำลองใน localStorage | เปิดหน้าขาย | ไม่แสดงหรือใช้สินค้า/หมวดหมู่จำลอง และล้าง cache catalog เดิม | Playwright | Chromium |
 | POS-SALE-010 | P0 | API สร้าง PromptPay QR ใช้งานไม่ได้ | เลือกชำระด้วย PromptPay | ไม่สร้าง QR จากหมายเลขสำรอง แจ้งข้อผิดพลาด และปิดปุ่มยืนยัน | Playwright | Chromium |
+| POS-SALE-011 | P1 | มีสินค้าในตะกร้า | เปิดชำระ เลือก PromptPay ปิด modal แล้วล้างสินค้า | ไม่เรียก QR ด้วยยอด 0 และไม่มี 400/console error | Playwright | Chromium |
 | POS-HOLD-001 | P1 | Members exist | ค้น member ใน Hold | debounce 500 ms, เลือกสมาชิกจริง, เพิ่มสมาชิกได้ | Manual | Chromium |
 | POS-HOLD-002 | P1 | Same member | Hold หลาย sale | การ์ดเดียว แต่ source documents ครบ | Go | API |
 | POS-PAY-001 | P1 | Receivables 2+ members | เลือกหลายคน จ่าย cash/QR | settlement สำเร็จครบและยอดถูก | Manual | Chromium |
@@ -107,6 +108,9 @@
 | POS-RPT-006 | P1 | Staff มี/ไม่มี reports, สิทธิ์รายงานย่อยทั้ง 9 เมนู และ report_export; Admin A/B | เปิดแต่ละแท็บ เรียก report APIs พิมพ์ และส่งออกพร้อม filter | แสดงเฉพาะเมนูที่อนุญาต, API/print/export ปฏิเสธรายงานที่ไม่มีสิทธิ์, tenant isolation ถูกต้อง และไม่แสดง code เทคนิค | Go/Playwright | API/Chromium/Excel |
 | POS-RPT-007 | P2 | มีเอกสารรับเข้าที่ระบุซัพพลายเออร์และส่วนลด | ค้นหาชื่อ เลือกซัพพลายเออร์ ดูรายละเอียด และส่งออก Excel รวม/รายเอกสาร | ค่าเริ่มต้นเป็นวันนี้และซัพพลายเออร์ทั้งหมด ตัวกรองทำงาน รายการย่อย/ยอดตรงเอกสาร และคอลัมน์เงินใน Excel เป็นตัวเลข 2 ตำแหน่ง | Playwright | API/Chromium/Excel |
 | POS-RPT-008 | P1 | สินค้าคงเหลือกำหนดจำนวนต่อแพ็ก | พิมพ์รายงานสินค้าคงเหลือแบบสลิปย่อ | แสดงแพ็กเต็ม เศษ และยอดรวมหน่วย ส่วนสินค้าไม่กำหนดแพ็กแสดงจำนวนหน่วย | Playwright | Chromium |
+| POS-RPT-009 | P0 | Staff เปิดรายงานสินค้าคงเหลือแต่ถูกปิดสิทธิ์มูลค่า | เปิดตาราง ตรวจ Network และ Export Excel | ตาราง/Excel แสดง `***` และ API ไม่มี cost/price fields ทั้ง 4 ฟิลด์ | Playwright | API/Chromium/Excel |
+| POS-QC-006 | P1 | Admin มี Session, Coin order และ ledger มากกว่า 20 รายการ | เปิดรายละเอียด Admin แล้วเปลี่ยนหน้าของทั้ง 3 ตาราง | แต่ละตารางใช้ server pagination แยกกันและ request ส่ง page/pageSize ถูกต้อง | Playwright | Chromium/API |
+| POS-QC-007 | P0 | Production Compose ใช้ project/port/volume QA แยก | เปิดทุก service, ตรวจไม่มี Vite HMR, recreate PostgreSQL แล้วอ่าน marker เดิม | Frontend/POS/Backend/pgAdmin พร้อมใช้ และข้อมูลใน named volume ไม่หาย | Docker smoke | Nginx/PostgreSQL |
 | POS-NF-001 | P2 | Desktop/Mobile | เปิด critical pages/modals | ไม่มี overflow/modal หลุด/nav ทับ action | Playwright | Chromium Desktop/Mobile |
 | POS-NF-002 | P2 | QA local | วัด API read และ sale/settlement | read <1s, transaction <2s ไม่มี external delay | Playwright | API |
 | POS-PWA-001 | P2 | POS served | ตรวจ manifest/service worker/installability | manifest/icon/start URL ถูก | Playwright | Chromium |

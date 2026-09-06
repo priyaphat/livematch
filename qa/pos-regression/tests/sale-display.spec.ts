@@ -154,6 +154,29 @@ test('POS-SALE-010 PromptPay API ล้มเหลวแล้วไม่ส�
   await expect(page.locator('#confirm-checkout-btn')).toBeDisabled();
 });
 
+test('POS-SALE-011 ปิด PromptPay แล้วล้างตะกร้าไม่เรียก QR ยอดศูนย์', async ({ page }) => {
+  const qrAmounts: number[] = [];
+  const badResponses: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/admin/pos/qr?')) {
+      qrAmounts.push(Number(new URL(request.url()).searchParams.get('amountSatang')));
+    }
+  });
+  page.on('response', (response) => {
+    if (response.url().includes('/api/admin/pos/qr?') && response.status() >= 400) badResponses.push(`${response.status()} ${response.url()}`);
+  });
+  await page.goto('/');
+  await page.locator('#pos-product-qa-product-coffee-a').click();
+  await page.locator('#pos-pay-btn').click();
+  await page.locator('#pay-method-promptpay-btn').click();
+  await expect.poll(() => qrAmounts.length).toBeGreaterThan(0);
+  await page.locator('#close-payment-modal-btn').click();
+  await page.locator('#clear-cart-btn').click();
+  await page.waitForTimeout(300);
+  expect(qrAmounts.every((amount) => amount > 0), `QR amounts: ${qrAmounts.join(', ')}`).toBeTruthy();
+  expect(badResponses).toEqual([]);
+});
+
 test('POS-CAT-007 @smoke Enter จากเครื่องยิง barcode ใน modal สินค้าไม่ submit form', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'จัดการสินค้า' }).click();

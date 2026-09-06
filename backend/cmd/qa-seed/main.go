@@ -110,9 +110,26 @@ func main() {
 	mustExec(ctx, tx, `
 		insert into sessions(id,name,session_type,admin_passcode,state,admin_id,usage_started_at)
 		values
-		('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '9 hour') at time zone 'Asia/Bangkok'),
-		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '10 hour') at time zone 'Asia/Bangkok'),
+		('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',now()-interval '2 minutes'),
+		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',now()-interval '1 minute'),
 		('qa-session-history','QA History 125 Games','liveMatch','qa-history','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')-interval '30 day'+interval '11 hour') at time zone 'Asia/Bangkok')
+	`)
+	mustExec(ctx, tx, `
+		insert into sessions(id,name,session_type,admin_passcode,state,admin_id,usage_started_at,created_at,updated_at)
+		select 'qa-admin-detail-session-'||n, 'QA Admin Detail Session '||lpad(n::text,2,'0'), 'liveMatch',
+			'qa-detail-'||n, '{}'::jsonb, 'qa-admin-a', null, now()-n*interval '1 day', now()-n*interval '1 day'
+		from generate_series(1,24) n
+	`)
+	mustExec(ctx, tx, `
+		insert into coin_ledger(admin_id,delta,balance,reason,note,created_at)
+		select 'qa-admin-a', 1, 1000+n, 'qa_pagination', 'QA ledger '||n, now()-n*interval '1 hour'
+		from generate_series(1,24) n
+	`)
+	mustExec(ctx, tx, `
+		insert into coin_purchase_orders(id,admin_id,package_id,package_name,price_thb,coins,slip_image,status,note,created_at,updated_at)
+		select 'qa-admin-detail-order-'||n, 'qa-admin-a', 'qa-package-detail', 'QA Package', 100, 100,
+			'', 'approved', 'QA order '||n, now()-n*interval '1 hour', now()-n*interval '1 hour'
+		from generate_series(1,24) n
 	`)
 	mustExec(ctx, tx, `
 		insert into session_settings(session_id,entry_fee,club_entry_fee,member_entry_fees,shuttle_fee,shuttle_brands,court_count,court_names)
@@ -212,7 +229,7 @@ func main() {
 	if err = tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=3 history=127")
+	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=27 history=127")
 }
 
 func mustHash(value string) string {

@@ -92,6 +92,39 @@ test('POS-QC-004 @smoke Backoffice defers every data section until its tab opens
   expect(unexpected).toEqual([]);
 });
 
+test('POS-QC-006 รายละเอียด Admin แบ่งหน้า Session รายการซื้อ และ Coin ledger จาก server', async ({ page }) => {
+  await page.goto(`${frontendURL}/backoffice`);
+  await page.getByPlaceholder('superadmin').fill('qa-superadmin');
+  await page.locator('input[type="password"]').fill('qa-superadmin-only');
+  await page.getByRole('button', { name: 'เข้าสู่หลังบ้าน' }).click();
+  await page.getByRole('button', { name: /^สมาชิก admin/ }).click();
+  await page.getByPlaceholder('ค้นหาชื่อ อีเมล หรือ Admin No.').fill('qa.owner.a@example.invalid');
+  await page.getByRole('button', { name: 'ค้นหา', exact: true }).click();
+  const adminRow = page.getByText('qa.owner.a@example.invalid', { exact: true }).locator('xpath=../..');
+  await adminRow.getByRole('button', { name: /Admin DB Preview/ }).click();
+  await expect(page.getByRole('heading', { name: 'QA Owner A' })).toBeVisible();
+
+  const cases = [
+    { label: 'จำนวน Session ต่อหน้า', prefix: 'session' },
+    { label: 'จำนวนรายการซื้อ Coin ต่อหน้า', prefix: 'order' },
+    { label: 'จำนวน Coin ledger ต่อหน้าในรายละเอียด Admin', prefix: 'ledger' },
+  ];
+  for (const item of cases) {
+    const select = page.getByLabel(item.label);
+    await expect(select).toHaveValue('10');
+    const pager = item.prefix === 'session' ? select.locator('xpath=..') : select.locator('xpath=../..');
+    await expect(pager).toContainText('หน้า 1 / 3');
+    const requestPromise = page.waitForRequest((request) => {
+      if (!request.url().includes('/api/backoffice/admins/qa-admin-a?')) return false;
+      return new URL(request.url()).searchParams.get(`${item.prefix}Page`) === '2';
+    });
+    await pager.getByRole('button', { name: 'ถัดไป', exact: true }).click();
+    const request = await requestPromise;
+    expect(new URL(request.url()).searchParams.get(`${item.prefix}PageSize`)).toBe('10');
+    await expect(page.getByLabel(item.label).locator(item.prefix === 'session' ? 'xpath=..' : 'xpath=../..')).toContainText('หน้า 2 / 3');
+  }
+});
+
 test('POS-QC-005 @smoke Booking and member admin pages lazy-load their menus without API failures', async ({ page }) => {
   const requested: string[] = [];
   const unexpected: string[] = [];

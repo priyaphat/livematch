@@ -117,10 +117,12 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
 
   // Generate dynamic EMVCo PromptPay QR Code
   useEffect(() => {
-    if (method !== 'promptpay') {
+    const amountSatang = Math.round(totalDue * 100);
+    if (!isOpen || method !== 'promptpay' || amountSatang <= 0) {
       setQrDataUrl('');
       setQrError('');
       setQrReceiverName('');
+      setIsQrLoading(false);
       return;
     }
     let isCancelled = false;
@@ -129,7 +131,8 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
       try {
         setIsQrLoading(true);
         setQrError('');
-        const result = await getPOSPaymentQR(Math.round(totalDue * 100));
+        const result = await getPOSPaymentQR(amountSatang);
+        if (isCancelled) return;
         setQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
         if (!result.promptPayPayload && result.fallbackImage) {
           setQrDataUrl(result.fallbackImage);
@@ -151,6 +154,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
           setIsQrLoading(false);
         }
       } catch (err) {
+        if (isCancelled) return;
         console.error('Error generating QR code:', err);
         setQrDataUrl('');
         setQrError(err instanceof Error ? err.message : 'ไม่สามารถสร้าง QR ได้');
@@ -163,16 +167,16 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
     return () => {
       isCancelled = true;
     };
-  }, [method, totalDue]);
+  }, [isOpen, method, totalDue, settings.promptPayReceiverName, settings.storeName]);
 
   // PromptPay Countdown timer
   useEffect(() => {
-    if (method !== 'promptpay') return;
+    if (!isOpen || method !== 'promptpay') return;
     const timer = setInterval(() => {
       setQrGeneratedTime((prev) => (prev > 0 ? prev - 1 : 120));
     }, 1000);
     return () => clearInterval(timer);
-  }, [method]);
+  }, [isOpen, method]);
 
   if (!isOpen) return null;
 
