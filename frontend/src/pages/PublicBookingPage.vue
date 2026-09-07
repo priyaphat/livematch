@@ -272,7 +272,7 @@ function status(court, minute) {
     }
     return booking.status === "pending_review"
       ? { text: `รอตรวจสอบ${bookerLabel}`, tone: "pending" }
-      : { text: `จองแล้ว${bookerLabel}`, tone: "busy" };
+      : { text: booking.bookerName || "จองแล้ว", tone: "busy" };
   }
   const closure = state.closures.find(
     (item) =>

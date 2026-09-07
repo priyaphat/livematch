@@ -66,6 +66,26 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
+  it("shows only the booker name for a confirmed slot", async () => {
+    const confirmedAvailability = availability();
+    confirmedAvailability.bookings.push({
+      id: "confirmed-1",
+      courtId: "court-1",
+      startAt: "2026-07-22T18:00:00+07:00",
+      endAt: "2026-07-22T19:00:00+07:00",
+      status: "confirmed",
+      bookerName: "คุณปุ้ย",
+    });
+    const baseApi = apiMock();
+    const apiRequest = vi.fn((url, options) =>
+      url.includes("/availability") ? Promise.resolve(confirmedAvailability) : baseApi(url, options),
+    );
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="slot-court-1-1080"]').text()).toBe("คุณปุ้ย"));
+    expect(wrapper.get('[data-testid="slot-court-1-1080"]').text()).not.toContain("จองแล้ว");
+    wrapper.unmount();
+  });
+
   it("locks the booking action while saving to prevent double submission", async () => {
     let resolveHold
     const pendingHold = new Promise((resolve) => { resolveHold = resolve })
