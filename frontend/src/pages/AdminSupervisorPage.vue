@@ -130,6 +130,11 @@ function applyLinkedShuttleProduct(brand, product) {
   brand.priceSatang = Math.max(0, Number(product.priceSatang || 0))
   brand.price = brand.priceSatang / 100
 }
+function updateShuttleBrandPrice(brand, event) {
+  const price = Math.max(0, Number(event.target.value || 0))
+  brand.price = price
+  brand.priceSatang = Math.round(price * 100)
+}
 const percent = (value, total) => {
   if (!total) return 0
   return Math.min(100, Math.round((Number(value || 0) / Number(total || 0)) * 100))
@@ -428,7 +433,7 @@ function updateDashboardAnnouncement(index, value) {
               <div class="grid min-w-0 gap-3 md:grid-cols-[10rem_minmax(0,1fr)]">
                 <label class="grid min-w-0 gap-1.5">
                   <span class="text-xs font-black text-stone-500 dark:text-stone-400">ราคาต่อลูก</span>
-                  <input v-model.number="brand.price" type="number" min="0" step="0.01" :disabled="Boolean(brand.posProductId)" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold tabular-nums disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-500 dark:border-stone-700 dark:bg-stone-900 dark:disabled:bg-stone-900/50" placeholder="0.00" @input="brand.priceSatang = Math.round(Math.max(0, Number(brand.price || 0)) * 100)" />
+                  <input :value="Number(brand.priceSatang ?? Math.round(Number(brand.price || 0) * 100)) / 100" type="number" min="0" step="0.01" :disabled="Boolean(brand.posProductId)" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold tabular-nums disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-500 dark:border-stone-700 dark:bg-stone-900 dark:disabled:bg-stone-900/50" placeholder="0.00" @input="updateShuttleBrandPrice(brand, $event)" />
                   <small v-if="brand.posProductId" class="font-bold text-court-700 dark:text-court-300">ใช้ราคา POS {{ moneyValue(Number(brand.priceSatang || 0) / 100) }}</small>
                   <small v-else class="font-semibold text-stone-500">ราคาสำรองของ Match</small>
                 </label>

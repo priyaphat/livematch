@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -159,6 +160,7 @@ func (a *app) serveAnnouncementBell(w http.ResponseWriter, r *http.Request, sett
 	file, err := os.Open(filepath.Join(announcementBellStorageDir(), key))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			log.Printf("announcement bell file missing path=%q key=%q", r.URL.Path, key)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "custom announcement bell not found"})
 			return
 		}

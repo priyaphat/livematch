@@ -765,6 +765,9 @@ async function saveSettings() {
   settingsStatus.value = "";
   try {
     const payload = { ...settings };
+    // Automatic incidents are account-scoped. IP blocking remains an explicit
+    // action from an individual Blacklist incident only.
+    payload.blockIPEnabled = false;
     if (payload.paymentQrMode !== "uploaded" && payload.promptPayId)
       Object.assign(payload, currentPaymentTarget());
     if (payload.logoData === savedScheduleSettings.logoData)
@@ -817,7 +820,7 @@ async function loadIncidents(page = incidents.page) {
 		Object.assign(incidents, await props.apiRequest(`/api/admin/booking/blacklist?${params}`));
 		for (const item of incidents.items || []) {
 			item.blockAccount ??= true;
-			item.blockIp ??= true;
+			item.blockIp ??= false;
 			item.durationMinutes ??= Number(incidents.policy?.blockDurationMinutes || 10);
 			for (const block of item.blocks || []) block.editUntil = toDateTimeLocal(block.blockedUntil);
 		}
@@ -1730,9 +1733,8 @@ onUnmounted(() => {
 
 		<div v-else-if="settingsTab === 'security'" class="mt-4 grid gap-3 sm:grid-cols-2">
 		  <label class="flex items-center gap-2 rounded-lg border p-3 font-black dark:border-stone-700"><input v-model="settings.blockAccountEnabled" type="checkbox" />บล็อกบัญชีอัตโนมัติ</label>
-		  <label class="flex items-center gap-2 rounded-lg border p-3 font-black dark:border-stone-700"><input v-model="settings.blockIPEnabled" type="checkbox" />บล็อก IP อัตโนมัติ</label>
 		  <label class="grid gap-1 text-sm font-bold sm:col-span-2">ระยะเวลาบล็อก (นาที)<input v-model.number="settings.blockDurationMinutes" type="number" min="1" max="43200" class="h-10 rounded-lg border bg-transparent px-3" /></label>
-		  <p class="rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200 sm:col-span-2">ค่าเริ่มต้นบล็อกบัญชีและ IP 10 นาทีเมื่อพบสลิปซ้ำหรือ Auto Slip ยืนยันว่าไม่ผ่าน IP block อาจกระทบผู้ใช้ที่ใช้เครือข่ายร่วมกัน</p>
+		  <p class="rounded-lg bg-emerald-50 p-3 text-xs font-semibold text-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-200 sm:col-span-2">เมื่อพบสลิปซ้ำหรือ Auto Slip ยืนยันว่าไม่ผ่าน ระบบจะบล็อกเฉพาะบัญชีผู้ส่ง ไม่กระทบผู้ใช้อื่นใน Wi-Fi หรือเครือข่ายเดียวกัน ส่วนการบล็อก IP ทำได้ด้วยตนเองจากรายละเอียดเหตุการณ์ในหน้า Blacklist</p>
 		</div>
 
 		<div v-else-if="settingsTab === 'display'" class="mt-4 grid gap-4 sm:grid-cols-2">

@@ -985,7 +985,8 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_settings add column if not exists slipok_api_key text not null default '';
 		alter table booking_settings add column if not exists slipok_monthly_cap integer not null default 0;
 		alter table booking_settings add column if not exists block_account_enabled boolean not null default true;
-		alter table booking_settings add column if not exists block_ip_enabled boolean not null default true;
+		alter table booking_settings add column if not exists block_ip_enabled boolean not null default false;
+		alter table booking_settings alter column block_ip_enabled set default false;
 		alter table booking_settings add column if not exists block_duration_minutes integer not null default 10;
 		do $$
 		begin
@@ -1124,6 +1125,18 @@ func (a *app) migrate(ctx context.Context) error {
 		);
 		create index if not exists idx_booking_blocks_account on booking_blocks(admin_id,public_user_id,expires_at) where revoked_at is null and target_type='account';
 		create index if not exists idx_booking_blocks_ip on booking_blocks(admin_id,ip_hash,expires_at) where revoked_at is null and target_type='ip';
+		with applied as (
+			insert into app_migrations(migration_key)
+			values ('booking_automatic_ip_block_account_only_v1')
+			on conflict do nothing
+			returning migration_key
+		), disabled as (
+			update booking_settings set block_ip_enabled=false,updated_at=now()
+			where exists(select 1 from applied)
+			returning admin_id
+		)
+		update booking_blocks set revoked_at=coalesce(revoked_at,now()),updated_at=now()
+		where target_type='ip' and revoked_at is null and exists(select 1 from applied);
 		alter table booking_security_incidents add column if not exists client_ip_hash text not null default '';
 		alter table booking_security_incidents add column if not exists client_ip_encrypted text not null default '';
 		alter table booking_security_incidents add column if not exists client_ip_masked text not null default '';
@@ -2497,6 +2510,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		settings.AnnouncementBellName = state.Settings.AnnouncementBellName
 		settings.AnnouncementBellMIME = state.Settings.AnnouncementBellMIME
 		normalizeSettings(&settings)
+		if err := a.hydrateLinkedShuttleBrandPrices(r.Context(), routeUser.ID, &settings, true); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		mergeMemberEntryFees(&settings, state.MemberTypes)
 		if isLiveShare(state) {
 			settings.StartMatchWithShuttle = false
@@ -3430,6 +3447,11 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		_ = json.Unmarshal(memberEntryFeesRaw, &state.Settings.MemberEntryFees)
 	}
 	normalizeSettings(&state.Settings)
+	if adminID != "" {
+		if err := a.hydrateLinkedShuttleBrandPrices(ctx, adminID, &state.Settings, false); err != nil {
+			return SessionState{}, err
+		}
+	}
 	mergeMemberEntryFees(&state.Settings, state.MemberTypes)
 	normalizeLiveShareState(&state)
 

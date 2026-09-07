@@ -1,9 +1,11 @@
 <script setup>
-import { Plus, X } from '@lucide/vue'
+import { Plus, Trash2, X } from '@lucide/vue'
 import { computed, ref, watch } from 'vue'
+import ProductStockCombobox from '../components/ProductStockCombobox.vue'
 
 const props = defineProps([
   'state',
+  'apiRequest',
   'forms',
   'addCourt',
   'removeCourt',
@@ -20,6 +22,29 @@ const activeSettingsTab = ref('general')
 const isLiveShare = computed(() => props.state.session?.type === 'liveShare')
 const usedCourtSet = computed(() => props.usedCourtNames || new Set())
 const usedLevelSet = computed(() => props.usedLevels || new Set())
+
+function applyLinkedShuttleProduct(brand, product) {
+  if (product) {
+    brand.priceSatang = Math.max(0, Number(product.priceSatang || 0))
+    brand.price = brand.priceSatang / 100
+  }
+  props.saveSettings?.()
+}
+
+function updateShuttleBrandPrice(brand, event) {
+  const price = Math.max(0, Number(event.target.value || 0))
+  brand.price = price
+  brand.priceSatang = Math.round(price * 100)
+}
+
+function removeShuttleBrand(index) {
+  if ((props.state.settings.shuttleBrands || []).length <= 1) return
+  props.state.settings.shuttleBrands.splice(index, 1)
+  if (!props.state.settings.shuttleBrands.some((brand) => brand.active)) {
+    props.state.settings.shuttleBrands[0].active = true
+  }
+  props.saveSettings?.()
+}
 
 const settingsTabs = computed(() => [
   { id: 'general', label: 'ทั่วไป', hint: 'ชื่อ session และ workflow' },
@@ -118,32 +143,52 @@ watch(settingsTabs, (tabs) => {
           <input v-model.number="state.settings.memberEntryFees[memberType.id]" type="number" min="0" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
         </label>
 
-        <div class="grid gap-3 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 lg:col-span-2">
+        <div class="grid gap-4 rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900 lg:col-span-2">
           <div>
             <h2 class="font-black">ยี่ห้อลูกแบด</h2>
-            <p class="text-sm font-bold text-amber-700 dark:text-amber-300">กรุณาใส่ราคาเต็มต่อลูก</p>
+            <p class="mt-1 text-xs font-semibold leading-5 text-stone-500 dark:text-stone-400">กำหนดชื่อ ราคาสำรอง และสินค้าสต็อก POS สำหรับ Session นี้</p>
           </div>
-          <div class="grid gap-2">
-            <div v-for="brand in state.settings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md border border-stone-200 p-3 dark:border-stone-700 sm:grid-cols-[minmax(10rem,1fr)_7rem_auto]">
-              <input v-model.trim="brand.name" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" @change="saveSettings" />
-              <div class="grid gap-1">
-                <input v-model.number="brand.price" type="number" min="0" step="0.01" :disabled="Boolean(brand.posProductId)" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" @input="brand.priceSatang = Math.round(Math.max(0, Number(brand.price || 0)) * 100)" @change="saveSettings" />
-                <small v-if="brand.posProductId" class="font-bold text-court-700 dark:text-court-300">ใช้ราคา POS {{ Number(brand.priceSatang || 0) / 100 }} บาท</small>
+          <div class="grid gap-3">
+            <article v-for="(brand, index) in state.settings.shuttleBrands" :key="brand.id" class="grid gap-3 rounded-xl border border-stone-200 bg-paper-100 p-3 dark:border-stone-700 dark:bg-stone-800/70">
+              <div class="flex min-w-0 items-end gap-2">
+                <label class="grid min-w-0 flex-1 gap-1.5">
+                  <span class="text-xs font-black text-stone-500 dark:text-stone-400">ชื่อยี่ห้อลูกแบด</span>
+                  <input v-model.trim="brand.name" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold dark:border-stone-700 dark:bg-stone-900" @change="saveSettings" />
+                </label>
+                <label class="flex h-11 shrink-0 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-900">
+                  <input v-model="brand.active" type="checkbox" class="h-4 w-4 accent-court-600" @change="saveSettings" />
+                  ใช้งาน
+                </label>
+                <button type="button" class="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-35 dark:border-rose-900/60 dark:text-rose-300 dark:hover:bg-rose-950/30" :disabled="state.settings.shuttleBrands.length <= 1" aria-label="ลบยี่ห้อลูกแบด" @click="removeShuttleBrand(index)">
+                  <Trash2 class="h-4 w-4" />
+                </button>
               </div>
-              <label class="flex h-10 items-center gap-2 text-sm font-bold">
-                <input v-model="brand.active" type="checkbox" @change="saveSettings" />
-                ใช้งาน
-              </label>
-            </div>
+
+              <div class="grid min-w-0 gap-3 md:grid-cols-[10rem_minmax(0,1fr)]">
+                <label class="grid min-w-0 gap-1.5">
+                  <span class="text-xs font-black text-stone-500 dark:text-stone-400">ราคาต่อลูก</span>
+                  <input :value="Number(brand.priceSatang ?? Math.round(Number(brand.price || 0) * 100)) / 100" type="number" min="0" step="0.01" :disabled="Boolean(brand.posProductId)" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold tabular-nums disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-500 dark:border-stone-700 dark:bg-stone-900 dark:disabled:bg-stone-900/50" @input="updateShuttleBrandPrice(brand, $event)" @change="saveSettings" />
+                  <small v-if="brand.posProductId" class="font-bold text-court-700 dark:text-court-300">ใช้ราคา POS {{ (Number(brand.priceSatang || 0) / 100).toLocaleString('th-TH', { minimumFractionDigits: Number(brand.priceSatang || 0) % 100 ? 2 : 0 }) }} บาท</small>
+                  <small v-else class="font-semibold text-stone-500">ราคาสำรองของ Match</small>
+                </label>
+                <label class="grid min-w-0 gap-1.5">
+                  <span class="text-xs font-black text-stone-500 dark:text-stone-400">เชื่อมสินค้าสต็อก POS</span>
+                  <ProductStockCombobox v-model="brand.posProductId" :api-request="apiRequest" @selected-product="applyLinkedShuttleProduct(brand, $event)" />
+                  <small class="font-semibold text-stone-500">เลือกเฉพาะสินค้าที่เปิดติดตามสต็อก</small>
+                </label>
+              </div>
+            </article>
           </div>
-          <div class="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
-            <input v-model="forms.newShuttleBrandName" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ยี่ห้อลูกแบดใหม่" @keyup.enter="addShuttleBrand" />
-            <input v-model.number="forms.newShuttleBrandPrice" type="number" min="0" step="0.01" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ราคา" @keyup.enter="addShuttleBrand" />
-            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-shuttle-400 px-4 font-bold text-stone-950" @click="addShuttleBrand">
+
+          <div class="grid gap-3 rounded-xl border border-dashed border-stone-300 bg-paper-50 p-3 dark:border-stone-700 dark:bg-stone-800/50 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
+            <label class="grid min-w-0 gap-1.5"><span class="text-xs font-black text-stone-500 dark:text-stone-400">เพิ่มยี่ห้อใหม่</span><input v-model="forms.newShuttleBrandName" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold dark:border-stone-700 dark:bg-stone-900" placeholder="ชื่อยี่ห้อลูกแบด" @keyup.enter="addShuttleBrand" /></label>
+            <label class="grid min-w-0 gap-1.5"><span class="text-xs font-black text-stone-500 dark:text-stone-400">ราคาเริ่มต้น</span><input v-model.number="forms.newShuttleBrandPrice" type="number" min="0" step="0.01" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold tabular-nums dark:border-stone-700 dark:bg-stone-900" placeholder="0.00" @keyup.enter="addShuttleBrand" /></label>
+            <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-stone-900 px-4 text-sm font-black text-white transition hover:bg-stone-800 dark:bg-white dark:text-stone-900" @click="addShuttleBrand">
               <Plus class="h-4 w-4" />
               เพิ่ม
             </button>
           </div>
+          <p class="rounded-lg bg-court-500/10 px-3 py-2.5 text-xs font-semibold leading-5 text-court-700 dark:text-court-300">เมื่อเชื่อม POS ราคาจะอ่านจากสินค้าและแก้ใน Session ไม่ได้ ลูกแบด 1 ลูกจะตัดสินค้า 1 หน่วย</p>
         </div>
       </div>
 

@@ -161,18 +161,19 @@ describe('LiveMatch app', () => {
     wrapper.unmount()
     globalThis.fetch = originalFetch
 	})
-	it('locks the whole app with a server-authoritative booking countdown', async () => {
+	it('locks only the current booking account without persisting a venue-wide block', async () => {
 		const wrapper = mount(App)
 		await flushPromises()
 		window.history.replaceState({}, '', '/booking/test-tenant')
 		window.dispatchEvent(new window.CustomEvent('livematch:booking-blocked', { detail: { code: 'booking_blacklisted', blockedUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(), remainingSeconds: 600, targets: ['account', 'ip'] } }))
 		await wrapper.vm.$nextTick()
-		expect(localStorage.getItem('livematch_booking_block:test-tenant')).toContain('account')
+		expect(localStorage.getItem('livematch_booking_block:test-tenant')).toBeNull()
 		const blockedScreen = wrapper.text()
 		expect(blockedScreen).toContain('ระงับการใช้งานชั่วคราว')
 		expect(blockedScreen).toContain('ไม่สามารถใช้งานระบบจองสนามได้')
+		expect(blockedScreen).toContain('ผูกกับบัญชีผู้ส่งสลิปเท่านั้น')
+		expect(blockedScreen).toContain('ออกจากบัญชีนี้')
 		wrapper.unmount()
-		localStorage.removeItem('livematch_booking_block:test-tenant')
 		window.history.replaceState({}, '', '/')
 	})
   it('shows a user-friendly message when admin credentials are incorrect', async () => {
@@ -634,6 +635,48 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.find('fieldset').attributes('disabled')).toBeDefined()
     expect(wrapper.find('fieldset').find('input').exists()).toBe(true)
+  })
+
+  it('uses the POS product combobox and locks the linked shuttle price in session settings', async () => {
+    const apiRequest = vi.fn().mockResolvedValue({
+      items: [{ id: 'product-victor', name: 'Victor No.1', sku: 'PROD-019', priceSatang: 10000, stockQuantity: 12, unit: 'ลูก', active: true, trackStock: true }]
+    })
+    const wrapper = mount(SettingsPage, {
+      props: {
+        apiRequest,
+        state: {
+          session: { type: 'liveMatch' },
+          memberTypes: [],
+          settings: {
+            entryFee: 20,
+            memberEntryFees: {},
+            shuttleFee: 100,
+            shuttleBrands: [{ id: 'default', name: 'Victor No.1', price: 100, priceSatang: 10000, posProductId: 'product-victor', active: true }],
+            sessionFee: 0,
+            courtNames: ['สนาม 1'],
+            levels: ['BG']
+          }
+        },
+        forms: { newShuttleBrandName: '', newShuttleBrandPrice: 0, newCourtName: '', newLevelName: '' },
+        addShuttleBrand: vi.fn(),
+        addCourt: vi.fn(),
+        removeCourt: vi.fn(),
+        addLevel: vi.fn(),
+        removeLevel: vi.fn(),
+        usedCourtNames: new Set(),
+        usedLevels: new Set(),
+        saveSettings: vi.fn()
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('ค่าใช้จ่าย')).trigger('click')
+    await flushPromises()
+
+    const priceLabel = wrapper.findAll('label').find((label) => label.text().includes('ราคาต่อลูก'))
+    expect(priceLabel.get('input[type="number"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[role="combobox"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('ใช้ราคา POS 100 บาท')
+    expect(apiRequest).toHaveBeenCalledWith(expect.stringContaining('/api/admin/pos/products?'))
   })
 
   it('disables liveShare hour editing when the session is read-only', () => {

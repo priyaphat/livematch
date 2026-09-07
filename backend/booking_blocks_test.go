@@ -29,3 +29,16 @@ func TestWriteBookingBlockedUsesLockedContract(t *testing.T) {
 		t.Fatalf("missing block contract: %s", body)
 	}
 }
+
+func TestAutomaticBookingBlockTargetsOnlySubmittingAccount(t *testing.T) {
+	settings := automaticBookingBlockSettings(bookingSettingsRecord{
+		BlockAccountEnabled: true,
+		BlockIPEnabled:      true,
+	})
+	if !settings.BlockAccountEnabled {
+		t.Fatal("automatic duplicate-slip handling must retain the account block")
+	}
+	if settings.BlockIPEnabled {
+		t.Fatal("automatic duplicate-slip handling must not block a shared IP")
+	}
+}

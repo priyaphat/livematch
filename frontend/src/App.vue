@@ -80,7 +80,6 @@ function bookingBlockSurfaceToken() {
 	return ''
 }
 const isBookingBlockSurface = () => Boolean(bookingBlockSurfaceToken())
-const bookingBlockStorageKey = () => `livematch_booking_block:${bookingBlockSurfaceToken() || 'none'}`
 const adminNavigationKey = 'livematch_admin_navigation'
 const restorableAdminTabs = new Set(['dashboard', 'players', 'livematch', 'queue', 'liveboard', 'history', 'settings', 'liveShareHours', 'help'])
 const defaultAnnouncementTemplate = 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}'
@@ -819,17 +818,12 @@ onMounted(() => {
 	window.addEventListener('focus', refreshMatchBillingOnFocus)
 	document.addEventListener('visibilitychange', refreshMatchBillingOnFocus)
 	billingSyncTimer = window.setInterval(refreshMatchBillingOnFocus, 10_000)
-	try {
-		const saved = JSON.parse(localStorage.getItem(bookingBlockStorageKey()) || 'null')
-		if (isBookingBlockSurface() && Number(saved?.deadlineMs) > Date.now()) Object.assign(bookingBlock, saved, { surfaceToken: bookingBlockSurfaceToken() })
-	} catch { /* Ignore invalid local state. */ }
 	bookingBlockTimer = window.setInterval(() => {
 		bookingBlock.now = Date.now()
 		if (isBookingBlockSurface() && bookingBlock.deadlineMs && bookingBlock.deadlineMs <= bookingBlock.now) {
 			bookingBlock.blockedUntil = ''
 			bookingBlock.targets = []
 			bookingBlock.deadlineMs = 0
-			localStorage.removeItem(bookingBlockStorageKey())
 			window.location.reload()
 		}
 	}, 1000)
@@ -901,7 +895,15 @@ function handleBookingBlocked(event) {
 		const parsedUntil = Date.parse(bookingBlock.blockedUntil)
 		bookingBlock.deadlineMs = Number.isFinite(parsedUntil) ? parsedUntil : 0
 	}
-	try { localStorage.setItem(bookingBlockStorageKey(), JSON.stringify({ blockedUntil: bookingBlock.blockedUntil, targets: bookingBlock.targets, deadlineMs: bookingBlock.deadlineMs })) } catch { /* Backend remains authoritative. */ }
+}
+
+async function leaveBlockedBookingAccount() {
+	try { await api('/api/public-auth/logout', { method: 'POST' }) } catch { /* A fresh load still checks the server. */ }
+	bookingBlock.blockedUntil = ''
+	bookingBlock.targets = []
+	bookingBlock.deadlineMs = 0
+	bookingBlock.surfaceToken = ''
+	window.location.reload()
 }
 
 const bookingBlockRemaining = computed(() => Math.max(0, Math.ceil((bookingBlock.deadlineMs - bookingBlock.now) / 1000)))
@@ -2615,11 +2617,13 @@ function announcementParts(match, court = '') {
 }
 
 async function playAnnouncementChime(source = '') {
-  try {
-    const bellPath = source || (state.settings.announcementBellKey
-      ? `/api/sessions/${encodeURIComponent(state.session.id)}/announcement-bell`
-      : '/sounds/announcement-bell.mp3')
-    const bell = new Audio(bellPath)
+  const defaultBellPath = '/sounds/announcement-bell.mp3'
+  const bellPath = source || (state.settings.announcementBellKey
+    ? `/api/sessions/${encodeURIComponent(state.session.id)}/announcement-bell`
+    : defaultBellPath)
+  const customBellRequested = bellPath !== defaultBellPath
+  const playBell = async (path) => {
+    const bell = new Audio(path)
     bell.preload = 'auto'
     bell.volume = 0.85
     const playback = playAudioUntilEnded(bell)
@@ -2631,14 +2635,26 @@ async function playAnnouncementChime(source = '') {
       if (activeAnnouncementAudio === bell) activeAnnouncementAudio = null
       if (activeAnnouncementAudioStop === playback.cancel) activeAnnouncementAudioStop = null
     }
-    return
-  } catch {
-    // Fall back to a generated chime if the audio file is blocked or unavailable.
   }
 
-  const AudioContext = window.AudioContext || window.webkitAudioContext
-  if (!AudioContext) return
   try {
+    await playBell(bellPath)
+    return
+  } catch {
+    if (customBellRequested) {
+      showToast('ไม่พบเสียงกริ่งที่ตั้งไว้ ระบบใช้เสียงเริ่มต้น กรุณาอัปโหลดเสียงใหม่', 'info')
+      try {
+        await playBell(defaultBellPath)
+        return
+      } catch {
+        // Continue with the generated chime when the bundled sound is blocked too.
+      }
+    }
+  }
+
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext
+    if (!AudioContext) return
     const audio = new AudioContext()
     if (audio.state === 'suspended') {
       await audio.resume()
@@ -3239,9 +3255,7 @@ async function previewAdminAnnouncementBell() {
   const source = auth.defaultSettings?.announcementBellKey
     ? `/api/admin/announcement-bell?t=${Date.now()}`
     : '/sounds/announcement-bell.mp3'
-  const audio = new Audio(source)
-  audio.volume = 0.85
-  await audio.play()
+  await playAnnouncementChime(source)
 }
 
 async function saveAdminMatchPolicy() {
@@ -3991,7 +4005,8 @@ const pageProps = computed(() => ({
 		<h1 class="mt-2 text-2xl font-black">ไม่สามารถใช้งานระบบจองสนามได้</h1>
 		<p class="mt-3 font-semibold text-stone-500 dark:text-stone-400">ระบบตรวจพบรายการสลิปผิดปกติ กรุณารอจนกว่าจะครบกำหนด</p>
 		<p class="mt-6 font-mono text-5xl font-black tabular-nums">{{ bookingBlockCountdown }}</p>
-		<p class="mt-4 text-xs font-bold text-stone-400">ระบบตรวจสอบทั้งบัญชีและเครือข่ายจาก Backend การเปลี่ยนหน้าเว็บจะไม่ข้ามข้อจำกัดนี้</p>
+		<p class="mt-4 text-xs font-bold text-stone-400">ข้อจำกัดนี้ผูกกับบัญชีผู้ส่งสลิปเท่านั้น ผู้ใช้อื่นยังจองได้ตามปกติ</p>
+		<button type="button" class="mt-5 h-11 w-full rounded-lg border border-stone-300 font-black text-stone-700 dark:border-stone-700 dark:text-stone-200" @click="leaveBlockedBookingAccount">ออกจากบัญชีนี้</button>
 	  </div>
 	</section>
 	<VerifyEmailPage v-else-if="verifyEmail.isPage" v-bind="pageProps" />

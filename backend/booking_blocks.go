@@ -111,7 +111,16 @@ func (a *app) requireNoBookingBlock(w http.ResponseWriter, r *http.Request, admi
 	return true
 }
 
-func (a *app) createAutomaticBookingBlocks(ctx context.Context, tx *sql.Tx, settings bookingSettingsRecord, incidentID int64, publicUserID, ip, reason string) error {
+func automaticBookingBlockSettings(settings bookingSettingsRecord) bookingSettingsRecord {
+	// A duplicate/invalid slip belongs to the authenticated submitter. An IP can
+	// represent a venue Wi-Fi, carrier NAT, or reverse proxy and must never be
+	// used for an automatic punishment because that can lock out unrelated users.
+	// Admins can still add an IP block explicitly from the incident screen.
+	settings.BlockIPEnabled = false
+	return settings
+}
+
+func (a *app) createBookingBlocks(ctx context.Context, tx *sql.Tx, settings bookingSettingsRecord, incidentID int64, publicUserID, ip, reason string) error {
 	expires := time.Now().Add(time.Duration(settings.BlockDurationMinutes) * time.Minute)
 	if settings.BlockAccountEnabled && publicUserID != "" {
 		result, err := tx.ExecContext(ctx, `update booking_blocks set incident_id=$2,reason=$4,expires_at=greatest(expires_at,$5),updated_at=now() where admin_id=$1 and target_type='account' and public_user_id=$3 and revoked_at is null and expires_at>now()`, settings.AdminID, incidentID, publicUserID, reason, expires)
@@ -139,6 +148,10 @@ func (a *app) createAutomaticBookingBlocks(ctx context.Context, tx *sql.Tx, sett
 		}
 	}
 	return nil
+}
+
+func (a *app) createAutomaticBookingBlocks(ctx context.Context, tx *sql.Tx, settings bookingSettingsRecord, incidentID int64, publicUserID, ip, reason string) error {
+	return a.createBookingBlocks(ctx, tx, automaticBookingBlockSettings(settings), incidentID, publicUserID, ip, reason)
 }
 
 func (a *app) changeBookingBlock(w http.ResponseWriter, r *http.Request, adminID, rawID string) {
@@ -216,7 +229,7 @@ func (a *app) createIncidentBlocks(w http.ResponseWriter, r *http.Request, admin
 	}
 	defer tx.Rollback()
 	settings := bookingSettingsRecord{AdminID: adminID, BlockAccountEnabled: body.BlockAccount, BlockIPEnabled: body.BlockIP, BlockDurationMinutes: body.DurationMinutes}
-	if err = a.createAutomaticBookingBlocks(r.Context(), tx, settings, incidentID, publicUserID.String, ip, reason); err != nil || tx.Commit() != nil {
+	if err = a.createBookingBlocks(r.Context(), tx, settings, incidentID, publicUserID.String, ip, reason); err != nil || tx.Commit() != nil {
 		writeJSON(w, 500, map[string]string{"error": "สร้างรายการบล็อกไม่สำเร็จ"})
 		return
 	}
