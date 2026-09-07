@@ -77,9 +77,9 @@ const REPORT_PERMISSION_LABELS = [
 ] as const;
 
 const DEFAULT_PERMISSIONS: Record<MemberRole, POSPermissions> = {
-  owner: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  manager: { sales: true, bills: true, products: true, stock: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, report_overview: false, report_top_sellers: false, report_vat: false, report_payments: false, report_sold_products: false, report_purchases: false, report_inventory: false, report_inventory_values: false, report_transfers: false, report_special: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
+  owner: { sales: true, bills: true, products: true, stock: true, view_costs: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  manager: { sales: true, bills: true, products: true, stock: true, view_costs: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  cashier: { sales: true, bills: true, products: false, stock: false, view_costs: false, reports: false, report_overview: false, report_top_sellers: false, report_vat: false, report_payments: false, report_sold_products: false, report_purchases: false, report_inventory: false, report_inventory_values: false, report_transfers: false, report_special: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
 };
 
 const STAFF_ROLE_OPTIONS: Array<{ value: Exclude<MemberRole, 'owner'>; label: string }> = [
@@ -360,6 +360,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     setPermissions((current) => {
       const enabled = !current[role][permission];
       const next = { ...current[role], [permission]: enabled };
+      if (permission === 'stock' && !enabled) next.view_costs = false;
       if (permission === 'reports') POS_REPORT_PERMISSION_KEYS.forEach((key) => { next[key] = enabled; });
       if (permission === 'report_inventory' && !enabled) next.report_inventory_values = false;
       if (permission.startsWith('report_') && permission !== 'report_export') {
@@ -935,6 +936,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                               className="h-4 w-4 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed"
                             />
                           </label>
+                          {key === 'stock' && (
+                            <label className={`ml-3 flex items-center justify-between rounded-lg border border-dashed px-2.5 py-2 ${permissions[role].view_costs ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100' : 'border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-800 dark:bg-slate-900'}`}>
+                              <span>
+                                <span className="block text-[10px] font-semibold">แสดงราคาต้นทุนและกำไร</span>
+                                <span className="block text-[9px] opacity-70">ปิดแล้ว API จะไม่ส่งข้อมูลต้นทุน</span>
+                              </span>
+                              <input type="checkbox" checked={permissions[role].view_costs} disabled={role === 'owner' || !isOwner || !enabled} onChange={() => role !== 'owner' && togglePermission(role, 'view_costs')} className="h-3.5 w-3.5 rounded border-slate-300 accent-amber-500 disabled:cursor-not-allowed" />
+                            </label>
+                          )}
                           {key === 'reports' && (
                             <div className={`ml-3 grid gap-1.5 border-l-2 py-1 pl-3 ${enabled ? 'border-emerald-200 dark:border-emerald-500/20' : 'border-slate-200 dark:border-slate-800'}`}>
                               <p className="px-2 text-[10px] font-black uppercase tracking-wide text-slate-400">เมนูรายงานย่อย</p>

@@ -186,6 +186,28 @@ func TestWeightedAverageCost(t *testing.T) {
 	}
 }
 
+func TestStockReceiptRegressionKeepsOriginalCostFormula(t *testing.T) {
+	// Existing product: 6 units in primary + 4 in secondary at 100.00 each.
+	// Receipt: 5 units, gross 600.00, discount 10% => net 540.00.
+	// Weighted average = (10*100.00 + 540.00) / 15 = 102.666..., rounded to 102.67.
+	grossSatang := int64(60000)
+	discount := stockDiscountSatang(grossSatang, "percent", 0, 1000)
+	if discount != 6000 {
+		t.Fatalf("discount=%d, want 6000", discount)
+	}
+	netSatang := grossSatang - discount
+	average := weightedAverageCostSatang(6+4, 10000, 5, netSatang)
+	if average != 10267 {
+		t.Fatalf("weighted average=%d, want 10267", average)
+	}
+	if stockValue := int64(15) * average; stockValue != 154005 {
+		t.Fatalf("post-receipt stock value=%d, want 154005", stockValue)
+	}
+	if unitReceiptCost := unitCostFromLineTotalSatang(grossSatang, 5); unitReceiptCost != 12000 {
+		t.Fatalf("receipt unit cost=%d, want 12000", unitReceiptCost)
+	}
+}
+
 func TestUnitCostFromLineTotalSatang(t *testing.T) {
 	tests := []struct {
 		name       string

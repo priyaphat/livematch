@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/base64"
@@ -18,6 +19,58 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
+
+type posCostFilteringWriter struct {
+	http.ResponseWriter
+	status int
+	body   bytes.Buffer
+	path   string
+}
+
+func (w *posCostFilteringWriter) WriteHeader(status int)         { w.status = status }
+func (w *posCostFilteringWriter) Write(body []byte) (int, error) { return w.body.Write(body) }
+
+func redactPOSCostFields(value any, hideProcurementTotals bool) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, child := range typed {
+			lower := strings.ToLower(key)
+			sensitive := strings.Contains(lower, "cost") || strings.Contains(lower, "profit") || strings.Contains(lower, "margin")
+			if hideProcurementTotals && (lower == "grosstotalsatang" || lower == "discountsatang" || lower == "allocateddiscountsatang" || lower == "nettotalsatang") {
+				sensitive = true
+			}
+			if sensitive {
+				delete(typed, key)
+				continue
+			}
+			redactPOSCostFields(child, hideProcurementTotals)
+		}
+	case []any:
+		for _, child := range typed {
+			redactPOSCostFields(child, hideProcurementTotals)
+		}
+	}
+}
+
+func (w *posCostFilteringWriter) flush() {
+	status := w.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	body := w.body.Bytes()
+	if status >= 200 && status < 300 && strings.Contains(w.Header().Get("Content-Type"), "application/json") {
+		var payload any
+		if json.Unmarshal(body, &payload) == nil {
+			hideProcurement := strings.HasPrefix(w.path, "stock/") || w.path == "reports/purchases"
+			redactPOSCostFields(payload, hideProcurement)
+			if encoded, err := json.Marshal(payload); err == nil {
+				body = encoded
+			}
+		}
+	}
+	w.ResponseWriter.WriteHeader(status)
+	_, _ = w.ResponseWriter.Write(body)
+}
 
 type posSettingsRecord struct {
 	PromptPayType               string `json:"promptPayType"`
@@ -355,6 +408,11 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 	}
 	if !authorizePOSPath(w, user, r.Method, path) {
 		return
+	}
+	if r.Method == http.MethodGet && !hasPOSPermission(user, "view_costs") {
+		filtered := &posCostFilteringWriter{ResponseWriter: w, path: path}
+		defer filtered.flush()
+		w = filtered
 	}
 	if r.Method == http.MethodGet && (path == "reports" || strings.HasPrefix(path, "reports/")) {
 		reportType := r.URL.Query().Get("reportType")
@@ -2390,6 +2448,11 @@ func (a *app) patchPOSProduct(w http.ResponseWriter, r *http.Request, user admin
 	if previous.TrackStock && !p.TrackStock && (previous.StockQuantity != 0 || previous.SecondaryStockQuantity != 0) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "กรุณาปรับยอดทั้งสองสต็อกเป็นศูนย์ก่อนปิดการติดตามสต็อก"})
 		return
+	}
+	if !hasPOSPermission(user, "view_costs") {
+		// Hidden/default client values must not overwrite the stored average cost.
+		p.CostSatang = previous.CostSatang
+		p.CostTHB = roundedBaht(previous.CostSatang)
 	}
 	result, err := tx.ExecContext(r.Context(), `update pos_products set category=$3,name=$4,price_thb=$5,price_satang=$6,cost_thb=$7,cost_satang=$8,track_stock=$9,low_stock_threshold=$10,active=$11,unit=$12,units_per_pack=$13,image_data=$14,barcode=$15,description=$16,is_popular=$17,updated_at=now() where id=$1 and admin_id=$2 and deleted_at is null`, id, user.ID, p.Category, p.Name, p.PriceTHB, p.PriceSatang, p.CostTHB, p.CostSatang, p.TrackStock, p.LowStockThreshold, p.Active, p.Unit, p.UnitsPerPack, p.ImageData, p.Barcode, p.Description, p.Popular)
 	if err != nil {

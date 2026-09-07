@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext';
 import { Product, StockMovement, Supplier, StockBatchSummary } from '../types';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
+import { POSPermissions } from '../api/posAccess';
 import { isAndroidDevice } from '../utils/browserHardware';
 import {
   PlusCircle,
@@ -47,7 +48,7 @@ const normalizeDecimalInput = (value: string) => {
   return `${whole}.${decimal}`;
 };
 
-export const StockView: React.FC = () => {
+export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissions }) => {
   const {
     products,
     categories: catalogCategories,
@@ -60,6 +61,10 @@ export const StockView: React.FC = () => {
     settings,
     showToast,
   } = usePos();
+  const canViewCosts = permissions.view_costs;
+  const formatCost = (value: number, decimalPlaces = settings.decimalPlaces) => canViewCosts
+    ? formatCurrency(value, settings.currencySymbol, decimalPlaces)
+    : '***';
 
   // Navigation & View Mode inside Stock Management
   const [activeMainTab, setActiveMainTab] = useState<'master' | 'batches' | 'movements' | 'suppliers'>('master');
@@ -561,7 +566,7 @@ export const StockView: React.FC = () => {
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-yellow-600 dark:text-yellow-400 font-mono mt-2">
-            {formatCurrency(totalInventoryCost, settings.currencySymbol, settings.decimalPlaces)}
+            {formatCost(totalInventoryCost)}
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
             <span>มูลค่าขายปลีก:</span>
@@ -793,7 +798,7 @@ export const StockView: React.FC = () => {
                             {formatCurrency(p.price, settings.currencySymbol, settings.decimalPlaces)}
                           </td>
                           <td className="p-3.5 text-right font-mono text-slate-500 dark:text-slate-400">
-                            {formatCurrency(p.cost, settings.currencySymbol, settings.decimalPlaces)}
+                            {formatCost(p.cost)}
                           </td>
                           <td className="p-3.5 text-center">
                             <span
@@ -809,11 +814,7 @@ export const StockView: React.FC = () => {
                             </span>
                           </td>
                           <td className="p-3.5 text-right font-mono font-bold text-yellow-600 dark:text-yellow-400">
-                            {formatCurrency(
-                              totalLineCost,
-                              settings.currencySymbol,
-                              settings.decimalPlaces
-                            )}
+                            {formatCost(totalLineCost)}
                           </td>
                           <td className="p-3.5 text-center">
                             {isOut ? (
@@ -971,11 +972,7 @@ export const StockView: React.FC = () => {
                         <div className="text-right">
                           <span className="text-[11px] text-slate-500 dark:text-slate-400 block">มูลค่ารวมรายการ</span>
                           <span className="text-base sm:text-lg font-black text-yellow-600 dark:text-yellow-400 font-mono">
-                            {formatCurrency(
-                              batch.totalCostValue,
-                              settings.currencySymbol,
-                              settings.decimalPlaces
-                            )}
+                            {formatCost(batch.totalCostValue)}
                           </span>
                         </div>
 
@@ -1647,11 +1644,7 @@ export const StockView: React.FC = () => {
                                     มูลค่าก่อน
                                   </span>
                                   <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300">
-                                    {formatCurrency(
-                                      beforeValue,
-                                      settings.currencySymbol,
-                                      settings.decimalPlaces
-                                    )}
+                                    {formatCost(beforeValue)}
                                   </span>
                                 </div>
                                 <div>
@@ -1659,11 +1652,7 @@ export const StockView: React.FC = () => {
                                     มูลค่าหลัง
                                   </span>
                                   <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">
-                                    {formatCurrency(
-                                      afterValue,
-                                      settings.currencySymbol,
-                                      settings.decimalPlaces
-                                    )}
+                                    {formatCost(afterValue)}
                                   </span>
                                 </div>
                               </div>
@@ -1736,21 +1725,13 @@ export const StockView: React.FC = () => {
                   <div className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-950">
                     <span className="text-slate-500 dark:text-slate-400 block">มูลค่าก่อนปรับ</span>
                     <span className="text-sm font-black text-slate-900 dark:text-white font-mono">
-                      {formatCurrency(
-                        adjustmentBeforeValue,
-                        settings.currencySymbol,
-                        settings.decimalPlaces
-                      )}
+                      {formatCost(adjustmentBeforeValue)}
                     </span>
                   </div>
                   <div className="rounded-xl border border-yellow-300 bg-yellow-50 px-3 py-2 dark:border-yellow-500/30 dark:bg-yellow-500/10">
                     <span className="text-yellow-700 dark:text-yellow-400 block">มูลค่าหลังปรับ</span>
                     <span className="text-base font-black text-yellow-700 dark:text-yellow-400 font-mono">
-                      {formatCurrency(
-                        adjustmentAfterValue,
-                        settings.currencySymbol,
-                        settings.decimalPlaces
-                      )}
+                      {formatCost(adjustmentAfterValue)}
                     </span>
                     <span
                       className={`block text-[11px] font-bold font-mono ${
@@ -1762,11 +1743,7 @@ export const StockView: React.FC = () => {
                       }`}
                     >
                       {adjustmentValueDelta > 0 ? '+' : ''}
-                      {formatCurrency(
-                        adjustmentValueDelta,
-                        settings.currencySymbol,
-                        settings.decimalPlaces
-                      )}
+                      {formatCost(adjustmentValueDelta)}
                     </span>
                   </div>
                 </div>
@@ -1809,7 +1786,7 @@ export const StockView: React.FC = () => {
                     <div className="border-l border-slate-200 dark:border-slate-800 pl-4">
                       <span className="text-slate-500 dark:text-slate-400 block">มูลค่ารวมทั้งสิ้น:</span>
                       <span className="text-base font-black text-yellow-600 dark:text-yellow-400 font-mono">
-                        {formatCurrency(batchTotalValue, settings.currencySymbol, settings.decimalPlaces)}
+                        {formatCost(batchTotalValue)}
                       </span>
                     </div>
                   )}
@@ -1933,7 +1910,7 @@ export const StockView: React.FC = () => {
                   {selectedBatchForDetails.type === 'in' ? 'ยอดสุทธิ:' : 'มูลค่ารายการ:'}
                 </span>
                 <span className="font-black text-yellow-600 dark:text-yellow-400 font-mono">
-                  {formatCurrency(selectedBatchForDetails.netTotalValue ?? selectedBatchForDetails.totalCostValue, settings.currencySymbol, 2)}
+                  {formatCost(selectedBatchForDetails.netTotalValue ?? selectedBatchForDetails.totalCostValue, 2)}
                 </span>
               </div>
             </div>
@@ -2002,22 +1979,22 @@ export const StockView: React.FC = () => {
                         <>
                           <div className="text-right min-w-[95px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ต้นทุนรับ/หน่วย</span>
-                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(item.costPerUnit || 0, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCost(item.costPerUnit || 0, 2)}</span>
                           </div>
                           <div className="grid min-w-[190px] grid-cols-2 gap-2 rounded-xl bg-white px-2.5 py-1.5 text-right dark:bg-slate-900">
                             <div>
                               <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ก่อนลด</span>
-                              <span className="text-xs font-mono font-bold">{formatCurrency(item.grossTotalValue || 0, settings.currencySymbol, 2)}</span>
+                              <span className="text-xs font-mono font-bold">{formatCost(item.grossTotalValue || 0, 2)}</span>
                             </div>
                             <div>
                               <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ส่วนลด / สุทธิ</span>
-                              <span className="text-[10px] font-mono text-red-500">-{formatCurrency(item.allocatedDiscountValue || 0, settings.currencySymbol, 2)}</span>
-                              <span className="block text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(item.netTotalValue || 0, settings.currencySymbol, 2)}</span>
+                              <span className="text-[10px] font-mono text-red-500">{canViewCosts ? `-${formatCost(item.allocatedDiscountValue || 0, 2)}` : '***'}</span>
+                              <span className="block text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCost(item.netTotalValue || 0, 2)}</span>
                             </div>
                           </div>
                           <div className="text-right min-w-[125px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ต้นทุนเฉลี่ย ก่อน → หลัง</span>
-                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(previousCost, settings.currencySymbol, 2)} → {formatCurrency(resultingCost, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{canViewCosts ? `${formatCost(previousCost, 2)} → ${formatCost(resultingCost, 2)}` : '***'}</span>
                           </div>
                         </>
                       )}
@@ -2026,11 +2003,11 @@ export const StockView: React.FC = () => {
                         <>
                           <div className="text-right min-w-[100px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ต้นทุนเฉลี่ย/หน่วย</span>
-                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(item.costPerUnit || 0, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCost(item.costPerUnit || 0, 2)}</span>
                           </div>
                           <div className="text-right min-w-[100px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่าจ่ายออก</span>
-                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(item.netTotalValue || 0, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCost(item.netTotalValue || 0, 2)}</span>
                           </div>
                         </>
                       )}
@@ -2039,16 +2016,16 @@ export const StockView: React.FC = () => {
                         <div className="grid min-w-[270px] grid-cols-3 gap-2 rounded-xl bg-white px-2.5 py-1.5 text-right dark:bg-slate-900">
                           <div>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่าก่อน</span>
-                            <span className="text-xs font-mono font-bold">{formatCurrency(beforeValue, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold">{formatCost(beforeValue, 2)}</span>
                           </div>
                           <div>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่าหลัง</span>
-                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(afterValue, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCost(afterValue, 2)}</span>
                           </div>
                           <div>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ผลต่าง</span>
                             <span className={`text-xs font-mono font-black ${valueDelta > 0 ? 'text-emerald-600 dark:text-emerald-400' : valueDelta < 0 ? 'text-red-600 dark:text-red-400' : 'text-slate-500'}`}>
-                              {valueDelta > 0 ? '+' : ''}{formatCurrency(valueDelta, settings.currencySymbol, 2)}
+                              {canViewCosts && valueDelta > 0 ? '+' : ''}{formatCost(valueDelta, 2)}
                             </span>
                           </div>
                         </div>
@@ -2062,18 +2039,18 @@ export const StockView: React.FC = () => {
             <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
               {selectedBatchForDetails.type === 'in' ? (
                 <div className="flex items-center gap-4 text-xs">
-                  <div><span className="text-slate-500 block">ยอดก่อนลด</span><strong className="font-mono">{formatCurrency(selectedBatchForDetails.grossTotalValue || 0, settings.currencySymbol, 2)}</strong></div>
-                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ส่วนลด</span><strong className="font-mono text-red-500">-{formatCurrency(selectedBatchForDetails.discountValue || 0, settings.currencySymbol, 2)}</strong></div>
-                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ยอดสุทธิ</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCurrency(selectedBatchForDetails.netTotalValue || 0, settings.currencySymbol, 2)}</strong></div>
+                  <div><span className="text-slate-500 block">ยอดก่อนลด</span><strong className="font-mono">{formatCost(selectedBatchForDetails.grossTotalValue || 0, 2)}</strong></div>
+                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ส่วนลด</span><strong className="font-mono text-red-500">{canViewCosts ? `-${formatCost(selectedBatchForDetails.discountValue || 0, 2)}` : '***'}</strong></div>
+                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ยอดสุทธิ</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCost(selectedBatchForDetails.netTotalValue || 0, 2)}</strong></div>
                 </div>
               ) : selectedBatchForDetails.type === 'adjust' ? (
                 <div className="grid grid-cols-3 gap-2 text-xs flex-1 w-full">
                   <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-2"><span className="text-slate-500 block">จำนวนเพิ่ม/ลด</span><strong className="font-mono text-orange-600 dark:text-orange-400">{detailQuantityDelta > 0 ? '+' : ''}{detailQuantityDelta}</strong></div>
-                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-2"><span className="text-slate-500 block">มูลค่าก่อน</span><strong className="font-mono">{formatCurrency(detailBeforeValue, settings.currencySymbol, 2)}</strong></div>
-                  <div className="rounded-xl bg-yellow-50 dark:bg-yellow-500/10 px-3 py-2"><span className="text-yellow-700 dark:text-yellow-400 block">มูลค่าหลัง</span><strong className="font-mono text-yellow-700 dark:text-yellow-400">{formatCurrency(detailAfterValue, settings.currencySymbol, 2)}</strong></div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-2"><span className="text-slate-500 block">มูลค่าก่อน</span><strong className="font-mono">{formatCost(detailBeforeValue, 2)}</strong></div>
+                  <div className="rounded-xl bg-yellow-50 dark:bg-yellow-500/10 px-3 py-2"><span className="text-yellow-700 dark:text-yellow-400 block">มูลค่าหลัง</span><strong className="font-mono text-yellow-700 dark:text-yellow-400">{formatCost(detailAfterValue, 2)}</strong></div>
                 </div>
               ) : (
-                <div className="text-xs"><span className="text-slate-500 block">มูลค่าจ่ายออกรวม</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCurrency(selectedBatchForDetails.totalCostValue, settings.currencySymbol, 2)}</strong></div>
+                <div className="text-xs"><span className="text-slate-500 block">มูลค่าจ่ายออกรวม</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCost(selectedBatchForDetails.totalCostValue, 2)}</strong></div>
               )}
               <button
                 onClick={() => setSelectedBatchForDetails(null)}

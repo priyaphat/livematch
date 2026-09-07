@@ -2,7 +2,7 @@ import { posRequest } from './posCatalog';
 
 export type POSRole = 'owner' | 'manager' | 'cashier';
 export type POSReportPermissionKey = 'report_overview' | 'report_top_sellers' | 'report_vat' | 'report_payments' | 'report_sold_products' | 'report_purchases' | 'report_inventory' | 'report_inventory_values' | 'report_transfers' | 'report_special';
-export type POSPermissionKey = 'sales' | 'bills' | 'products' | 'stock' | 'reports' | POSReportPermissionKey | 'settings' | 'discounts' | 'void_sales' | 'stock_adjust' | 'product_pricing' | 'report_export' | 'member_create';
+export type POSPermissionKey = 'sales' | 'bills' | 'products' | 'stock' | 'view_costs' | 'reports' | POSReportPermissionKey | 'settings' | 'discounts' | 'void_sales' | 'stock_adjust' | 'product_pricing' | 'report_export' | 'member_create';
 export type POSPermissions = Record<POSPermissionKey, boolean>;
 
 export const POS_REPORT_PERMISSION_KEYS: POSReportPermissionKey[] = ['report_overview', 'report_top_sellers', 'report_vat', 'report_payments', 'report_sold_products', 'report_purchases', 'report_inventory', 'report_inventory_values', 'report_transfers', 'report_special'];

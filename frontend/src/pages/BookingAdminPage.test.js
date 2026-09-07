@@ -27,6 +27,26 @@ function overview(settings = {}) {
 }
 
 describe('BookingAdminPage', () => {
+	it('clearly warns when the real SlipOK provider quota is exhausted', async () => {
+		const apiRequest = vi.fn((url) => {
+			if (url.includes('/slipok-quota')) return Promise.resolve({
+				month: '2026-09', used: 71, limit: 95, remaining: 24, limitEnabled: true,
+				provider: { available: true, remaining: 0, overQuota: 100, capReached: true }
+			})
+			return Promise.resolve(structuredClone(overview({ slipOKEnabled: true })))
+		})
+		const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+		await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+		await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+		await wrapper.findAll('button').find((button) => button.text().includes('Auto Slip')).trigger('click')
+		await vi.waitFor(() => expect(wrapper.get('[data-testid="provider-quota-alert"]').text()).toContain('โควตา SlipOK หมดแล้ว'))
+		expect(wrapper.get('[data-testid="provider-quota-alert"]').text()).toContain('ใช้เกินแล้ว 100 ครั้ง')
+		expect(wrapper.text()).toContain('โควตาภายใน LiveMatch')
+		expect(wrapper.text()).toContain('คงเหลือ 24 / 95')
+		expect(wrapper.text()).toContain('โควตา SlipOK จริง · คงเหลือ 0 ครั้ง')
+		wrapper.unmount()
+	})
+
 	it('defaults to showing booker names and saves the visibility choice', async () => {
 		const apiRequest = vi.fn((url) => {
 			if (url.includes('/slipok-quota')) return Promise.resolve({})

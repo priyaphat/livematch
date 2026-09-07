@@ -35,7 +35,7 @@ var dummyPOSCredentialHash = func() string {
 
 var posReportPermissionKeys = []string{"report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_inventory_values", "report_transfers", "report_special"}
 
-var posPermissionKeys = []string{"sales", "bills", "products", "stock", "reports", "report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_inventory_values", "report_transfers", "report_special", "settings", "discounts", "void_sales", "stock_adjust", "product_pricing", "report_export", "member_create"}
+var posPermissionKeys = []string{"sales", "bills", "products", "stock", "view_costs", "reports", "report_overview", "report_top_sellers", "report_vat", "report_payments", "report_sold_products", "report_purchases", "report_inventory", "report_inventory_values", "report_transfers", "report_special", "settings", "discounts", "void_sales", "stock_adjust", "product_pricing", "report_export", "member_create"}
 
 type posPrincipal struct {
 	User        adminUser
@@ -85,13 +85,13 @@ func allPOSPermissions() map[string]bool {
 func defaultPOSPermissions(role string) map[string]bool {
 	reportAccess := role == "manager"
 	if role == "manager" {
-		result := map[string]bool{"sales": true, "bills": true, "products": true, "stock": true, "reports": true, "settings": false, "discounts": true, "void_sales": true, "stock_adjust": true, "product_pricing": true, "report_export": true, "member_create": true}
+		result := map[string]bool{"sales": true, "bills": true, "products": true, "stock": true, "view_costs": true, "reports": true, "settings": false, "discounts": true, "void_sales": true, "stock_adjust": true, "product_pricing": true, "report_export": true, "member_create": true}
 		for _, key := range posReportPermissionKeys {
 			result[key] = reportAccess
 		}
 		return result
 	}
-	result := map[string]bool{"sales": true, "bills": true, "products": false, "stock": false, "reports": false, "settings": false, "discounts": false, "void_sales": false, "stock_adjust": false, "product_pricing": false, "report_export": false, "member_create": true}
+	result := map[string]bool{"sales": true, "bills": true, "products": false, "stock": false, "view_costs": false, "reports": false, "settings": false, "discounts": false, "void_sales": false, "stock_adjust": false, "product_pricing": false, "report_export": false, "member_create": true}
 	for _, key := range posReportPermissionKeys {
 		result[key] = reportAccess
 	}
@@ -99,6 +99,11 @@ func defaultPOSPermissions(role string) map[string]bool {
 }
 
 func normalizePOSPermissions(input map[string]bool) map[string]bool {
+	if _, exists := input["view_costs"]; !exists {
+		// Old POS clients did not send this key. Preserve their prior access
+		// instead of silently hiding costs during a rolling deployment.
+		input["view_costs"] = input["products"] || input["stock"] || input["reports"]
+	}
 	result := map[string]bool{}
 	for _, key := range posPermissionKeys {
 		value, exists := input[key]
@@ -124,6 +129,11 @@ func (a *app) posPermissions(ctx context.Context, adminID, role string) map[stri
 	if err := a.db.QueryRowContext(ctx, `select permissions from pos_role_permissions where admin_id=$1 and role=$2`, adminID, role).Scan(&raw); err == nil {
 		var stored map[string]bool
 		if json.Unmarshal(raw, &stored) == nil {
+			if _, exists := stored["view_costs"]; !exists {
+				// Existing installations keep the visibility they had before this
+				// permission was introduced, until the owner explicitly changes it.
+				stored["view_costs"] = stored["products"] || stored["stock"] || stored["reports"]
+			}
 			for _, key := range posPermissionKeys {
 				if value, ok := stored[key]; ok {
 					result[key] = value

@@ -15,8 +15,8 @@ export interface POSProductRecord {
   name: string;
   priceThb: number;
   priceSatang: number;
-  costThb: number;
-  costSatang: number;
+  costThb?: number;
+  costSatang?: number;
   stockQuantity: number;
   secondaryStockQuantity: number;
   totalStockQuantity: number;

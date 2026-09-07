@@ -32,7 +32,9 @@ const REPORT_PERMISSION_BY_TYPE: Record<ReportType, POSReportPermissionKey> = {
 
 export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permissions }) => {
   const { settings, showToast, categories, suppliers } = usePos();
+  const canViewCosts = permissions.view_costs;
   const canViewInventoryValues = permissions.report_inventory_values;
+  const formatCostSatang = (value?: number) => canViewCosts ? formatCurrency((value ?? 0) / 100, settings.currencySymbol, 2) : '***';
 
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
   const [dateRange, setDateRange] = useState<POSReportRange>('day');
@@ -137,7 +139,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   const grossProfit = (summary?.grossProfitSatang || 0) / 100;
   const profitMarginPercent = totalSales > 0 ? Math.round((grossProfit / totalSales) * 100) : 0;
   const avgOrderValue = (summary?.averageBillSatang || 0) / 100;
-  const topSellers = (report?.topSellers || []).map((item) => ({ id: item.id || `${item.sku}:${item.name}`, name: item.name, sku: item.sku, qty: item.quantity, revenue: item.revenueSatang / 100, cost: item.costSatang / 100 }));
+  const topSellers = (report?.topSellers || []).map((item) => ({ id: item.id || `${item.sku}:${item.name}`, name: item.name, sku: item.sku, qty: item.quantity, revenue: item.revenueSatang / 100, cost: (item.costSatang ?? 0) / 100 }));
   const completedOrders = report?.sales || [];
   const topPagination = report?.topSellersPagination || { page: 1, pageSize: 20, total: 0, totalPages: 0 };
   const vatPagination = report?.salesPagination || { page: 1, pageSize: 25, total: 0, totalPages: 0 };
@@ -263,7 +265,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       return;
     }
 
-    const exportTopSellers = exportReport.topSellers.map((item) => ({ name: item.name, sku: item.sku, qty: item.quantity, revenue: item.revenueSatang / 100, cost: item.costSatang / 100 }));
+    const exportTopSellers = exportReport.topSellers.map((item) => ({ name: item.name, sku: item.sku, qty: item.quantity, revenue: item.revenueSatang / 100, cost: canViewCosts ? (item.costSatang ?? 0) / 100 : '***' }));
     const exportCompletedOrders = exportReport.sales;
     const exportTotalSales = exportReport.summary.totalSalesSatang / 100;
     const exportPaymentStats = { cash: exportReport.paymentStats.cashSatang / 100, promptpay: exportReport.paymentStats.promptPaySatang / 100 };
@@ -287,13 +289,13 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
         ['ส่วนลดทั้งหมด', totalDiscounts, 'ส่วนลดที่มอบให้ลูกค้า'],
         ['ภาษีมูลค่าเพิ่ม', totalVat, `VAT ${settings.vatRate}%`],
         ['ยอดขายสุทธิ', totalSales, `${summary?.completedBills || 0} บิล`],
-        ['ต้นทุนขายรวม', totalCogs, 'ต้นทุนสินค้าที่ขายจริง'],
-        ['กำไรขั้นต้น', grossProfit, `อัตรากำไร ${profitMarginPercent}%`],
+        ['ต้นทุนขายรวม', canViewCosts ? totalCogs : '***', 'ต้นทุนสินค้าที่ขายจริง'],
+        ['กำไรขั้นต้น', canViewCosts ? grossProfit : '***', canViewCosts ? `อัตรากำไร ${profitMarginPercent}%` : '***'],
         ['ยอดขายเฉลี่ยต่อบิล', avgOrderValue, 'ค่าเฉลี่ยจากบิลที่สำเร็จ'],
       ];
     } else if (reportType === 'top_sellers') {
       headers = ['อันดับ', 'สินค้า', 'SKU', 'จำนวนขาย', 'ยอดขาย (บาท)', 'ต้นทุน (บาท)', 'กำไร (บาท)'];
-      rows = exportTopSellers.map((item, index) => [index + 1, item.name, item.sku || '-', item.qty, item.revenue, item.cost, item.revenue - item.cost]);
+      rows = exportTopSellers.map((item, index) => [index + 1, item.name, item.sku || '-', item.qty, item.revenue, item.cost, canViewCosts ? item.revenue - Number(item.cost) : '***']);
     } else if (reportType === 'vat') {
       headers = ['ลำดับ', 'เลขบิล', 'วันที่ชำระ', 'ลูกค้า', 'ราคาสินค้า (บาท)', 'ส่วนลด (บาท)', 'หลังส่วนลด (บาท)', 'VAT (บาท)', 'ยอดสุทธิ (บาท)', 'วิธีชำระ'];
       rows = exportCompletedOrders.map((sale, index) => [
@@ -324,10 +326,10 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       rows = (exportSold?.items || []).map((item, index) => [index + 1, item.name, item.quantity, item.billCount, item.revenueSatang / 100]);
     } else if (singlePurchase) {
       headers = ['ลำดับ', 'สินค้า', 'SKU', 'จำนวน', 'ต้นทุน/หน่วย (บาท)', 'ยอดก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'ยอดสุทธิ (บาท)'];
-      rows = (singlePurchase.lines || []).map((item, index) => [index + 1, item.productName, item.productSku || '-', item.quantity, item.unitCostSatang / 100, item.grossTotalSatang / 100, item.discountSatang / 100, item.netTotalSatang / 100]);
+      rows = (singlePurchase.lines || []).map((item, index) => [index + 1, item.productName, item.productSku || '-', item.quantity, canViewCosts ? item.unitCostSatang / 100 : '***', canViewCosts ? item.grossTotalSatang / 100 : '***', canViewCosts ? item.discountSatang / 100 : '***', canViewCosts ? item.netTotalSatang / 100 : '***']);
     } else if (reportType === 'purchases') {
       headers = ['ลำดับ', 'วันที่ซื้อ', 'เลขเอกสาร', 'เลขอ้างอิงซัพพลายเออร์', 'รหัสซัพพลายเออร์', 'ซัพพลายเออร์', 'รายการสินค้า', 'จำนวนรายการ', 'จำนวนชิ้น', 'ยอดก่อนส่วนลด (บาท)', 'ส่วนลด (บาท)', 'ยอดสุทธิ (บาท)', 'ผู้บันทึก', 'หมายเหตุ'];
-      rows = (exportPurchases?.items || []).map((item, index) => [index + 1, formatCSVDateTime(item.createdAt), item.referenceNo, item.externalReferenceNo || '-', item.supplierCode || '-', item.supplierName, item.products || '-', item.itemCount, item.totalQuantity, item.grossTotalSatang / 100, item.discountSatang / 100, item.netTotalSatang / 100, item.actorName || '-', item.note || '-']);
+      rows = (exportPurchases?.items || []).map((item, index) => [index + 1, formatCSVDateTime(item.createdAt), item.referenceNo, item.externalReferenceNo || '-', item.supplierCode || '-', item.supplierName, item.products || '-', item.itemCount, item.totalQuantity, canViewCosts ? item.grossTotalSatang / 100 : '***', canViewCosts ? item.discountSatang / 100 : '***', canViewCosts ? item.netTotalSatang / 100 : '***', item.actorName || '-', item.note || '-']);
     } else if (reportType === 'inventory') {
       headers = ['ลำดับ', 'สินค้า', 'หมวดหมู่', 'หน่วยนับ', 'สถานะสินค้า', 'คงเหลือ', 'จำนวนในแพ็ค', 'แพ็คเต็ม', 'เศษ', 'ต้นทุน/หน่วย (บาท)', 'มูลค่าทุน (บาท)', 'ราคาขาย (บาท)', 'มูลค่าขาย (บาท)'];
       rows = (exportInventory?.items || []).map((item, index) => [index + 1, item.name, item.category || '-', item.unit || '-', item.active ? 'ใช้งาน' : 'ปิดใช้งาน', item.stockQuantity, item.unitsPerPack || 'ไม่ได้กำหนด', item.fullPacks ?? '-', item.remainderUnits ?? '-', canViewInventoryValues ? Number(item.costSatang || 0) / 100 : '***', canViewInventoryValues ? Number(item.costValueSatang || 0) / 100 : '***', canViewInventoryValues ? Number(item.priceSatang || 0) / 100 : '***', canViewInventoryValues ? Number(item.retailValueSatang || 0) / 100 : '***']);
@@ -622,21 +624,21 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 sm:p-5 shadow-md">
           <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">กำไรขั้นต้น (Gross Profit)</span>
           <div className="text-xl sm:text-2xl font-extrabold text-teal-600 dark:text-teal-300 font-mono mt-1">
-            {formatCurrency(grossProfit, settings.currencySymbol, settings.decimalPlaces)}
+            {canViewCosts ? formatCurrency(grossProfit, settings.currencySymbol, settings.decimalPlaces) : '***'}
           </div>
           <div className="flex items-center gap-1 text-[11px] text-teal-600 dark:text-teal-400 mt-1 font-semibold">
             <TrendingUp className="w-3.5 h-3.5" />
-            <span>มาร์จิ้นกำไรเฉลี่ย {profitMarginPercent}%</span>
+            <span>มาร์จิ้นกำไรเฉลี่ย {canViewCosts ? `${profitMarginPercent}%` : '***'}</span>
           </div>
         </div>
 
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 sm:p-5 shadow-md">
           <span className="text-xs text-slate-500 dark:text-slate-400 font-medium">ต้นทุนขายรวม (COGS)</span>
           <div className="text-xl sm:text-2xl font-extrabold text-slate-800 dark:text-slate-300 font-mono mt-1">
-            {formatCurrency(totalCogs, settings.currencySymbol, settings.decimalPlaces)}
+            {canViewCosts ? formatCurrency(totalCogs, settings.currencySymbol, settings.decimalPlaces) : '***'}
           </div>
           <div className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">
-            คิดเป็น {totalSales > 0 ? Math.round((totalCogs / totalSales) * 100) : 0}% ของยอดขาย
+            คิดเป็น {canViewCosts ? `${totalSales > 0 ? Math.round((totalCogs / totalSales) * 100) : 0}%` : '***'} ของยอดขาย
           </div>
         </div>
 
@@ -745,7 +747,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
               <div className="flex justify-between items-center p-3 bg-slate-50 dark:bg-slate-950/70 rounded-2xl border border-slate-200 dark:border-slate-800">
                 <span className="text-xs text-slate-600 dark:text-slate-400">ต้นทุนสินค้าทั้งหมด (COGS)</span>
                 <span className="font-mono font-bold text-slate-600 dark:text-slate-400 text-sm">
-                  -{formatCurrency(totalCogs, settings.currencySymbol, settings.decimalPlaces)}
+                  {canViewCosts ? `-${formatCurrency(totalCogs, settings.currencySymbol, settings.decimalPlaces)}` : '***'}
                 </span>
               </div>
 
@@ -759,7 +761,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
                   </span>
                 </div>
                 <span className="font-mono font-extrabold text-emerald-600 dark:text-emerald-400 text-xl">
-                  {formatCurrency(grossProfit, settings.currencySymbol, settings.decimalPlaces)}
+                  {canViewCosts ? formatCurrency(grossProfit, settings.currencySymbol, settings.decimalPlaces) : '***'}
                 </span>
               </div>
             </div>
@@ -849,10 +851,10 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
                       {formatCurrency(item.revenue, settings.currencySymbol, settings.decimalPlaces)}
                     </td>
                     <td className="p-4 text-right font-mono text-slate-500 dark:text-slate-400">
-                      {formatCurrency(item.cost, settings.currencySymbol, settings.decimalPlaces)}
+                      {canViewCosts ? formatCurrency(item.cost, settings.currencySymbol, settings.decimalPlaces) : '***'}
                     </td>
                     <td className="p-4 text-right font-mono font-extrabold text-teal-600 dark:text-teal-300">
-                      {formatCurrency(profit, settings.currencySymbol, settings.decimalPlaces)}
+                      {canViewCosts ? formatCurrency(profit, settings.currencySymbol, settings.decimalPlaces) : '***'}
                     </td>
                   </tr>
                 );
@@ -998,8 +1000,8 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
             {[
               ['เอกสารซื้อ', `${purchasesReport?.summary.purchaseCount || 0} รายการ`],
               ['จำนวนสินค้า', `${purchasesReport?.summary.totalQuantity || 0} ชิ้น`],
-              ['ส่วนลดจากซัพพลายเออร์', formatCurrency((purchasesReport?.summary.discountSatang || 0) / 100, settings.currencySymbol, 2)],
-              ['ยอดซื้อสุทธิ', formatCurrency((purchasesReport?.summary.netTotalSatang || 0) / 100, settings.currencySymbol, 2)],
+              ['ส่วนลดจากซัพพลายเออร์', formatCostSatang(purchasesReport?.summary.discountSatang)],
+              ['ยอดซื้อสุทธิ', formatCostSatang(purchasesReport?.summary.netTotalSatang)],
             ].map(([label, value]) => (
               <div key={label} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900">
                 <p className="text-xs text-slate-500">{label}</p>
@@ -1010,7 +1012,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
           <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-md dark:border-slate-800 dark:bg-slate-900">
             <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 p-4 dark:border-slate-800">
               <div><h3 className="text-sm font-bold">รายการซื้อจากซัพพลายเออร์</h3><p className="text-xs text-slate-500">อ้างอิงจากเอกสารรับสินค้าเข้าที่ระบุซัพพลายเออร์</p></div>
-              <div className="text-right text-xs text-slate-500">ก่อนส่วนลด {formatCurrency((purchasesReport?.summary.grossTotalSatang || 0) / 100, settings.currencySymbol, 2)}</div>
+              <div className="text-right text-xs text-slate-500">ก่อนส่วนลด {formatCostSatang(purchasesReport?.summary.grossTotalSatang)}</div>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[1100px] text-left text-xs">
@@ -1023,9 +1025,9 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
                       <td className="p-3"><strong>{item.supplierName}</strong>{item.supplierCode && <span className="block text-slate-500">{item.supplierCode}</span>}</td>
                       <td className="max-w-[320px] p-3 text-slate-600 dark:text-slate-300">{item.products || '-'}</td>
                       <td className="p-3 text-right font-mono">{item.itemCount} รายการ<br/><span className="text-slate-500">{item.totalQuantity} ชิ้น</span></td>
-                      <td className="p-3 text-right font-mono">{formatCurrency(item.grossTotalSatang / 100, settings.currencySymbol, 2)}</td>
-                      <td className="p-3 text-right font-mono text-amber-600">{formatCurrency(item.discountSatang / 100, settings.currencySymbol, 2)}</td>
-                      <td className="p-3 text-right font-mono font-bold text-emerald-600">{formatCurrency(item.netTotalSatang / 100, settings.currencySymbol, 2)}</td>
+                      <td className="p-3 text-right font-mono">{formatCostSatang(item.grossTotalSatang)}</td>
+                      <td className="p-3 text-right font-mono text-amber-600">{formatCostSatang(item.discountSatang)}</td>
+                      <td className="p-3 text-right font-mono font-bold text-emerald-600">{formatCostSatang(item.netTotalSatang)}</td>
                       <td className="p-3">{item.actorName || '-'}</td>
                       <td className="p-3"><div className="flex justify-center gap-2"><button type="button" onClick={() => setSelectedPurchase(item)} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 font-bold text-slate-600 hover:border-emerald-500 hover:text-emerald-600 dark:border-slate-700 dark:text-slate-300"><Eye className="h-3.5 w-3.5"/>ดูรายละเอียด</button><button type="button" onClick={() => void handleExportCSV(item)} className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1.5 font-bold text-white hover:bg-emerald-500"><FileSpreadsheet className="h-3.5 w-3.5"/>Excel</button></div></td>
                     </tr>
@@ -1050,9 +1052,9 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
                 ['เลขอ้างอิงซัพพลายเออร์', selectedPurchase.externalReferenceNo || '-'],
                 ['ผู้บันทึก', selectedPurchase.actorName || '-'],
                 ['จำนวนสินค้า', `${selectedPurchase.totalQuantity} ชิ้น`],
-                ['ยอดสุทธิ', formatCurrency(selectedPurchase.netTotalSatang / 100, settings.currencySymbol, 2)],
+                ['ยอดสุทธิ', formatCostSatang(selectedPurchase.netTotalSatang)],
               ].map(([label, value]) => <div key={label} className="rounded-2xl bg-slate-50 p-3 dark:bg-slate-950"><p className="text-[10px] font-bold text-slate-400">{label}</p><p className="mt-1 text-sm font-black">{value}</p></div>)}</div>
-              <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800"><table className="w-full min-w-[760px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950"><tr><th className="p-3 text-left">สินค้า / SKU</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">ต้นทุน/หน่วย</th><th className="p-3 text-right">ก่อนลด</th><th className="p-3 text-right">ส่วนลด</th><th className="p-3 text-right">สุทธิ</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(selectedPurchase.lines || []).map((line) => <tr key={`${line.productId}:${line.productSku}`}><td className="p-3"><strong className="block">{line.productName}</strong><span className="text-slate-500">{line.productSku || '-'}</span></td><td className="p-3 text-right font-mono">{line.quantity}</td><td className="p-3 text-right font-mono">{formatCurrency(line.unitCostSatang / 100, settings.currencySymbol, 2)}</td><td className="p-3 text-right font-mono">{formatCurrency(line.grossTotalSatang / 100, settings.currencySymbol, 2)}</td><td className="p-3 text-right font-mono text-amber-600">{formatCurrency(line.discountSatang / 100, settings.currencySymbol, 2)}</td><td className="p-3 text-right font-mono font-black text-emerald-600">{formatCurrency(line.netTotalSatang / 100, settings.currencySymbol, 2)}</td></tr>)}</tbody></table></div>
+              <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-slate-800"><table className="w-full min-w-[760px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950"><tr><th className="p-3 text-left">สินค้า / SKU</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">ต้นทุน/หน่วย</th><th className="p-3 text-right">ก่อนลด</th><th className="p-3 text-right">ส่วนลด</th><th className="p-3 text-right">สุทธิ</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(selectedPurchase.lines || []).map((line) => <tr key={`${line.productId}:${line.productSku}`}><td className="p-3"><strong className="block">{line.productName}</strong><span className="text-slate-500">{line.productSku || '-'}</span></td><td className="p-3 text-right font-mono">{line.quantity}</td><td className="p-3 text-right font-mono">{formatCostSatang(line.unitCostSatang)}</td><td className="p-3 text-right font-mono">{formatCostSatang(line.grossTotalSatang)}</td><td className="p-3 text-right font-mono text-amber-600">{formatCostSatang(line.discountSatang)}</td><td className="p-3 text-right font-mono font-black text-emerald-600">{formatCostSatang(line.netTotalSatang)}</td></tr>)}</tbody></table></div>
               {selectedPurchase.note && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-xs text-slate-600 dark:bg-slate-950 dark:text-slate-300">หมายเหตุ: {selectedPurchase.note}</p>}
               <div className="mt-5 flex justify-end"><button type="button" onClick={() => void handleExportCSV(selectedPurchase)} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-black text-white hover:bg-emerald-500"><Download className="h-4 w-4"/>Export Excel รายการนี้</button></div>
             </div>
@@ -1070,7 +1072,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
             <select value={inventoryFilters.packStatus} onChange={(e) => { setInventoryPage(1); setInventoryFilters((v) => ({ ...v, packStatus: e.target.value as POSInventoryFilters['packStatus'] })); }} className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none dark:border-slate-700 dark:bg-slate-950"><option value="all">จำนวนในแพ็คทั้งหมด</option><option value="configured">กำหนดแล้ว</option><option value="unconfigured">ยังไม่กำหนด</option></select>
           </div>
           <div className="rounded-3xl border border-slate-200 bg-white shadow-md overflow-hidden dark:border-slate-800 dark:bg-slate-900">
-            <div className="overflow-x-auto"><table className="w-full min-w-[1050px] text-left text-xs"><thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-3">สินค้า</th><th className="p-3">หมวด/หน่วย</th><th className="p-3">สถานะ</th><th className="p-3 text-right">คงเหลือ</th><th className="p-3">แพ็คและเศษ</th><th className="p-3 text-right">ต้นทุน/มูลค่าทุน</th><th className="p-3 text-right">ราคาขาย/มูลค่าขาย</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(inventoryReport?.items || []).map((item) => <tr key={item.productId}><td className="p-3 font-bold">{item.name}</td><td className="p-3 text-slate-500">{item.category || '-'} · {item.unit || '-'}</td><td className="p-3"><span className={`rounded-full px-2 py-1 font-bold ${item.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{item.active ? 'ใช้งาน' : 'ปิดใช้งาน'}</span></td><td className="p-3 text-right font-mono">{item.stockQuantity}</td><td className="p-3">{item.unitsPerPack > 0 ? `${item.fullPacks} แพ็ค + เศษ ${item.remainderUnits} ${item.unit}` : 'ไม่ได้กำหนดจำนวนในแพ็ค'}</td><td className="p-3 text-right font-mono">{canViewInventoryValues ? <>{formatCurrency(Number(item.costSatang || 0) / 100, settings.currencySymbol, 2)}<div className="text-slate-400">รวม {formatCurrency(Number(item.costValueSatang || 0) / 100, settings.currencySymbol, 2)}</div></> : <span className="font-black tracking-widest text-slate-400">***</span>}</td><td className="p-3 text-right font-mono">{canViewInventoryValues ? <>{formatCurrency(Number(item.priceSatang || 0) / 100, settings.currencySymbol, 2)}<div className="text-emerald-600">รวม {formatCurrency(Number(item.retailValueSatang || 0) / 100, settings.currencySymbol, 2)}</div></> : <span className="font-black tracking-widest text-slate-400">***</span>}</td></tr>)}</tbody></table></div>
+            <div className="overflow-x-auto"><table className="w-full min-w-[1050px] text-left text-xs"><thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-3">สินค้า</th><th className="p-3">หมวด/หน่วย</th><th className="p-3">สถานะ</th><th className="p-3 text-right">คงเหลือ</th><th className="p-3">แพ็คและเศษ</th><th className="p-3 text-right">ต้นทุน/มูลค่าทุน</th><th className="p-3 text-right">ราคาขาย/มูลค่าขาย</th></tr></thead><tbody className="divide-y divide-slate-100 dark:divide-slate-800">{(inventoryReport?.items || []).map((item) => <tr key={item.productId}><td className="p-3 font-bold">{item.name}</td><td className="p-3 text-slate-500">{item.category || '-'} · {item.unit || '-'}</td><td className="p-3"><span className={`rounded-full px-2 py-1 font-bold ${item.active ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{item.active ? 'ใช้งาน' : 'ปิดใช้งาน'}</span></td><td className="p-3 text-right font-mono">{item.stockQuantity}</td><td className="p-3">{item.unitsPerPack > 0 ? `${item.fullPacks} แพ็ค + เศษ ${item.remainderUnits} ${item.unit}` : 'ไม่ได้กำหนดจำนวนในแพ็ค'}</td><td className="p-3 text-right font-mono">{canViewInventoryValues && canViewCosts ? <>{formatCurrency(Number(item.costSatang || 0) / 100, settings.currencySymbol, 2)}<div className="text-slate-400">รวม {formatCurrency(Number(item.costValueSatang || 0) / 100, settings.currencySymbol, 2)}</div></> : <span className="font-black tracking-widest text-slate-400">***</span>}</td><td className="p-3 text-right font-mono">{canViewInventoryValues ? <>{formatCurrency(Number(item.priceSatang || 0) / 100, settings.currencySymbol, 2)}<div className="text-emerald-600">รวม {formatCurrency(Number(item.retailValueSatang || 0) / 100, settings.currencySymbol, 2)}</div></> : <span className="font-black tracking-widest text-slate-400">***</span>}</td></tr>)}</tbody></table></div>
             {inventoryReport && paginationBar(inventoryReport.pagination.page, inventoryReport.pagination.totalPages, inventoryReport.pagination.total, setInventoryPage)}
           </div>
         </div>

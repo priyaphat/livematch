@@ -108,6 +108,47 @@ func TestNormalizePOSPermissionsDropsUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestNormalizePOSPermissionsPreservesLegacyCostVisibility(t *testing.T) {
+	legacyManager := normalizePOSPermissions(map[string]bool{"products": true, "stock": true, "reports": true})
+	if !legacyManager["view_costs"] {
+		t.Fatal("legacy role with stock access must keep cost visibility until owner changes it")
+	}
+	explicitlyHidden := normalizePOSPermissions(map[string]bool{"stock": true, "view_costs": false})
+	if explicitlyHidden["view_costs"] {
+		t.Fatal("explicitly hidden cost permission must remain hidden")
+	}
+	if defaultPOSPermissions("cashier")["view_costs"] {
+		t.Fatal("new cashier default must not expose cost data")
+	}
+}
+
+func TestRedactPOSCostFieldsRemovesNetworkCostData(t *testing.T) {
+	payload := map[string]any{
+		"costSatang": int64(1000), "grossProfitSatang": int64(500), "salesSatang": int64(1500),
+		"items": []any{map[string]any{"unitCostSatang": int64(1000), "priceSatang": int64(1500)}},
+	}
+	redactPOSCostFields(payload, false)
+	encoded, _ := json.Marshal(payload)
+	body := string(encoded)
+	for _, forbidden := range []string{"costSatang", "grossProfitSatang", "unitCostSatang"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("redacted payload still exposes %s: %s", forbidden, body)
+		}
+	}
+	for _, allowed := range []string{"salesSatang", "priceSatang"} {
+		if !strings.Contains(body, allowed) {
+			t.Fatalf("redaction removed allowed field %s: %s", allowed, body)
+		}
+	}
+
+	procurement := map[string]any{"grossTotalSatang": int64(2000), "discountSatang": int64(100), "netTotalSatang": int64(1900), "quantity": 2}
+	redactPOSCostFields(procurement, true)
+	encoded, _ = json.Marshal(procurement)
+	if string(encoded) != `{"quantity":2}` {
+		t.Fatalf("procurement totals can reveal costs: %s", encoded)
+	}
+}
+
 func TestNormalizePOSPermissionsMigratesAndEnforcesReportChildren(t *testing.T) {
 	legacy := normalizePOSPermissions(map[string]bool{"reports": true})
 	for _, permission := range posReportPermissionKeys {

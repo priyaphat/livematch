@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext';
 import { Product, Category, UnitItem, NoteOption } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
+import { POSPermissions } from '../api/posAccess';
 import {
   Package,
   Plus,
@@ -119,7 +120,7 @@ const resizeProductImage = async (file: File) => {
   }
 };
 
-export const ProductsView: React.FC = () => {
+export const ProductsView: React.FC<{ permissions: POSPermissions }> = ({ permissions }) => {
   const {
     products,
     addProduct,
@@ -838,17 +839,13 @@ export const ProductsView: React.FC = () => {
 
                           {/* Cost */}
                           <td className="p-3.5 text-right font-mono text-slate-500 dark:text-slate-400">
-                            {formatCurrency(
-                              prod.cost,
-                              settings.currencySymbol,
-                              settings.decimalPlaces
-                            )}
+                            {permissions.view_costs ? formatCurrency(prod.cost, settings.currencySymbol, settings.decimalPlaces) : '***'}
                           </td>
 
                           {/* Margin % */}
                           <td className="p-3.5 text-center">
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-yellow-500/15 text-yellow-700 dark:text-yellow-300 border border-yellow-500/30">
-                              {margin}%
+                              {permissions.view_costs ? `${margin}%` : '***'}
                             </span>
                           </td>
 
@@ -1151,7 +1148,9 @@ export const ProductsView: React.FC = () => {
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                       ราคาขาย (Price) *
                     </label>
-                    <input
+                    {editingProduct && !permissions.view_costs ? (
+                      <div className="w-full rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-sm font-black tracking-widest text-slate-500 dark:border-slate-700 dark:bg-slate-900">***</div>
+                    ) : <input
                       type="number"
                       required
                       min="0"
@@ -1164,7 +1163,7 @@ export const ProductsView: React.FC = () => {
                       }}
                       onBlur={() => setPriceInput((value) => value || '0')}
                       className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-red-600 dark:text-yellow-400 font-black focus:outline-none focus:border-red-500 dark:focus:border-yellow-400"
-                    />
+                    />}
                   </div>
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
@@ -1191,17 +1190,17 @@ export const ProductsView: React.FC = () => {
                   <span>
                     กำไรต่อชิ้น:{' '}
                     <strong className="text-red-600 dark:text-yellow-400 font-black font-mono">
-                      {formatCurrency(
+                      {permissions.view_costs || !editingProduct ? formatCurrency(
                         (Number(priceInput) || 0) - (Number(costInput) || 0),
                         settings.currencySymbol,
                         settings.decimalPlaces
-                      )}
+                      ) : '***'}
                     </strong>
                   </span>
                   <span>
                     มาร์จิ้นกำไร:{' '}
                     <strong className="text-red-600 dark:text-yellow-400 font-black font-mono">
-                      {calculateMargin(Number(priceInput) || 0, Number(costInput) || 0)}%
+                      {permissions.view_costs || !editingProduct ? `${calculateMargin(Number(priceInput) || 0, Number(costInput) || 0)}%` : '***'}
                     </strong>
                   </span>
                 </div>

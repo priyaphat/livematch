@@ -3,7 +3,7 @@ import { posRequest } from './posCatalog';
 export interface POSStockSummary {
   productCount: number;
   totalUnits: number;
-  inventoryCostSatang: number;
+  inventoryCostSatang?: number;
   inventoryRetailSatang: number;
   lowStockCount: number;
   outOfStockCount: number;
@@ -38,12 +38,12 @@ export interface POSStockMovementRecord {
   reason: string;
   note?: string;
   supplierName?: string;
-  unitCostSatang: number;
-  grossTotalSatang: number;
-  allocatedDiscountSatang: number;
-  netTotalSatang: number;
-  previousCostSatang: number;
-  resultingCostSatang: number;
+  unitCostSatang?: number;
+  grossTotalSatang?: number;
+  allocatedDiscountSatang?: number;
+  netTotalSatang?: number;
+  previousCostSatang?: number;
+  resultingCostSatang?: number;
   createdAt: string;
   actorId: string;
   actorType: string;
@@ -63,10 +63,10 @@ export interface POSStockBatchRecord {
   supplierName?: string;
   discountType: 'none' | 'amount' | 'percent';
   discountRateBps: number;
-  grossTotalSatang: number;
-  discountSatang: number;
-  netTotalSatang: number;
-  totalCostSatang: number;
+  grossTotalSatang?: number;
+  discountSatang?: number;
+  netTotalSatang?: number;
+  totalCostSatang?: number;
   createdAt: string;
   actorId: string;
   actorType: string;
@@ -78,12 +78,12 @@ export interface POSStockBatchRecord {
     productSku: string;
     delta: number;
     balance: number;
-    unitCostSatang: number;
-    grossTotalSatang: number;
-    allocatedDiscountSatang: number;
-    netTotalSatang: number;
-    previousCostSatang: number;
-    resultingCostSatang: number;
+    unitCostSatang?: number;
+    grossTotalSatang?: number;
+    allocatedDiscountSatang?: number;
+    netTotalSatang?: number;
+    previousCostSatang?: number;
+    resultingCostSatang?: number;
   }>;
 }
 
