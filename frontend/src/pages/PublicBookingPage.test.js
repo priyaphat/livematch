@@ -155,6 +155,22 @@ describe("PublicBookingPage", () => {
     vi.useRealTimers();
   });
 
+  it("shows a real booker name only when the availability API includes it", async () => {
+    const namedAvailability = availability();
+    namedAvailability.bookings[1].bookerName = "คุณปุ้ย";
+    namedAvailability.settings.showBookerName = true;
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(namedAvailability);
+      if (url.includes("/public-auth/me")) return Promise.reject(Object.assign(new Error("unauthorized"), { status: 401 }));
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain("คุณปุ้ย"));
+    expect(wrapper.find('.public-slot--pending').text()).toBe("รอตรวจสอบ · คุณปุ้ย");
+    wrapper.unmount();
+  });
+
   it("shows the closure reason directly without the closed prefix", async () => {
     const payload = availability();
     payload.closures = [{

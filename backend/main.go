@@ -978,6 +978,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_settings add column if not exists booking_acceptance_close_time time;
 		alter table booking_settings add column if not exists single_slot_purchase_enabled boolean not null default false;
 		alter table booking_settings add column if not exists popup_enabled boolean not null default false;
+		alter table booking_settings add column if not exists show_booker_name boolean not null default true;
 		alter table booking_settings add column if not exists popup_image text not null default '';
 		alter table booking_settings add column if not exists popup_revision text not null default '';
 		alter table booking_settings add column if not exists slipok_enabled boolean not null default false;

@@ -15,7 +15,7 @@ function overview(settings = {}) {
     settings: {
       openTime: '16:00', closeTime: '22:00', intervalMinutes: 60, allowOvernight: false,
       useSamePrice: true, paymentQrMode: 'generated', promptPayType: 'mobile', promptPayId: '', promptPayReceiverName: '',
-      publicToken: 'public-token', ...settings
+      publicToken: 'public-token', showBookerName: true, ...settings
     },
     courts: [{ id: 'court-1', name: 'สนาม 1', pricePerInterval: 100, active: true }],
     bookings: [{ id: 'booking-1', courtId: 'court-1', courtName: 'สนาม 1', bookerName: 'ผู้จอง', startAt: `${testToday}T17:00:00+07:00`, endAt: `${testToday}T18:00:00+07:00`, status: 'pending_review', totalPriceThb: 100, slipData: 'data:image/png;base64,iVBORw0KGgo=' }],
@@ -27,6 +27,24 @@ function overview(settings = {}) {
 }
 
 describe('BookingAdminPage', () => {
+	it('defaults to showing booker names and saves the visibility choice', async () => {
+		const apiRequest = vi.fn((url) => {
+			if (url.includes('/slipok-quota')) return Promise.resolve({})
+			return Promise.resolve(structuredClone(overview()))
+		})
+		const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+		await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+		await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+		await wrapper.findAll('button').find((button) => button.text().includes('การแสดงผล')).trigger('click')
+		const checkbox = wrapper.get('[data-testid="show-booker-name"]')
+		expect(checkbox.element.checked).toBe(true)
+		await checkbox.setValue(false)
+		await wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า')).trigger('click')
+		const saveCall = apiRequest.mock.calls.find(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')
+		expect(JSON.parse(saveCall[1].body).showBookerName).toBe(false)
+		wrapper.unmount()
+	})
+
   it('locks the settings save button and shows a completion toast', async () => {
     let resolveSave
     const pendingSave = new Promise((resolve) => { resolveSave = resolve })

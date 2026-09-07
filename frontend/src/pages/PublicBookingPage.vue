@@ -257,6 +257,7 @@ function status(court, minute) {
       new Date(item.endAt).getTime() > start,
   );
   if (booking) {
+	const bookerLabel = booking.bookerName ? ` · ${booking.bookerName}` : "";
     if (booking.status === "hold") {
       const seconds = Math.max(
         0,
@@ -265,13 +266,13 @@ function status(court, minute) {
         ),
       );
       return {
-        text: `กำลังจอง ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+        text: `กำลังจอง${bookerLabel} ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
         tone: "hold",
       };
     }
     return booking.status === "pending_review"
-      ? { text: "รอตรวจสอบ", tone: "pending" }
-      : { text: "จองแล้ว", tone: "busy" };
+      ? { text: `รอตรวจสอบ${bookerLabel}`, tone: "pending" }
+      : { text: `จองแล้ว${bookerLabel}`, tone: "busy" };
   }
   const closure = state.closures.find(
     (item) =>

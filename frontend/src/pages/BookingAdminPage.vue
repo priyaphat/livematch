@@ -1738,6 +1738,10 @@ onUnmounted(() => {
 		</div>
 
 		<div v-else-if="settingsTab === 'display'" class="mt-4 grid gap-4 sm:grid-cols-2">
+		  <label class="flex items-start gap-3 rounded-lg border p-4 font-black dark:border-stone-700 sm:col-span-2">
+			<input v-model="settings.showBookerName" type="checkbox" class="mt-1" data-testid="show-booker-name" />
+			<span>แสดงชื่อผู้จองบนหน้าจองของผู้ใช้<small class="mt-1 block font-semibold text-stone-500">ค่าเริ่มต้นเปิด หากปิด Backend จะไม่ส่งชื่อจริงในข้อมูลตารางจองสาธารณะ</small></span>
+		  </label>
           <div class="grid gap-3 rounded-lg border p-3 dark:border-stone-700">
             <h3 class="font-black">โลโก้หน้าจอง</h3>
             <div v-if="settings.logoData" class="grid place-items-center rounded-lg bg-paper-100 p-2 dark:bg-stone-800"><img :src="settings.logoData" alt="ตัวอย่างโลโก้" class="h-20 w-20 rounded-xl object-cover" /></div>

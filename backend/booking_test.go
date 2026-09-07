@@ -46,6 +46,23 @@ func TestPhoneSearchDigits(t *testing.T) {
 	}
 }
 
+func TestPublicBookingNameVisibilityRedactsAtBackend(t *testing.T) {
+	original := bookingRecord{ID: "booking-1", MemberID: "member-1", BookerName: "สมชาย", BookedBy: "member", PaymentStatus: "paid", Note: "private"}
+	hidden := original
+	redactPublicBookingRecord(&hidden, false)
+	if hidden.BookerName != "" || hidden.ID != "" || hidden.MemberID != "" || hidden.Note != "" {
+		t.Fatalf("hidden public booking leaked private data: %+v", hidden)
+	}
+	shown := original
+	redactPublicBookingRecord(&shown, true)
+	if shown.BookerName != "สมชาย" {
+		t.Fatalf("enabled public booking name = %q, want %q", shown.BookerName, "สมชาย")
+	}
+	if shown.ID != "" || shown.MemberID != "" || shown.PaymentStatus != "" {
+		t.Fatalf("showing a name must not expose private identifiers: %+v", shown)
+	}
+}
+
 func TestMemberSearchQuerySearchesFromFirstCharacter(t *testing.T) {
 	tests := []struct {
 		values url.Values
