@@ -31,7 +31,12 @@ import (
 	"google.golang.org/api/idtoken"
 )
 
-const publicCookieName = "livematch_public_session"
+const (
+	publicCookieName         = "livematch_public_session"
+	bookingHoldUserRateLimit = 60
+	bookingHoldIPRateLimit   = 1000
+	bookingHoldRateWindow    = 10 * time.Minute
+)
 
 type requestRateBucket struct {
 	count int
@@ -3118,7 +3123,7 @@ func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, 
 		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
-	if !a.requireRequestRate(w, r, "booking-hold-user:"+adminID+":"+u.ID, 20, 10*time.Minute) || !a.requireRequestRate(w, r, "booking-hold-ip:"+adminID, 500, 10*time.Minute) {
+	if !a.requireRequestRate(w, r, "booking-hold-user:"+adminID+":"+u.ID, bookingHoldUserRateLimit, bookingHoldRateWindow) || !a.requireRequestRate(w, r, "booking-hold-ip:"+adminID, bookingHoldIPRateLimit, bookingHoldRateWindow) {
 		return
 	}
 	var memberID, name string

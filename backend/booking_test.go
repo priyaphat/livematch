@@ -144,6 +144,18 @@ func TestBookingRateLimitUsesRemoteIPAndScope(t *testing.T) {
 	}
 }
 
+func TestBookingHoldRatePolicyAllowsFrequentBulkBooking(t *testing.T) {
+	if bookingHoldUserRateLimit != 60 {
+		t.Fatalf("booking hold user limit = %d, want 60 requests", bookingHoldUserRateLimit)
+	}
+	if bookingHoldIPRateLimit != 1000 {
+		t.Fatalf("booking hold IP limit = %d, want 1000 requests", bookingHoldIPRateLimit)
+	}
+	if bookingHoldRateWindow != 10*time.Minute {
+		t.Fatalf("booking hold window = %s, want 10m", bookingHoldRateWindow)
+	}
+}
+
 func TestFetchTelegramUpdatesReturnsJSONWithoutExposingTokenInURLResponse(t *testing.T) {
 	token := "123456789:secret-token-value"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
