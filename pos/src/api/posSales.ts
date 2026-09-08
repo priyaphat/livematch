@@ -114,6 +114,9 @@ export interface POSReceivable {
   billingAccountId: string;
   memberId: string;
   displayName: string;
+  memberName?: string;
+  matchDisplayName?: string;
+  searchAliases?: string[];
   phone?: string;
   matchTotalSatang: number;
   posTotalSatang: number;

@@ -316,3 +316,26 @@ func TestTelegramBookingMessageShowsEveryBookedSlot(t *testing.T) {
 		}
 	}
 }
+
+func TestBookingDashboardRangeUsesBangkokCalendarBoundaries(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 13, 45, 0, 0, bangkokLocation)
+	tests := []struct {
+		period string
+		start  string
+		end    string
+	}{
+		{"day", "2026-09-08", "2026-09-09"},
+		{"week", "2026-09-07", "2026-09-14"},
+		{"month", "2026-09-01", "2026-10-01"},
+		{"invalid", "2026-09-08", "2026-09-09"},
+	}
+	for _, test := range tests {
+		start, end, _ := bookingDashboardRange(now, test.period)
+		if got := start.Format("2006-01-02"); got != test.start {
+			t.Fatalf("%s start=%s want %s", test.period, got, test.start)
+		}
+		if got := end.Format("2006-01-02"); got != test.end {
+			t.Fatalf("%s end=%s want %s", test.period, got, test.end)
+		}
+	}
+}

@@ -224,6 +224,7 @@ const state = reactive({
   historyView: {
     items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: ''
   },
+  shuttleStockAvailability: [],
   liveShare: {
     courtHours: {},
     playerHours: {},
@@ -535,12 +536,13 @@ function closeToast() {
 }
 
 async function api(path, options = {}) {
+  const { __staleRetried = false, ...fetchOptions } = options
   const isFormData = options.body instanceof FormData
   const csrfToken = document.cookie.split('; ').find((item) => item.startsWith('livematch_csrf='))?.split('=').slice(1).join('=') || ''
   const method = String(options.method || 'GET').toUpperCase()
   const isSessionMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && path.startsWith('/api/sessions/')
   const response = await fetch(`${apiUrl}${path}`, {
-    ...options,
+    ...fetchOptions,
     credentials: 'include',
     headers: {
       ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
@@ -557,6 +559,9 @@ async function api(path, options = {}) {
     requestError.retryAfter = Number(response.headers?.get?.('Retry-After') || 0)
     requestError.code = error.code || error.error || ''
     requestError.payload = error
+    if (requestError.code === 'session_token_stale' && (method === 'GET' || method === 'HEAD') && !__staleRetried) {
+      return api(path, { ...options, __staleRetried: true })
+    }
     if (requestError.code === 'booking_blacklisted') {
       window.dispatchEvent(new CustomEvent('livematch:booking-blocked', { detail: error }))
     }
@@ -603,6 +608,7 @@ function mergeSessionPatch(patch = {}) {
   if (patch.liveShare) state.liveShare = patch.liveShare
   if (patch.settings) state.settings = patch.settings
   if (Array.isArray(patch.memberTypes)) state.memberTypes = patch.memberTypes
+  if (Array.isArray(patch.shuttleStockAvailability)) state.shuttleStockAvailability = patch.shuttleStockAvailability
   normalizeClientSettings()
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
@@ -3653,6 +3659,13 @@ async function adjustShuttleApi(match, delta, brandId = defaultShuttleBrand().id
       throw error
     }
     adjustShuttle(match, delta, brandId)
+    return
+  }
+  try {
+    await reloadAdminTab('liveboard')
+  } catch {
+    // The shuttle was already recorded successfully. Keep the saved state and
+    // let the next live-board refresh reconcile the stock badge.
   }
 }
 

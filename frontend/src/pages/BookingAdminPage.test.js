@@ -27,6 +27,29 @@ function overview(settings = {}) {
 }
 
 describe('BookingAdminPage', () => {
+	it('loads booking business metrics only after opening Dashboard and switches period', async () => {
+		const apiRequest = vi.fn((url) => {
+			if (url.includes('/booking/dashboard')) return Promise.resolve({
+				period: url.includes('period=week') ? 'week' : 'day',
+				startAt: `${testToday}T00:00:00+07:00`, endAt: `${testTomorrow}T00:00:00+07:00`,
+				summary: { confirmedBookings: 4, paidRevenueThb: 800, outstandingRevenueThb: 100, newCustomers: 2, returningCustomers: 1, maxRepeatBookings: 5 },
+				courts: [{ courtId: 'court-1', courtName: 'สนาม 1', slots: 4, hours: 4, revenueThb: 800 }],
+				trend: [{ label: '18:00', bookings: 4, revenueThb: 800 }],
+			})
+			return Promise.resolve(structuredClone(overview()))
+		})
+		const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+		await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+		expect(apiRequest.mock.calls.some(([url]) => url.includes('/booking/dashboard'))).toBe(false)
+		await wrapper.findAll('nav button').find((button) => button.text().includes('Dashboard')).trigger('click')
+		await vi.waitFor(() => expect(wrapper.get('[data-testid="booking-dashboard"]').text()).toContain('฿800'))
+		expect(wrapper.text()).toContain('สมาชิกใหม่')
+		expect(wrapper.text()).toContain('จองซ้ำสูงสุด')
+		await wrapper.findAll('button').find((button) => button.text().trim() === 'Week').trigger('click')
+		await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url.includes('dashboard?period=week'))).toBe(true))
+		wrapper.unmount()
+	})
+
 	it('clearly warns when the real SlipOK provider quota is exhausted', async () => {
 		const apiRequest = vi.fn((url) => {
 			if (url.includes('/slipok-quota')) return Promise.resolve({
@@ -198,7 +221,7 @@ describe('BookingAdminPage', () => {
     expect(wrapper.find('.booking-state--closed').exists()).toBe(true)
     expect(wrapper.find('.booking-state--free').exists()).toBe(true)
     expect(wrapper.text()).toContain('ประวัติการจอง')
-    expect(wrapper.findAll('nav button')).toHaveLength(5)
+    expect(wrapper.findAll('nav button')).toHaveLength(6)
 
     const detailButton = wrapper.findAll('button').find((button) => button.text().includes('ดูรายละเอียด'))
     await detailButton.trigger('click')

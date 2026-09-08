@@ -2,7 +2,36 @@ import React, { useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { Printer, X, Check, Copy, ChevronLeft, ChevronRight, Files } from 'lucide-react';
-import { printIminBitmap } from '../utils/iminPrinter';
+import { printIminText } from '../utils/iminPrinter';
+
+const receiptText = (order: any, settings: any) => [
+  settings.storeName,
+  order.vatRate > 0 && settings.taxId ? `เลขประจำตัวผู้เสียภาษี: ${settings.taxId}` : '',
+  settings.phone ? `โทร: ${settings.phone}` : '',
+  '--------------------------------',
+  order.vatRate > 0 ? 'ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ' : 'ใบเสร็จรับเงิน',
+  `เลขที่: ${order.orderNumber}`,
+  `วันที่: ${formatThaiDateTime(order.createdAt)}`,
+  `พนักงานขาย: ${order.cashierName || '-'}`,
+  order.customerNote ? `ลูกค้า: ${order.customerNote}` : '',
+  order.referenceNumber ? `เลขอ้างอิง: ${order.referenceNumber}` : '',
+  '--------------------------------',
+  ...(order.items || []).flatMap((item: any) => [
+    `${item.name} x ${item.quantity}`,
+    `  ${formatCurrency(item.price, settings.currencySymbol, settings.decimalPlaces)} = ${formatCurrency(item.total, settings.currencySymbol, settings.decimalPlaces)}`,
+  ]),
+  '--------------------------------',
+  `รวม: ${formatCurrency(order.subtotal, settings.currencySymbol, settings.decimalPlaces)}`,
+  order.discount > 0 ? `ส่วนลด: -${formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  order.vatRate > 0 ? `VAT ${order.vatRate}%: ${formatCurrency(order.vatAmount, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  `ยอดสุทธิ: ${formatCurrency(order.total, settings.currencySymbol, settings.decimalPlaces)}`,
+  `วิธีชำระ: ${order.paymentMethod === 'cash' ? 'เงินสด' : order.paymentMethod === 'promptpay' ? 'PromptPay QR' : order.paymentMethod === 'card' ? 'บัตรเครดิต' : 'โอนเงิน'}`,
+  order.cashReceived ? `รับเงิน: ${formatCurrency(order.cashReceived, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  order.change !== undefined ? `เงินทอน: ${formatCurrency(order.change, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  '--------------------------------',
+  settings.receiptFooterMessage || '',
+  '\n\n',
+].filter(Boolean).join('\n');
 
 export const ReceiptModal: React.FC = () => {
   const { selectedOrderForReceipt, setSelectedOrderForReceipt, receiptBatch, setReceiptBatch, settings, showToast } = usePos();
@@ -21,9 +50,21 @@ export const ReceiptModal: React.FC = () => {
     setReceiptBatch([]);
   };
 
-  const handlePrintAll = () => {
+  const handlePrintAll = async () => {
     if (activeBatch.length < 2) {
       void handlePrint();
+      return;
+    }
+    if (/Android/i.test(navigator.userAgent)) {
+      setIsPrinting(true);
+      try {
+        for (const receipt of activeBatch) await printIminText(receiptText(receipt, settings), paperWidth);
+        showToast(`พิมพ์ใบเสร็จ ${activeBatch.length} ใบผ่าน iMin InnerPrinter แล้ว`, 'success');
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'พิมพ์ใบเสร็จทั้งหมดไม่สำเร็จ', 'error');
+      } finally {
+        setIsPrinting(false);
+      }
       return;
     }
     const escapeHTML = (value: unknown) => String(value ?? '').replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character] || character);
@@ -42,25 +83,7 @@ export const ReceiptModal: React.FC = () => {
     setIsPrinting(true);
     if (/Android/i.test(navigator.userAgent)) {
       try {
-        const receiptElement = document.getElementById('printable-receipt');
-        if (!receiptElement) throw new Error('ไม่พบข้อมูลใบเสร็จสำหรับพิมพ์');
-        await document.fonts?.ready;
-        const { toPng } = await import('html-to-image');
-        const targetWidth = paperWidth === '58mm' ? 384 : 576;
-        const receiptWidth = Math.max(1, receiptElement.getBoundingClientRect().width);
-        const imageData = await toPng(receiptElement, {
-          backgroundColor: '#ffffff',
-          cacheBust: true,
-          pixelRatio: targetWidth / receiptWidth,
-          skipFonts: true,
-          style: {
-            boxShadow: 'none',
-            border: 'none',
-            borderRadius: '0',
-            margin: '0',
-          },
-        });
-        await printIminBitmap(imageData, paperWidth);
+        await printIminText(receiptText(order, settings), paperWidth);
         showToast('พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว', 'success');
         setIsPrinting(false);
         return;
@@ -73,42 +96,7 @@ export const ReceiptModal: React.FC = () => {
   };
 
   const handleCopyText = () => {
-    const textLines = [
-      `================================`,
-      `${settings.storeName}`,
-      order.vatRate > 0 ? `เลขประจำตัวผู้เสียภาษี: ${settings.taxId}` : '',
-      `โทร: ${settings.phone}`,
-      `--------------------------------`,
-      order.vatRate > 0 ? `ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ` : `ใบเสร็จรับเงิน`,
-      `เลขที่: ${order.orderNumber}`,
-      `วันที่: ${formatThaiDateTime(order.createdAt)}`,
-      `พนักงานขาย: ${order.cashierName}`,
-      `--------------------------------`,
-      ...order.items.map(
-        (it) =>
-          `${it.name}\n  ${it.quantity} x ${formatCurrency(it.price, settings.currencySymbol, settings.decimalPlaces)} = ${formatCurrency(it.total, settings.currencySymbol, settings.decimalPlaces)}`
-      ),
-      `--------------------------------`,
-      `รวมเงิน (Subtotal): ${formatCurrency(order.subtotal, settings.currencySymbol, settings.decimalPlaces)}`,
-      order.discount > 0
-        ? `ส่วนลด (Discount): -${formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}`
-        : '',
-      order.vatRate > 0 ? `ภาษีมูลค่าเพิ่ม (VAT ${order.vatRate}%): ${formatCurrency(order.vatAmount, settings.currencySymbol, settings.decimalPlaces)} (${order.isVatIncluded ? 'รวมในราคาสินค้า' : 'แยกนอก'})` : '',
-      `ยอดสุทธิ (Total): ${formatCurrency(order.total, settings.currencySymbol, settings.decimalPlaces)}`,
-      `วิธีชำระ: ${order.paymentMethod === 'cash' ? 'เงินสด' : order.paymentMethod === 'promptpay' ? 'PromptPay QR' : order.paymentMethod === 'card' ? 'บัตรเครดิต' : 'โอนเงิน'}`,
-      order.cashReceived
-        ? `รับเงิน: ${formatCurrency(order.cashReceived, settings.currencySymbol, settings.decimalPlaces)}`
-        : '',
-      order.change !== undefined
-        ? `เงินทอน: ${formatCurrency(order.change, settings.currencySymbol, settings.decimalPlaces)}`
-        : '',
-      `================================`,
-      `${settings.receiptFooterMessage}`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    navigator.clipboard.writeText(textLines);
+    navigator.clipboard.writeText(receiptText(order, settings));
     setCopied(true);
     showToast('คัดลอกข้อความใบเสร็จแล้ว', 'success');
     setTimeout(() => setCopied(false), 2000);

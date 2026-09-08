@@ -22,6 +22,15 @@ const props = defineProps([
 ])
 
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+const brandAvailability = (brandId) => (props.state.shuttleStockAvailability || []).find((item) => item.brandId === brandId)
+const brandSelectable = (brand) => brandAvailability(brand.id)?.selectable !== false
+const stockLabel = (brand) => {
+  const availability = brandAvailability(brand.id)
+  if (!availability?.linked) return 'ไม่เชื่อมสต็อก POS'
+  if (availability.code === 'POS_SHUTTLE_OUT_OF_STOCK') return 'สินค้าหมด'
+  if (!availability.selectable) return 'สินค้า POS ไม่พร้อมใช้งาน'
+  return `คงเหลือ ${Number(availability.availableQuantity || 0).toLocaleString('th-TH')} ลูก`
+}
 const shuttlePrice = (brand) => new Intl.NumberFormat('th-TH', { minimumFractionDigits: Number(brand.priceSatang || 0) % 100 ? 2 : 0, maximumFractionDigits: 2 }).format(Number(brand.priceSatang ?? Math.round(Number(brand.price || 0) * 100)) / 100)
 if (!props.state.settings) props.state.settings = {}
 if (props.state.settings.showWaitingOnQueueShare === undefined) props.state.settings.showWaitingOnQueueShare = false
@@ -44,7 +53,7 @@ function requestStartMatch(match) {
   const court = props.forms.matchCourts[match.id]
   if (!court) return
   const brands = activeBrands()
-  if (brands.length <= 1) {
+  if (brands.length === 1 && brandSelectable(brands[0])) {
     props.forms.matchShuttleBrands[match.id] = brands[0]?.id || ''
     props.startMatch(match, court)
     return
@@ -60,7 +69,8 @@ function closeStartMatchModal() {
 
 function confirmStartMatch() {
   const match = startMatchSelection.value
-  if (!match || !startMatchBrandId.value) return
+  const selectedBrand = activeBrands().find((brand) => brand.id === startMatchBrandId.value)
+  if (!match || !selectedBrand || !brandSelectable(selectedBrand)) return
   const court = props.forms.matchCourts[match.id]
   if (!court) return
   props.forms.matchShuttleBrands[match.id] = startMatchBrandId.value
@@ -174,12 +184,14 @@ function confirmStartMatch() {
           :key="brand.id"
           type="button"
           class="flex min-h-16 items-center justify-between gap-3 rounded-lg border p-3 text-left transition"
-          :class="startMatchBrandId === brand.id ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/15' : 'border-stone-200 bg-paper-50 hover:border-court-300 dark:border-stone-700 dark:bg-stone-800'"
+          :class="!brandSelectable(brand) ? 'cursor-not-allowed border-stone-200 bg-stone-100 opacity-55 dark:border-stone-700 dark:bg-stone-800/50' : startMatchBrandId === brand.id ? 'border-court-500 bg-court-500/10 ring-2 ring-court-500/15' : 'border-stone-200 bg-paper-50 hover:border-court-300 dark:border-stone-700 dark:bg-stone-800'"
+          :disabled="!brandSelectable(brand)"
           @click="startMatchBrandId = brand.id"
         >
           <span>
             <span class="block font-black">{{ brand.name }}</span>
             <span class="mt-0.5 block text-xs font-semibold text-stone-500 dark:text-stone-400">{{ shuttlePrice(brand) }} บาท / ลูก</span>
+            <span class="mt-1 block text-xs font-black" :class="brandSelectable(brand) ? 'text-court-700 dark:text-court-300' : 'text-rose-600 dark:text-rose-300'">{{ stockLabel(brand) }}</span>
           </span>
           <CheckCircle2 v-if="startMatchBrandId === brand.id" class="h-5 w-5 shrink-0 text-court-600 dark:text-court-300" />
         </button>
@@ -187,7 +199,7 @@ function confirmStartMatch() {
 
       <footer class="grid grid-cols-2 gap-2 border-t border-stone-200 p-3 dark:border-stone-700 sm:p-4">
         <button class="h-11 rounded-md border border-stone-200 px-4 font-black dark:border-stone-700" @click="closeStartMatchModal">ยกเลิก</button>
-        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 font-black text-white disabled:cursor-not-allowed disabled:bg-stone-400" :class="startMatchBrandId ? 'bg-court-500' : 'bg-stone-400'" :disabled="!startMatchBrandId" @click="confirmStartMatch">
+        <button class="inline-flex h-11 items-center justify-center gap-2 rounded-md px-4 font-black text-white disabled:cursor-not-allowed disabled:bg-stone-400" :class="startMatchBrandId ? 'bg-court-500' : 'bg-stone-400'" :disabled="!startMatchBrandId || !brandSelectable(activeBrands().find((brand) => brand.id === startMatchBrandId) || {})" @click="confirmStartMatch">
           <Play class="h-4 w-4" />
           เริ่มเกม
         </button>

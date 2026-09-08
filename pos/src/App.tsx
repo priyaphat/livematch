@@ -173,7 +173,7 @@ const PosAppContent: React.FC = () => {
   if (!authUser) return <LoginView onLogin={handleLogin} />;
 
   return (
-    <div className="h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-red-600 selection:text-white overflow-hidden transition-colors">
+    <div id="pos-app-shell" className="h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-red-600 selection:text-white overflow-hidden transition-colors">
       {/* Top Navigation Bar */}
       <Navbar
         onLogout={handleLogout}

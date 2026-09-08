@@ -169,12 +169,12 @@ func TestRotatingSessionIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	reused := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
-	if reused.failure != "session_reuse_detected" {
-		t.Fatalf("expected reuse detection, got %#v", reused)
+	if reused.failure != "session_token_stale" {
+		t.Fatalf("expected stale-token response, got %#v", reused)
 	}
 	var revoked, detected bool
-	if err = db.QueryRow(`select revoked_at is not null,reuse_detected_at is not null from admin_sessions where admin_id=$1`, adminID).Scan(&revoked, &detected); err != nil || !revoked || !detected {
-		t.Fatalf("session family was not revoked: revoked=%v detected=%v err=%v", revoked, detected, err)
+	if err = db.QueryRow(`select revoked_at is not null,reuse_detected_at is not null from admin_sessions where admin_id=$1`, adminID).Scan(&revoked, &detected); err != nil || revoked || detected {
+		t.Fatalf("a delayed tab must not revoke the current session: revoked=%v detected=%v err=%v", revoked, detected, err)
 	}
 
 	idleToken := randHex(24)

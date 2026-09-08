@@ -60,6 +60,14 @@ func TestMatchShuttlePOSStockIntegration(t *testing.T) {
 	insertProduct(productEmpty, "EMPTY-"+randHex(4), "Shuttle out of stock", 5000, 0, 0)
 	insertProduct(productZero, "ZERO-"+randHex(4), "Shuttle free", 0, 2, 0)
 	insertProduct(productSecondary, "SECONDARY-"+randHex(4), "Shuttle secondary", 9950, 9, 2)
+	availability := a.sessionShuttleStockAvailability(t.Context(), adminID, []ShuttleBrand{
+		{ID: "available", POSProductID: productA},
+		{ID: "empty", POSProductID: productEmpty},
+		{ID: "unlinked"},
+	})
+	if len(availability) != 3 || !availability[0].Selectable || availability[0].AvailableQuantity != 3 || availability[1].Selectable || availability[1].Code != "POS_SHUTTLE_OUT_OF_STOCK" || !availability[2].Selectable || availability[2].Linked {
+		t.Fatalf("unexpected shuttle availability payload: %#v", availability)
+	}
 
 	// The server, rather than a stale or forged client value, owns the price in
 	// saved admin defaults whenever a POS product is linked.

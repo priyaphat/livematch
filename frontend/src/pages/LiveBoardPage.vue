@@ -27,6 +27,19 @@ const props = defineProps([
 ])
 
 const activeBrands = () => props.activeShuttleBrands?.() || props.state.settings?.shuttleBrands?.filter((brand) => brand.active) || []
+const brandAvailability = (brandId) => (props.state.shuttleStockAvailability || []).find((item) => item.brandId === brandId)
+const brandSelectable = (brand) => brandAvailability(brand?.id)?.selectable !== false
+const stockLabel = (brand) => {
+  const availability = brandAvailability(brand?.id)
+  if (!availability?.linked) return 'ไม่เชื่อมสต็อก POS'
+  if (availability.code === 'POS_SHUTTLE_OUT_OF_STOCK') return 'สินค้าหมด'
+  if (!availability.selectable) return 'สินค้า POS ไม่พร้อมใช้งาน'
+  return `คงเหลือ ${Number(availability.availableQuantity || 0).toLocaleString('th-TH')} ลูก`
+}
+const selectedAddBrand = computed(() => activeBrands().find((brand) => brand.id === props.forms.addShuttleBrandId))
+// Older/partially-loaded session payloads did not include shuttleBrands. Keep the
+// legacy add flow usable; once brands are present, stock availability is enforced.
+const canConfirmAddShuttle = computed(() => !activeBrands().length || (Boolean(selectedAddBrand.value) && brandSelectable(selectedAddBrand.value)))
 const brandName = (brandId) => props.shuttleBrandName?.(brandId) || props.state.settings?.shuttleBrands?.find((brand) => brand.id === brandId)?.name || 'ลูกแบดทั่วไป'
 const shuttleSummary = (match) => props.matchShuttleSummary?.(match) || ''
 const shuttleSequenceText = (match) => props.matchShuttleSequenceText?.(match) || match?.shuttleSequence || '-'
@@ -107,13 +120,18 @@ function removeThirdSet() {
         <label v-if="activeBrands().length > 1" class="mt-4 grid gap-2 text-sm font-bold">
           ยี่ห้อลูกแบด
           <select v-model="forms.addShuttleBrandId" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800">
-            <option v-for="brand in activeBrands()" :key="brand.id" :value="brand.id">{{ brand.name }}</option>
+            <option v-for="brand in activeBrands()" :key="brand.id" :value="brand.id" :disabled="!brandSelectable(brand)">{{ brand.name }} · {{ stockLabel(brand) }}</option>
           </select>
         </label>
 
+        <div v-if="selectedAddBrand" class="mt-3 rounded-md border p-3 text-sm font-bold" :class="brandSelectable(selectedAddBrand) ? 'border-court-200 bg-court-500/10 text-court-700 dark:border-court-900 dark:text-court-300' : 'border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-300'">
+          <span class="block">{{ selectedAddBrand.name }}</span>
+          <span class="mt-1 block text-xs">{{ stockLabel(selectedAddBrand) }}</span>
+        </div>
+
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button class="h-11 rounded-md border border-stone-200 font-bold dark:border-stone-700" @click="ui.showShuttleModal = false">กลับ</button>
-          <button class="h-11 rounded-md bg-shuttle-400 font-bold text-stone-950 disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly" @click="confirmAddShuttle">เพิ่มลูกแบด</button>
+          <button class="h-11 rounded-md bg-shuttle-400 font-bold text-stone-950 disabled:cursor-not-allowed disabled:opacity-45" :disabled="isSessionReadOnly || !canConfirmAddShuttle" @click="confirmAddShuttle">เพิ่มลูกแบด</button>
         </div>
       </div>
     </div>

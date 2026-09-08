@@ -58,6 +58,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
     batchStockOperation,
     suppliers,
     addSupplier,
+    deleteSupplier,
     settings,
     showToast,
   } = usePos();
@@ -74,6 +75,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [supplierPendingDelete, setSupplierPendingDelete] = useState<Supplier | null>(null);
 
   // Batch Operation Modal state
   const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | 'transfer' | null>(null);
@@ -1178,6 +1180,16 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                       <PlusCircle className="w-3.5 h-3.5" />
                       <span>เปิดใบรับสินค้าจากเจ้านี้</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setSupplierPendingDelete(sup)}
+                      disabled={sup.productsCount > 0}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-slate-400 dark:text-red-400 dark:hover:bg-red-500/10"
+                      title={sup.productsCount > 0 ? 'ลบไม่ได้ เนื่องจากมีประวัติรับสินค้าแล้ว' : 'ลบซัพพลายเออร์'}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      ลบ
+                    </button>
                   </div>
                 </div>
               ))}
@@ -1186,6 +1198,21 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
           </div>
         )}
       </div>
+
+      {supplierPendingDelete && (
+        <div className="fixed inset-0 z-[70] grid place-items-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="ยืนยันลบซัพพลายเออร์">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex items-start gap-3">
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400"><Trash2 className="h-5 w-5" /></span>
+              <div><h3 className="font-black text-slate-900 dark:text-white">ลบซัพพลายเออร์?</h3><p className="mt-1 text-sm text-slate-500">ต้องการลบ “{supplierPendingDelete.name}” ออกจากรายการใช้งานหรือไม่</p></div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold dark:border-slate-700" onClick={() => setSupplierPendingDelete(null)}>ยกเลิก</button>
+              <button type="button" className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white" onClick={async () => { const target = supplierPendingDelete; setSupplierPendingDelete(null); await deleteSupplier(target.id); }}>ยืนยันลบ</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================================= */}
       {/* MODAL: BATCH STOCK OPERATION (รับเข้า / จ่ายออก / ปรับปรุง แบบเลือกเพิ่มสินค้าข้างใน) */}

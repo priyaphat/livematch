@@ -3,11 +3,13 @@ import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import QRCode from "qrcode";
 import {
   ArrowLeft,
+  BarChart3,
   CalendarDays,
   CheckCircle2,
   Clock3,
   ClipboardList,
   Copy,
+  Coins,
   Download,
   Eye,
   History,
@@ -18,6 +20,7 @@ import {
   Settings,
   ShieldCheck,
   UserRound,
+  Users,
   X,
   XCircle,
 } from "@lucide/vue";
@@ -62,6 +65,17 @@ const historyLoading = ref(false);
 const historyPage = ref(1);
 const historyPageSize = ref(20);
 const historyTotal = ref(0);
+const dashboardPeriod = ref("day");
+const dashboardLoading = ref(false);
+const dashboardError = ref("");
+const dashboard = reactive({
+  period: "day",
+  startAt: "",
+  endAt: "",
+  summary: { confirmedBookings: 0, paidRevenueThb: 0, outstandingRevenueThb: 0, newCustomers: 0, returningCustomers: 0, maxRepeatBookings: 0 },
+  courts: [],
+  trend: [],
+});
 const pendingPage = ref(1);
 const pendingPageSize = 10;
 const pendingTotal = ref(0);
@@ -99,6 +113,7 @@ const tabs = computed(() => [
     icon: ClipboardList,
     count: pendingBookings.value.length,
   },
+  { id: "dashboard", label: "Dashboard", icon: BarChart3 },
   { id: "history", label: "ประวัติการจอง", icon: History },
   { id: "blacklist", label: "Blacklist", icon: ShieldCheck, count: incidents.total },
   { id: "export", label: "รายงาน", icon: Download },
@@ -204,6 +219,30 @@ const pagedPendingBookings = computed(() => {
 const historyTotalPages = computed(() =>
   Math.max(1, Math.ceil(historyTotal.value / historyPageSize.value)),
 );
+const dashboardVisibleTrend = computed(() => {
+  const trend = dashboard.trend || [];
+  if (dashboardPeriod.value !== "day") return trend;
+
+  const activeIndexes = trend
+    .map((item, index) => Number(item.bookings || 0) > 0 || Number(item.revenueThb || 0) > 0 ? index : -1)
+    .filter((index) => index >= 0);
+  if (!activeIndexes.length) return trend.slice(16, 22);
+
+  const first = Math.max(0, activeIndexes[0] - 1);
+  const last = Math.min(trend.length, activeIndexes[activeIndexes.length - 1] + 2);
+  return trend.slice(first, last);
+});
+const dashboardMaxRevenue = computed(() => Math.max(1, ...dashboardVisibleTrend.value.map((item) => Number(item.revenueThb || 0))));
+const dashboardCourtTotal = computed(() => (dashboard.courts || []).reduce((sum, item) => sum + Number(item.slots || 0), 0));
+const dashboardCustomerTotal = computed(() => Number(dashboard.summary.newCustomers || 0) + Number(dashboard.summary.returningCustomers || 0));
+const dashboardReturnRate = computed(() => dashboardCustomerTotal.value ? Math.round(Number(dashboard.summary.returningCustomers || 0) / dashboardCustomerTotal.value * 100) : 0);
+const dashboardNewRate = computed(() => dashboardCustomerTotal.value ? 100 - dashboardReturnRate.value : 0);
+const dashboardRangeLabel = computed(() => {
+  if (!dashboard.startAt || !dashboard.endAt) return "";
+  const start = new Date(dashboard.startAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" });
+  const end = new Date(new Date(dashboard.endAt).getTime() - 1).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" });
+  return start === end ? start : `${start} – ${end}`;
+});
 const displayDate = computed(() =>
   new Intl.DateTimeFormat("th-TH", {
     weekday: "long",
@@ -502,11 +541,31 @@ async function loadHistory(page = historyPage.value) {
   }
 }
 
+async function loadBookingDashboard(period = dashboardPeriod.value) {
+  dashboardPeriod.value = ["day", "week", "month"].includes(period) ? period : "day";
+  dashboardLoading.value = true;
+  dashboardError.value = "";
+  try {
+    const data = await props.apiRequest(`/api/admin/booking/dashboard?period=${dashboardPeriod.value}`);
+    dashboard.period = data.period || dashboardPeriod.value;
+    dashboard.startAt = data.startAt || "";
+    dashboard.endAt = data.endAt || "";
+    Object.assign(dashboard.summary, data.summary || {});
+    dashboard.courts = data.courts || [];
+    dashboard.trend = data.trend || [];
+  } catch (error) {
+    dashboardError.value = error.message || "โหลด Dashboard ไม่สำเร็จ";
+  } finally {
+    dashboardLoading.value = false;
+  }
+}
+
 function changeTab(tab) {
   activeTab.value = tab;
   editor.value = null;
   review.value = null;
   historyDetail.value = null;
+  if (tab === "dashboard") loadBookingDashboard();
   if (tab === "history") loadHistory();
   if (tab === "blacklist") loadIncidents(1);
   if (tab === "settings") {
@@ -1431,6 +1490,74 @@ onUnmounted(() => {
         <span class="text-sm font-black">หน้า {{ pendingPage }} / {{ pendingTotalPages }} · {{ pendingTotal }} รายการ</span>
         <button class="booking-secondary-button h-10" :disabled="pendingPage >= pendingTotalPages" @click="loadPendingPage(pendingPage+1)">ถัดไป</button>
       </div>
+    </section>
+
+    <section
+      v-else-if="activeTab === 'dashboard'"
+      class="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm dark:border-stone-700 dark:bg-stone-900"
+      data-testid="booking-dashboard"
+    >
+      <header class="flex flex-wrap items-end justify-between gap-4 px-4 py-5 sm:px-6 lg:px-8">
+        <div>
+          <p class="text-xs font-black uppercase tracking-[0.16em] text-court-700 dark:text-court-300">Booking intelligence</p>
+          <h2 class="mt-1 text-2xl font-black sm:text-3xl">ภาพรวมการจอง</h2>
+          <p class="mt-2 inline-flex items-center gap-2 text-sm font-bold text-stone-500"><CalendarDays class="h-4 w-4" />{{ dashboardRangeLabel || 'ข้อมูลการจองตามช่วงเวลาที่เลือก' }}</p>
+        </div>
+        <div class="grid min-w-[18rem] grid-cols-3 overflow-hidden rounded-lg border border-stone-300 dark:border-stone-600">
+          <button v-for="option in [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'month', label: 'Month' }]" :key="option.id" type="button" class="h-11 border-r border-stone-300 px-5 text-sm font-black transition last:border-r-0 dark:border-stone-600" :class="dashboardPeriod === option.id ? 'bg-court-700 text-white' : 'bg-white text-stone-600 hover:bg-paper-100 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800'" :disabled="dashboardLoading" @click="loadBookingDashboard(option.id)">{{ option.label }}</button>
+        </div>
+      </header>
+
+      <p v-if="dashboardError" class="mx-4 mb-4 rounded-xl bg-red-50 p-3 font-bold text-red-700 dark:bg-red-950/30 dark:text-red-200 sm:mx-6 lg:mx-8">{{ dashboardError }}</p>
+      <div v-if="dashboardLoading" class="border-t border-stone-200 p-16 text-center font-bold text-stone-500 dark:border-stone-700"><RefreshCw class="mx-auto mb-3 h-6 w-6 animate-spin text-court-600" />กำลังโหลด Dashboard...</div>
+      <template v-else>
+        <div class="grid grid-cols-2 border-y border-stone-200 bg-paper-50/70 dark:border-stone-700 dark:bg-stone-950/35 md:grid-cols-5">
+          <div class="border-b border-r border-stone-200 px-4 py-5 dark:border-stone-700 md:border-b-0 sm:px-6"><p class="flex items-center gap-2 text-xs font-black text-stone-500"><Coins class="h-4 w-4 text-court-700" />รายรับสุทธิ</p><p class="mt-2 text-2xl font-black text-court-800 dark:text-court-300">฿{{ Number(dashboard.summary.paidRevenueThb || 0).toLocaleString('th-TH') }}</p></div>
+          <div class="border-b border-stone-200 px-4 py-5 dark:border-stone-700 md:border-b-0 md:border-r sm:px-6"><p class="text-xs font-black text-stone-500">ยอดค้างชำระ</p><p class="mt-2 text-2xl font-black text-amber-600">฿{{ Number(dashboard.summary.outstandingRevenueThb || 0).toLocaleString('th-TH') }}</p></div>
+          <div class="border-b border-r border-stone-200 px-4 py-5 dark:border-stone-700 md:border-b-0 sm:px-6"><p class="text-xs font-black text-stone-500">การจองยืนยัน</p><p class="mt-2 text-2xl font-black">{{ Number(dashboard.summary.confirmedBookings || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">ชุด</small></p></div>
+          <div class="border-b border-stone-200 px-4 py-5 dark:border-stone-700 md:border-b-0 md:border-r sm:px-6"><p class="flex items-center gap-2 text-xs font-black text-stone-500"><Users class="h-4 w-4" />สมาชิกใหม่</p><p class="mt-2 text-2xl font-black">{{ Number(dashboard.summary.newCustomers || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">คน</small></p></div>
+          <div class="col-span-2 px-4 py-5 md:col-span-1 sm:px-6"><p class="flex items-center gap-2 text-xs font-black text-stone-500"><RefreshCw class="h-4 w-4" />กลับมาจองซ้ำ</p><p class="mt-2 text-2xl font-black">{{ Number(dashboard.summary.returningCustomers || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">คน</small></p></div>
+        </div>
+
+        <section class="px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+          <div class="flex flex-wrap items-end justify-between gap-3"><div><h3 class="text-lg font-black">รายรับสุทธิและจำนวนการจอง</h3><p class="mt-1 text-xs font-semibold text-stone-500">แท่งสีเขียวคือรายรับที่ชำระแล้ว · ตัวเลขด้านบนคือจำนวนชุดจอง</p></div><span class="rounded-lg bg-court-50 px-3 py-2 text-xs font-black text-court-800 dark:bg-court-950/30 dark:text-court-300">สูงสุด ฿{{ Number(dashboardMaxRevenue || 0).toLocaleString('th-TH') }}</span></div>
+          <div class="mt-6 overflow-x-auto overflow-y-hidden pb-7">
+            <div class="relative flex h-64 min-w-[34rem] items-end gap-3 border-b border-stone-300 px-2 dark:border-stone-600">
+              <div class="pointer-events-none absolute inset-x-0 top-1/4 border-t border-dashed border-stone-200 dark:border-stone-700"></div>
+              <div class="pointer-events-none absolute inset-x-0 top-1/2 border-t border-dashed border-stone-200 dark:border-stone-700"></div>
+              <div class="pointer-events-none absolute inset-x-0 top-3/4 border-t border-dashed border-stone-200 dark:border-stone-700"></div>
+              <div v-for="item in dashboardVisibleTrend" :key="item.label" class="relative z-10 flex min-w-14 flex-1 flex-col items-center justify-end gap-1" :title="`${item.label}: ${item.bookings} ชุด · ฿${Number(item.revenueThb || 0).toLocaleString('th-TH')}`">
+                <span class="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-black text-amber-700 dark:bg-amber-950/30 dark:text-amber-300">{{ item.bookings || 0 }}</span>
+                <div class="w-full max-w-11 rounded-t-sm bg-court-700 transition-all dark:bg-court-500" :style="{ height: `${Math.max(Number(item.revenueThb || 0) > 0 ? 10 : 2, Math.round(Number(item.revenueThb || 0) / dashboardMaxRevenue * 180))}px` }"></div>
+                <span class="absolute top-full mt-2 whitespace-nowrap text-[10px] font-bold text-stone-500">{{ item.label }}</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div class="grid border-t border-stone-200 dark:border-stone-700 lg:grid-cols-[0.95fr_1.35fr]">
+          <section class="border-b border-stone-200 px-4 py-6 dark:border-stone-700 sm:px-6 lg:border-b-0 lg:border-r lg:px-8">
+            <div class="flex items-center justify-between gap-3"><div><h3 class="text-lg font-black">ลูกค้า</h3><p class="mt-1 text-xs font-semibold text-stone-500">สัดส่วนสมาชิกที่เข้ามาจองในช่วงนี้</p></div><Users class="h-7 w-7 text-court-700 dark:text-court-300" /></div>
+            <div class="mt-6 grid grid-cols-2 divide-x divide-stone-200 dark:divide-stone-700">
+              <div class="pr-5"><p class="text-xs font-black text-stone-500">สมาชิกใหม่</p><p class="mt-2 text-3xl font-black">{{ dashboard.summary.newCustomers || 0 }}</p><p class="mt-1 text-sm font-black text-court-700 dark:text-court-300">{{ dashboardNewRate }}%</p></div>
+              <div class="pl-5"><p class="text-xs font-black text-stone-500">กลับมาจองซ้ำ</p><p class="mt-2 text-3xl font-black">{{ dashboard.summary.returningCustomers || 0 }}</p><p class="mt-1 text-sm font-black text-amber-600">{{ dashboardReturnRate }}%</p></div>
+            </div>
+            <div class="mt-5 flex h-3 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800"><div class="bg-court-700" :style="{ width: `${dashboardNewRate}%` }"></div><div class="bg-amber-500" :style="{ width: `${dashboardReturnRate}%` }"></div></div>
+            <div class="mt-5 flex items-center justify-between border-t border-stone-200 pt-4 text-sm dark:border-stone-700"><span class="font-bold text-stone-500">จองซ้ำสูงสุดต่อคน</span><strong class="text-xl text-court-800 dark:text-court-300">{{ dashboard.summary.maxRepeatBookings || 0 }} ครั้ง</strong></div>
+          </section>
+
+          <section class="px-4 py-6 sm:px-6 lg:px-8">
+            <div class="flex items-center justify-between gap-3"><div><h3 class="text-lg font-black">การกระจายสนาม</h3><p class="mt-1 text-xs font-semibold text-stone-500">จำนวนช่องเวลาที่ได้รับการยืนยันและชั่วโมงใช้งาน</p></div><span class="text-xs font-black text-stone-500">รวม {{ dashboardCourtTotal }} ช่อง</span></div>
+            <div v-if="dashboard.courts.length" class="mt-4 grid gap-4">
+              <div v-for="court in dashboard.courts" :key="court.courtId">
+                <div class="grid grid-cols-[5.5rem_1fr_auto] items-center gap-3 text-sm"><span class="truncate font-black">{{ court.courtName }}</span><div class="h-2.5 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800"><div class="h-full rounded-full bg-court-700 dark:bg-court-500" :style="{ width: `${dashboardCourtTotal ? Math.max(3, Math.round(Number(court.slots || 0) / dashboardCourtTotal * 100)) : 0}%` }"></div></div><span class="min-w-24 text-right font-black">{{ dashboardCourtTotal ? Math.round(Number(court.slots || 0) / dashboardCourtTotal * 100) : 0 }}%</span></div>
+                <p class="mt-1 pl-[6.25rem] text-xs font-semibold text-stone-500">{{ court.slots }} ช่อง · {{ Number(court.hours || 0).toLocaleString('th-TH', { maximumFractionDigits: 1 }) }} ชม. · ฿{{ Number(court.revenueThb || 0).toLocaleString('th-TH') }}</p>
+              </div>
+            </div>
+            <p v-else class="py-10 text-center text-sm font-bold text-stone-500">ยังไม่มีการจองที่ยืนยันในช่วงนี้</p>
+          </section>
+        </div>
+      </template>
     </section>
 
     <section

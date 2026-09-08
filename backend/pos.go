@@ -320,6 +320,9 @@ type billingReceivable struct {
 	BillingAccountID string        `json:"billingAccountId"`
 	MemberID         string        `json:"memberId"`
 	DisplayName      string        `json:"displayName"`
+	MemberName       string        `json:"memberName,omitempty"`
+	MatchDisplayName string        `json:"matchDisplayName,omitempty"`
+	SearchAliases    []string      `json:"searchAliases,omitempty"`
 	Phone            string        `json:"phone,omitempty"`
 	MatchTotalSatang int64         `json:"matchTotalSatang"`
 	POSTotalSatang   int64         `json:"posTotalSatang"`
@@ -2123,13 +2126,33 @@ func (a *app) patchPOSSupplier(w http.ResponseWriter, r *http.Request, user admi
 }
 
 func (a *app) deletePOSSupplier(w http.ResponseWriter, r *http.Request, user adminUser, id string) {
-	result, err := a.db.ExecContext(r.Context(), `update pos_suppliers set active=false,updated_at=now() where id=$1 and admin_id=$2 and active`, id, user.ID)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	var used bool
+	err = tx.QueryRowContext(r.Context(), `select exists(select 1 from pos_stock_batches where admin_id=$1 and supplier_id=$2)`, user.ID, id).Scan(&used)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if used {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "ลบไม่ได้ เนื่องจากซัพพลายเออร์นี้มีประวัติรับสินค้าแล้ว", "code": "SUPPLIER_IN_USE"})
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `update pos_suppliers set active=false,updated_at=now() where id=$1 and admin_id=$2 and active`, id, user.ID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "ลบซัพพลายเออร์ไม่สำเร็จ"})
 		return
 	}
 	if count, _ := result.RowsAffected(); count == 0 {
 		writeJSON(w, 404, map[string]string{"error": "ไม่พบซัพพลายเออร์"})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
 		return
 	}
 	a.insertActivityLog(r.Context(), posActorType(user), posActorID(user), "disable_pos_supplier", "pos_supplier", id, map[string]any{"adminId": user.ID})
@@ -3636,13 +3659,13 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 		pageSize = 50
 	}
 	search := strings.TrimSpace(r.URL.Query().Get("search"))
-	filter := `ba.admin_id=$1 and ba.kind='member' and ba.active and m.active and m.deleted_at is null and ($2='' or ba.display_name ilike '%%'||$2||'%%' or m.phone ilike '%%'||$2||'%%') and (exists(select 1 from pos_sales ps where ps.billing_account_id=ba.id and ps.status='open') or exists(select 1 from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id where sp.billing_account_id=ba.id and sp.status='open' and ps.status='open') or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id)))`
+	filter := `ba.admin_id=$1 and ba.kind='member' and ba.active and m.active and m.deleted_at is null and ($2='' or ba.display_name ilike '%%'||$2||'%%' or m.name ilike '%%'||$2||'%%' or m.phone ilike '%%'||$2||'%%' or exists(select 1 from players search_player join sessions search_session on search_session.id=search_player.session_id where search_session.admin_id=ba.admin_id and search_player.active and not search_player.paid and (search_player.billing_account_id=ba.id or search_player.member_id=ba.member_id) and search_player.name ilike '%%'||$2||'%%')) and (exists(select 1 from pos_sales ps where ps.billing_account_id=ba.id and ps.status='open') or exists(select 1 from pos_sale_splits sp join pos_sales ps on ps.id=sp.sale_id where sp.billing_account_id=ba.id and sp.status='open' and ps.status='open') or exists(select 1 from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id)))`
 	var total int
 	if err := a.db.QueryRowContext(r.Context(), `select count(*) from billing_accounts ba join members m on m.id=ba.member_id where `+filter, adminID, search).Scan(&total); err != nil {
 		writePOSInternalError(w, r, err)
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `select ba.id,ba.member_id,ba.display_name,m.phone from billing_accounts ba join members m on m.id=ba.member_id where `+filter+` order by lower(ba.display_name),ba.id limit $3 offset $4`, adminID, search, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(r.Context(), `select ba.id,ba.member_id,ba.display_name,m.name,m.phone,coalesce((select p.name from players p join sessions s on s.id=p.session_id where s.admin_id=ba.admin_id and p.active and not p.paid and (p.billing_account_id=ba.id or p.member_id=ba.member_id) order by s.updated_at desc,p.id desc limit 1),'') from billing_accounts ba join members m on m.id=ba.member_id where `+filter+` order by lower(m.name),ba.id limit $3 offset $4`, adminID, search, pageSize, (page-1)*pageSize)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -3651,9 +3674,18 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 	items := []billingReceivable{}
 	for rows.Next() {
 		var item billingReceivable
-		if err = rows.Scan(&item.BillingAccountID, &item.MemberID, &item.DisplayName, &item.Phone); err != nil {
+		var billingName string
+		if err = rows.Scan(&item.BillingAccountID, &item.MemberID, &billingName, &item.MemberName, &item.Phone, &item.MatchDisplayName); err != nil {
 			break
 		}
+		item.DisplayName = item.MemberName
+		if item.MatchDisplayName != "" {
+			item.DisplayName = item.MatchDisplayName
+			if !strings.EqualFold(item.MatchDisplayName, item.MemberName) {
+				item.DisplayName += " (สมาชิก: " + item.MemberName + ")"
+			}
+		}
+		item.SearchAliases = []string{item.MatchDisplayName, item.MemberName, billingName}
 		summary, summaryErr := a.billingSummaryForAccount(r.Context(), adminID, item.BillingAccountID, true)
 		if summaryErr != nil || summary.TotalSatang <= 0 {
 			continue

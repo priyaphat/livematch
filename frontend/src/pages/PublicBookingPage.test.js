@@ -162,9 +162,11 @@ describe("PublicBookingPage", () => {
 
     await flushPromises();
     expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
-    await vi.advanceTimersByTimeAsync(10000);
+    await vi.advanceTimersByTimeAsync(18000);
     await flushPromises();
     expect(availabilityCalls).toBe(2);
+    expect(apiRequest.mock.calls.filter(([url]) => url.includes('/public-auth/me'))).toHaveLength(1);
+    expect(apiRequest.mock.calls.filter(([url]) => url.includes('/availability'))[1][0]).toContain('includeConfiguration=false');
     expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
     expect(wrapper.get('[data-testid="guest-booking-table"]').exists()).toBe(true);
     expect(wrapper.text()).not.toContain("กำลังโหลดตารางจองสนาม");

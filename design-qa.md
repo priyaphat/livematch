@@ -39,7 +39,6 @@
 - Post-fix evidence: `artifacts/pos-bottom-nav-wrap-comparison.png`.
 
 final result: passed
-
 ## POS split-share bill presentation addendum — 2026-09-03
 
 - Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-bed719ce-530c-4906-9c74-605f96e7b55b.png` and `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-3b70b54c-ff58-4694-9576-dd1e8073c3ca.png`
@@ -288,5 +287,63 @@ passed
 - Earlier finding [P1]: reopening an already linked ComboBox searched using its formatted display label and returned an empty result.
 - Fix: selected ComboBoxes now query by Product ID; the final capture shows the linked product, ฿100 price, and 89 remaining units.
 - Post-fix evidence: final in-app Browser capture in this task. No actionable P0/P1/P2 findings remain.
+
+final result: passed
+
+---
+
+# Booking Dashboard — Design QA
+
+## Evidence
+
+- Source visual truth: `C:\Users\OTAMOS\.codex\generated_images\01a063b5-8142-7eb0-9891-1f082000aac1\exec-7c82aa5f-9b08-4b03-acf2-636ec012fc20.png`
+- Browser-rendered implementation: `D:\VibeStudio\LiveMatch\artifacts\design-qa\booking-dashboard-mobile.png`
+- Combined comparison: `D:\VibeStudio\LiveMatch\artifacts\design-qa\booking-dashboard-comparison.png`
+- Route: `http://localhost:5173/admin/booking`, authenticated booking admin, Dashboard tab, Day period, light theme
+- Source pixels: 1487 × 1058 at the generated desktop density.
+- Implementation pixels / viewport: 678 × 727 at the in-app browser's responsive viewport and native capture density.
+- Normalization: the source was proportionally reduced to 678 × 483 and placed beside the 678 × 727 implementation capture. Because the selected source is desktop and the available verification viewport is narrow, the comparison evaluates responsive hierarchy and visual language rather than one-to-one desktop geometry.
+
+## Full-view comparison
+
+The combined evidence confirms the selected direction is preserved: warm paper background, deep green primary color, amber financial accent, an uninterrupted KPI strip, a dominant revenue chart, and lower customer/court analytics. The implementation intentionally collapses the five desktop KPIs into a two-column mobile grid and stacks the lower analytics instead of compressing them.
+
+## Focused-region comparison
+
+The focused browser capture covers the dashboard heading, Day/Week/Month segmented control, all five KPIs, and the complete day chart at readable mobile scale. Separate live inspection covered the customer composition and court-distribution regions. A focused check was required because the labels and chart bars are too small to judge in the reduced full-source comparison.
+
+## Required fidelity surfaces
+
+- Typography: Thai display and data hierarchy remain strong and readable; uppercase English eyebrow uses restrained tracking. No clipping or broken wrapping observed.
+- Spacing/layout: sections use dividers and a single surface rather than excessive nested cards. Mobile KPI and lower-section stacking preserve scan order.
+- Colors/tokens: court green, paper white, stone dividers, and amber financial emphasis follow the source direction with sufficient contrast.
+- Image quality/assets: this data dashboard does not require photographic assets. Existing Lucide icons remain crisp and consistent; no placeholder imagery or handcrafted decorative SVG was introduced.
+- Copy/content: metric names and units are concise Thai labels; the chart legend explains both encodings.
+- Responsiveness/accessibility: controls retain practical tap sizes, the period control remains reachable, and chart overflow no longer creates a nested vertical scrollbar.
+
+## Comparison history
+
+### Iteration 1
+
+- [P2] The day chart rendered all 24 hours, pushing meaningful evening data off-screen on a narrow viewport.
+- [P2] Absolute x-axis labels combined with horizontal overflow produced an unwanted nested vertical scrollbar.
+- Fixes: added `dashboardVisibleTrend` to focus Day on the active range with one neighboring interval on each side; constrained the chart wrapper to `overflow-y-hidden`; added bottom label space and responsive minimum bar widths.
+- Post-fix evidence: `booking-dashboard-mobile.png` shows 16:00–21:00 in one readable chart, with no nested vertical scrollbar.
+
+### Final pass
+
+No actionable P0, P1, or P2 visual differences remain for the implemented responsive state. The desktop source includes comparison deltas and denser heatmap analytics that are not present in the current dashboard API; those are treated as future product scope rather than hidden or fabricated UI.
+
+## Interactions and runtime checks
+
+- Day, Week, and Month each loaded the matching date range and trend buckets.
+- Day was restored as the final visible state.
+- Browser console error check returned no errors.
+- Frontend component tests: 20 passed.
+- Production frontend build: passed.
+
+## Follow-up polish
+
+- [P3] If comparison-period and court-by-hour matrix data are added to the API later, the desktop view can gain the source's delta labels and heatmap without inventing client-side figures.
 
 final result: passed

@@ -128,6 +128,10 @@ export const BillsView: React.FC = () => {
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [historyLoadError, setHistoryLoadError] = useState('');
+  const [historyQrOrder, setHistoryQrOrder] = useState<Order | null>(null);
+  const [historyQrDataUrl, setHistoryQrDataUrl] = useState('');
+  const [historyQrError, setHistoryQrError] = useState('');
+  const [historyQrReceiverName, setHistoryQrReceiverName] = useState('');
 
   // Multi-selection state for Held Orders
   const [selectedHeldIds, setSelectedHeldIds] = useState<string[]>([]);
@@ -357,6 +361,49 @@ export const BillsView: React.FC = () => {
     });
     return () => { cancelled = true; };
   }, [isBatchPayModalOpen, batchPayMethod, paymentTotal]);
+
+  useEffect(() => {
+    if (!historyQrOrder || historyQrOrder.total <= 0) return;
+    let cancelled = false;
+    setHistoryQrDataUrl('');
+    setHistoryQrError('');
+    setHistoryQrReceiverName('');
+    void getPOSPaymentQR(Math.round(historyQrOrder.total * 100)).then(async (result) => {
+      const image = result.promptPayPayload ? await QRCode.toDataURL(result.promptPayPayload, { width: 320, margin: 1 }) : result.fallbackImage || '';
+      if (!image) throw new Error('ระบบยังไม่ได้ตั้งค่า PromptPay');
+      if (!cancelled) {
+        setHistoryQrDataUrl(image);
+        setHistoryQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
+      }
+    }).catch((error) => {
+      if (!cancelled) setHistoryQrError(error instanceof Error ? error.message : 'ไม่สามารถสร้าง QR PromptPay ได้');
+    });
+    return () => { cancelled = true; };
+  }, [historyQrOrder]);
+
+  useEffect(() => {
+    if (!historyQrOrder) return;
+    const paymentState = {
+      isOpen: true,
+      method: 'promptpay' as const,
+      totalDue: historyQrOrder.total,
+      qrDataUrl: historyQrDataUrl || undefined,
+      qrError: historyQrError || undefined,
+      qrReceiverName: historyQrReceiverName || undefined,
+      items: historyQrOrder.items,
+    };
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
+  }, [historyQrOrder, historyQrDataUrl, historyQrError, historyQrReceiverName]);
+
+  const closeHistoryQr = () => {
+    setHistoryQrOrder(null);
+    setHistoryQrDataUrl('');
+    setHistoryQrError('');
+    const paymentState = { isOpen: false, method: 'cash' as const, totalDue: 0 };
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
+  };
 
   useEffect(() => {
     if (!isBatchPayModalOpen) return;
@@ -847,6 +894,15 @@ export const BillsView: React.FC = () => {
                               title="ดูและพิมพ์ใบเสร็จ"
                             >
                               <Printer className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setHistoryQrOrder(order)}
+                              className="p-2 rounded-xl bg-sky-50 dark:bg-sky-500/10 hover:bg-sky-100 dark:hover:bg-sky-500/20 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-500/30 transition-colors"
+                              title="สร้าง QR ชำระยอดนี้อีกครั้ง"
+                              aria-label={`สร้าง QR บิล ${order.orderNumber}`}
+                            >
+                              <QrCode className="w-4 h-4" />
                             </button>
 
 						{order.status === 'completed' && !order.paymentId && (
@@ -1364,6 +1420,26 @@ export const BillsView: React.FC = () => {
                 </span>
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {historyQrOrder && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" role="dialog" aria-modal="true" aria-label="QR ชำระเงินจากประวัติ">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-3">
+              <div><p className="text-[10px] font-black uppercase tracking-wider text-sky-600">สร้าง QR จากประวัติ</p><h3 className="mt-1 text-lg font-black text-slate-900 dark:text-white">บิล {historyQrOrder.orderNumber}</h3><p className="mt-1 text-xs font-semibold text-slate-500">QR นี้ใช้ยอดเดิมและไม่บันทึกการชำระซ้ำอัตโนมัติ</p></div>
+              <button type="button" onClick={closeHistoryQr} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 dark:border-slate-700" aria-label="ปิด QR"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="mt-5 flex flex-col items-center rounded-2xl border border-sky-200 bg-sky-50 p-5 text-center dark:border-sky-500/30 dark:bg-sky-500/10">
+              <div className="grid h-64 w-64 place-items-center rounded-2xl bg-white p-3 shadow-sm">
+                {historyQrDataUrl ? <img src={historyQrDataUrl} alt="PromptPay QR จากประวัติการขาย" className="h-full w-full object-contain" /> : historyQrError ? <span className="px-4 text-sm font-bold text-rose-600">{historyQrError}</span> : <QrCode className="h-20 w-20 animate-pulse text-slate-300" />}
+              </div>
+              <p className="mt-4 text-3xl font-black text-sky-700 dark:text-sky-300">{formatCurrency(historyQrOrder.total, settings.currencySymbol, settings.decimalPlaces)}</p>
+              <p className="mt-1 text-xs font-bold text-slate-600 dark:text-slate-300">ผู้รับ: {historyQrReceiverName || settings.promptPayReceiverName || settings.storeName}</p>
+              <p className="mt-1 text-xs text-slate-500">{historyQrOrder.customerNote || 'ลูกค้าทั่วไป'}</p>
+            </div>
+            <button type="button" onClick={closeHistoryQr} className="mt-4 h-11 w-full rounded-xl bg-slate-900 font-bold text-white dark:bg-slate-700">ปิด</button>
           </div>
         </div>
       )}

@@ -40,7 +40,7 @@ services:
       - APP_BASE_URL=${APP_BASE_URL:-https://badmintonphrae.club}
       - POS_BASE_URL=${POS_BASE_URL:-https://pos.badmintonphrae.club}
       - APP_ALLOWED_ORIGINS=${APP_ALLOWED_ORIGINS:-https://badmintonphrae.club,https://pos.badmintonphrae.club}
-      - APP_TRUSTED_PROXY_CIDRS=${APP_TRUSTED_PROXY_CIDRS:-}
+      - APP_TRUSTED_PROXY_CIDRS=${APP_TRUSTED_PROXY_CIDRS:-172.16.0.0/12,127.0.0.0/8,::1/128}
       - COOKIE_SECURE=true
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-}

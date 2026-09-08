@@ -17,7 +17,7 @@ import {
 } from "@lucide/vue";
 
 const props = defineProps(["apiRequest", "token", "theme"]);
-const AUTO_REFRESH_MS = 10000;
+const AUTO_REFRESH_MS = 15000;
 const emit = defineEmits(["toggle-theme"]);
 const today = new Date().toLocaleDateString("en-CA", {
   timeZone: "Asia/Bangkok",
@@ -50,6 +50,7 @@ let toastTimer;
 let loadRequest = 0;
 let loadInFlight = false;
 let loadQueued = false;
+let loadQueuedIdentity = false;
 let availabilityLoaded = false;
 
 function handleSessionEnded(event) {
@@ -212,13 +213,13 @@ function changeDate(days) {
   state.date = next;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
-  load();
+  load(false);
 }
 function goToday() {
   state.date = today;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
-  load();
+  load(false);
 }
 
 async function maybeShowPopup() {
@@ -298,9 +299,10 @@ function slotClass(court, minute) {
   const tone = status(court, minute).tone;
   return `public-slot--${tone} booking-state--${tone}`;
 }
-async function load() {
+async function load(refreshIdentity = true) {
   if (loadInFlight) {
     loadQueued = true;
+    loadQueuedIdentity = loadQueuedIdentity || refreshIdentity;
     loadRequest += 1;
     return;
   }
@@ -314,11 +316,11 @@ async function load() {
   state.error = "";
   try {
     const availability = await props.apiRequest(
-      `/api/public-booking/${props.token}/availability?date=${requestedDate}`,
+      `/api/public-booking/${props.token}/availability?date=${requestedDate}${refreshIdentity ? '' : '&includeConfiguration=false'}`,
     );
     if (request !== loadRequest || requestedDate !== state.date) return;
     Object.assign(state, availability);
-    await maybeShowPopup();
+    if (refreshIdentity) await maybeShowPopup();
     availabilityLoaded = true;
     if (availability.serverNow) {
       state.clockOffsetMs = timestamp(availability.serverNow) - Date.now();
@@ -328,7 +330,7 @@ async function load() {
       if (scheduleScroll.value && requestedDate === state.date)
         scheduleScroll.value.scrollLeft = previousScroll;
     });
-    try {
+    if (refreshIdentity) try {
       const me = await props.apiRequest(
         `/api/public-auth/me?tenant=${props.token}`,
       );
@@ -375,10 +377,29 @@ async function load() {
     if (request === loadRequest) state.loading = false;
     loadInFlight = false;
     if (loadQueued) {
+      const queuedIdentity = loadQueuedIdentity;
       loadQueued = false;
-      queueMicrotask(load);
+      loadQueuedIdentity = false;
+      queueMicrotask(() => load(queuedIdentity));
     }
   }
+}
+
+function scheduleAvailabilityRefresh() {
+  clearTimeout(timer);
+  if (document.hidden || !navigator.onLine) return;
+  timer = window.setTimeout(async () => {
+    await load(false);
+    scheduleAvailabilityRefresh();
+  }, AUTO_REFRESH_MS + Math.floor(Math.random() * 2500));
+}
+
+function handleBookingVisibility() {
+  if (document.hidden || !navigator.onLine) {
+    clearTimeout(timer);
+    return;
+  }
+  void load(false).finally(scheduleAvailabilityRefresh);
 }
 function googleLogin() {
   if (actionBusy.login) return;
@@ -624,7 +645,10 @@ async function upload(event) {
 onMounted(async () => {
   window.addEventListener("livematch:session-ended", handleSessionEnded);
   await load();
-  timer = setInterval(load, AUTO_REFRESH_MS);
+  document.addEventListener("visibilitychange", handleBookingVisibility);
+  window.addEventListener("online", handleBookingVisibility);
+  window.addEventListener("offline", handleBookingVisibility);
+  scheduleAvailabilityRefresh();
   clock = setInterval(() => {
     state.now = Date.now() + state.clockOffsetMs;
     const expiredQueueIds = state.queues
@@ -644,7 +668,7 @@ onMounted(async () => {
         qr.value = "";
       }
       showToast("หมดเวลาชำระเงินแล้ว รายการจองถูกลบ กรุณาเลือกเวลาใหม่");
-      load();
+      load(false);
       return;
     }
     if (
@@ -655,13 +679,16 @@ onMounted(async () => {
       payment.value = null;
       qr.value = "";
       showToast("หมดเวลาชำระเงินแล้ว รายการจองถูกลบ กรุณาเลือกเวลาใหม่");
-      load();
+      load(false);
     }
   }, 1000);
 });
 onUnmounted(() => {
   window.removeEventListener("livematch:session-ended", handleSessionEnded);
-  clearInterval(timer);
+  document.removeEventListener("visibilitychange", handleBookingVisibility);
+  window.removeEventListener("online", handleBookingVisibility);
+  window.removeEventListener("offline", handleBookingVisibility);
+  clearTimeout(timer);
   clearInterval(clock);
   clearTimeout(toastTimer);
 });
@@ -933,7 +960,7 @@ onUnmounted(() => {
               aria-label="วันที่จอง"
               @change="
                 clearSelection();
-                load();
+                load(false);
               "
           /></label>
           <button

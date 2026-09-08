@@ -125,6 +125,11 @@ input[type='number']::-webkit-inner-spin-button {
 
 /* Thermal receipt printing styling */
 @media print {
+  #pos-app-shell {
+    zoom: 1 !important;
+    width: 100% !important;
+    height: auto !important;
+  }
   html, body, #root, #receipt-modal-backdrop, #receipt-modal-container {
     height: auto !important;
     min-height: 100% !important;

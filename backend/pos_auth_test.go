@@ -86,6 +86,47 @@ func TestPOSAccessHandlerRequiresOwnerBeforeDatabase(t *testing.T) {
 	}
 }
 
+func TestPOSSupplierDeleteOnlyWhenUnused(t *testing.T) {
+	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL supplier integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := &app{db: db}
+	adminID := "supplier-delete-test-" + randHex(6)
+	if _, err = db.Exec(`insert into admin_users(id,email,name,password_hash,verified_at) values($1,$2,'Supplier Delete Test','test',now())`, adminID, adminID+"@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from activity_logs where actor_id=$1 or details like '%'||$1||'%'`, adminID)
+		_, _ = db.Exec(`delete from admin_users where id=$1`, adminID)
+	}()
+	owner := adminUser{ID: adminID, POSRole: "owner", POSActorID: adminID, POSActorType: "admin", POSActorName: "Supplier Delete Test"}
+
+	unusedID, usedID := "supplier-"+randHex(6), "supplier-"+randHex(6)
+	if _, err = db.Exec(`insert into pos_suppliers(id,admin_id,code,name,phone) values($1,$3,'SUP-U','Unused','0'),($2,$3,'SUP-X','Used','0')`, unusedID, usedID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into pos_stock_batches(id,admin_id,name,mode,supplier_id,supplier_name) values($1,$2,'Used supplier batch','in',$3,'Used')`, "batch-"+randHex(6), adminID, usedID); err != nil {
+		t.Fatal(err)
+	}
+
+	unusedResponse := httptest.NewRecorder()
+	a.deletePOSSupplier(unusedResponse, httptest.NewRequest(http.MethodDelete, "/api/admin/pos/suppliers/"+unusedID, nil), owner, unusedID)
+	if unusedResponse.Code != http.StatusOK {
+		t.Fatalf("unused supplier delete status=%d body=%s", unusedResponse.Code, unusedResponse.Body.String())
+	}
+	usedResponse := httptest.NewRecorder()
+	a.deletePOSSupplier(usedResponse, httptest.NewRequest(http.MethodDelete, "/api/admin/pos/suppliers/"+usedID, nil), owner, usedID)
+	if usedResponse.Code != http.StatusConflict || !strings.Contains(usedResponse.Body.String(), "SUPPLIER_IN_USE") {
+		t.Fatalf("used supplier delete status=%d body=%s", usedResponse.Code, usedResponse.Body.String())
+	}
+}
+
 func TestPOSSettlementErrorDoesNotLeakDatabaseDetails(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/api/admin/pos/settlements", nil)
 	response := httptest.NewRecorder()

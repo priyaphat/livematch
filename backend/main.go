@@ -202,6 +202,18 @@ type ShuttleBrand struct {
 	POSProductID string `json:"posProductId,omitempty"`
 }
 
+type ShuttleStockAvailability struct {
+	BrandID           string `json:"brandId"`
+	Linked            bool   `json:"linked"`
+	ProductID         string `json:"productId,omitempty"`
+	ProductName       string `json:"productName,omitempty"`
+	ProductSKU        string `json:"productSku,omitempty"`
+	StockLocation     string `json:"stockLocation,omitempty"`
+	AvailableQuantity int    `json:"availableQuantity"`
+	Selectable        bool   `json:"selectable"`
+	Code              string `json:"code,omitempty"`
+}
+
 type ShuttleSeqItem struct {
 	BrandID         string `json:"brandId"`
 	Number          int    `json:"number"`
@@ -2220,7 +2232,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "state":
 		writeJSON(w, http.StatusOK, state)
 	case r.Method == http.MethodGet && action == "bootstrap":
-		writeJSON(w, http.StatusOK, map[string]any{"version": state.Version, "session": state.Session, "settings": state.Settings, "memberTypes": state.MemberTypes})
+		writeJSON(w, http.StatusOK, map[string]any{"version": state.Version, "session": state.Session, "settings": state.Settings, "memberTypes": state.MemberTypes, "shuttleStockAvailability": a.sessionShuttleStockAvailability(r.Context(), routeUser.ID, state.Settings.ShuttleBrands)})
 	case r.Method == http.MethodGet && action == "dashboard":
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
@@ -2489,9 +2501,15 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "live-share-hours":
 		writeJSON(w, http.StatusOK, map[string]any{"liveShare": state.LiveShare})
 	case r.Method == http.MethodGet && action == "queue":
-		writeJSON(w, http.StatusOK, queuePayload(state))
+		payload := queuePayload(state)
+		payload["shuttleStockAvailability"] = a.sessionShuttleStockAvailability(r.Context(), routeUser.ID, state.Settings.ShuttleBrands)
+		writeJSON(w, http.StatusOK, payload)
 	case r.Method == http.MethodGet && action == "live":
-		writeJSON(w, http.StatusOK, map[string]any{"live": state.Live, "players": state.Players})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"live":                     state.Live,
+			"players":                  state.Players,
+			"shuttleStockAvailability": a.sessionShuttleStockAvailability(r.Context(), routeUser.ID, state.Settings.ShuttleBrands),
+		})
 	case r.Method == http.MethodGet && action == "history":
 		items := state.History
 		paged, page, pageSize := paginate(items, r)
@@ -2932,6 +2950,45 @@ func copyShuttlePriceSnapshot(target *ShuttleSeqItem, source ShuttleSeqItem) {
 	target.POSProductID = source.POSProductID
 	target.ProductName = source.ProductName
 	target.ProductSKU = source.ProductSKU
+}
+
+func (a *app) sessionShuttleStockAvailability(ctx context.Context, adminID string, brands []ShuttleBrand) []ShuttleStockAvailability {
+	location := "primary"
+	_ = a.db.QueryRowContext(ctx, `select case when secondary_stock_enabled then sale_stock_location else 'primary' end from pos_settings where admin_id=$1`, adminID).Scan(&location)
+	if !validStockLocation(location) {
+		location = "primary"
+	}
+	items := make([]ShuttleStockAvailability, 0, len(brands))
+	for _, brand := range brands {
+		item := ShuttleStockAvailability{BrandID: normalizedBrandID(brand.ID), ProductID: strings.TrimSpace(brand.POSProductID), StockLocation: location, Selectable: true}
+		item.Linked = item.ProductID != ""
+		if !item.Linked {
+			items = append(items, item)
+			continue
+		}
+		var primaryStock, secondaryStock int
+		var active, available, trackStock bool
+		err := a.db.QueryRowContext(ctx, `select name,sku,stock_quantity,secondary_stock_quantity,active,deleted_at is null,track_stock from pos_products where id=$1 and admin_id=$2`, item.ProductID, adminID).Scan(&item.ProductName, &item.ProductSKU, &primaryStock, &secondaryStock, &active, &available, &trackStock)
+		if errors.Is(err, sql.ErrNoRows) || !available {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_PRODUCT_NOT_FOUND"
+		} else if err != nil {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_AVAILABILITY_UNAVAILABLE"
+		} else if !active {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_PRODUCT_INACTIVE"
+		} else if !trackStock {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_TRACKING_DISABLED"
+		} else {
+			item.AvailableQuantity = primaryStock
+			if location == "secondary" {
+				item.AvailableQuantity = secondaryStock
+			}
+			if item.AvailableQuantity < 1 {
+				item.Selectable, item.Code = false, "POS_SHUTTLE_OUT_OF_STOCK"
+			}
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID string, state *SessionState) error {

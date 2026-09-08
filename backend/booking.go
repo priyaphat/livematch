@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net"
 	"net/http"
@@ -99,7 +100,8 @@ func (a *app) requireRequestRate(w http.ResponseWriter, r *http.Request, scope s
 		retry = 1
 	}
 	w.Header().Set("Retry-After", strconv.Itoa(retry))
-	writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many requests"})
+	log.Printf("booking rate limit request_id=%v scope_hash=%s retry_after=%d", r.Context().Value(requestIDContextKey), shortHash(scope), retry)
+	writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "มีการทำรายการถี่เกินไป กรุณารอสักครู่แล้วลองใหม่", "code": "BOOKING_RATE_LIMITED", "retryAfterSeconds": retry, "scope": strings.SplitN(scope, ":", 2)[0]})
 	return false
 }
 
@@ -1285,6 +1287,8 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 		a.writeBookingOverview(w, r, user.ID, true)
 	case r.Method == http.MethodGet && path == "/history":
 		a.writeBookingHistory(w, r, user.ID)
+	case r.Method == http.MethodGet && path == "/dashboard":
+		a.writeBookingDashboard(w, r, user.ID)
 	case r.Method == http.MethodGet && path == "/export":
 		a.writeBookingExport(w, r, user.ID)
 	case r.Method == http.MethodPut && path == "/settings":
@@ -1322,6 +1326,157 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
+}
+
+func bookingDashboardRange(now time.Time, period string) (time.Time, time.Time, string) {
+	now = now.In(bangkokLocation)
+	start := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, bangkokLocation)
+	switch period {
+	case "week":
+		weekday := (int(start.Weekday()) + 6) % 7
+		start = start.AddDate(0, 0, -weekday)
+		return start, start.AddDate(0, 0, 7), "week"
+	case "month":
+		start = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, bangkokLocation)
+		return start, start.AddDate(0, 1, 0), "month"
+	default:
+		return start, start.AddDate(0, 0, 1), "day"
+	}
+}
+
+func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, adminID string) {
+	start, end, period := bookingDashboardRange(time.Now(), strings.TrimSpace(r.URL.Query().Get("period")))
+	ctx := r.Context()
+
+	summary := struct {
+		ConfirmedBookings  int   `json:"confirmedBookings"`
+		PaidRevenueTHB     int64 `json:"paidRevenueThb"`
+		OutstandingTHB     int64 `json:"outstandingRevenueThb"`
+		NewCustomers       int   `json:"newCustomers"`
+		ReturningCustomers int   `json:"returningCustomers"`
+		MaxRepeatBookings  int   `json:"maxRepeatBookings"`
+	}{}
+	err := a.db.QueryRowContext(ctx, `
+		with booking_groups as (
+			select coalesce(nullif(booking_batch_id,''),id) group_id,
+				min(nullif(member_id,'')) member_id,min(start_at) start_at,
+				sum(total_price_thb)::bigint total_price_thb,
+				bool_and(status='confirmed') confirmed,
+				bool_and(payment_status='paid') paid
+			from bookings where admin_id=$1
+			group by coalesce(nullif(booking_batch_id,''),id)
+		), customer_stats as (
+			select member_id,count(*) filter (where confirmed)::int confirmed_count,
+				min(start_at) filter (where confirmed) first_booking_at
+			from booking_groups where member_id is not null group by member_id
+		), period_groups as (
+			select * from booking_groups where start_at >= $2 and start_at < $3 and confirmed
+		), period_customers as (
+			select distinct pg.member_id from period_groups pg where pg.member_id is not null
+		)
+		select count(*)::int,
+			coalesce(sum(total_price_thb) filter (where paid),0)::bigint,
+			coalesce(sum(total_price_thb) filter (where not paid),0)::bigint,
+			coalesce((select count(*) from period_customers pc join customer_stats cs using(member_id) where cs.first_booking_at >= $2 and cs.first_booking_at < $3),0)::int,
+			coalesce((select count(*) from period_customers pc join customer_stats cs using(member_id) where cs.confirmed_count > 1),0)::int,
+			coalesce((select max(cs.confirmed_count) from period_customers pc join customer_stats cs using(member_id)),0)::int
+		from period_groups`, adminID, start, end).Scan(
+		&summary.ConfirmedBookings, &summary.PaidRevenueTHB, &summary.OutstandingTHB,
+		&summary.NewCustomers, &summary.ReturningCustomers, &summary.MaxRepeatBookings,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	type courtMetric struct {
+		CourtID    string  `json:"courtId"`
+		CourtName  string  `json:"courtName"`
+		Slots      int     `json:"slots"`
+		Hours      float64 `json:"hours"`
+		RevenueTHB int64   `json:"revenueThb"`
+	}
+	courtRows, err := a.db.QueryContext(ctx, `
+		select c.id,c.name,count(*)::int,
+			coalesce(sum(extract(epoch from (b.end_at-b.start_at)))/3600,0)::float8,
+			coalesce(sum(b.total_price_thb),0)::bigint
+		from bookings b join booking_courts c on c.id=b.court_id and c.admin_id=b.admin_id
+		where b.admin_id=$1 and b.start_at >= $2 and b.start_at < $3 and b.status='confirmed'
+		group by c.id,c.name,c.sort_order order by count(*) desc,c.sort_order,c.name`, adminID, start, end)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	courts := make([]courtMetric, 0)
+	for courtRows.Next() {
+		var item courtMetric
+		if err = courtRows.Scan(&item.CourtID, &item.CourtName, &item.Slots, &item.Hours, &item.RevenueTHB); err != nil {
+			courtRows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		courts = append(courts, item)
+	}
+	err = courtRows.Err()
+	courtRows.Close()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	type trendMetric struct {
+		Key        time.Time
+		Label      string `json:"label"`
+		Bookings   int    `json:"bookings"`
+		RevenueTHB int64  `json:"revenueThb"`
+	}
+	truncUnit := "day"
+	step := 24 * time.Hour
+	if period == "day" {
+		truncUnit = "hour"
+		step = time.Hour
+	}
+	trendRows, err := a.db.QueryContext(ctx, `
+		select date_trunc($4,start_at at time zone 'Asia/Bangkok') bucket,
+			count(distinct coalesce(nullif(booking_batch_id,''),id))::int,
+			coalesce(sum(total_price_thb) filter (where payment_status='paid'),0)::bigint
+		from bookings where admin_id=$1 and start_at >= $2 and start_at < $3 and status='confirmed'
+		group by bucket order by bucket`, adminID, start, end, truncUnit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	byBucket := map[string]trendMetric{}
+	for trendRows.Next() {
+		var item trendMetric
+		if err = trendRows.Scan(&item.Key, &item.Bookings, &item.RevenueTHB); err != nil {
+			trendRows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		byBucket[item.Key.Format("2006-01-02 15:04")] = item
+	}
+	err = trendRows.Err()
+	trendRows.Close()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	trend := make([]trendMetric, 0)
+	for cursor := start; cursor.Before(end); cursor = cursor.Add(step) {
+		item := byBucket[cursor.Format("2006-01-02 15:04")]
+		if period == "day" {
+			item.Label = cursor.Format("15:00")
+		} else {
+			item.Label = cursor.Format("02/01")
+		}
+		trend = append(trend, item)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"period": period, "startAt": start.Format(time.RFC3339), "endAt": end.Format(time.RFC3339),
+		"summary": summary, "courts": courts, "trend": trend,
+	})
 }
 
 func (a *app) testBookingPaymentQR(w http.ResponseWriter, r *http.Request) {
@@ -2422,15 +2577,14 @@ func (a *app) deleteClosure(w http.ResponseWriter, r *http.Request, user adminUs
 }
 
 func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, adminID string, admin bool) {
-	a.expireHolds(r.Context(), adminID)
-	includeConfiguration := !admin || r.URL.Query().Get("includeConfiguration") != "false"
+	includeConfiguration := r.URL.Query().Get("includeConfiguration") != "false"
 	var s bookingSettingsRecord
 	var err error
 	if includeConfiguration {
 		s, err = a.ensureBookingSettings(r.Context(), adminID)
 	} else {
 		var acceptanceOpen, acceptanceClose string
-		err = a.db.QueryRowContext(r.Context(), `select allow_overnight,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),'') from booking_settings where admin_id=$1`, adminID).Scan(&s.AllowOvernight, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose)
+		err = a.db.QueryRowContext(r.Context(), `select allow_overnight,booking_acceptance_enabled,coalesce(to_char(booking_acceptance_open_time,'HH24:MI'),''),coalesce(to_char(booking_acceptance_close_time,'HH24:MI'),''),show_booker_name from booking_settings where admin_id=$1`, adminID).Scan(&s.AllowOvernight, &s.BookingAcceptanceEnabled, &acceptanceOpen, &acceptanceClose, &s.ShowBookerName)
 		s.BookingAcceptanceOpenTime = acceptanceOpen
 		s.BookingAcceptanceCloseTime = acceptanceClose
 	}
@@ -2456,7 +2610,7 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		return
 	}
 	dayEnd := dayStart.Add(48 * time.Hour)
-	rows, err := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),case when $4 or $5 then b.booker_name else '' end,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,case when $4 then b.note else '' end,case when $4 then coalesce((select p.id from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') else '' end,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.start_at<$3 and b.end_at>$2 and b.status<>'expired' and ($4 or b.status in ('hold','pending_review','confirmed')) order by b.start_at,c.sort_order`, adminID, dayStart, dayEnd, admin, s.ShowBookerName)
+	rows, err := a.db.QueryContext(r.Context(), `select b.id,coalesce(b.booking_batch_id,''),b.court_id,c.name,coalesce(b.member_id,''),case when $4 or $5 then b.booker_name else '' end,b.booked_by,b.start_at,b.end_at,b.interval_minutes,b.unit_price_thb,b.total_price_thb,b.status,b.payment_status,b.hold_expires_at,case when $4 then b.note else '' end,case when $4 then coalesce((select p.id from booking_payments p join bookings paid_booking on paid_booking.id=p.booking_id where p.booking_id=b.id or (b.booking_batch_id is not null and paid_booking.booking_batch_id=b.booking_batch_id) order by p.created_at desc limit 1),'') else '' end,to_char(b.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from bookings b join booking_courts c on c.id=b.court_id where b.admin_id=$1 and b.start_at<$3 and b.end_at>$2 and b.status<>'expired' and (b.status<>'hold' or b.hold_expires_at>now()) and ($4 or b.status in ('hold','pending_review','confirmed')) order by b.start_at,c.sort_order`, adminID, dayStart, dayEnd, admin, s.ShowBookerName)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -2524,7 +2678,7 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		payload["pendingReviews"] = pendingReviews
 		payload["pendingPagination"] = map[string]int{"page": pendingPage, "pageSize": pendingPageSize, "total": pendingTotal, "totalPages": max(1, (pendingTotal+pendingPageSize-1)/pendingPageSize)}
 	}
-	if !admin {
+	if !admin && includeConfiguration {
 		if s.LogoData != "" {
 			s.LogoURL = "/api/public-booking/" + url.PathEscape(s.PublicToken) + "/logo?v=" + shortHash(s.LogoData)
 		}
@@ -2544,6 +2698,16 @@ func (a *app) writeBookingOverview(w http.ResponseWriter, r *http.Request, admin
 		s.SlipOKAPIKeyMasked = ""
 		s.SlipOKMonthlyCap = 0
 		payload["settings"] = s
+	}
+	if !admin {
+		revisionRaw, _ := json.Marshal(map[string]any{"bookings": bookings, "closures": closures, "date": date, "bookingDateAllowed": payload["bookingDateAllowed"], "bookingAcceptanceOpen": payload["bookingAcceptanceOpen"]})
+		etag := `"` + shortHash(string(revisionRaw)) + `"`
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Cache-Control", "private, no-cache")
+		if r.Header.Get("If-None-Match") == etag {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 	}
 	writeJSON(w, 200, payload)
 }
@@ -2949,12 +3113,12 @@ func (a *app) handlePublicBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, tenantToken string) {
-	if !a.requireRequestRate(w, r, "booking-hold:"+adminID, 20, 10*time.Minute) {
-		return
-	}
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
 		writeAuthFailure(w, r, publicSessionKind)
+		return
+	}
+	if !a.requireRequestRate(w, r, "booking-hold-user:"+adminID+":"+u.ID, 20, 10*time.Minute) || !a.requireRequestRate(w, r, "booking-hold-ip:"+adminID, 500, 10*time.Minute) {
 		return
 	}
 	var memberID, name string
@@ -3062,12 +3226,12 @@ func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, 
 }
 
 func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID, bookingID string) {
-	if !a.requireRequestRate(w, r, "booking-slip:"+adminID, 10, 10*time.Minute) {
-		return
-	}
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
 		writeAuthFailure(w, r, publicSessionKind)
+		return
+	}
+	if !a.requireRequestRate(w, r, "booking-slip-user:"+adminID+":"+u.ID, 10, 10*time.Minute) || !a.requireRequestRate(w, r, "booking-slip-ip:"+adminID, 250, 10*time.Minute) {
 		return
 	}
 	slipRaw, err := readMultipartSlip(w, r)
