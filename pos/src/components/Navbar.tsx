@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useLayoutEffect } from "react";
 import { usePos } from "../context/PosContext";
 import { InstallPwaButton } from "./InstallPwaButton";
+import { POS_UI_SIZE_MAX, POS_UI_SIZE_MIN, POS_UI_SIZE_STEP, normalizePosUISize, posUISizeToRootFontPixels } from "../utils/uiSize";
 import {
   Store,
   Clock,
@@ -49,22 +50,18 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [currentDate, setCurrentDate] = useState<string>("");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [uiZoom, setUiZoom] = useState(() => {
-    const saved = Number(window.localStorage.getItem('pos-ui-zoom') || 100);
-    return Number.isFinite(saved) && saved >= 80 && saved <= 120 ? saved : 100;
+    return normalizePosUISize(window.localStorage.getItem('pos-ui-size') || window.localStorage.getItem('pos-ui-zoom') || 100);
   });
 
-  useEffect(() => {
-    const shell = document.getElementById('pos-app-shell');
-    if (!shell) return;
+  useLayoutEffect(() => {
     const scale = activeTab === 'customer-display' ? 1 : uiZoom / 100;
-    shell.style.zoom = String(scale);
-    shell.style.width = `${100 / scale}%`;
-    shell.style.height = `${100 / scale}vh`;
-    window.localStorage.setItem('pos-ui-zoom', String(uiZoom));
+    document.documentElement.style.fontSize = `${posUISizeToRootFontPixels(scale * 100)}px`;
+    document.documentElement.style.setProperty('--pos-ui-size', String(scale));
+    window.localStorage.setItem('pos-ui-size', String(uiZoom));
+    window.localStorage.removeItem('pos-ui-zoom');
     return () => {
-      shell.style.zoom = '';
-      shell.style.width = '';
-      shell.style.height = '';
+      document.documentElement.style.fontSize = '';
+      document.documentElement.style.removeProperty('--pos-ui-size');
     };
   }, [uiZoom, activeTab]);
 
@@ -181,10 +178,10 @@ export const Navbar: React.FC<NavbarProps> = ({
             </button>
           </div>
 
-          <div className="hidden items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 sm:flex" aria-label="ปรับขนาดหน้าจอ POS">
-            <button type="button" className="p-2 text-slate-600 hover:bg-slate-200 disabled:opacity-35 dark:text-slate-300 dark:hover:bg-slate-700" disabled={uiZoom <= 80} onClick={() => setUiZoom((value) => Math.max(80, value - 10))} title="ย่อหน้าจอ"><ZoomOut className="h-4 w-4" /></button>
-            <button type="button" className="min-w-12 border-x border-slate-200 px-1 py-2 text-[10px] font-black text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700" onClick={() => setUiZoom(100)} title="กลับเป็น 100%">{uiZoom}%</button>
-            <button type="button" className="p-2 text-slate-600 hover:bg-slate-200 disabled:opacity-35 dark:text-slate-300 dark:hover:bg-slate-700" disabled={uiZoom >= 120} onClick={() => setUiZoom((value) => Math.min(120, value + 10))} title="ขยายหน้าจอ"><ZoomIn className="h-4 w-4" /></button>
+          <div className="hidden items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100 dark:border-slate-700 dark:bg-slate-800 sm:flex" aria-label="ปรับขนาดส่วนประกอบ POS">
+            <button type="button" className="p-2 text-slate-600 hover:bg-slate-200 disabled:opacity-35 dark:text-slate-300 dark:hover:bg-slate-700" disabled={uiZoom <= POS_UI_SIZE_MIN} onClick={() => setUiZoom((value) => Math.max(POS_UI_SIZE_MIN, value - POS_UI_SIZE_STEP))} title="ย่อตัวอักษร ปุ่ม และ Card"><ZoomOut className="h-4 w-4" /></button>
+            <button type="button" className="min-w-12 border-x border-slate-200 px-1 py-2 text-[10px] font-black text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-700" onClick={() => setUiZoom(100)} title="กลับเป็นขนาดมาตรฐาน">{uiZoom}%</button>
+            <button type="button" className="p-2 text-slate-600 hover:bg-slate-200 disabled:opacity-35 dark:text-slate-300 dark:hover:bg-slate-700" disabled={uiZoom >= POS_UI_SIZE_MAX} onClick={() => setUiZoom((value) => Math.min(POS_UI_SIZE_MAX, value + POS_UI_SIZE_STEP))} title="ขยายตัวอักษร ปุ่ม และ Card"><ZoomIn className="h-4 w-4" /></button>
           </div>
 
           <button

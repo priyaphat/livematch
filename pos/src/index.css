@@ -3,6 +3,10 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
+  :root {
+    --pos-ui-size: 1;
+  }
+
   * {
     font-family: 'Prompt', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   }
@@ -40,9 +44,9 @@ input[type='number']::-webkit-inner-spin-button {
 
 /* POS readability: promote every on-screen type utility by one Tailwind size step. */
 @media screen {
-  .text-\[9px\] { font-size: 10px; }
-  .text-\[10px\] { font-size: 11px; }
-  .text-\[11px\] { font-size: 12px; }
+  .text-\[9px\] { font-size: calc(10px * var(--pos-ui-size)); }
+  .text-\[10px\] { font-size: calc(11px * var(--pos-ui-size)); }
+  .text-\[11px\] { font-size: calc(12px * var(--pos-ui-size)); }
   .text-xs { font-size: 0.875rem; line-height: 1.25rem; }
   .text-sm { font-size: 1rem; line-height: 1.5rem; }
   .text-base { font-size: 1.125rem; line-height: 1.75rem; }
@@ -55,7 +59,7 @@ input[type='number']::-webkit-inner-spin-button {
 }
 
 @media screen and (min-width: 40rem) {
-  .sm\:text-\[10px\] { font-size: 11px; }
+  .sm\:text-\[10px\] { font-size: calc(11px * var(--pos-ui-size)); }
   .sm\:text-xs { font-size: 0.875rem; line-height: 1.25rem; }
   .sm\:text-sm { font-size: 1rem; line-height: 1.5rem; }
   .sm\:text-base { font-size: 1.125rem; line-height: 1.75rem; }
@@ -125,6 +129,10 @@ input[type='number']::-webkit-inner-spin-button {
 
 /* Thermal receipt printing styling */
 @media print {
+  html {
+    font-size: 16px !important;
+  }
+
   #pos-app-shell {
     zoom: 1 !important;
     width: 100% !important;
