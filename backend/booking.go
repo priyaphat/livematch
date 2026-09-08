@@ -34,8 +34,7 @@ import (
 const (
 	publicCookieName         = "livematch_public_session"
 	bookingHoldUserRateLimit = 60
-	bookingHoldIPRateLimit   = 1000
-	bookingHoldRateWindow    = 10 * time.Minute
+	bookingHoldRateWindow    = time.Minute
 )
 
 type requestRateBucket struct {
@@ -3123,7 +3122,7 @@ func (a *app) createPublicHold(w http.ResponseWriter, r *http.Request, adminID, 
 		writeAuthFailure(w, r, publicSessionKind)
 		return
 	}
-	if !a.requireRequestRate(w, r, "booking-hold-user:"+adminID+":"+u.ID, bookingHoldUserRateLimit, bookingHoldRateWindow) || !a.requireRequestRate(w, r, "booking-hold-ip:"+adminID, bookingHoldIPRateLimit, bookingHoldRateWindow) {
+	if !a.requireRequestRate(w, r, "booking-hold-user:"+adminID+":"+u.ID, bookingHoldUserRateLimit, bookingHoldRateWindow) {
 		return
 	}
 	var memberID, name string

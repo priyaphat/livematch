@@ -148,11 +148,8 @@ func TestBookingHoldRatePolicyAllowsFrequentBulkBooking(t *testing.T) {
 	if bookingHoldUserRateLimit != 60 {
 		t.Fatalf("booking hold user limit = %d, want 60 requests", bookingHoldUserRateLimit)
 	}
-	if bookingHoldIPRateLimit != 1000 {
-		t.Fatalf("booking hold IP limit = %d, want 1000 requests", bookingHoldIPRateLimit)
-	}
-	if bookingHoldRateWindow != 10*time.Minute {
-		t.Fatalf("booking hold window = %s, want 10m", bookingHoldRateWindow)
+	if bookingHoldRateWindow != time.Minute {
+		t.Fatalf("booking hold window = %s, want 1m", bookingHoldRateWindow)
 	}
 }
 
