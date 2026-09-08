@@ -562,46 +562,45 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const refreshPOSSales = async (options: { includeMembers?: boolean; includeSettings?: boolean; skipIfEditing?: boolean } = {}) => {
     const includeMembers = options.includeMembers !== false;
     const includeSettings = options.includeSettings !== false;
-    const [apiMembers, apiSales, apiSettings, apiReceivables, apiPayments] = await Promise.all([
+    const [apiMembers, apiSettings, apiReceivables, apiPayments] = await Promise.all([
       includeMembers ? listPOSMembers() : Promise.resolve(null),
-      listPOSSales(),
       includeSettings ? getPOSSettings() : Promise.resolve(null),
       listPOSReceivables(),
       listPOSPaymentHistory(),
     ]);
     if (options.skipIfEditing && isPOSEditing()) return;
     if (apiMembers) setMembers(apiMembers);
-    const openSales = apiSales.filter((sale) => sale.status === 'open');
     setHeldOrders(apiReceivables.map((receivable) => {
-      const accountSales = openSales.filter((sale) => sale.billingAccountId === receivable.billingAccountId);
-	  const splitSaleIds = receivable.lines.filter((line) => line.sourceType === 'pos').map((line) => String(line.snapshot?.saleId || '')).filter(Boolean);
-	  const splitAllocations = receivable.lines.filter((line) => line.sourceType === 'pos' && line.snapshot?.splitMode === 'equal').map((line) => ({ saleId: String(line.snapshot?.saleId || line.sourceId), count: Number(line.snapshot?.splitCount || 1), position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 }));
-	  const splitSales = openSales.filter((sale) => splitSaleIds.includes(sale.id));
-	  const visibleSales = [...accountSales, ...splitSales.filter((sale) => !accountSales.some((item) => item.id === sale.id))];
-	  const posItems = visibleSales.flatMap((sale) => {
-		const billingLine = receivable.lines.find((line) => line.sourceType === 'pos' && String(line.snapshot?.saleId || line.sourceId) === sale.id);
-		const splitCount = Number(billingLine?.snapshot?.splitCount || 0);
-		if (!billingLine || billingLine.snapshot?.splitMode !== 'equal' || splitCount < 2) {
-		  return sale.items.map((item) => ({ product: saleItemProduct(item), quantity: item.quantity, note: item.note }));
+	  const posLines = receivable.lines.filter((line) => line.sourceType === 'pos');
+	  const sourceSaleIds = [...new Set(posLines.map((line) => {
+		const snapshotSaleId = String(line.snapshot?.saleId || '').trim();
+		if (snapshotSaleId) return snapshotSaleId;
+		return line.sourceId.startsWith('split:') ? '' : line.sourceId;
+	  }).filter(Boolean))];
+	  const splitAllocations = posLines.filter((line) => line.snapshot?.splitMode === 'equal').map((line) => ({ saleId: String(line.snapshot?.saleId || line.sourceId), count: Number(line.snapshot?.splitCount || 1), position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 }));
+	  const posItems = posLines.flatMap((line) => {
+		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+		const splitCount = Number(line.snapshot?.splitCount || 0);
+		if (entries.length === 0) {
+		  return [{
+			product: { id: `billing-pos-${line.sourceId}`, sku: '', name: line.label || 'สินค้า POS', category: 'POS', price: line.amountSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const },
+			quantity: 1,
+			allocatedTotal: line.amountSatang / 100,
+		  }];
 		}
-		const sourceAmounts = sale.items.map((item) => Number(item.lineTotalSatang || 0));
+		const sourceAmounts = entries.map((entry: any) => Number(entry.amountSatang ?? entry.lineTotalSatang ?? 0));
 		const sourceTotal = sourceAmounts.reduce((sum, amount) => sum + amount, 0);
-		const allocated = sourceAmounts.map((amount) => sourceTotal > 0 ? Math.floor(amount * billingLine.amountSatang / sourceTotal) : 0);
-		if (allocated.length > 0) allocated[0] += billingLine.amountSatang - allocated.reduce((sum, amount) => sum + amount, 0);
-		return sale.items.map((item, index) => {
+		const allocated = sourceAmounts.map((amount) => sourceTotal > 0 ? Math.floor(amount * line.amountSatang / sourceTotal) : 0);
+		if (allocated.length > 0) allocated[0] += line.amountSatang - allocated.reduce((sum, amount) => sum + amount, 0);
+		return entries.map((entry: any, index: number) => {
+		  const quantity = Math.max(1, Number(entry.quantity || 1));
 		  const allocatedTotal = allocated[index] / 100;
-		  const snapshotProduct = saleItemProduct(item);
 		  return {
-			product: { ...snapshotProduct, name: item.productName, sku: item.sku, price: item.quantity > 0 ? allocatedTotal / item.quantity : allocatedTotal },
-			quantity: item.quantity,
-			note: item.note,
+			product: { id: `billing-pos-${line.sourceId}-${index}`, sku: String(entry.sku || ''), name: String(entry.name || entry.productName || entry.label || line.label || 'สินค้า POS'), category: 'POS', price: allocatedTotal / quantity, cost: Number(entry.unitCostSatang || 0) / 100, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: String(entry.unit || 'ชิ้น'), status: 'inactive' as const },
+			quantity,
+			note: entry.note ? String(entry.note) : undefined,
 			allocatedTotal,
-			splitAllocation: {
-			  count: splitCount,
-			  position: Number(billingLine.snapshot?.splitPosition || 1),
-			  paidCount: Number(billingLine.snapshot?.splitPaidCount || 0),
-			  share: allocatedTotal,
-			},
+			...(line.snapshot?.splitMode === 'equal' && splitCount > 1 ? { splitAllocation: { count: splitCount, position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 } } : {}),
 		  };
 		});
 	  });
@@ -621,12 +620,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         customerName: receivable.displayName,
         memberId: receivable.memberId,
         billingAccountId: receivable.billingAccountId,
-		sourceSaleIds: visibleSales.map((sale) => sale.id),
+		sourceSaleIds,
         items: [...matchItems, ...posItems],
         subtotal: receivable.totalSatang / 100,
         discount: 0,
         discountType: 'amount' as const,
-        note: `Match ${(receivable.matchTotalSatang / 100).toFixed(2)} · POS ${(receivable.posTotalSatang / 100).toFixed(2)}`,
+        note: undefined,
         createdAt: receivable.calculatedAt,
         total: receivable.totalSatang / 100,
         matchTotal: receivable.matchTotalSatang / 100,

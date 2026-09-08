@@ -39,6 +39,85 @@
 - Post-fix evidence: `artifacts/pos-bottom-nav-wrap-comparison.png`.
 
 final result: passed
+
+---
+
+# POS Held Bills Card — Design QA
+
+## Evidence
+
+- Source issue capture: `D:\VibeStudio\LiveMatch\artifacts\design-qa\held-bill-card-source.png`
+- Revised full page: `D:\VibeStudio\LiveMatch\artifacts\design-qa\held-bill-page.png`
+- Revised card detail: `D:\VibeStudio\LiveMatch\artifacts\design-qa\held-bill-card-detail.png`
+- Route/state: `http://localhost:5175/`, Bills & History > Held bills, dark theme, one three-hour-old open sale placed behind 60 newer paid sales.
+- Source pixels: 465 × 270. Implementation viewport/capture: 403 × 562. The source is a focused desktop crop while the implementation evidence is the in-app browser's narrow responsive viewport; comparison focuses on hierarchy, content recovery, and overflow behavior rather than one-to-one page geometry.
+
+## Findings and comparison history
+
+- [P1] The original card showed a correct outstanding total but an empty item region. The client fetched only the latest 50 sales across all statuses, so an older open sale could not be joined to its receivable. Fixed by rendering POS items directly from each receivable line's immutable server snapshot and removing that unrelated 50-sale dependency.
+- [P1] The source mixed generated text (`Match 0.00 · POS 20.00`) into a quoted note block and left the empty item panel unexplained. Fixed with dedicated POS/Match source chips and a structured item row containing name, quantity, unit price, and allocated total.
+- [P2] The first redesign retained status/count/time metadata the user did not need. Fixed by removing the status/count header badge and timestamp, enlarging the customer name, and constraining each card to 360px.
+- [P2] Follow-up capture showed the page filter surface reaching the right viewport edge. Fixed with `box-border`, `min-w-0`, `max-w-full`, and horizontal overflow containment on the page and held-list shells. The revised full-page capture shows a consistent right inset.
+
+## Required fidelity surfaces
+
+- Typography: customer name is now the strongest card label; item and total hierarchy remain readable at the narrow viewport.
+- Spacing/layout: the card is centered, capped at 360px, and has distinct identity, item, and payment regions without horizontal clipping.
+- Colors/tokens: existing slate, amber, sky, and dark-mode tokens are retained; no new visual language was introduced.
+- Image/assets: no raster imagery is required. Existing Lucide icons are used consistently; no placeholder or custom SVG asset was introduced.
+- Copy/content: generated quote text is removed; labels now describe source, item count, item details, and amount due directly.
+
+## Interaction and runtime checks
+
+- [x] A held sale older than 60 newer paid sales still displays `น้ำดื่ม`, quantity 1, and ฿20.00 from its billing snapshot.
+- [x] Select, delete, restore-to-cart, and pay-now controls remain present and accessible.
+- [x] The page and search panel no longer exceed the narrow viewport width.
+- [x] POS TypeScript lint and production build pass.
+- [x] Backend `go test ./...` passes.
+
+No actionable P0, P1, or P2 findings remain in the requested held-card scope.
+
+final result: passed
+
+---
+
+# POS Receipt Printing — Design QA
+
+## Evidence
+
+- Source visual truth: `C:\Users\OTAMOS\AppData\Local\Temp\codex-clipboard-07614db3-df1e-48f0-a2b4-2458f5d10794.png`
+- Browser-rendered implementation: `D:\VibeStudio\LiveMatch\artifacts\design-qa\receipt-modal-implementation.png`
+- Combined comparison: `D:\VibeStudio\LiveMatch\artifacts\design-qa\receipt-modal-comparison.png`
+- Route/state: `http://localhost:5175/`, POS > Bills & History > Sales history > Receipt modal, 80 mm.
+- Source pixels: 367 × 727. Implementation viewport/capture: 403 × 562.
+
+## Visual comparison
+
+The implementation preserves the displayed receipt as the print source: the same white paper surface, centered store identity, dashed metadata and total separators, item hierarchy, payment summary, barcode, and footer are rasterized directly from `#printable-receipt`. Screen-only modal chrome and action buttons are excluded from the printable node. The QA tenant has no logo asset, so the implementation capture correctly omits a fabricated replacement; configured production logos remain part of the shared receipt node.
+
+## Interaction and runtime checks
+
+- [x] The Sales, held Bills, and Sales History flows all open the single global `ReceiptModal`, so all three use the same visual print renderer.
+- [x] Standard print creates an exact bitmap of the visible receipt for iMin and a standalone image document for browser printing.
+- [x] “พิมพ์ใบเสร็จ (QR)” is visible and reachable at the mobile viewport without horizontal overflow.
+- [x] The QR API was called with the immutable stored total of 12,500 satang and returned a dynamic PromptPay payload with `amountSatang: 12500`.
+- [x] QR printing rejects a server amount mismatch or a fallback/static image that cannot guarantee a locked amount.
+- [x] The bitmap pipeline checks for non-white content before sending data to the printer, preventing blank-paper output.
+- [x] Browser console error log is empty.
+- [x] POS TypeScript lint and production build pass.
+
+## Findings and fixes
+
+- [P1] The previous iMin path printed separately assembled plain text, so the physical receipt could not match the on-screen layout. Fixed by rasterizing the existing receipt node and printing that bitmap.
+- [P1] The receipt modal had no locked-amount QR print action. Fixed with a server-verified PromptPay payload generated from the saved receipt total.
+- [P1] A failed DOM/image capture could still feed a visually blank receipt to the printer. Fixed with PNG validation plus sampled pixel-content validation.
+- [P2] Three action buttons could overflow on a narrow device. Fixed by wrapping the action area and keeping the QR button reachable in the footer.
+- [P2] Follow-up review found the text copy button used too much width and there was no explicit Close action beside printing. Fixed by converting Copy to an accessible icon-only control, shortening print labels responsively, and placing Copy, Print, Print QR, and Close on one non-wrapping row. The revised `receipt-modal-implementation.png` confirms all four controls remain visible at 403 × 562.
+- [P3] Final requested ordering places Print QR before the standard Print action. The final browser capture confirms Copy, Print QR, Print, and Close remain on one row.
+
+No actionable P0, P1, or P2 visual differences remain for the requested receipt-printing scope.
+
+final result: passed
 ## POS split-share bill presentation addendum — 2026-09-03
 
 - Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-bed719ce-530c-4906-9c74-605f96e7b55b.png` and `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-3b70b54c-ff58-4694-9576-dd1e8073c3ca.png`
