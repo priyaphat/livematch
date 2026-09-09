@@ -1242,6 +1242,8 @@ func (a *app) handleBackofficeRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleBackofficeAdminSubscriptionCancel(w, r, backofficeUser)
 	case r.Method == http.MethodDelete && strings.HasPrefix(action, "admins/") && strings.Contains(action, "/sessions/"):
 		a.handleBackofficeSessionDelete(w, r, backofficeUser)
+	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/") && strings.HasSuffix(action, "/slipok-usage"):
+		a.handleBackofficeAdminSlipOKUsage(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(action, "admins/"):
 		a.handleBackofficeAdminDetail(w, r)
 	case r.Method == http.MethodPatch && strings.HasPrefix(action, "admins/") && strings.HasSuffix(action, "/features"):
@@ -1539,6 +1541,86 @@ func (a *app) activitySessionOptions(ctx context.Context, adminID string) ([]map
 func (a *app) handleBackofficeAdminDetail(w http.ResponseWriter, r *http.Request) {
 	adminID := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/backoffice/admins/"))
 	a.writeBackofficeAdminDetail(w, r, adminID)
+}
+
+func parseSlipOKUsageMonth(value string, now time.Time) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return slipOKMonthStart(now), nil
+	}
+	month, err := time.ParseInLocation("2006-01", value, bangkokLocation)
+	if err != nil || month.Format("2006-01") != value {
+		return time.Time{}, errors.New("invalid month")
+	}
+	return month, nil
+}
+
+func (a *app) handleBackofficeAdminSlipOKUsage(w http.ResponseWriter, r *http.Request) {
+	action := strings.TrimPrefix(r.URL.Path, "/api/backoffice/admins/")
+	adminID := strings.TrimSpace(strings.TrimSuffix(action, "/slipok-usage"))
+	if adminID == "" || strings.Contains(adminID, "/") {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing admin id"})
+		return
+	}
+	var exists bool
+	if err := a.db.QueryRowContext(r.Context(), `select exists(select 1 from admin_users where id=$1)`, adminID).Scan(&exists); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !exists {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "admin not found"})
+		return
+	}
+	month, err := parseSlipOKUsageMonth(r.URL.Query().Get("month"), time.Now())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "เดือนต้องอยู่ในรูปแบบ YYYY-MM", "code": "invalid_month"})
+		return
+	}
+	settings := a.bookingSlipOKSettings(r.Context(), adminID)
+	var used int
+	if err = a.db.QueryRowContext(r.Context(), `select coalesce((select used from slipok_monthly_usage where admin_id=$1 and source_system='booking' and month_start=$2),0)`, adminID, month.Format("2006-01-02")).Scan(&used); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `
+		select to_char(month_start,'YYYY-MM'),used
+		from slipok_monthly_usage
+		where admin_id=$1 and source_system='booking'
+		order by month_start desc
+	`, adminID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	history := []map[string]any{}
+	totalUsed := 0
+	for rows.Next() {
+		var itemMonth string
+		var itemUsed int
+		if err = rows.Scan(&itemMonth, &itemUsed); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		totalUsed += itemUsed
+		history = append(history, map[string]any{"month": itemMonth, "used": itemUsed})
+	}
+	if err = rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	result := map[string]any{
+		"month": month.Format("2006-01"), "used": used, "totalUsed": totalUsed, "history": history,
+		"enabled": settings.Enabled, "configured": settings.BranchID != "" && settings.APIKey != "",
+		"limitEnabled": settings.LimitEnabled, "limit": max(0, settings.MonthlyCap),
+	}
+	if settings.LimitEnabled {
+		result["remaining"] = max(0, settings.MonthlyCap-used)
+	}
+	if r.URL.Query().Get("includeProvider") != "0" {
+		result["provider"] = a.fetchSlipOKQuota(r.Context(), settings)
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *app) writeBackofficeAdminDetail(w http.ResponseWriter, r *http.Request, adminID string) {

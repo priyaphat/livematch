@@ -286,6 +286,9 @@ const forms = reactive({
   backofficeSlipOKLogsUserSearch: '',
   backofficeActivityUserSearch: '',
   backofficeAdminDetail: null,
+  backofficeAdminSlipOKMonth: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit' }).slice(0, 7),
+  backofficeAdminSlipOKUsage: null,
+  backofficeAdminSlipOKLoading: false,
   backofficeDiscountPercent: 0,
   backofficeSubscriptionId: '',
   backofficeSubscriptionStartDate: '',
@@ -1221,8 +1224,32 @@ async function openBackofficeAdminDetail(adminId) {
       headers: backofficeAuthHeaders()
     }))
     ui.showBackofficeAdminModal = true
+    forms.backofficeAdminSlipOKMonth = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit' }).slice(0, 7)
+    forms.backofficeAdminSlipOKUsage = null
+    void loadBackofficeAdminSlipOKUsage(forms.backofficeAdminSlipOKMonth, true)
   } catch (error) {
     forms.backofficeError = error.message || 'โหลดรายละเอียด admin ไม่สำเร็จ'
+  }
+}
+
+let backofficeAdminSlipOKRequest = 0
+async function loadBackofficeAdminSlipOKUsage(month = forms.backofficeAdminSlipOKMonth, includeProvider = false) {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  if (!adminId) return
+  const request = ++backofficeAdminSlipOKRequest
+  forms.backofficeAdminSlipOKLoading = true
+  try {
+    const params = new URLSearchParams({ month: String(month || '') })
+    params.set('includeProvider', includeProvider ? '1' : '0')
+    const payload = await api(`/api/backoffice/admins/${adminId}/slipok-usage?${params}`, { headers: backofficeAuthHeaders() })
+    if (request !== backofficeAdminSlipOKRequest || forms.backofficeAdminDetail?.user?.id !== adminId) return
+    const previousProvider = forms.backofficeAdminSlipOKUsage?.provider
+    forms.backofficeAdminSlipOKUsage = { ...payload, provider: payload.provider ?? previousProvider }
+    forms.backofficeAdminSlipOKMonth = payload.month || month
+  } catch (error) {
+    if (request === backofficeAdminSlipOKRequest) showToast(error.message || 'โหลดการใช้งาน Auto Slip ไม่สำเร็จ')
+  } finally {
+    if (request === backofficeAdminSlipOKRequest) forms.backofficeAdminSlipOKLoading = false
   }
 }
 
@@ -3968,6 +3995,7 @@ const pageProps = computed(() => ({
   loadBackofficeSlipOKLogs,
   applyBackofficeSlipOKLogFilters,
   openBackofficeAdminDetail,
+  loadBackofficeAdminSlipOKUsage,
   deleteBackofficeAdminSession,
   saveBackofficeAdminDiscount,
   saveBackofficeAdminFeatures,

@@ -133,13 +133,13 @@ func (settings slipOKSettings) ready() bool {
 }
 
 type slipOKMonthlyUsage struct {
-	Month        string      `json:"month"`
-	Used         int         `json:"used"`
-	Limit        int         `json:"limit"`
-	Remaining    *int        `json:"remaining"`
-	LimitEnabled bool        `json:"limitEnabled"`
-	CapReached   bool        `json:"capReached"`
-	Provider     slipOKQuota `json:"provider"`
+	Month        string       `json:"month"`
+	Used         int          `json:"used"`
+	Limit        int          `json:"limit"`
+	Remaining    *int         `json:"remaining"`
+	LimitEnabled bool         `json:"limitEnabled"`
+	CapReached   bool         `json:"capReached"`
+	Provider     *slipOKQuota `json:"provider,omitempty"`
 }
 
 func slipOKMonthStart(now time.Time) time.Time {
@@ -157,7 +157,8 @@ func (a *app) slipOKUsage(ctx context.Context, adminID, source string, settings 
 		result.CapReached = result.Used >= result.Limit
 	}
 	if includeProvider {
-		result.Provider = a.fetchSlipOKQuota(ctx, settings)
+		provider := a.fetchSlipOKQuota(ctx, settings)
+		result.Provider = &provider
 	}
 	return result
 }

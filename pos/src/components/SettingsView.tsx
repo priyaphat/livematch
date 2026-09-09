@@ -54,13 +54,12 @@ const PERMISSION_LABELS = [
   ['bills', 'บิลและประวัติ'],
   ['products', 'จัดการสินค้า'],
   ['stock', 'จัดการสต็อก'],
-  ['reports', 'ดูรายงาน'],
+  ['reports', 'รายงาน (ดู / พิมพ์ / Export)'],
   ['settings', 'ตั้งค่าระบบ'],
   ['discounts', 'ให้ส่วนลด'],
   ['void_sales', 'ยกเลิก / คืนบิล'],
   ['stock_adjust', 'ปรับยอดสต็อก'],
   ['product_pricing', 'แก้ไขราคาสินค้า'],
-  ['report_export', 'ส่งออกรายงาน'],
   ['member_create', 'เพิ่มสมาชิกหลัก'],
 ] as const;
 
@@ -361,7 +360,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
       const enabled = !current[role][permission];
       const next = { ...current[role], [permission]: enabled };
       if (permission === 'stock' && !enabled) next.view_costs = false;
-      if (permission === 'reports') POS_REPORT_PERMISSION_KEYS.forEach((key) => { next[key] = enabled; });
+      if (permission === 'reports') {
+        POS_REPORT_PERMISSION_KEYS.forEach((key) => { next[key] = enabled; });
+        // Printing and exporting are actions inside the reports menu, not a
+        // separate role capability. Keep the legacy API key synchronized.
+        next.report_export = enabled;
+      }
       if (permission === 'report_inventory' && !enabled) next.report_inventory_values = false;
       if (permission.startsWith('report_') && permission !== 'report_export') {
         next.reports = enabled || POS_REPORT_PERMISSION_KEYS.some((key) => key !== permission && key !== 'report_inventory_values' && next[key]);
@@ -947,6 +951,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                           )}
                           {key === 'reports' && (
                             <div className={`ml-3 grid gap-1.5 border-l-2 py-1 pl-3 ${enabled ? 'border-emerald-200 dark:border-emerald-500/20' : 'border-slate-200 dark:border-slate-800'}`}>
+                              <p className="px-2 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">เปิดแล้วสามารถพิมพ์และ Export รายงานที่อนุญาตได้ทันที</p>
                               <p className="px-2 text-[10px] font-black uppercase tracking-wide text-slate-400">เมนูรายงานย่อย</p>
                               {REPORT_PERMISSION_LABELS.map(([reportKey, reportLabel]) => {
                                 const reportEnabled = permissions[role][reportKey];

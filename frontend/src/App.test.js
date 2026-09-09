@@ -637,6 +637,41 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('fieldset').find('input').exists()).toBe(true)
   })
 
+  it('shows provider quota and selectable monthly history in Admin DB Preview', async () => {
+    const loadBackofficeAdminSlipOKUsage = vi.fn()
+    const forms = {
+      backofficeTab: 'members',
+      backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+      backofficeAdminsPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+      backofficeAdminDetail: {
+        user: { id: 'admin-1', name: 'สนามทดสอบ', email: 'admin@example.test', verified: true, coins: 5, createdAt: '2026-08-01 10:00' },
+        sessions: [], coinLedger: [], orders: [], features: {}, benefits: { pricing: {}, subscriptionHistory: [] },
+        sessionPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 },
+        orderPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 },
+        ledgerPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 }
+      },
+      backofficeAdminSlipOKMonth: '2026-08',
+      backofficeAdminSlipOKLoading: false,
+      backofficeAdminSlipOKUsage: {
+        month: '2026-08', used: 12, totalUsed: 31, limitEnabled: true, limit: 50, remaining: 38,
+        provider: { available: true, used: 95, limit: 95, remaining: 0, overQuota: 4 },
+        history: [{ month: '2026-08', used: 12 }, { month: '2026-07', used: 19 }]
+      }
+    }
+    const wrapper = mount(BackofficePage, {
+      props: { forms, ui: { showBackofficeAdminModal: true }, backoffice: { unlocked: true }, loadBackofficeAdminSlipOKUsage }
+    })
+
+    const usage = wrapper.get('[data-testid="admin-slipok-usage"]')
+    expect(usage.text()).toContain('โควตา SlipOK จริง · คงเหลือ')
+    expect(usage.text()).toContain('ใช้แล้ว 95 / 95')
+    expect(usage.text()).toContain('ใช้เกินโควตา 4 ครั้ง')
+    expect(usage.text()).toContain('31')
+    await usage.get('input[type="month"]').setValue('2026-07')
+    await usage.get('input[type="month"]').trigger('change')
+    expect(loadBackofficeAdminSlipOKUsage).toHaveBeenCalledWith('2026-07', false)
+  })
+
   it('uses the POS product combobox and locks the linked shuttle price in session settings', async () => {
     const apiRequest = vi.fn().mockResolvedValue({
       items: [{ id: 'product-victor', name: 'Victor No.1', sku: 'PROD-019', priceSatang: 10000, stockQuantity: 12, unit: 'ลูก', active: true, trackStock: true }]

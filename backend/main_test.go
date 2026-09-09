@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -294,6 +295,34 @@ func TestNormalizeSlipOKBranchID(t *testing.T) {
 		if got := normalizeSlipOKBranchID(input); got != expected {
 			t.Fatalf("normalizeSlipOKBranchID(%q) = %q, want %q", input, got, expected)
 		}
+	}
+}
+
+func TestParseSlipOKUsageMonth(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 23, 30, 0, 0, bangkokLocation)
+	current, err := parseSlipOKUsageMonth("", now)
+	if err != nil || current.Format("2006-01") != "2026-09" {
+		t.Fatalf("default month = %s, %v", current.Format("2006-01"), err)
+	}
+	historical, err := parseSlipOKUsageMonth("2025-12", now)
+	if err != nil || historical.Format("2006-01") != "2025-12" {
+		t.Fatalf("historical month = %s, %v", historical.Format("2006-01"), err)
+	}
+	for _, invalid := range []string{"2026-9", "2026-13", "September"} {
+		if _, err = parseSlipOKUsageMonth(invalid, now); err == nil {
+			t.Fatalf("expected %q to be rejected", invalid)
+		}
+	}
+}
+
+func TestSlipOKUsageWithoutProviderDoesNotExposeProviderQuota(t *testing.T) {
+	usage := slipOKMonthlyUsage{Month: "2026-09", Used: 7, Limit: 20, LimitEnabled: true}
+	payload, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "provider") {
+		t.Fatalf("user-admin usage payload exposed provider quota: %s", payload)
 	}
 }
 

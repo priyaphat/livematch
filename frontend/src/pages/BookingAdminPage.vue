@@ -94,7 +94,7 @@ const exportFilters = reactive({
 const exportLoading = ref(false);
 const exportStatus = ref("");
 const incidents = reactive({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1, search: "", type: "", loading: false });
-const slipOKQuota = reactive({ month: "", used: 0, remaining: null, limit: 0, limitEnabled: false, capReached: false, provider: {}, error: "" });
+const slipOKQuota = reactive({ month: "", used: 0, remaining: null, limit: 0, limitEnabled: false, capReached: false, error: "" });
 const actionBusy = reactive({ entry: false, reopen: false, review: false, settings: false, addCourt: false });
 const courtBusy = reactive(new Set());
 const blockBusy = reactive(new Set());
@@ -1846,7 +1846,7 @@ onUnmounted(() => {
 		<div v-else-if="settingsTab === 'slipok'" class="mt-4 grid gap-3">
           <div class="flex flex-wrap items-center justify-between gap-2 rounded-lg border p-3 dark:border-stone-700">
             <label class="flex items-center gap-2 font-black"><input v-model="settings.slipOKEnabled" type="checkbox" />เปิดใช้ Auto Slip</label>
-            <button type="button" class="rounded-lg border px-3 py-2 text-xs font-black" @click="loadSlipOKQuota">รีเฟรชโควตา</button>
+            <button type="button" class="rounded-lg border px-3 py-2 text-xs font-black" @click="loadSlipOKQuota">รีเฟรชยอดใช้</button>
           </div>
           <div class="grid gap-3 sm:grid-cols-2">
             <label class="grid gap-1 text-sm font-bold">Branch ID<input v-model="settings.slipOKBranchId" class="h-10 rounded-lg border bg-transparent px-3" /></label>
@@ -1856,14 +1856,9 @@ onUnmounted(() => {
 			<div class="rounded-lg bg-paper-100 p-3 text-sm font-bold dark:bg-stone-800">
 			  <p>โควตาภายใน LiveMatch · เดือน {{ slipOKQuota.month || '-' }}</p>
 			  <p class="mt-1 text-xs text-stone-500">ใช้แล้ว {{ slipOKQuota.used || 0 }} ครั้ง<span v-if="slipOKQuota.limitEnabled"> · คงเหลือ {{ slipOKQuota.remaining ?? 0 }} / {{ slipOKQuota.limit }}</span><span v-else> · ไม่จำกัดภายในระบบ</span></p>
-			  <p class="mt-2 text-xs font-black" :class="slipOKQuota.provider?.available && Number(slipOKQuota.provider?.remaining || 0) <= 0 ? 'text-red-700 dark:text-red-300' : 'text-stone-500'">โควตา SlipOK จริง · คงเหลือ {{ slipOKQuota.provider?.available ? Number(slipOKQuota.provider?.remaining || 0) : '-' }} ครั้ง</p>
-			  <p v-if="slipOKQuota.error || slipOKQuota.provider?.error" class="mt-1 text-xs text-amber-700">{{ slipOKQuota.error || slipOKQuota.provider?.error }}</p>
+			  <p v-if="slipOKQuota.error" class="mt-1 text-xs text-amber-700">{{ slipOKQuota.error }}</p>
 			</div>
           </div>
-		  <div v-if="slipOKQuota.provider?.available && (Number(slipOKQuota.provider?.remaining || 0) <= 0 || Number(slipOKQuota.provider?.overQuota || 0) > 0)" data-testid="provider-quota-alert" class="rounded-lg border border-red-300 bg-red-50 p-4 text-sm font-black text-red-800 dark:border-red-900 dark:bg-red-950/30 dark:text-red-200">
-			<p>โควตา SlipOK หมดแล้ว ระบบจะส่งรายการให้ Admin ตรวจสอบเอง</p>
-			<p v-if="Number(slipOKQuota.provider?.overQuota || 0) > 0" class="mt-1 text-xs">SlipOK รายงานว่าใช้เกินแล้ว {{ Number(slipOKQuota.provider.overQuota).toLocaleString('th-TH') }} ครั้ง</p>
-		  </div>
           <p class="rounded-lg bg-amber-50 p-3 text-xs font-semibold text-amber-800 dark:bg-amber-950/30 dark:text-amber-200">หาก Auto Slip ใช้งานไม่ได้หรือโควตาหมด ระบบจะส่งให้ Admin ตรวจ Manual</p>
 		</div>
 

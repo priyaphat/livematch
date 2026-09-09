@@ -117,6 +117,9 @@ func normalizePOSPermissions(input map[string]bool) map[string]bool {
 			result[key] = false
 		}
 	}
+	// Printing and exporting are part of report access. Keep the legacy field
+	// derived so stored permissions from older releases cannot block the actions.
+	result["report_export"] = result["reports"]
 	return result
 }
 
@@ -146,6 +149,7 @@ func (a *app) posPermissions(ctx context.Context, adminID, role string) map[stri
 					result[key] = false
 				}
 			}
+			result["report_export"] = result["reports"]
 		}
 	}
 	return result
@@ -928,7 +932,7 @@ func authorizePOSPath(w http.ResponseWriter, user adminUser, method, path string
 		return requirePOSOwner(w, user)
 	}
 	if path == "reports/export-authorize" {
-		return requirePOSPermission(w, user, "reports") && requirePOSPermission(w, user, "report_export")
+		return requirePOSPermission(w, user, "reports")
 	}
 	if path == "dashboard" || path == "reports" || strings.HasPrefix(path, "reports/") {
 		return requirePOSPermission(w, user, "reports")

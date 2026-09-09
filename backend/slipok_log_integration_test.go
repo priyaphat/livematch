@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSlipOKAuditLogIntegration(t *testing.T) {
@@ -168,5 +169,29 @@ func TestSlipOKAuditLogIntegration(t *testing.T) {
 		if item.AdminID != adminID || strings.TrimSpace(item.SourceSystem) == "" {
 			t.Fatalf("user isolation/source metadata failed: %#v", item)
 		}
+	}
+
+	previousMonth := slipOKMonthStart(time.Now()).AddDate(0, -1, 0)
+	if _, err = db.Exec(`insert into slipok_monthly_usage(admin_id,source_system,month_start,used) values($1,'booking',$2,7) on conflict(admin_id,source_system,month_start) do update set used=excluded.used`, adminID, previousMonth.Format("2006-01-02")); err != nil {
+		t.Fatal(err)
+	}
+	usageRecorder := httptest.NewRecorder()
+	usageRequest := httptest.NewRequest(http.MethodGet, "/api/backoffice/admins/"+adminID+"/slipok-usage?month="+previousMonth.Format("2006-01")+"&includeProvider=0", nil)
+	a.handleBackofficeAdminSlipOKUsage(usageRecorder, usageRequest)
+	if usageRecorder.Code != http.StatusOK {
+		t.Fatalf("admin SlipOK usage status=%d body=%s", usageRecorder.Code, usageRecorder.Body.String())
+	}
+	var usagePayload struct {
+		Month     string           `json:"month"`
+		Used      int              `json:"used"`
+		TotalUsed int              `json:"totalUsed"`
+		History   []map[string]any `json:"history"`
+		Provider  json.RawMessage  `json:"provider"`
+	}
+	if err = json.NewDecoder(usageRecorder.Body).Decode(&usagePayload); err != nil {
+		t.Fatal(err)
+	}
+	if usagePayload.Month != previousMonth.Format("2006-01") || usagePayload.Used != 7 || usagePayload.TotalUsed < 10 || len(usagePayload.History) < 2 || len(usagePayload.Provider) != 0 {
+		t.Fatalf("unexpected historical usage payload: %#v body=%s", usagePayload, usageRecorder.Body.String())
 	}
 }

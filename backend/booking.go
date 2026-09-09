@@ -1303,7 +1303,9 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 		a.checkBookingTelegram(w, r, user)
 	case r.Method == http.MethodGet && path == "/slipok-quota":
 		settings := a.bookingSlipOKSettings(r.Context(), user.ID)
-		writeJSON(w, http.StatusOK, a.slipOKUsage(r.Context(), user.ID, "booking", settings, true))
+		// Provider quota belongs to the operator/backoffice view. User admins only
+		// receive their LiveMatch usage and configured monthly limit.
+		writeJSON(w, http.StatusOK, a.slipOKUsage(r.Context(), user.ID, "booking", settings, false))
 	case r.Method == http.MethodGet && path == "/blacklist":
 		a.writeBookingIncidents(w, r, user.ID)
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/blacklist/") && strings.HasSuffix(path, "/block"):

@@ -149,6 +149,24 @@ func TestNormalizePOSPermissionsDropsUnknownKeys(t *testing.T) {
 	}
 }
 
+func TestPOSReportAccessIncludesPrintAndExport(t *testing.T) {
+	permissions := normalizePOSPermissions(map[string]bool{
+		"reports":         true,
+		"report_overview": true,
+		"report_export":   false, // legacy saved value must no longer block report actions
+	})
+	if !permissions["report_export"] {
+		t.Fatal("report access must include print and export")
+	}
+	cashier := adminUser{POSRole: "cashier", POSPermissions: permissions}
+	if !authorizePOSPath(httptest.NewRecorder(), cashier, http.MethodPost, "reports/export-authorize") {
+		t.Fatal("cashier with report access should be allowed to print or export")
+	}
+	if !requirePOSReportPermission(httptest.NewRecorder(), cashier, "overview") {
+		t.Fatal("cashier with the overview report enabled should pass report authorization")
+	}
+}
+
 func TestNormalizePOSPermissionsPreservesLegacyCostVisibility(t *testing.T) {
 	legacyManager := normalizePOSPermissions(map[string]bool{"products": true, "stock": true, "reports": true})
 	if !legacyManager["view_costs"] {

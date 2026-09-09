@@ -23,6 +23,7 @@ const props = defineProps([
   'openBackofficeSupportIssue',
   'saveBackofficeSupportIssue',
   'openBackofficeAdminDetail',
+  'loadBackofficeAdminSlipOKUsage',
   'loadBackofficeAdminDetailPage',
   'deleteBackofficeAdminSession',
   'saveBackofficeAdminDiscount',
@@ -66,6 +67,8 @@ const adminDetailOrders = computed(() => adminDetail.value.orders || [])
 const adminDetailSessionPagination = computed(() => adminDetail.value.sessionPagination || { page: 1, pageSize: 10, total: adminDetailSessions.value.length, totalPages: adminDetailSessions.value.length ? 1 : 0 })
 const adminDetailOrderPagination = computed(() => adminDetail.value.orderPagination || { page: 1, pageSize: 10, total: adminDetailOrders.value.length, totalPages: adminDetailOrders.value.length ? 1 : 0 })
 const adminDetailLedgerPagination = computed(() => adminDetail.value.ledgerPagination || { page: 1, pageSize: 10, total: adminDetailLedger.value.length, totalPages: adminDetailLedger.value.length ? 1 : 0 })
+const adminSlipOKUsage = computed(() => props.forms.backofficeAdminSlipOKUsage || {})
+const adminSlipOKProvider = computed(() => adminSlipOKUsage.value.provider || {})
 const adminBenefits = computed(() => adminDetail.value.benefits || { discountPercent: 0, pricing: {}, subscription: null, subscriptionHistory: [] })
 const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false, posEnabled: false }))
 const adminSubscription = computed(() => adminBenefits.value.subscription || null)
@@ -74,6 +77,11 @@ const sessionDeleteTarget = ref(null)
 const sessionDeleteRefund = ref(false)
 const sessionDeleteSaving = ref(false)
 const sessionDeleteError = ref('')
+
+function formatSlipOKMonth(value) {
+  if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return value || '-'
+  return new Intl.DateTimeFormat('th-TH', { month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok' }).format(new Date(`${value}-01T00:00:00+07:00`))
+}
 
 function openSessionDelete(session, refund) {
   if (!session?.deletable || (refund && !session?.refundAvailable)) return
@@ -1115,6 +1123,58 @@ function closeSlipPreview() {
               <p class="mt-2 text-sm font-black">{{ adminDetailUser.createdAt || '-' }}</p>
             </article>
           </div>
+
+          <section class="rounded-lg border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-900/70 dark:bg-sky-950/20" data-testid="admin-slipok-usage">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 class="font-black text-sky-950 dark:text-sky-100">การใช้งาน Auto Slip ของระบบจอง</h3>
+                <p class="mt-1 text-xs font-semibold text-sky-800/70 dark:text-sky-200/70">ข้อมูลโควตาจริงแสดงเฉพาะ Backoffice และยอดย้อนหลังอ้างอิงเวลา Asia/Bangkok</p>
+              </div>
+              <div class="flex flex-wrap items-end gap-2">
+                <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-300">
+                  เลือกเดือน
+                  <input v-model="forms.backofficeAdminSlipOKMonth" type="month" class="h-10 rounded-md border border-sky-200 bg-white px-3 text-sm font-black text-stone-900 dark:border-sky-900 dark:bg-stone-900 dark:text-white" @change="loadBackofficeAdminSlipOKUsage(forms.backofficeAdminSlipOKMonth, false)" />
+                </label>
+                <button type="button" class="inline-flex h-10 items-center gap-2 rounded-md border border-sky-300 bg-white px-3 text-xs font-black text-sky-800 disabled:opacity-50 dark:border-sky-800 dark:bg-stone-900 dark:text-sky-200" :disabled="forms.backofficeAdminSlipOKLoading" @click="loadBackofficeAdminSlipOKUsage(forms.backofficeAdminSlipOKMonth, true)">
+                  <RefreshCw class="h-4 w-4" :class="forms.backofficeAdminSlipOKLoading ? 'animate-spin' : ''" />รีเฟรชโควตาจริง
+                </button>
+              </div>
+            </div>
+
+            <div v-if="forms.backofficeAdminSlipOKLoading && !forms.backofficeAdminSlipOKUsage" class="mt-3 rounded-md bg-white p-4 text-sm font-bold text-stone-500 dark:bg-stone-900">กำลังโหลดข้อมูล Auto Slip…</div>
+            <div v-else class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">ใช้ใน {{ formatSlipOKMonth(adminSlipOKUsage.month || forms.backofficeAdminSlipOKMonth) }}</p>
+                <p class="mt-2 text-2xl font-black tabular-nums">{{ Number(adminSlipOKUsage.used || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">ครั้ง</small></p>
+                <p class="mt-1 text-xs font-semibold text-stone-500"><template v-if="adminSlipOKUsage.limitEnabled">เทียบเพดานปัจจุบัน: คงเหลือ {{ Number(adminSlipOKUsage.remaining || 0).toLocaleString('th-TH') }} / {{ Number(adminSlipOKUsage.limit || 0).toLocaleString('th-TH') }}</template><template v-else>ไม่จำกัดภายใน LiveMatch</template></p>
+              </article>
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">ใช้สะสมที่มีประวัติ</p>
+                <p class="mt-2 text-2xl font-black tabular-nums">{{ Number(adminSlipOKUsage.totalUsed || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">ครั้ง</small></p>
+                <p class="mt-1 text-xs font-semibold text-stone-500">{{ Number(adminSlipOKUsage.history?.length || 0).toLocaleString('th-TH') }} เดือน</p>
+              </article>
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">โควตา SlipOK จริง · คงเหลือ</p>
+                <p class="mt-2 text-2xl font-black tabular-nums" :class="adminSlipOKProvider.available && Number(adminSlipOKProvider.remaining || 0) <= 0 ? 'text-red-600' : 'text-sky-700 dark:text-sky-300'">{{ adminSlipOKProvider.available ? Number(adminSlipOKProvider.remaining || 0).toLocaleString('th-TH') : '-' }} <small class="text-xs text-stone-500">ครั้ง</small></p>
+                <p class="mt-1 text-xs font-semibold text-stone-500">ใช้แล้ว {{ adminSlipOKProvider.available ? Number(adminSlipOKProvider.used || 0).toLocaleString('th-TH') : '-' }} / {{ adminSlipOKProvider.available ? Number(adminSlipOKProvider.limit || 0).toLocaleString('th-TH') : '-' }}</p>
+              </article>
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">สถานะการเชื่อมต่อ</p>
+                <p class="mt-2 font-black" :class="adminSlipOKProvider.available ? 'text-court-700 dark:text-court-300' : 'text-amber-700 dark:text-amber-300'">{{ adminSlipOKProvider.available ? 'เชื่อมต่อ SlipOK แล้ว' : adminSlipOKUsage.configured ? 'ตรวจโควตาไม่สำเร็จ' : 'ยังตั้งค่าไม่ครบ' }}</p>
+                <p v-if="adminSlipOKProvider.overQuota" class="mt-1 text-xs font-black text-red-600">ใช้เกินโควตา {{ Number(adminSlipOKProvider.overQuota).toLocaleString('th-TH') }} ครั้ง</p>
+                <p v-else-if="adminSlipOKProvider.error" class="mt-1 line-clamp-2 text-xs font-semibold text-amber-700 dark:text-amber-300">{{ adminSlipOKProvider.error }}</p>
+              </article>
+            </div>
+
+            <details v-if="adminSlipOKUsage.history?.length" class="mt-3 rounded-md border border-sky-200 bg-white dark:border-sky-900 dark:bg-stone-900">
+              <summary class="cursor-pointer px-3 py-2 text-sm font-black">ดูยอดใช้ย้อนหลังทุกเดือน</summary>
+              <div class="grid gap-2 border-t border-sky-100 p-3 dark:border-sky-900 sm:grid-cols-2 lg:grid-cols-3">
+                <button v-for="item in adminSlipOKUsage.history" :key="item.month" type="button" class="flex items-center justify-between rounded-md bg-paper-100 px-3 py-2 text-left text-sm font-bold dark:bg-stone-800" @click="forms.backofficeAdminSlipOKMonth = item.month; loadBackofficeAdminSlipOKUsage(item.month, false)">
+                  <span>{{ formatSlipOKMonth(item.month) }}</span><strong>{{ Number(item.used || 0).toLocaleString('th-TH') }} ครั้ง</strong>
+                </button>
+              </div>
+            </details>
+          </section>
 
           <section class="rounded-lg border border-court-200 bg-court-500/5 p-4 dark:border-court-900/60">
             <div class="flex flex-wrap items-center justify-between gap-3">
