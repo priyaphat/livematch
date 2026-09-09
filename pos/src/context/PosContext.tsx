@@ -65,8 +65,13 @@ import {
 } from '../api/posSales';
 import {
   CustomerDisplayConnectionStatus,
+  customerDisplayWindowFeatures,
   enableHardwareKeyboardMode,
+  findSecondaryScreen,
   getPresentationRequestConstructor,
+  getScreenDetailsFunction,
+  isAndroidDevice,
+  ManagedScreenLike,
   PresentationConnectionLike,
 } from '../utils/browserHardware';
 
@@ -1113,31 +1118,76 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const latestCustomerDisplayStateRef = useRef<any>(null);
   latestCustomerDisplayStateRef.current = { cart, cartTotals, discount, discountType, settings };
 
-  const openCustomerDisplayPopup = () => {
+  const openCustomerDisplayPopup = (targetScreen?: ManagedScreenLike | null) => {
     const url = `${window.location.origin}${window.location.pathname}?display=customer`;
     const popup = window.open(
       url,
       'siampure_pos_customer_window',
-      'width=1024,height=768,menubar=no,toolbar=no,location=no,status=no,resizable=yes'
+      customerDisplayWindowFeatures(targetScreen)
     );
     if (popup) {
       try {
         (popup as any).__SIAMPURE_INITIAL_STATE__ = latestCustomerDisplayStateRef.current;
-        customerWindowsRef.current.push(popup);
+        if (!customerWindowsRef.current.includes(popup)) customerWindowsRef.current.push(popup);
+        if (targetScreen) {
+          popup.moveTo(targetScreen.availLeft, targetScreen.availTop);
+          popup.resizeTo(targetScreen.availWidth, targetScreen.availHeight);
+        }
+        popup.focus();
       } catch {
         // The storage/BroadcastChannel transports will still synchronize the window.
       }
+      setCustomerDisplayStatus('connected');
+      return true;
     } else {
-      setActiveTab('customer-display');
+      setCustomerDisplayStatus('unsupported');
+      showToast('เบราว์เซอร์บล็อกหน้าต่างจอลูกค้า กรุณาอนุญาต Pop-up สำหรับเว็บไซต์นี้', 'error');
+      return false;
     }
   };
 
   // Function to open standalone Customer Display Window
   const openCustomerDisplayWindow = async () => {
     const url = `${window.location.origin}${window.location.pathname}?display=customer`;
+    const isAndroid = isAndroidDevice();
+    if (!isAndroid) {
+      const getScreenDetails = getScreenDetailsFunction();
+      if (getScreenDetails) {
+        setCustomerDisplayStatus('connecting');
+        try {
+          const details = await getScreenDetails();
+          const secondaryScreen = findSecondaryScreen(details);
+          if (secondaryScreen) {
+            if (openCustomerDisplayPopup(secondaryScreen)) {
+              showToast(`เปิดจอลูกค้าบนจอที่สอง${secondaryScreen.label ? ` (${secondaryScreen.label})` : ''} แล้ว`, 'success');
+            }
+            return;
+          }
+          setCustomerDisplayStatus('unsupported');
+          showToast('เครื่องตรวจพบเพียง 1 จอหรือกำลังใช้โหมด Duplicate กรุณาตั้งค่าจอเป็น Extend แล้วกดใหม่', 'error');
+          return;
+        } catch (error) {
+          const errorName = error instanceof DOMException ? error.name : '';
+          if (errorName === 'NotAllowedError') {
+            setCustomerDisplayStatus('unsupported');
+            showToast('กรุณาอนุญาตสิทธิ์ Window management เพื่อให้ POS ย้ายหน้าจอลูกค้าไปจอที่สอง', 'warning');
+            return;
+          }
+          // Older desktop Chromium builds can still use Presentation or popup fallback.
+        }
+      } else if ('isExtended' in window.screen && !(window.screen as Screen & { isExtended?: boolean }).isExtended) {
+        setCustomerDisplayStatus('unsupported');
+        showToast('ระบบปฏิบัติการกำลังรายงานจอเดียว (Duplicate) กรุณาเปลี่ยนเป็น Extend ก่อน', 'error');
+        return;
+      }
+    }
     const PresentationRequestConstructor = getPresentationRequestConstructor();
     if (!PresentationRequestConstructor) {
       setCustomerDisplayStatus('unsupported');
+      if (isAndroid) {
+        showToast('Chrome บนเครื่อง POS ไม่ได้เชื่อมต่อจอหน้าของเครื่อง กรุณาเปิด POS ผ่านแอป iMin Customer Display ที่รองรับจอคู่', 'error');
+        return;
+      }
       showToast('เบราว์เซอร์นี้ไม่รองรับ Presentation API กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
       openCustomerDisplayPopup();
       return;
@@ -1157,6 +1207,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const availability = await request.getAvailability();
           if (!availability.value) {
             setCustomerDisplayStatus('unsupported');
+            if (isAndroid) {
+              showToast('ไม่พบจอหน้าของเครื่อง iMin ใน Chrome กรุณาใช้แอป POS ที่เชื่อม Android secondary display', 'error');
+              return;
+            }
             showToast('ไม่พบจอที่ Presentation API มองเห็น กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
             openCustomerDisplayPopup();
             return;
@@ -1195,6 +1249,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
       setCustomerDisplayStatus('unsupported');
+      if (isAndroid) {
+        showToast('เปิดจอหน้า iMin ไม่สำเร็จ ต้องเชื่อมผ่าน Android Presentation ภายในแอป POS', 'error');
+        return;
+      }
       showToast('ไม่พบจอที่ Presentation API ใช้งานได้ กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
       openCustomerDisplayPopup();
     }

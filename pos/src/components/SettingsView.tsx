@@ -671,6 +671,9 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white"><Monitor className="h-4 w-4 text-emerald-500" />ข้อความหน้า Index จอลูกค้า</h3>
                 <p className="mt-1 text-[11px] text-slate-500">แสดงบน <span className="font-mono">display=customer</span> เมื่อตะกร้ายังไม่มีสินค้า</p>
               </div>
+              <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-[11px] font-semibold leading-relaxed text-sky-900 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
+                จอแคชเชียร์และจอลูกค้าต้องตั้งเป็น <strong>Extend / ขยายจอ</strong> ไม่ใช่ Duplicate ระบบจึงจะตรวจพบและย้ายหน้าจอลูกค้าไปจอที่สองอัตโนมัติ ครั้งแรก Chrome จะขอสิทธิ์ Window management ให้กดอนุญาต
+              </div>
               <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความหัวเรื่อง
                 <input maxLength={120} value={formData.customerDisplayTitle} onChange={(event) => setFormData({ ...formData, customerDisplayTitle: event.target.value })} className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
               </label>
