@@ -308,6 +308,7 @@ test('POS-PRINT-002 @smoke iMin Web Print พบ InnerPrinter และพิม
     Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 13; iMin D4) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
     (window as any).__printCalls = 0;
     (window as any).__iminCommands = [];
+    (window as any).__failIminBitmap = false;
     window.print = () => { (window as any).__printCalls += 1; };
 
     class MockIminWebSocket {
@@ -373,6 +374,7 @@ test('POS-PRINT-003 ใบเสร็จ iMin ใช้ภาพเดียว
       send(payload: string) {
         const command = JSON.parse(payload);
         (window as any).__iminCommands.push(command);
+        if (command.type === 26 && (window as any).__failIminBitmap) throw new Error('mock bitmap failure');
         if (command.type === 2) window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 2, data: { value: 0 } }) })), 0);
       }
       close() { this.readyState = 3; }
@@ -403,9 +405,23 @@ test('POS-PRINT-003 ใบเสร็จ iMin ใช้ภาพเดียว
   await expect(page.locator('#printable-receipt')).toContainText('ใบเสร็จรับเงิน');
   await page.locator('#print-receipt-btn').click();
   await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toContain(26);
-  const bitmap = await page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 26)?.data?.text || '');
-  expect(bitmap).toMatch(/^data:image\/png;base64,/);
-  expect(bitmap.length).toBeGreaterThan(1000);
+  const bitmaps = await page.evaluate(() => (window as any).__iminCommands.filter((command: any) => command.type === 26).map((command: any) => command.data?.text || ''));
+  expect(bitmaps.length).toBeGreaterThan(1);
+  for (const bitmap of bitmaps) {
+    expect(bitmap).toMatch(/^data:image\/png;base64,/);
+    expect(bitmap.length).toBeGreaterThan(1000);
+  }
+  await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
+
+  await page.evaluate(() => {
+    (window as any).__iminCommands = [];
+    (window as any).__failIminBitmap = true;
+  });
+  await page.locator('#print-receipt-btn').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toContain(12);
+  const fallbackText = await page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 12)?.data?.text || '');
+  expect(fallbackText).toContain('ใบเสร็จรับเงิน');
+  expect(fallbackText).toContain('QA-RECEIPT-BITMAP');
   await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
 });
 

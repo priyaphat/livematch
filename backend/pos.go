@@ -1814,6 +1814,11 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 		writePOSInternalError(w, r, err)
 		return
 	}
+	var cashReceived, promptPayReceived int64
+	if cashReceived, promptPayReceived, err = a.posSpecialPaymentTotals(r.Context(), adminID, start, end, stockLocation); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
 
 	type sessionRef struct {
 		id         string
@@ -1859,10 +1864,60 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"range": rangeKey, "startDate": startDate, "endDate": endDate, "stockLocation": stockLocation, "posItems": posItems, "sessions": sessions,
-		"summary":           map[string]any{"posQuantity": posQuantity, "posRevenueSatang": posRevenue, "matchPlayerCount": matchPlayers, "matchEntryFeeSatang": matchEntry, "matchShuttleQuantity": matchShuttleQuantity, "matchShuttleSatang": matchShuttle, "sessionCount": len(allSessions), "totalSatang": posRevenue + matchEntry + matchShuttle},
+		"summary":           map[string]any{"posQuantity": posQuantity, "posRevenueSatang": posRevenue, "matchPlayerCount": matchPlayers, "matchEntryFeeSatang": matchEntry, "matchShuttleQuantity": matchShuttleQuantity, "matchShuttleSatang": matchShuttle, "sessionCount": len(allSessions), "totalSatang": posRevenue + matchEntry + matchShuttle, "cashReceivedSatang": cashReceived, "promptPayReceivedSatang": promptPayReceived},
 		"posPagination":     map[string]any{"page": posPage, "pageSize": pageSize, "total": posTotal, "totalPages": (posTotal + pageSize - 1) / pageSize},
 		"sessionPagination": map[string]any{"page": sessionPage, "pageSize": sessionPageSize, "total": len(allSessions), "totalPages": (len(allSessions) + sessionPageSize - 1) / sessionPageSize},
 	})
+}
+
+// posSpecialPaymentTotals reports money actually received for POS and Match.
+// Allocation amounts are used instead of the payment total so a combined payment
+// is counted once without including any unrelated source. Legacy Match payment
+// events are included only when they have not been migrated to billing_payments.
+func (a *app) posSpecialPaymentTotals(ctx context.Context, adminID string, start, end time.Time, stockLocation string) (int64, int64, error) {
+	locationFilter := ""
+	if stockLocation == "primary" || stockLocation == "secondary" {
+		locationFilter = ` and (allocation.source_type='match' or exists(
+			select 1 from pos_sales allocated_sale
+			where allocated_sale.id=allocation.source_id and allocated_sale.admin_id=payment.admin_id and allocated_sale.stock_location=$4
+		))`
+	}
+	query := `with received as (
+		select payment.method,allocation.amount_satang
+		from billing_payments payment
+		join billing_payment_allocations allocation on allocation.payment_id=payment.id
+		where payment.admin_id=$1 and payment.status='paid'
+		  and payment.created_at >= $2 and payment.created_at < $3
+		  and allocation.source_type in ('pos','match')` + locationFilter + `
+		union all
+		select coalesce(payment.method,'cash'),sale.total_satang
+		from pos_sales sale
+		left join billing_payments payment on payment.id=sale.payment_id
+		where sale.admin_id=$1 and sale.status='paid'
+		  and (payment.id is null or payment.status='paid')
+		  and coalesce(payment.created_at,sale.updated_at,sale.created_at) >= $2
+		  and coalesce(payment.created_at,sale.updated_at,sale.created_at) < $3
+		  and not exists(
+			select 1 from billing_payment_allocations allocated
+			where allocated.payment_id=sale.payment_id and allocated.source_type='pos' and allocated.source_id=sale.id
+		  )` + reportSaleStockClause("sale", stockLocation) + `
+		union all
+		select event.payment_method,event.amount_satang
+		from player_payment_events event
+		join sessions session on session.id=event.session_id
+		where session.admin_id=$1 and event.paid and event.billing_payment_id is null
+		  and event.created_at >= $2 and event.created_at < $3
+	)
+	select coalesce(sum(amount_satang) filter(where method='cash'),0)::bigint,
+	       coalesce(sum(amount_satang) filter(where method='promptpay'),0)::bigint
+	from received`
+	args := []any{adminID, start, end}
+	if locationFilter != "" {
+		args = append(args, stockLocation)
+	}
+	var cash, promptPay int64
+	err := a.db.QueryRowContext(ctx, query, args...).Scan(&cash, &promptPay)
+	return cash, promptPay, err
 }
 
 func (a *app) listPOSCategories(ctx context.Context, adminID string) ([]posCatalogRecord, error) {

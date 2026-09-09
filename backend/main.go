@@ -3280,7 +3280,26 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 			if state.Players[index].MemberID == "" {
 				continue
 			}
-			accountID, accountErr := ensureBillingAccountTx(ctx, tx, sessionAdminID.String, "member", state.Players[index].MemberID, "", "")
+			// A session player is a historical snapshot and may outlive the central
+			// member record. Reuse the account created when the member joined before
+			// consulting the active-member directory; otherwise soft-deleting one
+			// member would make every later match mutation in the session fail.
+			var accountID string
+			accountErr := tx.QueryRowContext(ctx, `
+				select id from billing_accounts
+				where admin_id=$1 and member_id=$2
+				order by updated_at desc, id
+				limit 1
+			`, sessionAdminID.String, state.Players[index].MemberID).Scan(&accountID)
+			if errors.Is(accountErr, sql.ErrNoRows) {
+				accountID, accountErr = ensureBillingAccountTx(ctx, tx, sessionAdminID.String, "member", state.Players[index].MemberID, "", "")
+			}
+			if errors.Is(accountErr, sql.ErrNoRows) {
+				// Legacy sessions can contain a member link whose directory record was
+				// removed before billing accounts existed. Keep the player snapshot and
+				// allow operational Match data to be saved without inventing an account.
+				continue
+			}
 			if accountErr != nil {
 				return accountErr
 			}

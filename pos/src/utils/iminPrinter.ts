@@ -76,6 +76,14 @@ class IminPrinterClient {
     this.socket.send(JSON.stringify({ data: { text, value, labelData: {} }, type }));
   }
 
+  private async waitForSendBuffer(timeoutMilliseconds = 2500) {
+    const startedAt = Date.now();
+    while (this.socket && this.socket.readyState === WebSocket.OPEN && Number(this.socket.bufferedAmount || 0) > 0) {
+      if (Date.now() - startedAt >= timeoutMilliseconds) throw new Error('ส่งข้อมูลใบเสร็จไปยัง iMin ไม่ทันเวลา');
+      await delay(25);
+    }
+  }
+
   private async readStatus(connectionType: IminConnectionType): Promise<number> {
     this.send(1, connectionType);
     await delay(80);
@@ -129,18 +137,31 @@ class IminPrinterClient {
     return status;
   }
 
-  async printBitmap(imageData: string, paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
+  async printBitmaps(imageData: string[], paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
+    if (!imageData.length || imageData.some((image) => !image.startsWith('data:image/'))) {
+      throw new Error('ข้อมูลภาพใบเสร็จไม่ถูกต้อง');
+    }
     const status = await this.probe();
     if (!status.ready || !status.connectionType) throw new Error(status.message);
 
     this.send(1, status.connectionType);
     this.send(25, '', paperWidth === '58mm' ? 1 : 0);
     this.send(6, '', 1);
-    this.send(26, imageData);
+    for (const image of imageData) {
+      this.send(26, image);
+      await this.waitForSendBuffer();
+      // Large receipts are intentionally sent as short vertical images. Giving
+      // the local iMin service time between chunks prevents it dropping a job.
+      await delay(140);
+    }
     this.send(4, '', 100);
     this.send(5);
     await delay(350);
     return status;
+  }
+
+  async printBitmap(imageData: string, paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
+    return this.printBitmaps([imageData], paperWidth);
   }
 }
 
@@ -149,3 +170,4 @@ const client = new IminPrinterClient();
 export const probeIminPrinter = () => client.probe();
 export const printIminText = (text: string, paperWidth: '58mm' | '80mm') => client.printText(text, paperWidth);
 export const printIminBitmap = (imageData: string, paperWidth: '58mm' | '80mm') => client.printBitmap(imageData, paperWidth);
+export const printIminBitmaps = (imageData: string[], paperWidth: '58mm' | '80mm') => client.printBitmaps(imageData, paperWidth);

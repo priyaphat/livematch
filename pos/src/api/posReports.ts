@@ -23,7 +23,7 @@ export interface POSInventoryReport {
 }
 export interface POSSpecialReport {
   range: POSReportRange; startDate: string; endDate: string;
-  summary: { posQuantity: number; posRevenueSatang: number; matchPlayerCount: number; matchEntryFeeSatang: number; matchShuttleQuantity: number; matchShuttleSatang: number; sessionCount: number; totalSatang: number };
+  summary: { posQuantity: number; posRevenueSatang: number; matchPlayerCount: number; matchEntryFeeSatang: number; matchShuttleQuantity: number; matchShuttleSatang: number; sessionCount: number; totalSatang: number; cashReceivedSatang: number; promptPayReceivedSatang: number };
   posItems: Array<{ productId: string; name: string; quantity: number; billCount: number; revenueSatang: number }>;
   sessions: Array<{ id: string; name: string; occurredAt: string; gameCount: number; playerCount: number; shuttleQuantity: number; entryFeeTotalSatang: number; shuttleTotalSatang: number; totalSatang: number; entryFees: Array<{ memberTypeId: string; memberTypeName: string; quantity: number; unitPriceSatang: number; totalSatang: number }>; shuttles: Array<{ brandId: string; brandName: string; quantity: number; unitPriceSatang: number; totalSatang: number }> }>;
   posPagination: POSPagination; sessionPagination: POSPagination;
