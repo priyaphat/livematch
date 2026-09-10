@@ -277,6 +277,29 @@ func TestSlipOKQuotaAndVerification(t *testing.T) {
 	}
 }
 
+func TestSlipOKCode1010SchedulesRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"code":    1010,
+			"message": "เนื่องจากเป็นสลิปจากธนาคารไทยพาณิชย์ กรุณารอการตรวจสอบสลิปหลังการโอนประมาณ 2 นาที",
+			"data": map[string]any{
+				"qrcodeData": "SCB-QR-PAYLOAD",
+				"bankCode":   "014",
+				"delay":      2,
+			},
+		})
+	}))
+	defer server.Close()
+	previous := slipOKAPIBaseURL
+	slipOKAPIBaseURL = server.URL
+	defer func() { slipOKAPIBaseURL = previous }()
+
+	result := (&app{}).checkSlipOK(t.Context(), slipOKSettings{Enabled: true, BranchID: "branch-1", APIKey: "secret"}, "data:image/png;base64,aGVsbG8=", 100)
+	if result.Passed || result.Definitive || !result.Retryable || result.Status != "pending_retry" || result.ErrorCode != 1010 || result.RetryAfter != 2*time.Minute || result.QRPayload != "SCB-QR-PAYLOAD" {
+		t.Fatalf("code 1010 must wait for retry without rejection: %#v", result)
+	}
+}
+
 func TestMaskSecret(t *testing.T) {
 	if got := maskSecret("1234567890abcdef"); got != "1234••••••••cdef" {
 		t.Fatalf("unexpected masked secret %q", got)

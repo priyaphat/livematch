@@ -72,6 +72,8 @@ type slipOKResult struct {
 	Sent       bool
 	Passed     bool
 	Definitive bool
+	Retryable  bool
+	RetryAfter time.Duration
 	Status     string
 	ErrorCode  int
 	Note       string
@@ -79,6 +81,7 @@ type slipOKResult struct {
 	AmountTHB  *int
 	PaidAt     string
 	Receiver   string
+	QRPayload  string
 }
 
 type slipOKLogMeta struct {
@@ -373,6 +376,8 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		Data    struct {
 			Success        bool    `json:"success"`
 			Message        string  `json:"message"`
+			QRPayload      string  `json:"qrcodeData"`
+			DelayMinutes   int     `json:"delay"`
 			TransRef       string  `json:"transRef"`
 			TransTimestamp string  `json:"transTimestamp"`
 			Amount         float64 `json:"amount"`
@@ -387,6 +392,28 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		return result
 	}
 	result.ErrorCode = payload.Code
+	result.QRPayload = strings.TrimSpace(payload.Data.QRPayload)
+	if payload.Code == 1010 {
+		delayMinutes := payload.Data.DelayMinutes
+		if delayMinutes < 1 {
+			delayMinutes = 2
+		}
+		if delayMinutes > 10 {
+			delayMinutes = 10
+		}
+		result.Retryable = true
+		result.RetryAfter = time.Duration(delayMinutes) * time.Minute
+		result.Definitive = false
+		result.Status = "pending_retry"
+		result.Note = strings.TrimSpace(payload.Message)
+		if result.Note == "" {
+			result.Note = strings.TrimSpace(payload.Data.Message)
+		}
+		if result.Note == "" {
+			result.Note = fmt.Sprintf("ธนาคารกำลังประมวลผลสลิป ระบบจะตรวจซ้ำใน %d นาที", delayMinutes)
+		}
+		return result
+	}
 	result.TransRef = strings.TrimSpace(payload.Data.TransRef)
 	if payload.Data.Amount > 0 {
 		amount := int(payload.Data.Amount + 0.5)

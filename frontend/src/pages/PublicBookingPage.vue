@@ -630,7 +630,14 @@ async function upload(event) {
 				{ method: "POST", body: form },
 			);
       payment.value.status = result.status || "pending_review";
-      showToast(result.status === "confirmed" ? "ชำระเงินผ่านและยืนยันการจองแล้ว" : "ส่งสลิปแล้ว รอผู้ดูแลตรวจสอบ", "success");
+      showToast(
+        result.status === "confirmed"
+          ? "ชำระเงินผ่านและยืนยันการจองแล้ว"
+          : result.verificationStatus === "pending_retry"
+            ? "รับสลิปแล้ว ธนาคารกำลังประมวลผล ระบบจะตรวจซ้ำอัตโนมัติประมาณ 2 นาที"
+            : "ส่งสลิปแล้ว รอผู้ดูแลตรวจสอบ",
+        "success",
+      );
       await load();
 	} catch (error) {
       showToast(error.message || "อัปโหลดสลิปไม่สำเร็จ กรุณาตรวจสอบสถานะการจอง");

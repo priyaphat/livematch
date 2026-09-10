@@ -2217,6 +2217,166 @@ func (a *app) runExpiredBookingHoldCleanup(ctx context.Context) {
 	}
 }
 
+const bookingSlipOKMaxRetries = 2
+
+type bookingSlipOKRetryJob struct {
+	PaymentID string
+	AdminID   string
+	BookingID string
+	AmountTHB int
+	Count     int
+}
+
+func (a *app) claimBookingSlipOKRetry(ctx context.Context) (bookingSlipOKRetryJob, error) {
+	var job bookingSlipOKRetryJob
+	err := a.db.QueryRowContext(ctx, `
+		with candidate as (
+			select id from booking_payments
+			where status='pending' and verification_status='pending_retry' and provider_retry_at<=now()
+			  and (provider_retry_claimed_at is null or provider_retry_claimed_at<now()-interval '5 minutes')
+			order by provider_retry_at,id
+			for update skip locked limit 1
+		)
+		update booking_payments payment set provider_retry_claimed_at=now()
+		from candidate where payment.id=candidate.id
+		returning payment.id,payment.admin_id,payment.booking_id,payment.amount_thb,payment.provider_retry_count
+	`).Scan(&job.PaymentID, &job.AdminID, &job.BookingID, &job.AmountTHB, &job.Count)
+	return job, err
+}
+
+func (a *app) runBookingSlipOKRetry(ctx context.Context) {
+	processDue := func() {
+		for processed := 0; processed < 20; processed++ {
+			job, err := a.claimBookingSlipOKRetry(ctx)
+			if errors.Is(err, sql.ErrNoRows) {
+				return
+			}
+			if err != nil {
+				log.Printf("claim booking SlipOK retry: %v", err)
+				return
+			}
+			if err = a.processBookingSlipOKRetry(ctx, job); err != nil {
+				log.Printf("process booking SlipOK retry payment=%s: %v", job.PaymentID, err)
+				_, _ = a.db.ExecContext(ctx, `update booking_payments set provider_retry_claimed_at=null,provider_retry_at=now()+interval '30 seconds' where id=$1 and status='pending' and verification_status='pending_retry'`, job.PaymentID)
+			}
+		}
+	}
+	processDue()
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			processDue()
+		}
+	}
+}
+
+func (a *app) processBookingSlipOKRetry(ctx context.Context, job bookingSlipOKRetryJob) error {
+	settings := a.bookingSlipOKSettings(ctx, job.AdminID)
+	if !settings.ready() {
+		return a.finishBookingSlipOKRetry(ctx, job, slipOKResult{Status: "manual_review", Note: "การตั้งค่า Auto Slip ไม่พร้อมระหว่างตรวจซ้ำ ส่งให้ผู้ดูแลตรวจสอบเอง"})
+	}
+	reserved, usage, err := a.reserveSlipOKUsage(ctx, job.AdminID, "booking", settings)
+	if err != nil {
+		return a.finishBookingSlipOKRetry(ctx, job, slipOKResult{Status: "manual_review", Note: "ตรวจสอบจำนวนใช้งาน Auto Slip ไม่สำเร็จ ส่งให้ผู้ดูแลตรวจสอบเอง"})
+	}
+	if !reserved {
+		return a.finishBookingSlipOKRetry(ctx, job, slipOKResult{Status: "manual_review", Note: fmt.Sprintf("Auto Slip ถึงจำนวนจำกัดรายเดือน (%d/%d) ส่งให้ผู้ดูแลตรวจสอบเอง", usage.Used, usage.Limit)})
+	}
+	stored, err := a.bookingSlipData(ctx, job.PaymentID, job.AdminID)
+	if err != nil {
+		a.releaseSlipOKUsage(ctx, job.AdminID, "booking")
+		return a.finishBookingSlipOKRetry(ctx, job, slipOKResult{Status: "manual_review", Note: "ไม่พบไฟล์สลิปสำหรับตรวจซ้ำ ส่งให้ผู้ดูแลตรวจสอบเอง"})
+	}
+	mimeType := stored.MIME
+	if mimeType == "" {
+		mimeType = http.DetectContentType(stored.Data)
+	}
+	dataURL := "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(stored.Data)
+	checkCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	result := a.checkSlipOK(checkCtx, settings, dataURL, job.AmountTHB, slipOKLogMeta{AdminID: job.AdminID, SourceSystem: "booking", ReferenceID: job.BookingID})
+	cancel()
+	if !result.Sent {
+		a.releaseSlipOKUsage(ctx, job.AdminID, "booking")
+	}
+	if result.Retryable {
+		nextCount := job.Count + 1
+		if nextCount < bookingSlipOKMaxRetries {
+			_, err = a.db.ExecContext(ctx, `update booking_payments set provider_retry_count=$2,provider_retry_at=$3,provider_retry_claimed_at=null,verification_note=$4,provider_error_code=$5,checked_at=now() where id=$1 and status='pending' and verification_status='pending_retry'`, job.PaymentID, nextCount, time.Now().Add(result.RetryAfter), result.Note, result.ErrorCode)
+			return err
+		}
+		result.Retryable = false
+		result.Status = "manual_review"
+		result.Note = fmt.Sprintf("รอตรวจสอบสลิป SCB ครบ %d ครั้งแล้วยังไม่พร้อม ส่งให้ผู้ดูแลตรวจสอบเอง", bookingSlipOKMaxRetries)
+	}
+	if !result.Passed {
+		result.Status = "manual_review"
+		if strings.TrimSpace(result.Note) == "" {
+			result.Note = "ตรวจซ้ำอัตโนมัติไม่สำเร็จ ส่งให้ผู้ดูแลตรวจสอบเอง"
+		}
+	}
+	return a.finishBookingSlipOKRetry(ctx, job, result)
+}
+
+// finishBookingSlipOKRetry applies only while the payment is still waiting for
+// this retry. An admin/Telegram decision that won the race is never overwritten.
+func (a *app) finishBookingSlipOKRetry(ctx context.Context, job bookingSlipOKRetryJob, result slipOKResult) error {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var paymentStatus, verificationStatus, batchID, memberID string
+	if err = tx.QueryRowContext(ctx, `select payment.status,payment.verification_status,coalesce(booking.booking_batch_id,''),coalesce(payment.member_id,'') from booking_payments payment join bookings booking on booking.id=payment.booking_id where payment.id=$1 and payment.admin_id=$2 for update`, job.PaymentID, job.AdminID).Scan(&paymentStatus, &verificationStatus, &batchID, &memberID); err != nil {
+		return err
+	}
+	if paymentStatus != "pending" || verificationStatus != "pending_retry" {
+		return tx.Commit()
+	}
+	if result.Passed && result.TransRef != "" {
+		var inserted string
+		refErr := tx.QueryRowContext(ctx, `insert into booking_slip_refs(admin_id,trans_ref,payment_id,member_id) values($1,$2,$3,nullif($4,'')) on conflict do nothing returning payment_id`, job.AdminID, result.TransRef, job.PaymentID, memberID).Scan(&inserted)
+		if errors.Is(refErr, sql.ErrNoRows) {
+			var existing string
+			if err = tx.QueryRowContext(ctx, `select payment_id from booking_slip_refs where admin_id=$1 and trans_ref=$2`, job.AdminID, result.TransRef).Scan(&existing); err != nil {
+				return err
+			}
+			if existing != job.PaymentID {
+				result.Passed = false
+				result.Status = "manual_review"
+				result.Note = "ตรวจซ้ำพบเลขอ้างอิงสลิปซ้ำ ส่งให้ผู้ดูแลตรวจสอบเอง"
+			}
+		} else if refErr != nil {
+			return refErr
+		}
+	}
+	nextPaymentStatus := "pending"
+	if result.Passed {
+		nextPaymentStatus = "approved"
+	}
+	_, err = tx.ExecContext(ctx, `update booking_payments set status=$2,verification_status=$3,verification_note=$4,provider_error_code=$5,trans_ref=case when $6<>'' then $6 else trans_ref end,slip_qr_payload=case when $7<>'' then $7 else slip_qr_payload end,detected_amount_thb=coalesce($8,detected_amount_thb),detected_paid_at=case when $9<>'' then $9 else detected_paid_at end,detected_receiver=case when $10<>'' then $10 else detected_receiver end,checked_at=now(),provider_retry_at=null,provider_retry_claimed_at=null,provider_retry_count=$11 where id=$1`, job.PaymentID, nextPaymentStatus, result.Status, result.Note, result.ErrorCode, result.TransRef, result.QRPayload, result.AmountTHB, result.PaidAt, result.Receiver, job.Count+1)
+	if err != nil {
+		return err
+	}
+	if result.Passed {
+		_, err = tx.ExecContext(ctx, `update bookings set status='confirmed',payment_status='paid',decision_source='auto_slip',decision_at=now(),decision_by='Auto Slip',updated_at=now() where admin_id=$1 and (id=$2 or ($3<>'' and booking_batch_id=$3)) and status='pending_review'`, job.AdminID, job.BookingID, batchID)
+		if err != nil {
+			return err
+		}
+	}
+	if err = a.insertActivityLogTx(ctx, tx, "system", "auto_slip", "retry_booking_slip", "booking", job.BookingID, map[string]any{"paymentId": job.PaymentID, "attempt": job.Count + 1, "passed": result.Passed, "status": result.Status, "providerCode": result.ErrorCode}); err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	go a.notifyAdminBooking(context.Background(), job.AdminID, job.BookingID)
+	return nil
+}
+
 func (a *app) deleteExpiredHoldsTx(ctx context.Context, tx *sql.Tx, adminID string) error {
 	rows, err := tx.QueryContext(ctx, `select id from bookings where admin_id=$1 and status='hold' and hold_expires_at<=now() for update`, adminID)
 	if err != nil {
@@ -3276,7 +3436,8 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 	transRef := localCheck.TransRef
 	detectedAmount, detectedPaidAt, detectedReceiver := localCheck.DetectedAmountTHB, localCheck.DetectedPaidAt, localCheck.DetectedReceiver
 	providerErrorCode := 0
-	autoApproved, definitiveFailure := false, false
+	autoApproved, definitiveFailure, retryScheduled := false, false, false
+	var providerRetryAt time.Time
 	slipSettings := a.bookingSlipOKSettings(r.Context(), adminID)
 	slipLogMeta := slipOKLogMeta{AdminID: adminID, SourceSystem: "booking", ReferenceID: primaryBookingID}
 	if !slipSettings.Enabled {
@@ -3312,9 +3473,16 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 			if checked.Receiver != "" {
 				detectedReceiver = checked.Receiver
 			}
+			if checked.QRPayload != "" {
+				localCheck.QRPayload = checked.QRPayload
+			}
 			verificationStatus, verificationNote = checked.Status, checked.Note
 			autoApproved = checked.Passed
 			definitiveFailure = !checked.Passed && checked.Definitive
+			if checked.Retryable {
+				retryScheduled = true
+				providerRetryAt = time.Now().Add(checked.RetryAfter)
+			}
 		}
 	}
 
@@ -3350,6 +3518,9 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		paymentStatus, bookingStatus, bookingPaymentStatus = "rejected", "rejected", "rejected"
 	}
 	_, err = tx.ExecContext(r.Context(), `insert into booking_payments (id,admin_id,booking_id,member_id,amount_thb,slip_data,slip_file_key,slip_mime_type,slip_size_bytes,slip_sha256,status,trans_ref,slip_qr_payload,detected_amount_thb,detected_paid_at,detected_receiver,verification_provider,verification_status,verification_note,provider_error_code,checked_at) values ($1,$2,$3,$4,$5,'',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,case when $16='slipok' then now() else null end)`, paymentID, adminID, primaryBookingID, memberID, amount, stored.Key, stored.MIME, stored.Size, stored.SHA256, paymentStatus, transRef, localCheck.QRPayload, detectedAmount, detectedPaidAt, detectedReceiver, provider, verificationStatus, verificationNote, providerErrorCode)
+	if err == nil && retryScheduled {
+		_, err = tx.ExecContext(r.Context(), `update booking_payments set provider_retry_at=$2,provider_retry_count=0,provider_retry_claimed_at=null where id=$1`, paymentID, providerRetryAt)
+	}
 	var duplicatePaymentID string
 	if err == nil && transRef != "" {
 		var inserted string
@@ -3401,7 +3572,9 @@ func (a *app) uploadBookingSlip(w http.ResponseWriter, r *http.Request, adminID,
 		return
 	}
 	keepStoredSlip = true
-	go a.notifyAdminBooking(context.Background(), adminID, primaryBookingID)
+	if !retryScheduled {
+		go a.notifyAdminBooking(context.Background(), adminID, primaryBookingID)
+	}
 	if securityIncident {
 		if status, blocked := a.activeBookingBlock(r.Context(), adminID, u.ID, clientIP(r)); blocked {
 			writeBookingBlocked(w, status)

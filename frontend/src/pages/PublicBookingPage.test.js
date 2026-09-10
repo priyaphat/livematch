@@ -484,4 +484,34 @@ describe("PublicBookingPage", () => {
     wrapper.unmount();
     vi.unstubAllGlobals();
   });
+
+	 it("explains that an SCB SlipOK 1010 response will be retried automatically", async () => {
+		 const baseApi = apiMock({
+			 queues: [{
+				 id: "batch-scb-retry",
+				 status: "hold",
+				 holdExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				 totalPriceThb: 100,
+				 startAt: "2026-07-22T18:00:00+07:00",
+				 endAt: "2026-07-22T19:00:00+07:00",
+				 courtNames: ["สนาม 1"],
+				 promptPayPayload: "",
+			 }],
+		 });
+		 const apiRequest = vi.fn((url, options) => {
+			 if (url.includes("/slip/")) return Promise.resolve({ status: "pending_review", verificationStatus: "pending_retry" });
+			 return baseApi(url, options);
+		 });
+		 vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 640, height: 960, close: vi.fn() })));
+		 const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+		 await vi.waitFor(() => expect(wrapper.find('[data-testid="active-booking-queues"]').exists()).toBe(true));
+		 const reopenButton = wrapper.get('[data-testid="active-booking-queues"]').findAll("button").find((button) => button.text().includes("แสดง QR"));
+		 await reopenButton.trigger("click");
+		 const input = wrapper.get('input[type="file"]');
+		 Object.defineProperty(input.element, "files", { configurable: true, value: [new File(["slip"], "slip.png", { type: "image/png" })] });
+		 await input.trigger("change");
+		 await vi.waitFor(() => expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain("ตรวจซ้ำอัตโนมัติประมาณ 2 นาที"));
+		 wrapper.unmount();
+		 vi.unstubAllGlobals();
+	 });
 });

@@ -352,6 +352,7 @@ func main() {
 		return
 	}
 	go a.runExpiredBookingHoldCleanup(context.Background())
+	go a.runBookingSlipOKRetry(context.Background())
 	go a.runRateLimitCleanup(context.Background())
 	go a.runBookingSlipCleanup(context.Background())
 	go a.refreshAdminTelegramWebhooks(context.Background())
@@ -1087,6 +1088,10 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_payments add column if not exists verification_note text not null default '';
 		alter table booking_payments add column if not exists provider_error_code integer not null default 0;
 		alter table booking_payments add column if not exists checked_at timestamptz;
+		alter table booking_payments add column if not exists provider_retry_at timestamptz;
+		alter table booking_payments add column if not exists provider_retry_count integer not null default 0;
+		alter table booking_payments add column if not exists provider_retry_claimed_at timestamptz;
+		create index if not exists idx_booking_payments_provider_retry on booking_payments(provider_retry_at,id) where status='pending' and verification_status='pending_retry';
 		update bookings b set decision_source='auto_slip',decision_at=coalesce(p.checked_at,p.created_at),decision_by='Auto Slip'
 		from booking_payments p where p.booking_id=b.id and b.decision_source='' and p.verification_provider='slipok' and p.status in ('approved','rejected');
 		update bookings b set decision_source=case when p.reviewed_by ~ '^[0-9]+$' then 'telegram' else 'web' end,decision_at=p.reviewed_at,decision_by=p.reviewed_by
@@ -1576,9 +1581,10 @@ func (a *app) migrate(ctx context.Context) error {
 			primary key (admin_id,source_system,month_start)
 		);
 		insert into slipok_monthly_usage(admin_id,source_system,month_start,used)
-		select admin_id,source_system,date_trunc('month',created_at at time zone 'Asia/Bangkok')::date,count(*)::int
-		from slipok_logs where admin_id<>'' and request_method='POST'
-		group by admin_id,source_system,date_trunc('month',created_at at time zone 'Asia/Bangkok')::date
+		select log.admin_id,log.source_system,date_trunc('month',log.created_at at time zone 'Asia/Bangkok')::date,count(*)::int
+		from slipok_logs log join admin_users admin on admin.id=log.admin_id
+		where log.admin_id<>'' and log.request_method='POST'
+		group by log.admin_id,log.source_system,date_trunc('month',log.created_at at time zone 'Asia/Bangkok')::date
 		on conflict (admin_id,source_system,month_start) do update set used=greatest(slipok_monthly_usage.used,excluded.used);
 		create table if not exists support_issues (
 			id text primary key,

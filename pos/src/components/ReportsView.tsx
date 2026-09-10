@@ -144,6 +144,8 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   const topPagination = report?.topSellersPagination || { page: 1, pageSize: 20, total: 0, totalPages: 0 };
   const vatPagination = report?.salesPagination || { page: 1, pageSize: 25, total: 0, totalPages: 0 };
   const paymentStats = { promptpay: (report?.paymentStats.promptPaySatang || 0) / 100, cash: (report?.paymentStats.cashSatang || 0) / 100, card: 0, transfer: 0 };
+  const specialReceivedSatang = (specialReport?.summary.cashReceivedSatang || 0) + (specialReport?.summary.promptPayReceivedSatang || 0);
+  const specialDifferenceSatang = (specialReport?.summary.totalSatang || 0) - specialReceivedSatang;
 
   const reportNames = {
     overview: 'สรุปภาพรวมรายได้',
@@ -209,6 +211,12 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
     } else if (reportType === 'purchases') {
       lines.push(`ซื้อสุทธิ ${formatCurrency((purchasesReport?.summary.netTotalSatang || 0) / 100, settings.currencySymbol, 2)}`);
       (purchasesReport?.items || []).slice(0, 20).forEach((item) => lines.push(`${item.referenceNo} ${item.totalQuantity} ชิ้น`));
+    } else if (reportType === 'special') {
+      lines.push(
+        `ยอดเกิดจริง POS + LiveMatch ${formatCurrency((specialReport?.summary.totalSatang || 0) / 100, settings.currencySymbol, 2)}`,
+        `รับเงินสด ${formatCurrency((specialReport?.summary.cashReceivedSatang || 0) / 100, settings.currencySymbol, 2)}`,
+        `รับ QR ${formatCurrency((specialReport?.summary.promptPayReceivedSatang || 0) / 100, settings.currencySymbol, 2)}`,
+      );
     } else {
       lines.push(`ยอดขาย ${formatCurrency(totalSales, settings.currencySymbol, 2)}`, `กำไร ${formatCurrency(grossProfit, settings.currencySymbol, 2)}`);
       (reportType === 'sold_products' ? (soldReport?.items || []).map((item) => `${item.name} x${item.quantity}`) : topSellers.map((item) => `${item.name} x${item.qty}`)).slice(0, 20).forEach((line) => lines.push(line));
@@ -338,11 +346,11 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       rows = (exportTransfers?.items || []).map((item, index) => [index + 1, formatCSVDateTime(item.createdAt), item.referenceNo, item.sourceStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName, item.destinationStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName, item.totalQuantity, item.lines.map((line) => `${line.productName} × ${line.quantity}`).join(', '), item.actorName || '-', item.note || '-']);
     } else {
       headers = ['ส่วน', 'Session / สินค้า', 'รายละเอียด', 'จำนวน', 'ราคาต่อหน่วย (บาท)', 'มูลค่า (บาท)'];
-      rows = (exportSpecial?.posItems || []).map((item) => ['POS', item.name, `${item.billCount} บิล`, item.quantity, '', item.revenueSatang / 100]);
-      (exportSpecial?.sessions || []).forEach((session) => {
-        session.entryFees.forEach((item) => rows.push(['LiveMatch', session.name, `ค่าเข้าสนาม · ${item.memberTypeName}`, item.quantity, item.unitPriceSatang / 100, item.totalSatang / 100]));
-        session.shuttles.forEach((item) => rows.push(['LiveMatch', session.name, `ลูกแบด · ${item.brandName}`, item.quantity, item.unitPriceSatang / 100, item.totalSatang / 100]));
-      });
+      rows = exportSpecial ? [
+        ['รับชำระจริง', 'เงินสด', 'ตามวันที่รับชำระ', '', '', exportSpecial.summary.cashReceivedSatang / 100],
+        ['รับชำระจริง', 'QR', 'ตามวันที่รับชำระ', '', '', exportSpecial.summary.promptPayReceivedSatang / 100],
+      ] : [];
+      rows.push(...(exportSpecial?.posItems || []).map((item) => ['POS', item.name, `${item.billCount} บิล`, item.quantity, '', item.revenueSatang / 100]));
     }
 
     const exportTitle = singlePurchase ? `รายละเอียดใบซื้อ ${singlePurchase.referenceNo}` : reportNames[reportType];
@@ -428,37 +436,6 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       for (let rowNumber = 6; rowNumber <= worksheet.rowCount; rowNumber += 1) worksheet.getRow(rowNumber).height = 34;
     }
     if (rows.length > 0) worksheet.autoFilter = { from: { row: 5, column: 1 }, to: { row: 5, column: columnCount } };
-
-    if (reportType === 'special' && exportSpecial) {
-      exportSpecial.sessions.forEach((session, sessionIndex) => {
-        const safeName = `${sessionIndex + 1}-${session.name}`.replace(/[\\/?*:[\]]/g, '-').slice(0, 31);
-        const sessionSheet = workbook.addWorksheet(safeName || `Session-${sessionIndex + 1}`);
-        sessionSheet.mergeCells('A1:F1');
-        sessionSheet.getCell('A1').value = `LiveMatch Session — ${session.name}`;
-        sessionSheet.getCell('A1').font = { name: 'Tahoma', size: 15, bold: true, color: { argb: 'FFFFFFFF' } };
-        sessionSheet.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
-        sessionSheet.mergeCells('A2:F2');
-        sessionSheet.getCell('A2').value = `วันที่ ${formatCSVDateTime(session.occurredAt)} · ${session.gameCount} เกม · ${session.playerCount} คน · รวม ${formatCurrency(session.totalSatang / 100, '฿', 2)}`;
-        const detailHeader = sessionSheet.getRow(4);
-        detailHeader.values = ['ประเภท', 'รายการ', 'จำนวน', 'หน่วย', 'ราคาต่อหน่วย (บาท)', 'มูลค่า (บาท)'];
-        detailHeader.eachCell((cell) => {
-          cell.font = { name: 'Tahoma', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
-          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0F766E' } };
-          cell.alignment = { horizontal: 'center', vertical: 'middle' };
-        });
-        session.entryFees.forEach((item) => sessionSheet.addRow(['ค่าเข้าสนาม', item.memberTypeName, item.quantity, 'คน', item.unitPriceSatang / 100, item.totalSatang / 100]));
-        session.shuttles.forEach((item) => sessionSheet.addRow(['ลูกแบดใช้จริง', item.brandName, item.quantity, 'ลูก', item.unitPriceSatang / 100, item.totalSatang / 100]));
-        for (let rowNumber = 5; rowNumber <= sessionSheet.rowCount; rowNumber += 1) {
-          const row = sessionSheet.getRow(rowNumber);
-          row.eachCell((cell) => { cell.font = { name: 'Tahoma', size: 10 }; cell.alignment = { vertical: 'middle' }; });
-          sessionSheet.getCell(rowNumber, 3).numFmt = '#,##0';
-          sessionSheet.getCell(rowNumber, 5).numFmt = '#,##0.00';
-          sessionSheet.getCell(rowNumber, 6).numFmt = '#,##0.00';
-        }
-        sessionSheet.columns = [{ width: 18 }, { width: 28 }, { width: 12 }, { width: 12 }, { width: 22 }, { width: 20 }];
-        sessionSheet.views = [{ state: 'frozen', ySplit: 4 }];
-      });
-    }
 
     let workbookBuffer: Awaited<ReturnType<typeof workbook.xlsx.writeBuffer>>;
     try {
@@ -1082,7 +1059,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
         <div className="space-y-4">
           <div className="rounded-3xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">ยอด LiveMatch เป็น “ยอดเกิดจริง” ตาม Session และอาจยังไม่ได้รับชำระ รายงานนี้ไม่รวมค่าบริการ Session, ค่าสนามรายชั่วโมง, LiveShare และ VAT ของ Match</div>
           <div className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
-            {nameFilter(specialSearch, (value) => { setSpecialPOSPage(1); setSpecialSessionPage(1); setSpecialSearch(value); }, 'กรองชื่อสินค้า POS หรือชื่อ Session')}
+            {nameFilter(specialSearch, (value) => { setSpecialPOSPage(1); setSpecialSearch(value); }, 'กรองชื่อสินค้า POS')}
           </div>
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">{[
             ['สินค้า POS', `${specialReport?.summary.posQuantity || 0} ชิ้น`, specialReport?.summary.posRevenueSatang || 0],
@@ -1092,8 +1069,13 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
             ['เงินสด', 'รับชำระจริง', specialReport?.summary.cashReceivedSatang || 0],
             ['QR', 'รับชำระจริง', specialReport?.summary.promptPayReceivedSatang || 0],
           ].map(([label, detail, amount]) => <div key={String(label)} className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><p className="text-xs text-slate-500">{label}</p><p className={`truncate text-lg font-black ${label === 'เงินสด' ? 'text-amber-500' : label === 'QR' ? 'text-sky-500' : 'text-emerald-600'}`}>{formatCurrency(Number(amount) / 100, settings.currencySymbol, 2)}</p><p className="text-[11px] text-slate-400">{detail}</p></div>)}</div>
-          <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="border-b border-slate-200 p-4 font-bold dark:border-slate-800">สินค้าที่ขายผ่าน POS</div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-3 text-left">สินค้า</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">บิล</th><th className="p-3 text-right">มูลค่า</th></tr></thead><tbody>{(specialReport?.posItems || []).map((item) => <tr key={`${item.productId}:${item.name}`} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3 font-bold">{item.name}</td><td className="p-3 text-right">{item.quantity}</td><td className="p-3 text-right">{item.billCount}</td><td className="p-3 text-right font-bold text-emerald-600">{formatCurrency(item.revenueSatang / 100, settings.currencySymbol, 2)}</td></tr>)}</tbody></table></div>{specialReport && paginationBar(specialReport.posPagination.page, specialReport.posPagination.totalPages, specialReport.posPagination.total, setSpecialPOSPage)}</div>
-          <div className="space-y-3">{(specialReport?.sessions || []).map((session) => <div key={session.id} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="flex flex-wrap justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800"><div><h3 className="font-bold">{session.name}</h3><p className="text-xs text-slate-500">{formatThaiDateShort(session.occurredAt)} · {session.gameCount} เกม · {session.playerCount} คน</p></div><strong className="text-emerald-600">{formatCurrency(session.totalSatang / 100, settings.currencySymbol, 2)}</strong></div><div className="mt-3 grid gap-4 lg:grid-cols-2"><div><p className="mb-2 text-xs font-bold">ค่าเข้าสนามตามประเภทสมาชิก</p>{session.entryFees.map((item) => <div key={`${item.memberTypeId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.memberTypeName} · {item.quantity} คน × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div><div><p className="mb-2 text-xs font-bold">ลูกแบดที่ใช้จริง</p>{session.shuttles.map((item) => <div key={`${item.brandId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.brandName} · {item.quantity} ลูก × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div></div></div>)}{specialReport && paginationBar(specialReport.sessionPagination.page, specialReport.sessionPagination.totalPages, specialReport.sessionPagination.total, setSpecialSessionPage)}</div>
+          {specialReport && specialDifferenceSatang !== 0 && <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200"><strong className="text-sm">{specialDifferenceSatang > 0 ? 'ยอดขายมากกว่าเงินที่รับจริง' : 'รับเงินจริงมากกว่ายอดขาย'} {formatCurrency(Math.abs(specialDifferenceSatang) / 100, settings.currencySymbol, 2)}</strong><p className="mt-1">ยอดขายยึดวันที่ปิดบิลและวันที่เกิด Session ส่วนเงินสด/QR ยึดวันที่รับเงินจริง จึงอาจต่างกันเมื่อบิลหารชำระคนละวันหรือยังรับเงินไม่ครบ</p></div>}
+          <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="border-b border-slate-200 p-4 dark:border-slate-800"><p className="font-bold">สินค้าที่ขายในช่วงที่เลือก</p><p className="mt-1 text-xs text-slate-500">แสดงเฉพาะรายการขายจาก POS ไม่รวมค่าใช้จ่ายจาก LiveMatch</p></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-3 text-left">สินค้า</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">บิล</th><th className="p-3 text-right">มูลค่า</th></tr></thead><tbody>{(specialReport?.posItems || []).map((item) => <tr key={`${item.productId}:${item.name}`} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3 font-bold">{item.name}</td><td className="p-3 text-right">{item.quantity}</td><td className="p-3 text-right">{item.billCount}</td><td className="p-3 text-right font-bold text-emerald-600">{formatCurrency(item.revenueSatang / 100, settings.currencySymbol, 2)}</td></tr>)}</tbody></table></div>{specialReport && paginationBar(specialReport.posPagination.page, specialReport.posPagination.totalPages, specialReport.posPagination.total, setSpecialPOSPage)}</div>
+          <div className="space-y-3">
+            <div><h3 className="font-black">รายละเอียด LiveMatch</h3><p className="mt-1 text-xs text-slate-500">แสดงแยกจากรายการสินค้า POS</p></div>
+            {(specialReport?.sessions || []).map((session) => <div key={session.id} className="rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="flex flex-wrap justify-between gap-2 border-b border-slate-200 pb-3 dark:border-slate-800"><div><h3 className="font-bold">{session.name}</h3><p className="text-xs text-slate-500">{formatThaiDateShort(session.occurredAt)} · {session.gameCount} เกม · {session.playerCount} คน</p></div><strong className="text-emerald-600">{formatCurrency(session.totalSatang / 100, settings.currencySymbol, 2)}</strong></div><div className="mt-3 grid gap-4 lg:grid-cols-2"><div><p className="mb-2 text-xs font-bold">ค่าเข้าสนามตามประเภทสมาชิก</p>{session.entryFees.map((item) => <div key={`${item.memberTypeId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.memberTypeName} · {item.quantity} คน × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div><div><p className="mb-2 text-xs font-bold">ลูกแบดที่ใช้จริง</p>{session.shuttles.map((item) => <div key={`${item.brandId}:${item.unitPriceSatang}`} className="flex justify-between py-1 text-xs"><span>{item.brandName} · {item.quantity} ลูก × {formatCurrency(item.unitPriceSatang / 100, settings.currencySymbol, 2)}</span><strong>{formatCurrency(item.totalSatang / 100, settings.currencySymbol, 2)}</strong></div>)}</div></div></div>)}
+            {specialReport && paginationBar(specialReport.sessionPagination.page, specialReport.sessionPagination.totalPages, specialReport.sessionPagination.total, setSpecialSessionPage)}
+          </div>
         </div>
       )}
       {reportType === 'transfers' && <div className="space-y-4"><div className="flex gap-2 rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900"><input value={transferSearch} onChange={(e) => { setTransfersPage(1); setTransferSearch(e.target.value); }} placeholder="กรองชื่อสินค้า ผู้ทำรายการ เลขที่ หรือหมายเหตุ" className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950" /></div><div className="rounded-3xl border border-slate-200 bg-white shadow-md overflow-hidden dark:border-slate-800 dark:bg-slate-900"><div className="overflow-x-auto"><table className="w-full min-w-[760px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950"><tr><th className="p-3 text-left">เอกสาร</th><th className="p-3 text-left">ต้นทาง → ปลายทาง</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-left">ผู้ทำรายการ / เวลา</th></tr></thead><tbody>{(transfersReport?.items || []).map((item) => <tr key={item.id} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3"><b>{item.referenceNo}</b><div className="text-slate-500">{item.note || '-'}</div></td><td className="p-3">{item.sourceStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName} → {item.destinationStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName}</td><td className="p-3 text-right font-mono font-bold">{item.totalQuantity}</td><td className="p-3">{item.actorName || '-'}<div className="text-slate-500">{item.createdAt}</div></td></tr>)}</tbody></table></div>{transfersReport && paginationBar(transfersReport.pagination.page, transfersReport.pagination.totalPages, transfersReport.pagination.total, setTransfersPage)}</div></div>}

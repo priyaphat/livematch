@@ -1825,7 +1825,7 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 		occurredAt time.Time
 	}
 	refs := []sessionRef{}
-	sessionRows, err := a.db.QueryContext(r.Context(), `select id,coalesce(usage_started_at,created_at) from sessions where admin_id=$1 and coalesce(session_type,'liveMatch')='liveMatch' and coalesce(usage_started_at,created_at)>=$2 and coalesce(usage_started_at,created_at)<$3 and ($4='' or name ilike '%%'||$4||'%%') order by coalesce(usage_started_at,created_at),id`, adminID, start, end, search)
+	sessionRows, err := a.db.QueryContext(r.Context(), `select id,coalesce(usage_started_at,created_at) from sessions where admin_id=$1 and coalesce(session_type,'liveMatch')='liveMatch' and coalesce(usage_started_at,created_at)>=$2 and coalesce(usage_started_at,created_at)<$3 order by coalesce(usage_started_at,created_at),id`, adminID, start, end)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
@@ -1899,7 +1899,13 @@ func (a *app) posSpecialPaymentTotals(ctx context.Context, adminID string, start
 		  and coalesce(payment.created_at,sale.updated_at,sale.created_at) < $3
 		  and not exists(
 			select 1 from billing_payment_allocations allocated
-			where allocated.payment_id=sale.payment_id and allocated.source_type='pos' and allocated.source_id=sale.id
+			where allocated.source_type='pos' and (
+				allocated.source_id=sale.id
+				or exists(
+					select 1 from pos_sale_splits allocated_split
+					where allocated.source_id='split:'||allocated_split.id and allocated_split.sale_id=sale.id
+				)
+			)
 		  )` + reportSaleStockClause("sale", stockLocation) + `
 		union all
 		select event.payment_method,event.amount_satang
