@@ -121,7 +121,32 @@ const splitReceiptBitmap = (dataUrl: string, maxChunkHeight = 640) => new Promis
   image.src = dataUrl;
 });
 
+// The WPOS I24D03 Web Print service accepts the iMin bitmap command but prints
+// only blank paper. Its native text command is reliable (the Settings test uses
+// the same command), so avoid bitmap jobs on this hardware family.
+const requiresNativeTextReceipt = async () => {
+  const isWposModel = (value: unknown) => /(?:I24D03|W\s?POS)/i.test(String(value || ''));
+  if (isWposModel(navigator.userAgent)) return true;
+
+  // Chrome's reduced Android user-agent often replaces the device model with
+  // just "K". Client Hints still exposes the real model on localhost/HTTPS.
+  const userAgentData = (navigator as Navigator & {
+    userAgentData?: { getHighEntropyValues?: (hints: string[]) => Promise<{ model?: string }> };
+  }).userAgentData;
+  if (!userAgentData?.getHighEntropyValues) return false;
+  try {
+    const values = await userAgentData.getHighEntropyValues(['model']);
+    return isWposModel(values.model);
+  } catch {
+    return false;
+  }
+};
+
 const printReceiptOnImin = async (order: any, settings: any, paperWidth: '58mm' | '80mm') => {
+  if (await requiresNativeTextReceipt()) {
+    await printIminText(receiptText(order, settings), paperWidth);
+    return 'text' as const;
+  }
   try {
     const receiptImage = await renderReceiptBitmap(paperWidth);
     await printIminBitmaps(await splitReceiptBitmap(receiptImage), paperWidth);
@@ -207,10 +232,13 @@ export const ReceiptModal: React.FC = () => {
     setPrintWithQr(false);
     try {
       const images: string[] = [];
-      for (const receipt of activeBatch) {
-        setSelectedOrderForReceipt(receipt);
-        await waitForReceiptLayout();
-        images.push(await renderReceiptBitmap(paperWidth));
+      const nativeTextBatch = isAndroid && await requiresNativeTextReceipt();
+      if (!nativeTextBatch) {
+        for (const receipt of activeBatch) {
+          setSelectedOrderForReceipt(receipt);
+          await waitForReceiptLayout();
+          images.push(await renderReceiptBitmap(paperWidth));
+        }
       }
       setSelectedOrderForReceipt(original);
       if (isAndroid) {
@@ -225,7 +253,10 @@ export const ReceiptModal: React.FC = () => {
             }
           }
         }
-        showToast(`พิมพ์ใบเสร็จ ${images.length} ใบผ่าน iMin InnerPrinter แล้ว`, 'success');
+        if (nativeTextBatch) {
+          for (const receipt of activeBatch) await printIminText(receiptText(receipt, settings), paperWidth);
+        }
+        showToast(`พิมพ์ใบเสร็จ ${activeBatch.length} ใบผ่าน InnerPrinter แล้ว`, 'success');
       } else if (printWindow) {
         printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>ใบเสร็จทั้งหมด</title><style>@page{size:${paperWidth} auto;margin:0}html,body{margin:0;background:#fff}.receipt{display:block;width:100%;height:auto;page-break-after:always}.receipt:last-child{page-break-after:auto}</style></head><body>${images.map((image) => `<img class="receipt" src="${image}" alt="ใบเสร็จ">`).join('')}<script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}<\/script></body></html>`);
         printWindow.document.close();

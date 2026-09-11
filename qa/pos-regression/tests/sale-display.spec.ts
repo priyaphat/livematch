@@ -425,6 +425,61 @@ test('POS-PRINT-003 ใบเสร็จ iMin ใช้ภาพเดียว
   await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
 });
 
+test('POS-PRINT-004 @smoke WPOS I24D03 ใช้ native text และไม่ส่ง bitmap ที่ทำให้กระดาษเปล่า', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
+    Object.defineProperty(navigator, 'userAgentData', {
+      configurable: true,
+      value: { getHighEntropyValues: async () => ({ model: 'I24D03' }) },
+    });
+    (window as any).__printCalls = 0;
+    (window as any).__iminCommands = [];
+    window.print = () => { (window as any).__printCalls += 1; };
+    class MockWPOSWebSocket {
+      static OPEN = 1;
+      readonly OPEN = 1;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(public url: string) { window.setTimeout(() => { this.readyState = 1; this.onopen?.(new Event('open')); }, 0); }
+      send(payload: string) {
+        const command = JSON.parse(payload);
+        (window as any).__iminCommands.push(command);
+        if (command.type === 2) window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 2, data: { value: 0 } }) })), 0);
+      }
+      close() { this.readyState = 3; }
+    }
+    (window as any).WebSocket = MockWPOSWebSocket;
+  });
+
+  const api = await ownerApi();
+  const sale = await api.post('/api/admin/pos/sales', {
+    headers: await csrfHeaders(api),
+    data: {
+      requestId: `qa-receipt-wpos-${Date.now()}`,
+      action: 'pay',
+      buyerType: 'anonymous',
+      method: 'cash',
+      expectedTotalSatang: 4500,
+      cashReceivedSatang: 5000,
+      items: [{ productId: 'qa-product-coffee-a', quantity: 1 }],
+    },
+  });
+  expect(sale.status(), await sale.text()).toBe(201);
+  await api.dispose();
+
+  await page.goto('/');
+  await page.locator('#nav-tab-dashboard').click();
+  await page.getByText('ดูใบเสร็จ ↗').first().click();
+  await page.locator('#print-receipt-btn').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toContain(12);
+  expect(await page.evaluate(() => (window as any).__iminCommands.some((command: any) => command.type === 26))).toBeFalsy();
+  expect(await page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 12)?.data?.text || '')).toContain('ใบเสร็จรับเงิน');
+  await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
+});
+
 test('POS-PWA-001 @smoke PWA manifest มี icon และ standalone start URL', async ({ page, request }) => {
   await page.goto('/');
   const href = await page.locator('link[rel="manifest"]').getAttribute('href');
