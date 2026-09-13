@@ -121,29 +121,14 @@ const splitReceiptBitmap = (dataUrl: string, maxChunkHeight = 640) => new Promis
   image.src = dataUrl;
 });
 
-// The WPOS I24D03 Web Print service accepts the iMin bitmap command but prints
-// only blank paper. Its native text command is reliable (the Settings test uses
-// the same command), so avoid bitmap jobs on this hardware family.
-const requiresNativeTextReceipt = async () => {
-  const isWposModel = (value: unknown) => /(?:I24D03|W\s?POS)/i.test(String(value || ''));
-  if (isWposModel(navigator.userAgent)) return true;
-
-  // Chrome's reduced Android user-agent often replaces the device model with
-  // just "K". Client Hints still exposes the real model on localhost/HTTPS.
-  const userAgentData = (navigator as Navigator & {
-    userAgentData?: { getHighEntropyValues?: (hints: string[]) => Promise<{ model?: string }> };
-  }).userAgentData;
-  if (!userAgentData?.getHighEntropyValues) return false;
-  try {
-    const values = await userAgentData.getHighEntropyValues(['model']);
-    return isWposModel(values.model);
-  } catch {
-    return false;
-  }
-};
+// Android Web Print implementations can acknowledge iMin bitmap jobs while
+// producing only blank paper (confirmed on WPOS I24D03). Native text is the
+// same reliable command used by the Settings test, so make it the safe Android
+// default instead of relying on device-model detection hidden by modern Chrome.
+const requiresNativeTextReceipt = () => /Android/i.test(navigator.userAgent);
 
 const printReceiptOnImin = async (order: any, settings: any, paperWidth: '58mm' | '80mm') => {
-  if (await requiresNativeTextReceipt()) {
+  if (requiresNativeTextReceipt()) {
     await printIminText(receiptText(order, settings), paperWidth);
     return 'text' as const;
   }
@@ -232,7 +217,7 @@ export const ReceiptModal: React.FC = () => {
     setPrintWithQr(false);
     try {
       const images: string[] = [];
-      const nativeTextBatch = isAndroid && await requiresNativeTextReceipt();
+      const nativeTextBatch = isAndroid && requiresNativeTextReceipt();
       if (!nativeTextBatch) {
         for (const receipt of activeBatch) {
           setSelectedOrderForReceipt(receipt);

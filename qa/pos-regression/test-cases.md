@@ -73,12 +73,13 @@
 | POS-HW-002 | P1 | W POS firmware รายงาน user agent เป็น Linux/Chromium | เปิดหน้า POS | ปุ่มคีย์บอร์ด USB ยังแสดงและสลับ inputmode ได้ | Playwright | Chromium Linux UA |
 | POS-PRINT-001 | P1 | Owner เปิดตั้งค่าเครื่องพิมพ์ | กดค้นหา/เลือกเครื่องพิมพ์ | สร้างเอกสาร 80 mm ในหน้าเดิมและเปิด Android Print Dialog | Playwright | Chromium mocked print |
 | POS-PRINT-002 | P1 | W POS Android เปิด iMin H5 Web Print service | ตรวจหาและทดสอบ InnerPrinter | เชื่อมต่อ localhost WebSocket, ตรวจสถานะและส่งข้อความไทยพร้อม feed/cut โดยไม่เปิด Android Print Dialog | Playwright | Chromium mocked iMin WebSocket |
-| POS-PRINT-003 | P1 | มีบิลขายและ iMin InnerPrinter พร้อมใช้ | เปิด Preview แล้วกดพิมพ์ใบเสร็จ | ส่งภาพใบเสร็จชุดเดียวกับ Preview ไปยัง InnerPrinter และไม่เปิด Android Print Dialog | Playwright | Chromium mocked iMin WebSocket |
+| POS-PRINT-003 | P1 | มีบิลขายและ Android InnerPrinter พร้อมใช้ | เปิด Preview แล้วกดพิมพ์ใบเสร็จ | ส่งข้อความใบเสร็จผ่าน native text แบบเดียวกับหน้า Settings ไม่ส่ง bitmap ที่อาจออกกระดาษเปล่า และไม่เปิด Android Print Dialog | Playwright | Chromium mocked iMin WebSocket |
 | POS-RCPT-001 | P1 | Paid sale | เปิด/พิมพ์ใบเสร็จ | ไม่มีสาขา; มีสินค้า VAT วิธีชำระ ผู้ขาย ยอดถูก | Manual | Chromium/printer |
 | POS-BILL-001 | P1 | มีประวัติชำระเงิน | กดดูรายละเอียดจากแท็บประวัติการขาย | modal แสดงลูกค้า วันเวลา ผู้รับชำระ ช่องทาง รายการ Match/POS ยอดรวม เงินรับ/ทอนหรือเลขอ้างอิงครบ | Playwright | Chromium |
 | POS-BILL-002 | P1 | มีประวัติอย่างน้อย 21 รายการ | ค้นหา กรอง และเปลี่ยนหน้าประวัติการขาย | API แบ่งหน้าละ 20, จำนวนรวม/ช่วงรายการถูก และตัวกรองทำงานกับข้อมูลทุกหน้า | Playwright | Chromium/API |
 | POS-BILL-003 | P1 | เลือกยอดพักอย่างน้อย 1 บิล | กดชำระเงินทันทีและตรวจ Modal | แสดงรายการ Match/POS และสินค้าในแต่ละบิลครบ; Desktop แบ่งรายละเอียดซ้าย/ชำระเงินขวา และ Mobile เรียงหนึ่งคอลัมน์ | Manual | Chromium |
 | POS-BILL-004 | P3 | มีรายการพักยอดอย่างน้อย 1 บิล | เปิดหน้าจัดการบิลบน Desktop | การ์ดรายการพักยอดใช้ grid 4 ใบต่อแถวที่ breakpoint Desktop | Playwright | Chromium |
+| POS-BILL-005 | P1 | เข้าหน้าจัดการบิล | เปิดแท็บพักบิลแล้วสลับไปแท็บประวัติ | แท็บพักบิลเรียกเฉพาะ receivables; แท็บประวัติเรียกเฉพาะ payment-history และหยุด polling ของอีกแท็บ | Playwright | Chromium/Network |
 | POS-XMATCH-001 | P1 | Match-only linked member | เปิด receivables POS | เห็น Match charge แม้ POS = 0 | Playwright | API |
 | POS-XMATCH-002 | P1 | Multiple linked players | เปิด receivables | สมาชิกมีค่า Match ทุกคนขึ้น; guest ไม่รวม | Playwright | API |
 | POS-XMATCH-003 | P1 | Match + shuttle + POS | เปิดรายละเอียดสองระบบ | ค่าสนาม ลูกแบด session และชื่อสินค้าแสดงครบ | Vitest | Match |

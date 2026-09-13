@@ -68,7 +68,27 @@ test('POS-BILL-004 การ์ดพักยอดแสดง 4 ใบต่�
   await page.locator('#tab-held-bills-btn').click();
   const heldCard = page.locator('[id^="held-card-"]').first();
   await expect(heldCard).toBeVisible();
-  await expect(heldCard.locator('..')).toHaveClass(/lg:grid-cols-4/);
+  await expect(heldCard.locator('..')).toHaveClass(/xl:grid-cols-4/);
+});
+
+test('POS-BILL-005 โหลดเฉพาะข้อมูลของแท็บพักบิลหรือประวัติที่เปิดอยู่', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.endsWith('/api/admin/pos/receivables') || url.pathname.endsWith('/api/admin/pos/payment-history')) {
+      requests.push(url.pathname);
+    }
+  });
+
+  await page.goto('/');
+  await page.getByRole('button', { name: 'บิล & ประวัติ' }).click();
+  await expect.poll(() => requests.filter((path) => path.endsWith('/receivables')).length).toBeGreaterThan(0);
+  expect(requests.filter((path) => path.endsWith('/payment-history'))).toHaveLength(0);
+
+  requests.length = 0;
+  await page.locator('#tab-history-bills-btn').click();
+  await expect.poll(() => requests.filter((path) => path.endsWith('/payment-history')).length).toBeGreaterThan(0);
+  expect(requests.filter((path) => path.endsWith('/receivables'))).toHaveLength(0);
 });
 
 test('POS-BILL-001 ประวัติการขายเปิดดูรายละเอียดการชำระและรายการสินค้าได้', async ({ page }) => {

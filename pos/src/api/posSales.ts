@@ -207,7 +207,7 @@ export function listPOSReceivables(search = '') {
 }
 
 export function listPOSPaymentHistory() {
-  return posRequest<{ items: POSPaymentHistory[] }>('/api/admin/pos/payment-history?page=1&pageSize=100').then((result) => result.items);
+  return posRequest<{ items: POSPaymentHistory[] }>('/api/admin/pos/payment-history?page=1&pageSize=20').then((result) => result.items);
 }
 
 export function listPOSPaymentHistoryPage(params: {

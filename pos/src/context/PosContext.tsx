@@ -142,6 +142,7 @@ interface PosContextType {
 
   // Held Orders
   heldOrders: HeldOrder[];
+  refreshHeldOrders: () => Promise<void>;
   holdCurrentCart: (memberIds: string[], customerNames: string[]) => Promise<boolean>;
   resumeHeldOrder: (heldId: string) => void;
   deleteHeldOrder: (heldId: string) => void;
@@ -324,7 +325,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [members, setMembers] = useState<POSMember[]>([]);
-  const [isBillingPollingActive, setIsBillingPollingActive] = useState(false);
 
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
   const [stockBatches, setStockBatches] = useState<StockBatchSummary[]>([]);
@@ -564,20 +564,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     paymentId: sale.paymentId,
   });
 
-  const refreshPOSSales = async (options: { includeMembers?: boolean; includeSettings?: boolean; skipIfEditing?: boolean } = {}) => {
+  const refreshPOSSales = async (options: { includeMembers?: boolean; includeSettings?: boolean; includeReceivables?: boolean; includePayments?: boolean; skipIfEditing?: boolean } = {}) => {
     const includeMembers = options.includeMembers !== false;
     const includeSettings = options.includeSettings !== false;
+    const includeReceivables = options.includeReceivables !== false;
+    const includePayments = options.includePayments === true;
     const [apiMembers, apiSettings, apiReceivables, apiPayments] = await Promise.all([
       includeMembers ? listPOSMembers() : Promise.resolve(null),
       includeSettings ? getPOSSettings() : Promise.resolve(null),
-      listPOSReceivables(),
-      listPOSPaymentHistory(),
+      includeReceivables ? listPOSReceivables() : Promise.resolve(null),
+      includePayments ? listPOSPaymentHistory() : Promise.resolve(null),
     ]);
     if (options.skipIfEditing && isPOSEditing()) return;
     if (apiMembers) setMembers(apiMembers);
-    setHeldOrders(apiReceivables.map((receivable) => {
+    if (apiReceivables) setHeldOrders(apiReceivables.map((receivable) => {
 	  const posLines = receivable.lines.filter((line) => line.sourceType === 'pos');
-	  const sourceSaleIds = [...new Set(posLines.map((line) => {
+	  const sourceSaleIds: string[] = [...new Set<string>(posLines.map((line) => {
 		const snapshotSaleId = String(line.snapshot?.saleId || '').trim();
 		if (snapshotSaleId) return snapshotSaleId;
 		return line.sourceId.startsWith('split:') ? '' : line.sourceId;
@@ -638,7 +640,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 		splitAllocations,
       } satisfies HeldOrder;
     }));
-    setOrders(apiPayments.map((payment) => {
+    if (apiPayments) setOrders(apiPayments.map((payment) => {
       const items: OrderItem[] = [];
       payment.lines.forEach((line) => {
         const snapshot = line.snapshot || {};
@@ -834,37 +836,27 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const tasks: Array<Promise<void>> = [];
       if (!permissions || permissions.sales || permissions.products || permissions.stock) tasks.push(refreshPOSCatalog());
       if (!permissions || permissions.stock) tasks.push(refreshPOSStock());
-      if (!permissions || permissions.sales || permissions.bills || permissions.settings) tasks.push(refreshPOSSales());
-	  setIsBillingPollingActive(true);
+      if (!permissions || permissions.sales || permissions.bills || permissions.settings) {
+        tasks.push(refreshPOSSales({ includeReceivables: false, includePayments: false }));
+      }
       void Promise.all(tasks);
     };
-	const stop = () => setIsBillingPollingActive(false);
     window.addEventListener('livematch:pos-authenticated', refresh);
-	window.addEventListener('livematch:pos-logged-out', stop);
-	window.addEventListener('livematch:pos-unauthorized', stop);
 	return () => {
 	  window.removeEventListener('livematch:pos-authenticated', refresh);
-	  window.removeEventListener('livematch:pos-logged-out', stop);
-	  window.removeEventListener('livematch:pos-unauthorized', stop);
 	};
   }, []);
 
   useEffect(() => {
-	if (!isBillingPollingActive) return;
-	const refreshVisible = () => {
-	  if (document.visibilityState === 'visible' && !isPOSEditing()) {
-		void refreshPOSSales({ includeMembers: false, includeSettings: false, skipIfEditing: true }).catch(() => undefined);
-	  }
-	};
-	const timer = window.setInterval(refreshVisible, 10_000);
-	document.addEventListener('visibilitychange', refreshVisible);
-	window.addEventListener('focus', refreshVisible);
-	return () => {
-	  window.clearInterval(timer);
-	  document.removeEventListener('visibilitychange', refreshVisible);
-	  window.removeEventListener('focus', refreshVisible);
-	};
-  }, [isBillingPollingActive]);
+	if (activeTab !== 'dashboard') return;
+	void refreshPOSSales({
+	  includeMembers: false,
+	  includeSettings: false,
+	  includeReceivables: false,
+	  includePayments: true,
+	  skipIfEditing: true,
+	}).catch(() => undefined);
+  }, [activeTab]);
 
   const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว', remoteScope: 'all' | 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'local' = 'all'): Promise<boolean> => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
@@ -1145,6 +1137,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
   };
+
+  const refreshHeldOrders = () => refreshPOSSales({
+    includeMembers: false,
+    includeSettings: false,
+    includeReceivables: true,
+    includePayments: false,
+    skipIfEditing: true,
+  });
 
   // Function to open standalone Customer Display Window
   const openCustomerDisplayWindow = async () => {
@@ -2163,6 +2163,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDiscount,
         cartTotals,
         heldOrders,
+        refreshHeldOrders,
         holdCurrentCart,
         resumeHeldOrder,
         deleteHeldOrder,

@@ -99,6 +99,7 @@ const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
 export const BillsView: React.FC = () => {
   const {
     heldOrders,
+    refreshHeldOrders,
     resumeHeldOrder,
     deleteHeldOrder,
     batchDeleteHeldOrders,
@@ -195,6 +196,26 @@ export const BillsView: React.FC = () => {
   }, [selectedHistoryDetail]);
 
   useEffect(() => {
+    if (activeSegment !== 'held') return;
+    let disposed = false;
+    const refresh = () => {
+      if (disposed || document.visibilityState !== 'visible') return;
+      void refreshHeldOrders().catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [activeSegment]);
+
+  useEffect(() => {
+    if (activeSegment !== 'history') return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setIsHistoryLoading(true);
