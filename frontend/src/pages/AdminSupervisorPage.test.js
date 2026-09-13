@@ -34,6 +34,29 @@ function mountDashboard(features) {
 }
 
 describe('AdminSupervisorPage feature cards', () => {
+	it('filters the main admin dashboard by week, month, and a custom date range', async () => {
+	  const wrapper = mountDashboard({ memberEnabled: true, bookingEnabled: true })
+	  const refresh = wrapper.props('refreshAdminSupervisor')
+	  const filter = wrapper.get('[data-testid="admin-dashboard-filter"]')
+
+	  await vi.waitFor(() => expect(refresh).toHaveBeenCalledWith(expect.objectContaining({ period: 'week' })))
+	  expect(filter.text()).not.toContain('ทั้งหมด')
+	  expect(filter.findAll('button').find((button) => button.text() === 'Week').classes()).toContain('bg-court-600')
+
+	  const monthButton = filter.findAll('button').find((button) => button.text() === 'Month')
+	  await vi.waitFor(() => expect(monthButton.attributes('disabled')).toBeUndefined())
+	  await monthButton.trigger('click')
+	  expect(refresh).toHaveBeenCalledWith(expect.objectContaining({ period: 'month' }))
+
+	  const customButton = filter.findAll('button').find((button) => button.text() === 'กำหนดเอง')
+	  await vi.waitFor(() => expect(customButton.attributes('disabled')).toBeUndefined())
+	  await customButton.trigger('click')
+	  await wrapper.get('[data-testid="admin-dashboard-custom-start"]').setValue('2026-09-01')
+	  await wrapper.get('[data-testid="admin-dashboard-custom-end"]').setValue('2026-09-12')
+	  await wrapper.get('[data-testid="admin-dashboard-custom-filter"]').trigger('submit')
+	  expect(refresh).toHaveBeenCalledWith(expect.objectContaining({ period: 'custom', startDate: '2026-09-01', endDate: '2026-09-12' }))
+	})
+
 	it('searches and stores a tracked POS product in admin default shuttle settings', async () => {
 	  const apiRequest = vi.fn().mockResolvedValue({ items: [{ id: 'product-yonex', name: 'Yonex AS-30', sku: 'SH-030', barcode: '88500030', priceSatang: 9950, trackStock: true, active: true, stockQuantity: 24, unit: 'ลูก' }] })
 	  const auth = {

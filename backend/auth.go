@@ -333,7 +333,21 @@ func (a *app) handlePOSAdminMe(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUser) {
-	sessions, _ := a.adminSessions(r.Context(), user.ID)
+	var sessions []adminSessionItem
+	var dashboardStartAt, dashboardEndAt time.Time
+	dashboardPeriod := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("period")))
+	if dashboardPeriod == "week" || dashboardPeriod == "month" || dashboardPeriod == "custom" {
+		var rangeErr error
+		dashboardStartAt, dashboardEndAt, dashboardPeriod, rangeErr = bookingDashboardRangeFromQuery(time.Now(), r.URL.Query())
+		if rangeErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "กรุณาเลือกช่วงวันที่ให้ถูกต้อง"})
+			return
+		}
+		sessions, _ = a.adminSessionsRange(r.Context(), user.ID, dashboardStartAt, dashboardEndAt)
+	} else {
+		dashboardPeriod = "all"
+		sessions, _ = a.adminSessions(r.Context(), user.ID)
+	}
 	ledger, _ := a.coinLedger(r.Context(), user.ID, 8)
 	defaultSettings, _ := a.adminDefaultSettings(r.Context(), user.ID)
 	memberTypes, _ := a.memberTypesForAdmin(r.Context(), user.ID, false)
@@ -349,7 +363,7 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 	var systemName, logoData string
 	var allowMatchGuestEntry bool
 	_ = a.db.QueryRowContext(r.Context(), `select system_name,logo_data,allow_match_guest_entry from admin_users where id=$1`, user.ID).Scan(&systemName, &logoData, &allowMatchGuestEntry)
-	writeJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"user":                 user,
 		"sessions":             sessions,
 		"coinLedger":           ledger,
@@ -364,7 +378,13 @@ func (a *app) writeAdminMe(w http.ResponseWriter, r *http.Request, user adminUse
 		"bookingCount":         bookingCount,
 		"posSaleCount":         posSaleCount,
 		"branding":             map[string]any{"systemName": systemName, "logoData": logoData},
-	})
+		"dashboardPeriod":      dashboardPeriod,
+	}
+	if !dashboardStartAt.IsZero() {
+		payload["dashboardStartAt"] = dashboardStartAt.Format(time.RFC3339)
+		payload["dashboardEndAt"] = dashboardEndAt.Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func defaultAdminSettings() Settings {
@@ -2360,7 +2380,12 @@ func (a *app) adminByEmail(ctx context.Context, email string) (adminUser, string
 }
 
 func (a *app) adminSessions(ctx context.Context, adminID string) ([]adminSessionItem, error) {
-	items, _, err := a.adminSessionsQuery(ctx, adminID, 0, 0)
+	items, _, err := a.adminSessionsQuery(ctx, adminID, 0, 0, nil, nil)
+	return items, err
+}
+
+func (a *app) adminSessionsRange(ctx context.Context, adminID string, start, end time.Time) ([]adminSessionItem, error) {
+	items, _, err := a.adminSessionsQuery(ctx, adminID, 0, 0, &start, &end)
 	return items, err
 }
 
@@ -2369,16 +2394,22 @@ func (a *app) adminSessionsPage(ctx context.Context, adminID string, page, pageS
 	if err := a.db.QueryRowContext(ctx, `select count(*) from sessions where admin_id = $1`, adminID).Scan(&total); err != nil {
 		return []adminSessionItem{}, 0, err
 	}
-	items, _, err := a.adminSessionsQuery(ctx, adminID, pageSize, (page-1)*pageSize)
+	items, _, err := a.adminSessionsQuery(ctx, adminID, pageSize, (page-1)*pageSize, nil, nil)
 	return items, total, err
 }
 
-func (a *app) adminSessionsQuery(ctx context.Context, adminID string, limit, offset int) ([]adminSessionItem, int, error) {
+func (a *app) adminSessionsQuery(ctx context.Context, adminID string, limit, offset int, start, end *time.Time) ([]adminSessionItem, int, error) {
 	items := []adminSessionItem{}
+	filterSQL := ""
 	paginationSQL := ""
 	args := []any{adminID}
+	if start != nil && end != nil {
+		filterSQL = " and s.created_at >= $2 and s.created_at < $3"
+		args = append(args, *start, *end)
+	}
 	if limit > 0 {
-		paginationSQL = "limit $2 offset $3"
+		limitIndex := len(args) + 1
+		paginationSQL = fmt.Sprintf("limit $%d offset $%d", limitIndex, limitIndex+1)
 		args = append(args, limit, offset)
 	}
 	rows, err := a.db.QueryContext(ctx, `
@@ -2419,7 +2450,7 @@ func (a *app) adminSessionsQuery(ctx context.Context, adminID string, limit, off
 				) else false end as refund_available
 		from sessions s
 		left join session_billing sb on sb.session_id = s.id
-		where s.admin_id = $1
+		where s.admin_id = $1`+filterSQL+`
 		order by s.updated_at desc
 		`+paginationSQL, args...)
 	if err != nil {

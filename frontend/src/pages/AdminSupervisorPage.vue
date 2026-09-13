@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import HeroBackground from '../components/HeroBackground.vue'
 import ProductStockCombobox from '../components/ProductStockCombobox.vue'
 import {
@@ -62,6 +62,13 @@ const adminDefaultSettingsTab = ref('costs')
 const adminDefaultSettingsSaving = ref(false)
 const announcementBellSaving = ref(false)
 const announcementBellPlaying = ref(false)
+const dashboardFilter = ref(['week', 'month', 'custom'].includes(props.auth.dashboardPeriod) ? props.auth.dashboardPeriod : 'week')
+const dashboardFilterLoading = ref(false)
+const dashboardFilterError = ref('')
+const bangkokToday = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit'
+}).format(new Date())
+const dashboardCustomRange = reactive({ startDate: bangkokToday, endDate: bangkokToday })
 const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
   { id: 'system', label: 'ตั้งค่าระบบ', hint: 'ชื่อ โลโก้ ผู้ดูแล', icon: ShieldCheck },
@@ -84,6 +91,13 @@ const liveShareQuote = computed(() => priceQuote('liveShare', props.auth.liveSha
 const liveMatchCost = computed(() => liveMatchQuote.value?.finalCost ?? null)
 const liveShareCost = computed(() => liveShareQuote.value?.finalCost ?? null)
 const sessions = computed(() => props.auth.sessions || [])
+const dashboardRangeLabel = computed(() => {
+  if (!props.auth.dashboardStartAt || !props.auth.dashboardEndAt) return ''
+  const options = { timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', year: 'numeric' }
+  const start = new Date(props.auth.dashboardStartAt).toLocaleDateString('th-TH', options)
+  const end = new Date(new Date(props.auth.dashboardEndAt).getTime() - 1).toLocaleDateString('th-TH', options)
+  return start === end ? start : `${start} – ${end}`
+})
 const canCreateLiveMatch = computed(() => liveMatchCost.value !== null && (canUseSubscription.value || Number(props.auth.user?.coins || 0) >= Number(liveMatchCost.value || 0)))
 const canCreateLiveShare = computed(() => liveShareCost.value !== null && (canUseSubscription.value || Number(props.auth.user?.coins || 0) >= Number(liveShareCost.value || 0)))
 const createBlockedText = computed(() => {
@@ -171,6 +185,35 @@ const openAdminDefaultSettingsModal = () => {
   adminDefaultSettingsTab.value = 'system'
   props.ui.showAdminDefaultSettingsModal = true
 }
+
+async function applyDashboardFilter(period) {
+  if (dashboardFilterLoading.value) return
+  if (period === 'custom' && (!dashboardCustomRange.startDate || !dashboardCustomRange.endDate || dashboardCustomRange.endDate < dashboardCustomRange.startDate)) {
+    dashboardFilterError.value = 'กรุณาเลือกช่วงวันที่ให้ถูกต้อง'
+    return
+  }
+  dashboardFilter.value = period
+  dashboardFilterError.value = ''
+  dashboardFilterLoading.value = true
+  try {
+    const refreshed = await props.refreshAdminSupervisor({ period, ...dashboardCustomRange })
+    if (refreshed === false) {
+      dashboardFilterError.value = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
+      return
+    }
+    sessionPage.value = 1
+  } catch (error) {
+    dashboardFilterError.value = error.message || 'โหลดข้อมูลไม่สำเร็จ'
+  } finally {
+    dashboardFilterLoading.value = false
+  }
+}
+
+onMounted(() => {
+  if (props.auth.dashboardPeriod !== 'week' || !props.auth.dashboardStartAt || !props.auth.dashboardEndAt) {
+    applyDashboardFilter('week')
+  }
+})
 
 function handleBrandLogo(event) {
   const file = event.target.files?.[0]
@@ -278,7 +321,7 @@ function updateDashboardAnnouncement(index, value) {
         <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ภาพรวม session, รายรับ และสถานะเกมของบัญชี admin นี้</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-4 text-sm font-bold transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 sm:flex-none" @click="refreshAdminSupervisor">
+        <button type="button" class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-4 text-sm font-bold transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 sm:flex-none" @click="applyDashboardFilter(dashboardFilter)">
           <RefreshCw class="h-4 w-4" />
           รีเฟรช
         </button>
@@ -297,6 +340,23 @@ function updateDashboardAnnouncement(index, value) {
         </button>
       </div>
   </header>
+
+    <section data-testid="admin-dashboard-filter" class="rounded-lg border border-stone-200 bg-white p-3 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:flex sm:items-center sm:justify-between sm:gap-4">
+      <div class="min-w-0">
+        <p class="text-xs font-black uppercase tracking-wider text-stone-500 dark:text-stone-400">ช่วงเวลาภาพรวม</p>
+        <p class="mt-1 truncate text-sm font-bold">{{ dashboardRangeLabel || 'เลือกช่วงเวลาที่ต้องการ' }}</p>
+      </div>
+      <div class="mt-3 grid grid-cols-3 overflow-hidden rounded-md border border-stone-200 dark:border-stone-700 sm:mt-0 sm:min-w-[20rem]">
+        <button v-for="option in [{ id: 'week', label: 'Week' }, { id: 'month', label: 'Month' }, { id: 'custom', label: 'กำหนดเอง' }]" :key="option.id" type="button" class="h-10 border-r border-stone-200 px-2 text-xs font-black transition last:border-r-0 dark:border-stone-700 sm:text-sm" :class="dashboardFilter === option.id ? 'bg-court-600 text-white' : 'bg-paper-50 text-stone-600 hover:bg-paper-100 dark:bg-stone-800 dark:text-stone-300'" :disabled="dashboardFilterLoading" @click="option.id === 'custom' ? dashboardFilter = 'custom' : applyDashboardFilter(option.id)">{{ option.label }}</button>
+      </div>
+    </section>
+
+    <form v-if="dashboardFilter === 'custom'" data-testid="admin-dashboard-custom-filter" class="grid gap-3 rounded-lg border border-stone-200 bg-white p-3 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:grid-cols-[1fr_1fr_auto] sm:items-end" @submit.prevent="applyDashboardFilter('custom')">
+      <label class="grid gap-1 text-sm font-black"><span>วันเริ่มต้น</span><input v-model="dashboardCustomRange.startDate" data-testid="admin-dashboard-custom-start" type="date" :max="dashboardCustomRange.endDate" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" required /></label>
+      <label class="grid gap-1 text-sm font-black"><span>วันสิ้นสุด</span><input v-model="dashboardCustomRange.endDate" data-testid="admin-dashboard-custom-end" type="date" :min="dashboardCustomRange.startDate" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" required /></label>
+      <button type="submit" class="h-11 rounded-md bg-court-600 px-5 text-sm font-black text-white disabled:opacity-50" :disabled="dashboardFilterLoading">{{ dashboardFilterLoading ? 'กำลังโหลด...' : 'แสดงผล' }}</button>
+    </form>
+    <p v-if="dashboardFilterError" class="rounded-md bg-rose-50 p-3 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ dashboardFilterError }}</p>
 
     <section
       v-if="visibleFeatureCardCount"

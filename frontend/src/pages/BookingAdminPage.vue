@@ -66,6 +66,10 @@ const historyPage = ref(1);
 const historyPageSize = ref(20);
 const historyTotal = ref(0);
 const dashboardPeriod = ref("day");
+const dashboardCustomRange = reactive({
+  startDate: addDateDays(today, -6),
+  endDate: today,
+});
 const dashboardLoading = ref(false);
 const dashboardError = ref("");
 const dashboard = reactive({
@@ -239,8 +243,9 @@ const dashboardReturnRate = computed(() => dashboardCustomerTotal.value ? Math.r
 const dashboardNewRate = computed(() => dashboardCustomerTotal.value ? 100 - dashboardReturnRate.value : 0);
 const dashboardRangeLabel = computed(() => {
   if (!dashboard.startAt || !dashboard.endAt) return "";
-  const start = new Date(dashboard.startAt).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" });
-  const end = new Date(new Date(dashboard.endAt).getTime() - 1).toLocaleDateString("th-TH", { day: "numeric", month: "short", year: "numeric" });
+  const dateOptions = { day: "numeric", month: "short", year: "numeric", timeZone: "Asia/Bangkok" };
+  const start = new Date(dashboard.startAt).toLocaleDateString("th-TH", dateOptions);
+  const end = new Date(new Date(dashboard.endAt).getTime() - 1).toLocaleDateString("th-TH", dateOptions);
   return start === end ? start : `${start} – ${end}`;
 });
 const displayDate = computed(() =>
@@ -542,11 +547,24 @@ async function loadHistory(page = historyPage.value) {
 }
 
 async function loadBookingDashboard(period = dashboardPeriod.value) {
-  dashboardPeriod.value = ["day", "week", "month"].includes(period) ? period : "day";
+  dashboardPeriod.value = ["day", "week", "month", "custom"].includes(period) ? period : "day";
+  if (dashboardPeriod.value === "custom" && (
+    !dashboardCustomRange.startDate ||
+    !dashboardCustomRange.endDate ||
+    dashboardCustomRange.endDate < dashboardCustomRange.startDate
+  )) {
+    dashboardError.value = "กรุณาเลือกช่วงวันที่ให้ถูกต้อง";
+    return;
+  }
   dashboardLoading.value = true;
   dashboardError.value = "";
   try {
-    const data = await props.apiRequest(`/api/admin/booking/dashboard?period=${dashboardPeriod.value}`);
+    const params = new URLSearchParams({ period: dashboardPeriod.value });
+    if (dashboardPeriod.value === "custom") {
+      params.set("startDate", dashboardCustomRange.startDate);
+      params.set("endDate", dashboardCustomRange.endDate);
+    }
+    const data = await props.apiRequest(`/api/admin/booking/dashboard?${params.toString()}`);
     dashboard.period = data.period || dashboardPeriod.value;
     dashboard.startAt = data.startAt || "";
     dashboard.endAt = data.endAt || "";
@@ -1494,7 +1512,7 @@ onUnmounted(() => {
 
     <section
       v-else-if="activeTab === 'dashboard'"
-      class="overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm dark:border-stone-700 dark:bg-stone-900"
+      class="relative min-h-[42rem] overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm dark:border-stone-700 dark:bg-stone-900"
       data-testid="booking-dashboard"
     >
       <header class="flex flex-wrap items-end justify-between gap-4 px-4 py-5 sm:px-6 lg:px-8">
@@ -1503,14 +1521,20 @@ onUnmounted(() => {
           <h2 class="mt-1 text-2xl font-black sm:text-3xl">ภาพรวมการจอง</h2>
           <p class="mt-2 inline-flex items-center gap-2 text-sm font-bold text-stone-500"><CalendarDays class="h-4 w-4" />{{ dashboardRangeLabel || 'ข้อมูลการจองตามช่วงเวลาที่เลือก' }}</p>
         </div>
-        <div class="grid min-w-[18rem] grid-cols-3 overflow-hidden rounded-lg border border-stone-300 dark:border-stone-600">
-          <button v-for="option in [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'month', label: 'Month' }]" :key="option.id" type="button" class="h-11 border-r border-stone-300 px-5 text-sm font-black transition last:border-r-0 dark:border-stone-600" :class="dashboardPeriod === option.id ? 'bg-court-700 text-white' : 'bg-white text-stone-600 hover:bg-paper-100 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800'" :disabled="dashboardLoading" @click="loadBookingDashboard(option.id)">{{ option.label }}</button>
+        <div class="grid min-w-[22rem] grid-cols-4 overflow-hidden rounded-lg border border-stone-300 dark:border-stone-600">
+          <button v-for="option in [{ id: 'day', label: 'Day' }, { id: 'week', label: 'Week' }, { id: 'month', label: 'Month' }, { id: 'custom', label: 'กำหนดเอง' }]" :key="option.id" type="button" class="h-11 border-r border-stone-300 px-3 text-sm font-black transition last:border-r-0 dark:border-stone-600" :class="dashboardPeriod === option.id ? 'bg-court-700 text-white' : 'bg-white text-stone-600 hover:bg-paper-100 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800'" :disabled="dashboardLoading" @click="loadBookingDashboard(option.id)">{{ option.label }}</button>
         </div>
       </header>
 
+      <form v-if="dashboardPeriod === 'custom'" data-testid="booking-dashboard-custom-filter" class="mx-4 mb-5 grid gap-3 rounded-xl border border-stone-200 bg-paper-50 p-4 dark:border-stone-700 dark:bg-stone-950/40 sm:mx-6 sm:grid-cols-[1fr_1fr_auto] sm:items-end lg:mx-8" @submit.prevent="loadBookingDashboard('custom')">
+        <label class="booking-field"><span>วันเริ่มต้น</span><input v-model="dashboardCustomRange.startDate" data-testid="dashboard-custom-start" type="date" :max="dashboardCustomRange.endDate" required /></label>
+        <label class="booking-field"><span>วันสิ้นสุด</span><input v-model="dashboardCustomRange.endDate" data-testid="dashboard-custom-end" type="date" :min="dashboardCustomRange.startDate" required /></label>
+        <button type="submit" class="booking-primary-button h-11" :disabled="dashboardLoading">แสดงผล</button>
+      </form>
+
       <p v-if="dashboardError" class="mx-4 mb-4 rounded-xl bg-red-50 p-3 font-bold text-red-700 dark:bg-red-950/30 dark:text-red-200 sm:mx-6 lg:mx-8">{{ dashboardError }}</p>
-      <div v-if="dashboardLoading" class="border-t border-stone-200 p-16 text-center font-bold text-stone-500 dark:border-stone-700"><RefreshCw class="mx-auto mb-3 h-6 w-6 animate-spin text-court-600" />กำลังโหลด Dashboard...</div>
-      <template v-else>
+      <div v-if="dashboardLoading" class="pointer-events-none absolute inset-x-0 top-0 z-20 flex h-1 overflow-hidden bg-court-100 dark:bg-court-950"><span class="h-full w-1/3 animate-pulse rounded-full bg-court-600"></span><span class="sr-only">กำลังโหลด Dashboard...</span></div>
+      <div :class="dashboardLoading ? 'pointer-events-none opacity-60' : ''" class="transition-opacity">
         <div class="grid grid-cols-2 border-y border-stone-200 bg-paper-50/70 dark:border-stone-700 dark:bg-stone-950/35 md:grid-cols-5">
           <div class="border-b border-r border-stone-200 px-4 py-5 dark:border-stone-700 md:border-b-0 sm:px-6"><p class="flex items-center gap-2 text-xs font-black text-stone-500"><Coins class="h-4 w-4 text-court-700" />รายรับสุทธิ</p><p class="mt-2 text-2xl font-black text-court-800 dark:text-court-300">฿{{ Number(dashboard.summary.paidRevenueThb || 0).toLocaleString('th-TH') }}</p></div>
           <div class="border-b border-stone-200 px-4 py-5 dark:border-stone-700 md:border-b-0 md:border-r sm:px-6"><p class="text-xs font-black text-stone-500">ยอดค้างชำระ</p><p class="mt-2 text-2xl font-black text-amber-600">฿{{ Number(dashboard.summary.outstandingRevenueThb || 0).toLocaleString('th-TH') }}</p></div>
@@ -1557,7 +1581,7 @@ onUnmounted(() => {
             <p v-else class="py-10 text-center text-sm font-bold text-stone-500">ยังไม่มีการจองที่ยืนยันในช่วงนี้</p>
           </section>
         </div>
-      </template>
+      </div>
     </section>
 
     <section

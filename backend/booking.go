@@ -1350,8 +1350,35 @@ func bookingDashboardRange(now time.Time, period string) (time.Time, time.Time, 
 	}
 }
 
+func bookingDashboardRangeFromQuery(now time.Time, values url.Values) (time.Time, time.Time, string, error) {
+	period := strings.TrimSpace(values.Get("period"))
+	if period != "custom" {
+		start, end, normalizedPeriod := bookingDashboardRange(now, period)
+		return start, end, normalizedPeriod, nil
+	}
+	startText := strings.TrimSpace(values.Get("startDate"))
+	endText := strings.TrimSpace(values.Get("endDate"))
+	start, err := time.ParseInLocation("2006-01-02", startText, bangkokLocation)
+	if err != nil {
+		return time.Time{}, time.Time{}, "", errors.New("invalid dashboard start date")
+	}
+	endDay, err := time.ParseInLocation("2006-01-02", endText, bangkokLocation)
+	if err != nil || endDay.Before(start) {
+		return time.Time{}, time.Time{}, "", errors.New("invalid dashboard end date")
+	}
+	end := endDay.AddDate(0, 0, 1)
+	if end.Sub(start) > 366*24*time.Hour {
+		return time.Time{}, time.Time{}, "", errors.New("dashboard range exceeds 366 days")
+	}
+	return start, end, "custom", nil
+}
+
 func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, adminID string) {
-	start, end, period := bookingDashboardRange(time.Now(), strings.TrimSpace(r.URL.Query().Get("period")))
+	start, end, period, rangeErr := bookingDashboardRangeFromQuery(time.Now(), r.URL.Query())
+	if rangeErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": rangeErr.Error()})
+		return
+	}
 	ctx := r.Context()
 
 	summary := struct {
@@ -1481,7 +1508,8 @@ func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, admi
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"period": period, "startAt": start.Format(time.RFC3339), "endAt": end.Format(time.RFC3339),
-		"summary": summary, "courts": courts, "trend": trend,
+		"timeZone": "Asia/Bangkok",
+		"summary":  summary, "courts": courts, "trend": trend,
 	})
 }
 

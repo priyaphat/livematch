@@ -1063,11 +1063,19 @@ async function openOwnedSession(sessionId, requestedTab = 'dashboard') {
   }
 }
 
-async function refreshAdminSupervisor() {
+async function refreshAdminSupervisor(filter = {}) {
   try {
-    applyAdminPayload(await api('/api/admin/supervisor'))
+    const params = new URLSearchParams()
+    if (filter?.period && filter.period !== 'all') params.set('period', filter.period)
+    if (filter?.period === 'custom') {
+      params.set('startDate', filter.startDate || '')
+      params.set('endDate', filter.endDate || '')
+    }
+    applyAdminPayload(await api(`/api/admin/supervisor${params.size ? `?${params.toString()}` : ''}`))
+    return true
   } catch (error) {
     showToast(error.message || 'โหลด dashboard admin ไม่สำเร็จ')
+    return false
   }
 }
 
@@ -1680,6 +1688,9 @@ function applyAdminPayload(payload) {
   auth.memberCount = Number(payload.memberCount || 0)
   auth.bookingCount = Number(payload.bookingCount || 0)
   auth.posSaleCount = Number(payload.posSaleCount || 0)
+  auth.dashboardPeriod = payload.dashboardPeriod || 'all'
+  auth.dashboardStartAt = payload.dashboardStartAt || ''
+  auth.dashboardEndAt = payload.dashboardEndAt || ''
 }
 
 function navigateAdminFeature(feature) {

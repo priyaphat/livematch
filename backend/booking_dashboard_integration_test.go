@@ -5,10 +5,45 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
 )
+
+func TestBookingDashboardRangeUsesBangkokCalendarBoundary(t *testing.T) {
+	// 18:30 UTC is already 01:30 on the following day in Bangkok.
+	nowUTC := time.Date(2026, time.September, 12, 18, 30, 0, 0, time.UTC)
+	start, end, period := bookingDashboardRange(nowUTC, "day")
+	if period != "day" || start.Format(time.RFC3339) != "2026-09-13T00:00:00+07:00" || end.Format(time.RFC3339) != "2026-09-14T00:00:00+07:00" {
+		t.Fatalf("dashboard range = %s..%s (%s), want Bangkok day 2026-09-13", start.Format(time.RFC3339), end.Format(time.RFC3339), period)
+	}
+}
+
+func TestBookingDashboardCustomRangeIncludesWholeEndDate(t *testing.T) {
+	start, end, period, err := bookingDashboardRangeFromQuery(time.Now(), url.Values{
+		"period":    {"custom"},
+		"startDate": {"2026-09-01"},
+		"endDate":   {"2026-09-12"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if period != "custom" || start.Format(time.RFC3339) != "2026-09-01T00:00:00+07:00" || end.Format(time.RFC3339) != "2026-09-13T00:00:00+07:00" {
+		t.Fatalf("custom dashboard range = %s..%s (%s)", start.Format(time.RFC3339), end.Format(time.RFC3339), period)
+	}
+}
+
+func TestBookingDashboardCustomRangeRejectsInvalidDates(t *testing.T) {
+	for _, values := range []url.Values{
+		{"period": {"custom"}, "startDate": {"2026-09-12"}, "endDate": {"2026-09-11"}},
+		{"period": {"custom"}, "startDate": {"2025-01-01"}, "endDate": {"2026-09-12"}},
+	} {
+		if _, _, _, err := bookingDashboardRangeFromQuery(time.Now(), values); err == nil {
+			t.Fatalf("expected invalid custom dashboard range for %v", values)
+		}
+	}
+}
 
 func TestBookingDashboardAggregatesTenantDataInPostgres(t *testing.T) {
 	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
