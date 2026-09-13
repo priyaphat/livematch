@@ -1392,7 +1392,7 @@ func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, admi
 	err := a.db.QueryRowContext(ctx, `
 		with booking_groups as (
 			select coalesce(nullif(booking_batch_id,''),id) group_id,
-				min(nullif(member_id,'')) member_id,min(start_at) start_at,
+				min(nullif(member_id,'')) member_id,min(created_at) created_at,
 				sum(total_price_thb)::bigint total_price_thb,
 				bool_and(status='confirmed') confirmed,
 				bool_and(payment_status='paid') paid
@@ -1400,10 +1400,10 @@ func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, admi
 			group by coalesce(nullif(booking_batch_id,''),id)
 		), customer_stats as (
 			select member_id,count(*) filter (where confirmed)::int confirmed_count,
-				min(start_at) filter (where confirmed) first_booking_at
+				min(created_at) filter (where confirmed) first_booking_at
 			from booking_groups where member_id is not null group by member_id
 		), period_groups as (
-			select * from booking_groups where start_at >= $2 and start_at < $3 and confirmed
+			select * from booking_groups where created_at >= $2 and created_at < $3 and confirmed
 		), period_customers as (
 			select distinct pg.member_id from period_groups pg where pg.member_id is not null
 		)
@@ -1434,7 +1434,7 @@ func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, admi
 			coalesce(sum(extract(epoch from (b.end_at-b.start_at)))/3600,0)::float8,
 			coalesce(sum(b.total_price_thb),0)::bigint
 		from bookings b join booking_courts c on c.id=b.court_id and c.admin_id=b.admin_id
-		where b.admin_id=$1 and b.start_at >= $2 and b.start_at < $3 and b.status='confirmed'
+		where b.admin_id=$1 and b.created_at >= $2 and b.created_at < $3 and b.status='confirmed'
 		group by c.id,c.name,c.sort_order order by count(*) desc,c.sort_order,c.name`, adminID, start, end)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
@@ -1470,10 +1470,10 @@ func (a *app) writeBookingDashboard(w http.ResponseWriter, r *http.Request, admi
 		step = time.Hour
 	}
 	trendRows, err := a.db.QueryContext(ctx, `
-		select date_trunc($4,start_at at time zone 'Asia/Bangkok') bucket,
+		select date_trunc($4,created_at at time zone 'Asia/Bangkok') bucket,
 			count(distinct coalesce(nullif(booking_batch_id,''),id))::int,
 			coalesce(sum(total_price_thb) filter (where payment_status='paid'),0)::bigint
-		from bookings where admin_id=$1 and start_at >= $2 and start_at < $3 and status='confirmed'
+		from bookings where admin_id=$1 and created_at >= $2 and created_at < $3 and status='confirmed'
 		group by bucket order by bucket`, adminID, start, end, truncUnit)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

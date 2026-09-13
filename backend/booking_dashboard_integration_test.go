@@ -76,18 +76,20 @@ func TestBookingDashboardAggregatesTenantDataInPostgres(t *testing.T) {
 
 	now := time.Now().In(bangkokLocation)
 	current := time.Date(now.Year(), now.Month(), now.Day(), 18, 0, 0, 0, bangkokLocation)
-	insertBooking := func(id, court, member string, start time.Time, total int, payment string) {
+	insertBooking := func(id, court, member string, start, created time.Time, total int, payment string) {
 		t.Helper()
-		_, insertErr := db.Exec(`insert into bookings(id,admin_id,court_id,member_id,booker_name,start_at,end_at,interval_minutes,unit_price_thb,total_price_thb,status,payment_status) values($1,$2,$3,$4,'ผู้จอง',$5::timestamptz,$5::timestamptz+interval '1 hour',60,$6,$6,'confirmed',$7)`, id, adminID, court, member, start, total, payment)
+		_, insertErr := db.Exec(`insert into bookings(id,admin_id,court_id,member_id,booker_name,start_at,end_at,interval_minutes,unit_price_thb,total_price_thb,status,payment_status,created_at,updated_at) values($1,$2,$3,$4,'ผู้จอง',$5::timestamptz,$5::timestamptz+interval '1 hour',60,$7,$7,'confirmed',$8,$6::timestamptz,$6::timestamptz)`, id, adminID, court, member, start, created, total, payment)
 		if insertErr != nil {
 			t.Fatal(insertErr)
 		}
 	}
 	for i := 0; i < 3; i++ {
-		insertBooking("old-"+randHex(6), courtA, oldMember, current.AddDate(0, 0, -10-i), 100, "paid")
+		oldTime := current.AddDate(0, 0, -10-i)
+		insertBooking("old-"+randHex(6), courtA, oldMember, oldTime, oldTime, 100, "paid")
 	}
-	insertBooking("current-old-"+randHex(4), courtA, oldMember, current, 300, "paid")
-	insertBooking("current-new-"+randHex(4), courtB, newMember, current.Add(time.Hour), 200, "unpaid")
+	bookingCreated := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, bangkokLocation)
+	insertBooking("current-old-"+randHex(4), courtA, oldMember, current, bookingCreated, 300, "paid")
+	insertBooking("current-new-"+randHex(4), courtB, newMember, current.Add(time.Hour), bookingCreated.Add(30*time.Minute), 200, "unpaid")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/booking/dashboard?period=day", nil)
 	rec := httptest.NewRecorder()
@@ -105,6 +107,10 @@ func TestBookingDashboardAggregatesTenantDataInPostgres(t *testing.T) {
 			MaxRepeatBookings  int `json:"maxRepeatBookings"`
 		} `json:"summary"`
 		Courts []map[string]any `json:"courts"`
+		Trend  []struct {
+			Label    string `json:"label"`
+			Bookings int    `json:"bookings"`
+		} `json:"trend"`
 	}
 	if err = json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
@@ -114,5 +120,17 @@ func TestBookingDashboardAggregatesTenantDataInPostgres(t *testing.T) {
 	}
 	if len(payload.Courts) != 2 {
 		t.Fatalf("expected 2 court metrics, got %d", len(payload.Courts))
+	}
+	foundEightAM := false
+	for _, point := range payload.Trend {
+		if point.Label == "08:00" && point.Bookings == 2 {
+			foundEightAM = true
+		}
+		if (point.Label == "18:00" || point.Label == "19:00") && point.Bookings > 0 {
+			t.Fatalf("trend used play time instead of booking creation time: %+v", point)
+		}
+	}
+	if !foundEightAM {
+		t.Fatalf("expected both bookings in 08:00 creation bucket, got %+v", payload.Trend)
 	}
 }
