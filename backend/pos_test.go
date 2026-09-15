@@ -86,6 +86,37 @@ func TestPromptPayPayloadSatangIncludesDecimalAmount(t *testing.T) {
 	}
 }
 
+func TestSaleTotalsAfterFinalDiscountKeepsVATIdentity(t *testing.T) {
+	tests := []struct {
+		name                        string
+		subtotal, current, discount int64
+		vatRate                     int
+		included                    bool
+		wantTotal                   int64
+	}{
+		{name: "no vat", subtotal: 10000, current: 10000, discount: 1000, wantTotal: 9000},
+		{name: "vat included", subtotal: 10700, current: 10700, discount: 1000, vatRate: 700, included: true, wantTotal: 9700},
+		{name: "vat excluded", subtotal: 10000, current: 10700, discount: 1000, vatRate: 700, wantTotal: 9700},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			discount, net, vat, total := saleTotalsAfterFinalDiscount(test.subtotal, test.current, test.discount, test.vatRate, test.included)
+			if total != test.wantTotal {
+				t.Fatalf("total=%d want %d", total, test.wantTotal)
+			}
+			if net+vat != total && !test.included {
+				t.Fatalf("exclusive identity net(%d)+vat(%d)!=total(%d)", net, vat, total)
+			}
+			if test.included && net != total {
+				t.Fatalf("included net=%d total=%d", net, total)
+			}
+			if discount < 0 || discount > test.subtotal {
+				t.Fatalf("discount=%d out of range", discount)
+			}
+		})
+	}
+}
+
 func TestDecodePOSProductRejectsNegativeStock(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":"W-NEG","name":"Water","priceThb":20,"costThb":10,"stockQuantity":-1,"lowStockThreshold":5,"active":true}`))
 	recorder := httptest.NewRecorder()

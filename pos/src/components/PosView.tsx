@@ -109,7 +109,7 @@ export const PosView: React.FC = () => {
   const holdMemberRequestRef = useRef(0);
   const [isDiscountModalOpen, setIsDiscountModalOpen] =
     useState<boolean>(false);
-  const [tempDiscountVal, setTempDiscountVal] = useState<number>(0);
+  const [tempDiscountVal, setTempDiscountVal] = useState<string>('');
   const [tempDiscountType, setTempDiscountType] = useState<
     "amount" | "percent"
   >("amount");
@@ -345,13 +345,14 @@ export const PosView: React.FC = () => {
   };
 
   const handleOpenDiscountModal = () => {
-    setTempDiscountVal(discount);
+    setTempDiscountVal(discount > 0 ? String(discount) : '');
     setTempDiscountType(discountType);
     setIsDiscountModalOpen(true);
   };
 
   const handleApplyDiscount = () => {
-    setDiscount(tempDiscountVal, tempDiscountType);
+    const parsedDiscount = Math.max(0, Number(tempDiscountVal) || 0);
+    setDiscount(tempDiscountType === 'percent' ? Math.min(100, parsedDiscount) : parsedDiscount, tempDiscountType);
     setIsDiscountModalOpen(false);
   };
 
@@ -1293,11 +1294,11 @@ export const PosView: React.FC = () => {
               <input
                 type="number"
                 min="0"
+                max={tempDiscountType === "percent" ? 100 : undefined}
+                step="0.01"
                 value={tempDiscountVal}
-                onFocus={(e) => e.currentTarget.select()}
-                onChange={(e) =>
-                  setTempDiscountVal(parseFloat(e.target.value) || 0)
-                }
+                onChange={(e) => setTempDiscountVal(e.target.value)}
+                placeholder="0"
                 className="w-full text-xl font-black bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-red-600 dark:text-yellow-400 focus:outline-none focus:border-red-500 font-mono"
               />
             </div>

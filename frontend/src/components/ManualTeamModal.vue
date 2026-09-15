@@ -1,6 +1,6 @@
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { Check, Plus, Trash2, Users, X } from '@lucide/vue'
+import { Check, Users, X } from '@lucide/vue'
 import { useWaitClock, waitMinutes } from '../waitTime'
 
 const props = defineProps({
@@ -12,7 +12,7 @@ const props = defineProps({
 
 const emit = defineEmits(['close'])
 const selected = reactive({ a1: '', a2: '', b1: '', b2: '' })
-const optionalSlots = reactive({ a2: false, b2: false })
+const matchFormat = ref('singles')
 const level = ref(props.state.settings.levels?.[0] || '')
 const submitting = ref(false)
 const error = ref('')
@@ -20,11 +20,14 @@ const waitClock = useWaitClock()
 const slots = ['a1', 'a2', 'b1', 'b2']
 
 const selectedIds = computed(() => slots.map((slot) => Number(selected[slot])).filter(Boolean))
-const canSubmit = computed(() => Boolean(selected.a1) && Boolean(selected.b1) && new Set(selectedIds.value).size === selectedIds.value.length && Boolean(level.value) && !props.isSessionReadOnly && !submitting.value)
+const canSubmit = computed(() => Boolean(selected.a1) && Boolean(selected.b1) && (matchFormat.value === 'singles' || Boolean(selected.a2) && Boolean(selected.b2)) && new Set(selectedIds.value).size === selectedIds.value.length && Boolean(level.value) && !props.isSessionReadOnly && !submitting.value)
 
-function removeOptionalSlot(slot) {
-  selected[slot] = ''
-  optionalSlots[slot] = false
+function setMatchFormat(format) {
+  matchFormat.value = format
+  if (format === 'singles') {
+    selected.a2 = ''
+    selected.b2 = ''
+  }
 }
 
 function optionsFor(slot) {
@@ -73,7 +76,7 @@ async function submit() {
             <p class="text-sm font-black">จัดทีมด้วยตัวเอง</p>
           </div>
           <h2 class="mt-1 text-xl font-black">สร้างทีมแบบอิสระ</h2>
-          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เริ่มจาก A1 พบ B1 และเพิ่มผู้เล่นคนที่สองให้แต่ละทีมได้</p>
+          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เลือกการแข่งขันแบบ 1 ต่อ 1 หรือ 2 ต่อ 2 เท่านั้น</p>
         </div>
         <button class="grid h-10 w-10 shrink-0 place-items-center rounded-md border border-stone-200 dark:border-stone-700" aria-label="ปิด" @click="emit('close')">
           <X class="h-4 w-4" />
@@ -81,6 +84,10 @@ async function submit() {
       </header>
 
       <form class="grid max-h-[72vh] gap-4 overflow-y-auto p-4 sm:p-5" @submit.prevent="submit">
+        <div class="grid grid-cols-2 overflow-hidden rounded-lg border border-stone-200 dark:border-stone-700" aria-label="รูปแบบการแข่งขัน">
+          <button type="button" class="h-11 border-r border-stone-200 text-sm font-black transition dark:border-stone-700" :class="matchFormat === 'singles' ? 'bg-court-600 text-white' : 'bg-paper-50 text-stone-600 dark:bg-stone-800 dark:text-stone-300'" @click="setMatchFormat('singles')">1 ต่อ 1</button>
+          <button type="button" class="h-11 text-sm font-black transition" :class="matchFormat === 'doubles' ? 'bg-court-600 text-white' : 'bg-paper-50 text-stone-600 dark:bg-stone-800 dark:text-stone-300'" @click="setMatchFormat('doubles')">2 ต่อ 2</button>
+        </div>
         <div class="grid gap-3 sm:grid-cols-2">
           <fieldset class="grid gap-3 rounded-lg border border-court-200 bg-court-50/60 p-3 dark:border-court-900/60 dark:bg-court-950/20">
             <legend class="px-1 text-sm font-black text-court-700 dark:text-court-300">ทีม A</legend>
@@ -91,14 +98,13 @@ async function submit() {
                 <option v-for="player in optionsFor('a1')" :key="player.id" :value="player.id">{{ optionLabel(player) }}</option>
               </select>
             </label>
-            <label v-if="optionalSlots.a2" class="grid gap-1.5 text-sm font-bold">
-              <span class="flex items-center justify-between">A2 <button type="button" class="inline-flex items-center gap-1 text-xs text-red-600" @click="removeOptionalSlot('a2')"><Trash2 class="h-3.5 w-3.5" /> นำออก</button></span>
+            <label v-if="matchFormat === 'doubles'" class="grid gap-1.5 text-sm font-bold">
+              <span>A2</span>
               <select v-model="selected.a2" class="h-11 w-full rounded-md border border-stone-300 bg-white px-3 font-semibold outline-none focus:border-court-500 focus:ring-2 focus:ring-court-500/20 dark:border-stone-700 dark:bg-stone-950">
                 <option value="">เลือกผู้เล่น A2</option>
                 <option v-for="player in optionsFor('a2')" :key="player.id" :value="player.id">{{ optionLabel(player) }}</option>
               </select>
             </label>
-            <button v-else type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-dashed border-court-400 font-bold text-court-700 dark:text-court-300" @click="optionalSlots.a2 = true"><Plus class="h-4 w-4" /> เพิ่ม A2</button>
           </fieldset>
 
           <fieldset class="grid gap-3 rounded-lg border border-sky-200 bg-sky-50/60 p-3 dark:border-sky-900/60 dark:bg-sky-950/20">
@@ -110,14 +116,13 @@ async function submit() {
                 <option v-for="player in optionsFor('b1')" :key="player.id" :value="player.id">{{ optionLabel(player) }}</option>
               </select>
             </label>
-            <label v-if="optionalSlots.b2" class="grid gap-1.5 text-sm font-bold">
-              <span class="flex items-center justify-between">B2 <button type="button" class="inline-flex items-center gap-1 text-xs text-red-600" @click="removeOptionalSlot('b2')"><Trash2 class="h-3.5 w-3.5" /> นำออก</button></span>
+            <label v-if="matchFormat === 'doubles'" class="grid gap-1.5 text-sm font-bold">
+              <span>B2</span>
               <select v-model="selected.b2" class="h-11 w-full rounded-md border border-stone-300 bg-white px-3 font-semibold outline-none focus:border-sky-500 focus:ring-2 focus:ring-sky-500/20 dark:border-stone-700 dark:bg-stone-950">
                 <option value="">เลือกผู้เล่น B2</option>
                 <option v-for="player in optionsFor('b2')" :key="player.id" :value="player.id">{{ optionLabel(player) }}</option>
               </select>
             </label>
-            <button v-else type="button" class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-dashed border-sky-400 font-bold text-sky-700 dark:text-sky-300" @click="optionalSlots.b2 = true"><Plus class="h-4 w-4" /> เพิ่ม B2</button>
           </fieldset>
         </div>
 

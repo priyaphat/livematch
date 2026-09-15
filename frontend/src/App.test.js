@@ -2063,25 +2063,27 @@ describe('LiveMatch app', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
-  it('adds an optional second player to either manual team', async () => {
+  it('switches both manual teams to 2v2 and requires all four players', async () => {
     const createManualMatch = vi.fn().mockResolvedValue(undefined)
     const wrapper = mount(ManualTeamModal, {
       props: {
         state: { settings: { levels: ['middle'] } },
-        players: [1, 2, 3].map((id) => ({ id, name: `p${id}`, level: 'middle' })),
+        players: [1, 2, 3, 4].map((id) => ({ id, name: `p${id}`, level: 'middle' })),
         createManualMatch
       }
     })
 
-    const addA2 = wrapper.findAll('button').find((button) => button.text().includes('เพิ่ม A2'))
-    await addA2.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '2 ต่อ 2').trigger('click')
     const selects = wrapper.findAll('select')
     await selects[0].setValue('1')
     await selects[1].setValue('2')
     await selects[2].setValue('3')
+    expect(wrapper.get('button[type="submit"]').element.disabled).toBe(true)
+    await selects[3].setValue('4')
+    await selects[4].setValue('middle')
     await wrapper.get('form').trigger('submit')
 
-    expect(createManualMatch).toHaveBeenCalledWith({ a1: 1, a2: 2, b1: 3, b2: 0, level: 'middle' })
+    expect(createManualMatch).toHaveBeenCalledWith({ a1: 1, a2: 2, b1: 3, b2: 4, level: 'middle' })
   })
 
   it('auto-selects the only shuttle brand when starting a queued match', async () => {

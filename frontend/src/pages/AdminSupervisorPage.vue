@@ -210,7 +210,7 @@ async function applyDashboardFilter(period) {
 }
 
 onMounted(() => {
-  if (props.auth.dashboardPeriod !== 'week' || !props.auth.dashboardStartAt || !props.auth.dashboardEndAt) {
+  if (props.auth.dashboardPeriod && (props.auth.dashboardPeriod !== 'week' || !props.auth.dashboardStartAt || !props.auth.dashboardEndAt)) {
     applyDashboardFilter('week')
   }
 })

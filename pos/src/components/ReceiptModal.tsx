@@ -5,10 +5,12 @@ import { Printer, X, Check, Copy, ChevronLeft, ChevronRight, Files, QrCode, Load
 import QRCode from 'qrcode';
 import { toPng } from 'html-to-image';
 import { getPOSPaymentQR } from '../api/posSales';
-import { printIminBitmaps, printIminText } from '../utils/iminPrinter';
+import { printIminBitmaps, printIminRichReceipt, printIminText } from '../utils/iminPrinter';
 
 const receiptText = (order: any, settings: any) => [
   settings.storeName,
+  settings.address || '',
+  settings.email || '',
   order.vatRate > 0 && settings.taxId ? `เลขประจำตัวผู้เสียภาษี: ${settings.taxId}` : '',
   settings.phone ? `โทร: ${settings.phone}` : '',
   '--------------------------------',
@@ -21,9 +23,12 @@ const receiptText = (order: any, settings: any) => [
   '--------------------------------',
   ...(order.items || []).flatMap((item: any) => [
     `${item.name} x ${item.quantity}`,
+    item.note ? `  * ${item.note}` : '',
     `  ${formatCurrency(item.price, settings.currencySymbol, settings.decimalPlaces)} = ${formatCurrency(item.total, settings.currencySymbol, settings.decimalPlaces)}`,
   ]),
   '--------------------------------',
+  order.matchTotal !== undefined ? `ยอด Match: ${formatCurrency(order.matchTotal || 0, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  order.posTotal !== undefined ? `ยอด POS: ${formatCurrency(order.posTotal || 0, settings.currencySymbol, settings.decimalPlaces)}` : '',
   `รวม: ${formatCurrency(order.subtotal, settings.currencySymbol, settings.decimalPlaces)}`,
   order.discount > 0 ? `ส่วนลด: -${formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}` : '',
   order.vatRate > 0 ? `VAT ${order.vatRate}%: ${formatCurrency(order.vatAmount, settings.currencySymbol, settings.decimalPlaces)}` : '',
@@ -35,6 +40,31 @@ const receiptText = (order: any, settings: any) => [
   settings.receiptFooterMessage || '',
   '\n\n',
 ].filter(Boolean).join('\n');
+
+const preparePrinterLogo = (dataUrl: string) => new Promise<string>((resolve) => {
+  if (!dataUrl?.startsWith('data:image/')) {
+    resolve('');
+    return;
+  }
+  const image = new Image();
+  image.onload = () => {
+    const scale = Math.min(1, 180 / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) {
+      resolve('');
+      return;
+    }
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    resolve(canvas.toDataURL('image/png'));
+  };
+  image.onerror = () => resolve('');
+  image.src = dataUrl;
+});
 
 const waitForReceiptLayout = () => new Promise<void>((resolve) => {
   window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
@@ -121,16 +151,14 @@ const splitReceiptBitmap = (dataUrl: string, maxChunkHeight = 640) => new Promis
   image.src = dataUrl;
 });
 
-// Android Web Print implementations can acknowledge iMin bitmap jobs while
-// producing only blank paper (confirmed on WPOS I24D03). Native text is the
-// same reliable command used by the Settings test, so make it the safe Android
-// default instead of relying on device-model detection hidden by modern Chrome.
-const requiresNativeTextReceipt = () => /Android/i.test(navigator.userAgent);
-
-const printReceiptOnImin = async (order: any, settings: any, paperWidth: '58mm' | '80mm') => {
-  if (requiresNativeTextReceipt()) {
-    await printIminText(receiptText(order, settings), paperWidth);
-    return 'text' as const;
+const printReceiptOnImin = async (order: any, settings: any, paperWidth: '58mm' | '80mm', qrPayload = '') => {
+  if (/Android/i.test(navigator.userAgent)) {
+    await printIminRichReceipt({
+      text: receiptText(order, settings),
+      logoData: await preparePrinterLogo(settings.logoData || ''),
+      qrPayload,
+    }, paperWidth);
+    return 'rich' as const;
   }
   try {
     const receiptImage = await renderReceiptBitmap(paperWidth);
@@ -155,12 +183,14 @@ export const ReceiptModal: React.FC = () => {
   const [isPrinting, setIsPrinting] = useState(false);
   const [isGeneratingQr, setIsGeneratingQr] = useState(false);
   const [receiptQrDataUrl, setReceiptQrDataUrl] = useState('');
+  const [receiptQrPayload, setReceiptQrPayload] = useState('');
   const [receiptQrAmountSatang, setReceiptQrAmountSatang] = useState(0);
   const [receiptQrError, setReceiptQrError] = useState('');
   const [printWithQr, setPrintWithQr] = useState(false);
 
   useEffect(() => {
     setReceiptQrDataUrl('');
+    setReceiptQrPayload('');
     setReceiptQrAmountSatang(0);
     setReceiptQrError('');
     setPrintWithQr(false);
@@ -180,7 +210,7 @@ export const ReceiptModal: React.FC = () => {
   const generateLockedReceiptQr = async () => {
     const amountSatang = Math.round(order.total * 100);
     if (amountSatang <= 0) throw new Error('ยอดใบเสร็จต้องมากกว่า 0 บาทจึงจะสร้าง QR ได้');
-    if (receiptQrDataUrl && receiptQrAmountSatang === amountSatang) return receiptQrDataUrl;
+    if (receiptQrDataUrl && receiptQrPayload && receiptQrAmountSatang === amountSatang) return { image: receiptQrDataUrl, payload: receiptQrPayload };
 
     setIsGeneratingQr(true);
     setReceiptQrError('');
@@ -190,8 +220,9 @@ export const ReceiptModal: React.FC = () => {
       if (!result.promptPayPayload) throw new Error('ต้องตั้งค่า PromptPay สำหรับสร้าง QR แบบล็อกยอดก่อน');
       const image = await QRCode.toDataURL(result.promptPayPayload, { width: 360, margin: 1, errorCorrectionLevel: 'M' });
       setReceiptQrDataUrl(image);
+      setReceiptQrPayload(result.promptPayPayload);
       setReceiptQrAmountSatang(amountSatang);
-      return image;
+      return { image, payload: result.promptPayPayload };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'สร้าง QR สำหรับใบเสร็จไม่สำเร็จ';
       setReceiptQrError(message);
@@ -217,7 +248,7 @@ export const ReceiptModal: React.FC = () => {
     setPrintWithQr(false);
     try {
       const images: string[] = [];
-      const nativeTextBatch = isAndroid && requiresNativeTextReceipt();
+      const nativeTextBatch = isAndroid;
       if (!nativeTextBatch) {
         for (const receipt of activeBatch) {
           setSelectedOrderForReceipt(receipt);
@@ -239,7 +270,7 @@ export const ReceiptModal: React.FC = () => {
           }
         }
         if (nativeTextBatch) {
-          for (const receipt of activeBatch) await printIminText(receiptText(receipt, settings), paperWidth);
+          for (const receipt of activeBatch) await printReceiptOnImin(receipt, settings, paperWidth);
         }
         showToast(`พิมพ์ใบเสร็จ ${activeBatch.length} ใบผ่าน InnerPrinter แล้ว`, 'success');
       } else if (printWindow) {
@@ -258,8 +289,9 @@ export const ReceiptModal: React.FC = () => {
   const handlePrint = async (withQr = false) => {
     if (isPrinting) return;
     setIsPrinting(true);
+    let lockedQrPayload = '';
     try {
-      if (withQr) await generateLockedReceiptQr();
+      if (withQr) lockedQrPayload = (await generateLockedReceiptQr()).payload;
       setPrintWithQr(withQr);
       await waitForReceiptLayout();
     } catch (error) {
@@ -269,10 +301,10 @@ export const ReceiptModal: React.FC = () => {
     }
     if (/Android/i.test(navigator.userAgent)) {
       try {
-        const mode = await printReceiptOnImin(order, settings, paperWidth);
-        showToast(mode === 'text'
-          ? 'พิมพ์ใบเสร็จแบบข้อความสำรองผ่าน iMin แล้ว'
-          : (withQr ? 'พิมพ์ใบเสร็จพร้อม QR ล็อกยอดผ่าน iMin แล้ว' : 'พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว'), 'success');
+        const mode = await printReceiptOnImin(order, settings, paperWidth, lockedQrPayload);
+        showToast(mode === 'rich'
+          ? (withQr ? 'พิมพ์ใบเสร็จใหม่พร้อมโลโก้และ QR ผ่าน iMin แล้ว' : 'พิมพ์ใบเสร็จใหม่พร้อมโลโก้ผ่าน iMin แล้ว')
+          : 'พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว', 'success');
         setIsPrinting(false);
         return;
       } catch (error) {

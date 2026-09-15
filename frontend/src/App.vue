@@ -1688,9 +1688,11 @@ function applyAdminPayload(payload) {
   auth.memberCount = Number(payload.memberCount || 0)
   auth.bookingCount = Number(payload.bookingCount || 0)
   auth.posSaleCount = Number(payload.posSaleCount || 0)
-  auth.dashboardPeriod = payload.dashboardPeriod || 'all'
-  auth.dashboardStartAt = payload.dashboardStartAt || ''
-  auth.dashboardEndAt = payload.dashboardEndAt || ''
+  if (Object.prototype.hasOwnProperty.call(payload, 'dashboardPeriod')) {
+    auth.dashboardPeriod = payload.dashboardPeriod || 'all'
+    auth.dashboardStartAt = payload.dashboardStartAt || ''
+    auth.dashboardEndAt = payload.dashboardEndAt || ''
+  }
 }
 
 function navigateAdminFeature(feature) {
@@ -2466,6 +2468,7 @@ function createManualMatch(match) {
   const slots = [match.a1, match.a2, match.b1, match.b2].map(Number)
   const ids = slots.filter((id) => id > 0)
   if (!slots[0] || !slots[2]) throw new Error('กรุณาเลือกผู้เล่น A1 และ B1')
+  if (Boolean(slots[1]) !== Boolean(slots[3])) throw new Error('จัดทีมได้เฉพาะ 1 ต่อ 1 หรือ 2 ต่อ 2 เท่านั้น')
   if (new Set(ids).size !== ids.length) {
     throw new Error('ผู้เล่นในทีมต้องไม่ซ้ำกัน')
   }

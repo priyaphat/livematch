@@ -14,6 +14,12 @@ export interface IminPrinterStatus {
   message: string;
 }
 
+export interface IminRichReceipt {
+  text: string;
+  logoData?: string;
+  qrPayload?: string;
+}
+
 const STATUS_MESSAGES: Record<number, string> = {
   0: 'พร้อมพิมพ์',
   3: 'ฝาครอบเครื่องพิมพ์เปิดอยู่',
@@ -137,6 +143,55 @@ class IminPrinterClient {
     return status;
   }
 
+  async printRichReceipt(receipt: IminRichReceipt, paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
+    const status = await this.probe();
+    if (!status.ready || !status.connectionType) throw new Error(status.message);
+
+    this.send(1, status.connectionType);
+    this.send(25, '', paperWidth === '58mm' ? 1 : 0);
+    if (receipt.logoData?.startsWith('data:image/')) {
+      this.send(6, '', 1);
+      this.send(26, receipt.logoData);
+      await this.waitForSendBuffer(5000);
+      await delay(250);
+    }
+    this.send(6, '', 0);
+    this.send(7, '', paperWidth === '58mm' ? 22 : 26);
+    this.send(8, '', 1);
+    this.send(9, '', 0);
+    this.send(12, `${receipt.text.trimEnd()}\n`);
+    if (receipt.qrPayload) {
+      this.send(6, '', 1);
+      this.send(20, '', paperWidth === '58mm' ? 5 : 6);
+      this.send(21, '', 51);
+      this.send(24, receipt.qrPayload, 1);
+      this.send(12, '\n');
+    }
+    this.send(4, '', 100);
+    this.send(5);
+    await this.waitForSendBuffer(5000);
+    await delay(350);
+    return status;
+  }
+
+  async printQrOnly(qrPayload: string, paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
+    if (!qrPayload.trim()) throw new Error('ไม่พบข้อมูล QR สำหรับพิมพ์');
+    const status = await this.probe();
+    if (!status.ready || !status.connectionType) throw new Error(status.message);
+    this.send(1, status.connectionType);
+    this.send(25, '', paperWidth === '58mm' ? 1 : 0);
+    this.send(6, '', 1);
+    this.send(20, '', paperWidth === '58mm' ? 7 : 9);
+    this.send(21, '', 51);
+    this.send(24, qrPayload, 1);
+    this.send(12, '\n');
+    this.send(4, '', 70);
+    this.send(5);
+    await this.waitForSendBuffer(5000);
+    await delay(300);
+    return status;
+  }
+
   async printBitmaps(imageData: string[], paperWidth: '58mm' | '80mm'): Promise<IminPrinterStatus> {
     if (!imageData.length || imageData.some((image) => !image.startsWith('data:image/'))) {
       throw new Error('ข้อมูลภาพใบเสร็จไม่ถูกต้อง');
@@ -169,5 +224,7 @@ const client = new IminPrinterClient();
 
 export const probeIminPrinter = () => client.probe();
 export const printIminText = (text: string, paperWidth: '58mm' | '80mm') => client.printText(text, paperWidth);
+export const printIminRichReceipt = (receipt: IminRichReceipt, paperWidth: '58mm' | '80mm') => client.printRichReceipt(receipt, paperWidth);
+export const printIminQrOnly = (qrPayload: string, paperWidth: '58mm' | '80mm') => client.printQrOnly(qrPayload, paperWidth);
 export const printIminBitmap = (imageData: string, paperWidth: '58mm' | '80mm') => client.printBitmap(imageData, paperWidth);
 export const printIminBitmaps = (imageData: string[], paperWidth: '58mm' | '80mm') => client.printBitmaps(imageData, paperWidth);

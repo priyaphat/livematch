@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext';
 import { formatCurrency } from '../utils/formatters';
 import QRCode from 'qrcode';
 import { getPOSPaymentQR } from '../api/posSales';
+import { printIminBitmap, printIminQrOnly } from '../utils/iminPrinter';
 import {
   X,
   Banknote,
@@ -11,6 +12,7 @@ import {
   CheckCircle2,
   AlertCircle,
   Sparkles,
+  Printer,
 } from 'lucide-react';
 
 interface PaymentModalProps {
@@ -19,13 +21,14 @@ interface PaymentModalProps {
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) => {
-  const { cartTotals, settings, processPayment, broadcastCustomerDisplay } = usePos();
+  const { cartTotals, settings, processPayment, broadcastCustomerDisplay, showToast } = usePos();
   const [method, setMethod] = useState<'cash' | 'promptpay'>('cash');
   const [cashInput, setCashInput] = useState<string>('');
   const [referenceNumber, setReferenceNumber] = useState<string>('');
   const [customerNote, setCustomerNote] = useState<string>('');
   const [qrGeneratedTime, setQrGeneratedTime] = useState<number>(120);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
+  const [qrPayload, setQrPayload] = useState<string>('');
   const [isQrLoading, setIsQrLoading] = useState<boolean>(false);
   const [qrError, setQrError] = useState<string>('');
   const [qrReceiverName, setQrReceiverName] = useState<string>('');
@@ -46,6 +49,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
       setMethod('cash');
       setQrGeneratedTime(120);
       setQrDataUrl('');
+      setQrPayload('');
       setQrError('');
       setQrReceiverName('');
 
@@ -120,6 +124,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
     const amountSatang = Math.round(totalDue * 100);
     if (!isOpen || method !== 'promptpay' || amountSatang <= 0) {
       setQrDataUrl('');
+      setQrPayload('');
       setQrError('');
       setQrReceiverName('');
       setIsQrLoading(false);
@@ -136,6 +141,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
         setQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
         if (!result.promptPayPayload && result.fallbackImage) {
           setQrDataUrl(result.fallbackImage);
+          setQrPayload('');
           setIsQrLoading(false);
           return;
         }
@@ -151,6 +157,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
 
         if (!isCancelled) {
           setQrDataUrl(url);
+          setQrPayload(result.promptPayPayload);
           setIsQrLoading(false);
         }
       } catch (err) {
@@ -223,6 +230,25 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
     setIsCompleting(false);
     if (!completedOrder) return;
     onClose();
+  };
+
+  const handlePrintQrOnly = async () => {
+    if (!qrDataUrl) return;
+    try {
+      if (/Android/i.test(navigator.userAgent)) {
+        const paperWidth = settings.printerType === 'thermal_58mm' ? '58mm' : '80mm';
+        if (qrPayload) await printIminQrOnly(qrPayload, paperWidth);
+        else await printIminBitmap(qrDataUrl, paperWidth);
+      } else {
+        const popup = window.open('', '_blank', 'width=420,height=520');
+        if (!popup) throw new Error('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up');
+        popup.document.write(`<!doctype html><html><head><title>PromptPay QR</title><style>@page{margin:8mm}body{font-family:sans-serif;text-align:center}img{width:280px;height:280px}.amount{font-size:28px;font-weight:800}</style></head><body><img src="${qrDataUrl}"><div class="amount">${formatCurrency(totalDue, settings.currencySymbol, settings.decimalPlaces)}</div><script>onload=()=>{print();onafterprint=()=>close()}<\/script></body></html>`);
+        popup.document.close();
+      }
+      showToast('ส่งพิมพ์เฉพาะ PromptPay QR แล้ว', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'พิมพ์ QR ไม่สำเร็จ', 'error');
+    }
   };
 
   return (
@@ -505,10 +531,26 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
         <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-4">
           <button
             onClick={onClose}
-            className="px-5 py-2.5 rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-bold transition-colors"
+            type="button"
+            title={method === 'promptpay' ? 'ยกเลิก' : undefined}
+            aria-label="ยกเลิกการชำระเงิน"
+            className={`${method === 'promptpay' ? 'h-11 w-11 shrink-0 p-0' : 'px-5 py-2.5'} inline-flex items-center justify-center rounded-xl bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 text-sm font-bold transition-colors`}
           >
-            ยกเลิก (Cancel)
+            {method === 'promptpay' ? <X className="h-5 w-5" aria-hidden="true" /> : 'ยกเลิก (Cancel)'}
           </button>
+
+          {method === 'promptpay' && (
+            <button
+              id="print-promptpay-qr-only-btn"
+              type="button"
+              disabled={!qrDataUrl || isQrLoading}
+              onClick={() => void handlePrintQrOnly()}
+              className="inline-flex h-11 shrink-0 items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 text-xs font-black text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+            >
+              <Printer className="h-4 w-4" />
+              <span className="hidden sm:inline">พิมพ์เฉพาะ QR</span>
+            </button>
+          )}
 
           <button
             id="confirm-checkout-btn"

@@ -34,8 +34,32 @@ import {
   Eye,
 } from 'lucide-react';
 import type { Order } from '../types';
+import { printIminBitmap, printIminQrOnly } from '../utils/iminPrinter';
 
 const HISTORY_PAGE_SIZE = 20;
+
+const historyPaymentDiscountSatang = (payment: POSPaymentHistory) => payment.lines.reduce((sum, line) => {
+  if (line.sourceType !== 'pos') return sum;
+  const snapshot = line.snapshot || {};
+  const recordedDiscount = Math.max(0, Number(snapshot.discountSatang) || 0);
+  const splitCount = Math.max(1, Math.trunc(Number(snapshot.splitCount) || 1));
+  const splitPosition = Math.max(1, Math.trunc(Number(snapshot.splitPosition) || 1));
+  const isSplit = splitCount > 1 && Number.isFinite(Number(snapshot.shareSatang));
+
+  let allocatedRecordedDiscount = recordedDiscount;
+  if (isSplit) {
+    const base = Math.floor(recordedDiscount / splitCount);
+    const remainder = recordedDiscount % splitCount;
+    allocatedRecordedDiscount = base + (splitPosition <= remainder ? 1 : 0);
+  }
+
+  // Held bills receive their final discount while settling. Their immutable
+  // snapshot contains the amount before that last discount, while the allocation
+  // contains the amount actually paid. This also preserves old payment history.
+  const amountBeforeSettlementDiscount = Math.max(0, Number(isSplit ? snapshot.shareSatang : snapshot.totalSatang) || 0);
+  const settlementDiscount = Math.max(0, amountBeforeSettlementDiscount - line.amountSatang);
+  return sum + allocatedRecordedDiscount + settlementDiscount;
+}, 0);
 
 const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
   const items: Order['items'] = [];
@@ -69,12 +93,13 @@ const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
       items.push({ productId: `${line.sourceId}-history-${index}`, name: `เกม ${match.matchId || '-'} · ${match.court || 'ไม่ระบุสนาม'}`, sku: '', price: 0, cost: 0, quantity: 1, total: 0, note: `${match.team || ''}${match.opponent ? ` พบ ${match.opponent}` : ''} · ใช้ลูก ${Number(match.shuttles || 0)} ลูก${match.result ? ` · ${match.result}` : ''}` });
     });
   });
+  const discountSatang = historyPaymentDiscountSatang(payment);
   return {
     id: payment.paymentId,
     orderNumber: payment.paymentId,
     items,
-    subtotal: payment.amountSatang / 100,
-    discount: 0,
+    subtotal: (payment.amountSatang + discountSatang) / 100,
+    discount: discountSatang / 100,
     discountType: 'amount',
     vatAmount: 0,
     vatRate: 0,
@@ -111,6 +136,8 @@ export const BillsView: React.FC = () => {
     setSelectedOrderForReceipt,
     settings,
     broadcastCustomerDisplay,
+    permissions,
+    showToast,
   } = usePos();
 
   const [activeSegment, setActiveSegment] = useState<'held' | 'history'>('held');
@@ -144,8 +171,11 @@ export const BillsView: React.FC = () => {
   const [billingSummary, setBillingSummary] = useState<POSBillingSummary | null>(null);
   const [batchLiveTotal, setBatchLiveTotal] = useState<number | null>(null);
   const [batchQrDataUrl, setBatchQrDataUrl] = useState('');
+  const [batchQrPayload, setBatchQrPayload] = useState('');
   const [batchQrError, setBatchQrError] = useState('');
   const [batchQrReceiverName, setBatchQrReceiverName] = useState('');
+  const [batchDiscountType, setBatchDiscountType] = useState<'amount' | 'percent'>('amount');
+  const [batchDiscountInput, setBatchDiscountInput] = useState('');
 
   const filteredOrders = historyOrders;
 
@@ -180,7 +210,11 @@ export const BillsView: React.FC = () => {
   // Selected held orders objects & calculations
   const selectedHeldObjects = heldOrders.filter((h) => selectedHeldIds.includes(h.id));
   const selectedTotalAmount = selectedHeldObjects.reduce((sum, h) => sum + h.total, 0);
-  const paymentTotal = batchLiveTotal ?? (billingSummary ? billingSummary.totalSatang / 100 : selectedTotalAmount);
+  const basePaymentTotal = batchLiveTotal ?? (billingSummary ? billingSummary.totalSatang / 100 : selectedTotalAmount);
+  const selectedPOSTotal = billingSummary ? billingSummary.posTotalSatang / 100 : selectedHeldObjects.reduce((sum, item) => sum + (item.posTotal || 0), 0);
+  const batchDiscountValue = Math.max(0, Number(batchDiscountInput) || 0);
+  const batchDiscountAmount = Math.min(selectedPOSTotal, batchDiscountType === 'percent' ? selectedPOSTotal * Math.min(100, batchDiscountValue) / 100 : batchDiscountValue);
+  const paymentTotal = Math.max(0, basePaymentTotal - batchDiscountAmount);
   const selectedTotalItemsCount = selectedHeldObjects.reduce(
     (sum, h) => sum + h.items.reduce((s, it) => s + it.quantity, 0),
     0
@@ -265,6 +299,8 @@ export const BillsView: React.FC = () => {
     setBatchCashInput('');
     setBatchRefNumber('');
     setBatchCustomerNote('');
+    setBatchDiscountType('amount');
+    setBatchDiscountInput('');
     setBillingSummary(null);
     setBatchLiveTotal(null);
     const targets = heldOrders.filter((item) => targetIds.includes(item.id));
@@ -308,6 +344,8 @@ export const BillsView: React.FC = () => {
       cashReceived: batchPayMethod === 'cash' ? cashGiven : undefined,
       referenceNumber: batchRefNumber || undefined,
       customerNote: batchCustomerNote || undefined,
+      discountType: batchDiscountType,
+      discountValue: batchDiscountValue,
     });
     setIsBatchPaying(false);
 
@@ -358,18 +396,21 @@ export const BillsView: React.FC = () => {
   useEffect(() => {
     if (!isBatchPayModalOpen || batchPayMethod !== 'promptpay' || paymentTotal <= 0) {
       setBatchQrDataUrl('');
+      setBatchQrPayload('');
       setBatchQrError('');
       setBatchQrReceiverName('');
       return;
     }
     let cancelled = false;
     setBatchQrDataUrl('');
+    setBatchQrPayload('');
     setBatchQrError('');
     void getPOSPaymentQR(Math.round(paymentTotal * 100)).then(async (result) => {
       const image = result.promptPayPayload ? await QRCode.toDataURL(result.promptPayPayload, { width: 260, margin: 1 }) : result.fallbackImage || '';
       if (!image) throw new Error('ระบบยังไม่ได้ตั้งค่า PromptPay');
       if (!cancelled) {
         setBatchQrDataUrl(image);
+        setBatchQrPayload(result.promptPayPayload || '');
         setBatchQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
       }
     }).catch((error) => {
@@ -381,6 +422,23 @@ export const BillsView: React.FC = () => {
     });
     return () => { cancelled = true; };
   }, [isBatchPayModalOpen, batchPayMethod, paymentTotal]);
+
+  const handlePrintBatchQrOnly = async () => {
+    if (!batchQrDataUrl) return;
+    try {
+      if (/Android/i.test(navigator.userAgent)) {
+        const paperWidth = settings.printerType === 'thermal_58mm' ? '58mm' : '80mm';
+        if (batchQrPayload) await printIminQrOnly(batchQrPayload, paperWidth);
+        else await printIminBitmap(batchQrDataUrl, paperWidth);
+      } else {
+        const popup = window.open('', '_blank', 'width=420,height=520');
+        if (!popup) throw new Error('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up');
+        popup.document.write(`<!doctype html><html><head><title>PromptPay QR</title><style>@page{margin:8mm}body{font-family:sans-serif;text-align:center}img{width:280px;height:280px}.amount{font-size:28px;font-weight:800}</style></head><body><img src="${batchQrDataUrl}"><div class="amount">${formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)}</div><script>onload=()=>{print();onafterprint=()=>close()}<\/script></body></html>`);
+        popup.document.close();
+      }
+      showToast('ส่งพิมพ์เฉพาะ PromptPay QR แล้ว', 'success');
+    } catch (error) { showToast(error instanceof Error ? error.message : 'พิมพ์ QR ไม่สำเร็จ', 'error'); }
+  };
 
   useEffect(() => {
     if (!historyQrOrder || historyQrOrder.total <= 0) return;
@@ -441,8 +499,8 @@ export const BillsView: React.FC = () => {
       items: billCart,
       totals: {
         itemCount: selectedTotalItemsCount,
-        subtotal: paymentTotal,
-        discountAmount: 0,
+        subtotal: basePaymentTotal,
+        discountAmount: batchDiscountAmount,
         netBeforeVat: paymentTotal,
         vatAmount: 0,
         total: paymentTotal,
@@ -451,7 +509,7 @@ export const BillsView: React.FC = () => {
 
     localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
     broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
-  }, [isBatchPayModalOpen, batchPayMethod, batchCashGiven, batchChange, paymentTotal, heldOrders, selectedHeldIds, batchQrDataUrl, batchQrError, batchQrReceiverName]);
+  }, [isBatchPayModalOpen, batchPayMethod, batchCashGiven, batchChange, paymentTotal, basePaymentTotal, batchDiscountAmount, heldOrders, selectedHeldIds, batchQrDataUrl, batchQrError, batchQrReceiverName]);
 
   return (
     <div className="box-border min-w-0 max-w-full flex-1 space-y-6 overflow-x-hidden overflow-y-auto bg-slate-50 p-4 pb-44 text-slate-900 dark:bg-slate-950 dark:text-slate-100 sm:p-6 sm:pb-48">
@@ -883,6 +941,7 @@ export const BillsView: React.FC = () => {
                             settings.decimalPlaces
                           )}
 						  <div className="mt-1 text-[10px] font-semibold text-slate-400">Match {formatCurrency(order.matchTotal || 0, settings.currencySymbol, 2)} · POS {formatCurrency(order.posTotal || 0, settings.currencySymbol, 2)}</div>
+                          {order.discount > 0 && <div className="mt-1 text-[10px] font-bold text-rose-500">ส่วนลด -{formatCurrency(order.discount, settings.currencySymbol, 2)}</div>}
                         </td>
                         <td className="p-4 text-center">
                           {order.status === 'completed' ? (
@@ -1262,6 +1321,18 @@ export const BillsView: React.FC = () => {
 
                 <div className="space-y-4 min-w-0 lg:border-l lg:border-slate-200 lg:pl-5 dark:lg:border-slate-800">
 
+              {permissions.discounts && selectedPOSTotal > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-500/25 dark:bg-amber-500/10">
+                  <div className="mb-2 flex items-center justify-between gap-3"><label className="text-xs font-black text-slate-700 dark:text-slate-200">ส่วนลดสินค้า POS ท้ายบิล</label>{batchDiscountAmount > 0 && <span className="text-xs font-bold text-rose-600">-{formatCurrency(batchDiscountAmount, settings.currencySymbol, 2)}</span>}</div>
+                  <div className="flex gap-2">
+                    <select value={batchDiscountType} onChange={(event) => setBatchDiscountType(event.target.value as 'amount' | 'percent')} className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs font-bold dark:border-amber-500/30 dark:bg-slate-900"><option value="amount">บาท</option><option value="percent">เปอร์เซ็นต์</option></select>
+                    <input type="number" min="0" max={batchDiscountType === 'percent' ? 100 : selectedPOSTotal} step="0.01" value={batchDiscountInput} onChange={(event) => setBatchDiscountInput(event.target.value)} placeholder="0" className="min-w-0 flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-right font-mono text-sm font-bold dark:border-amber-500/30 dark:bg-slate-900" />
+                    {batchDiscountValue > 0 && <button type="button" onClick={() => setBatchDiscountInput('')} className="rounded-xl px-2 text-xs font-bold text-rose-600">ล้าง</button>}
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">คิดส่วนลดจากสินค้า POS เท่านั้น ค่าใช้จ่าย Match ไม่ถูกลด</p>
+                </div>
+              )}
+
               {/* Payment Methods */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
@@ -1420,10 +1491,25 @@ export const BillsView: React.FC = () => {
               <button
                 type="button"
                 onClick={closeBatchPayModal}
-                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300"
+                title={batchPayMethod === 'promptpay' ? 'ยกเลิก' : undefined}
+                aria-label="ยกเลิกการชำระเงินรวม"
+                className={`${batchPayMethod === 'promptpay' ? 'h-10 w-10 shrink-0 p-0' : 'px-4 py-2.5'} inline-flex items-center justify-center rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300`}
               >
-                ยกเลิก
+                {batchPayMethod === 'promptpay' ? <X className="h-4 w-4" aria-hidden="true" /> : 'ยกเลิก'}
               </button>
+
+              {batchPayMethod === 'promptpay' && (
+                <button
+                  id="print-held-promptpay-qr-only-btn"
+                  type="button"
+                  disabled={!batchQrDataUrl}
+                  onClick={() => void handlePrintBatchQrOnly()}
+                  className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-3 text-xs font-black text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span className="hidden sm:inline">พิมพ์เฉพาะ QR</span>
+                </button>
+              )}
 
               <button
                 type="button"

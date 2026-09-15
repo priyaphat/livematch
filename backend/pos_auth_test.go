@@ -787,3 +787,126 @@ func TestPOSSaleIntegration(t *testing.T) {
 		t.Fatalf("failed sale changed stock: %d", stock)
 	}
 }
+
+func TestPOSEditHeldSaleStockDiscountAndProfitIntegration(t *testing.T) {
+	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL POS integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := &app{db: db}
+	adminID := "pos-edit-test-" + randHex(8)
+	productID := "product-" + randHex(8)
+	memberID := "member-" + randHex(8)
+	if _, err = db.Exec(`insert into admin_users(id,email,name,password_hash,verified_at) values($1,$2,'POS Edit Test','unused',now())`, adminID, adminID+"@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from activity_logs where actor_id=$1 or details like '%'||$1||'%'`, adminID)
+		_, _ = db.Exec(`delete from admin_users where id=$1`, adminID)
+	}()
+	if _, err = db.Exec(`insert into admin_features(admin_id,pos_enabled) values($1,true)`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into pos_settings(admin_id,tax_rate_percent,prices_include_tax) values($1,0,true)`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into pos_products(id,admin_id,sku,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,active) values($1,$2,'EDIT-1','Edit Product',100,10000,40,4000,5,true)`, productID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into members(id,admin_id,name,phone,active,profile_token_hash,profile_token) values($1,$2,'Edit Member',$3,true,$4,$5)`, memberID, adminID, "08"+randHex(4), tokenDigest(memberID), memberID); err != nil {
+		t.Fatal(err)
+	}
+	owner := adminUser{ID: adminID, Name: "POS Edit Test", POSRole: "owner", POSActorID: adminID, POSActorName: "POS Edit Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
+	requestSale := func(body map[string]any) (int, map[string]any) {
+		raw, _ := json.Marshal(body)
+		recorder := httptest.NewRecorder()
+		a.createPOSSale(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/pos/sales", bytes.NewReader(raw)), owner)
+		payload := map[string]any{}
+		_ = json.NewDecoder(recorder.Body).Decode(&payload)
+		return recorder.Code, payload
+	}
+	status, held := requestSale(map[string]any{"requestId": "hold-" + randHex(4), "action": "hold", "buyerType": "member", "buyerId": memberID, "expectedTotalSatang": 20000, "items": []map[string]any{{"productId": productID, "quantity": 2}}})
+	if status != http.StatusCreated {
+		t.Fatalf("hold status=%d payload=%#v", status, held)
+	}
+	heldID := held["saleId"].(string)
+	if snapshot := string(a.posSaleBillingSnapshot(t.Context(), adminID, heldID)); !strings.Contains(snapshot, `"productId":"`+productID+`"`) || !strings.Contains(snapshot, `"unitCostSatang":4000`) {
+		t.Fatalf("editable billing snapshot lost product identity or cost: %s", snapshot)
+	}
+	var stock int
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 3 {
+		t.Fatalf("stock after hold=%d want 3", stock)
+	}
+
+	// Opening the editor performs no server mutation. Saving one remaining item
+	// replaces the open sale and returns exactly one unit, not both units.
+	status, revised := requestSale(map[string]any{"requestId": "revise-" + randHex(4), "replaceSaleIds": []string{heldID}, "action": "hold", "buyerType": "member", "buyerId": memberID, "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if status != http.StatusCreated {
+		t.Fatalf("revise status=%d payload=%#v", status, revised)
+	}
+	revisedID := revised["saleId"].(string)
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 4 {
+		t.Fatalf("stock after revised quantity=%d want 4", stock)
+	}
+	var oldStatus string
+	_ = db.QueryRow(`select status from pos_sales where id=$1`, heldID).Scan(&oldStatus)
+	if oldStatus != "void" {
+		t.Fatalf("replaced sale status=%q", oldStatus)
+	}
+
+	var accountID string
+	_ = db.QueryRow(`select billing_account_id from pos_sales where id=$1`, revisedID).Scan(&accountID)
+	paid, err := a.settleBillingAccountWithDiscount(t.Context(), owner, accountID, "cash", 9000, 9000, "", true, "pos", "amount", 1000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paid.TotalSatang != 9000 || paid.POSTotalSatang != 9000 {
+		t.Fatalf("discounted payment=%#v", paid)
+	}
+	var total, discount, cost int64
+	if err = db.QueryRow(`select total_satang,discount_satang,cost_satang from pos_sales where id=$1`, revisedID).Scan(&total, &discount, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if total != 9000 || discount != 1000 || cost != 4000 || total-cost != 5000 {
+		t.Fatalf("sale total=%d discount=%d cost=%d profit=%d", total, discount, cost, total-cost)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 4 {
+		t.Fatalf("payment deducted stock twice: %d", stock)
+	}
+
+	secondMemberID := "member-" + randHex(8)
+	if _, err = db.Exec(`insert into members(id,admin_id,name,phone,active,profile_token_hash,profile_token) values($1,$2,'Split Discount Member',$3,true,$4,$5)`, secondMemberID, adminID, "09"+randHex(4), tokenDigest(secondMemberID), secondMemberID); err != nil {
+		t.Fatal(err)
+	}
+	status, split := requestSale(map[string]any{"requestId": "split-discount-" + randHex(4), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": []string{memberID, secondMemberID}, "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if status != http.StatusCreated {
+		t.Fatalf("split discount hold status=%d payload=%#v", status, split)
+	}
+	splitSaleID := split["saleId"].(string)
+	var splitAccountID string
+	if err = db.QueryRow(`select billing_account_id from pos_sale_splits where sale_id=$1 order by position limit 1`, splitSaleID).Scan(&splitAccountID); err != nil {
+		t.Fatal(err)
+	}
+	splitPaid, err := a.settleBillingAccountWithDiscount(t.Context(), owner, splitAccountID, "cash", 4000, 4000, "", true, "pos", "amount", 1000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if splitPaid.TotalSatang != 4000 {
+		t.Fatalf("discounted split payment=%d want 4000", splitPaid.TotalSatang)
+	}
+	var splitParentTotal, splitShares int64
+	if err = db.QueryRow(`select s.total_satang,(select sum(share_satang) from pos_sale_splits where sale_id=s.id) from pos_sales s where s.id=$1`, splitSaleID).Scan(&splitParentTotal, &splitShares); err != nil {
+		t.Fatal(err)
+	}
+	if splitParentTotal != 9000 || splitShares != 9000 {
+		t.Fatalf("discounted split parent=%d shares=%d want 9000", splitParentTotal, splitShares)
+	}
+}

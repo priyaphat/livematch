@@ -3814,6 +3814,9 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 	if requested.A1 <= 0 || requested.B1 <= 0 {
 		return Match{}, errors.New("กรุณาเลือกผู้เล่น A1 และ B1")
 	}
+	if (requested.A2 > 0) != (requested.B2 > 0) {
+		return Match{}, errors.New("จัดทีมได้เฉพาะ 1 ต่อ 1 หรือ 2 ต่อ 2 เท่านั้น")
+	}
 	selected := map[int]bool{}
 	for _, id := range ids {
 		if id <= 0 {

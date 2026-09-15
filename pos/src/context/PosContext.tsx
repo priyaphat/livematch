@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import type { POSPermissions } from '../api/posAccess';
 import {
   Product,
   CartItem,
@@ -76,6 +77,7 @@ import {
 } from '../utils/browserHardware';
 
 interface PosContextType {
+  permissions: POSPermissions;
   activeTab: 'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display';
   setActiveTab: (tab: 'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display') => void;
   
@@ -154,6 +156,8 @@ interface PosContextType {
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
+    discountType?: 'amount' | 'percent';
+    discountValue?: number;
   }) => Promise<Order | null>;
 
   // Orders
@@ -264,6 +268,7 @@ const isPOSEditing = () => {
 
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display'>('pos');
+  const [permissions, setPermissions] = useState<POSPermissions>(() => ({ discounts: true } as POSPermissions));
   
   // Local storage synced states with fallback
   const [settings, setSettings] = useState<StoreSettings>(() => {
@@ -345,6 +350,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' | 'warning' } | null>(null);
   const checkoutRequestIDRef = useRef('');
   const holdRequestIDRef = useRef('');
+  const editingHeldSaleIDsRef = useRef<string[]>([]);
   const currentPOSActorNameRef = useRef('Admin');
 
   // Sync to local storage
@@ -585,6 +591,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 		return line.sourceId.startsWith('split:') ? '' : line.sourceId;
 	  }).filter(Boolean))];
 	  const splitAllocations = posLines.filter((line) => line.snapshot?.splitMode === 'equal').map((line) => ({ saleId: String(line.snapshot?.saleId || line.sourceId), count: Number(line.snapshot?.splitCount || 1), position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 }));
+	  const posDiscount = posLines.reduce((sum, line) => sum + Number(line.snapshot?.discountSatang || 0), 0) / 100;
 	  const posItems = posLines.flatMap((line) => {
 		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
 		const splitCount = Number(line.snapshot?.splitCount || 0);
@@ -602,8 +609,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 		return entries.map((entry: any, index: number) => {
 		  const quantity = Math.max(1, Number(entry.quantity || 1));
 		  const allocatedTotal = allocated[index] / 100;
+		  const realProductID = String(entry.productId || '').trim();
+		  const catalogProduct = products.find((product) => product.id === realProductID);
 		  return {
-			product: { id: `billing-pos-${line.sourceId}-${index}`, sku: String(entry.sku || ''), name: String(entry.name || entry.productName || entry.label || line.label || 'สินค้า POS'), category: 'POS', price: allocatedTotal / quantity, cost: Number(entry.unitCostSatang || 0) / 100, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: String(entry.unit || 'ชิ้น'), status: 'inactive' as const },
+			product: catalogProduct || { id: realProductID || `billing-pos-${line.sourceId}-${index}`, sku: String(entry.sku || ''), name: String(entry.name || entry.productName || entry.label || line.label || 'สินค้า POS'), category: 'POS', price: Number(entry.unitPriceSatang || (allocatedTotal * 100 / quantity)) / 100, cost: Number(entry.unitCostSatang || 0) / 100, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: Boolean(realProductID), minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: String(entry.unit || 'ชิ้น'), status: realProductID ? 'active' as const : 'inactive' as const },
 			quantity,
 			note: entry.note ? String(entry.note) : undefined,
 			allocatedTotal,
@@ -630,7 +639,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 		sourceSaleIds,
         items: [...matchItems, ...posItems],
         subtotal: receivable.totalSatang / 100,
-        discount: 0,
+        discount: posDiscount,
         discountType: 'amount' as const,
         note: undefined,
         createdAt: receivable.calculatedAt,
@@ -832,6 +841,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const refresh = (event: Event) => {
       const detail = (event as CustomEvent<{ permissions?: Record<string, boolean>; user?: { name?: string } }>).detail;
       const permissions = detail?.permissions;
+      if (permissions) setPermissions(permissions as POSPermissions);
       currentPOSActorNameRef.current = detail?.user?.name || 'Admin';
       const tasks: Array<Promise<void>> = [];
       if (!permissions || permissions.sales || permissions.products || permissions.stock) tasks.push(refreshPOSCatalog());
@@ -1510,6 +1520,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const clearCart = () => {
     setCart([]);
     setDiscountState(0);
+    editingHeldSaleIDsRef.current = [];
   };
 
   const setDiscount = (amount: number, type: 'amount' | 'percent' = 'amount') => {
@@ -1549,9 +1560,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         discountType, discountAmountSatang: discountType === 'amount' ? Math.round(discount * 100) : 0,
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
+        replaceSaleIds: editingHeldSaleIDsRef.current,
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, note: item.note })),
       });
       clearCart();
+      editingHeldSaleIDsRef.current = [];
       holdRequestIDRef.current = '';
       await Promise.all([refreshPOSCatalog(), refreshPOSSales(), refreshPOSStock()]);
       playBeep('success');
@@ -1573,12 +1586,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (cart.length > 0 && !window.confirm('มีสินค้าอยู่ในตะกร้า ต้องการแทนที่ด้วยรายการพักยอดนี้หรือไม่?')) return;
     void (async () => {
       try {
-		const saleIds = found.sourceSaleIds || [];
+	const saleIds = found.sourceSaleIds || [];
 		if (saleIds.length === 0) { showToast('ยอด Match เรียกกลับไปแก้ไขในหน้าขายไม่ได้', 'warning'); return; }
-		await Promise.all(saleIds.map((id) => voidPOSSale(id, 'เรียกบิลกลับเข้าตะกร้า')));
-		setCart(found.items.filter((item) => !item.product.id.startsWith('billing-match-'))); setDiscountState(found.discount); setDiscountTypeState(found.discountType); setActiveTab('pos');
-        await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
-        showToast(`ดึงรายการพักยอด ${found.heldNumber} กลับมาขายแล้ว`, 'success');
+		if (saleIds.length !== 1 || found.splitAllocations?.length) { showToast('ดึงกลับมาแก้ไขได้ครั้งละ 1 บิลที่ไม่ได้หารเท่านั้น', 'warning'); return; }
+		const editableItems = found.items.filter((item) => !item.product.id.startsWith('billing-match-') && !item.product.id.startsWith('billing-pos-'));
+		if (editableItems.length === 0) { showToast('ไม่พบรหัสสินค้าจริงในบิลนี้ กรุณารีเฟรชข้อมูลก่อน', 'error'); return; }
+		editingHeldSaleIDsRef.current = saleIds;
+		setCart(editableItems); setDiscountState(found.discount); setDiscountTypeState(found.discountType); setActiveTab('pos');
+		setHeldOrders((current) => current.filter((item) => item.id !== found.id));
+		showToast(`เปิดบิล ${found.heldNumber} เพื่อแก้ไขแล้ว สต็อกยังคงถูกจองไว้จนกว่าจะบันทึก`, 'success');
       } catch (requestError) { showToast(requestError instanceof Error ? requestError.message : 'เรียกบิลไม่สำเร็จ', 'error'); }
     })();
   };
@@ -1606,16 +1622,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const mergeHeldOrdersIntoCart = (heldIds: string[]) => {
     const targets = heldOrders.filter((h) => heldIds.includes(h.id));
     if (targets.length === 0) return;
-    void (async () => {
-      try {
-		const saleIds = [...new Set(targets.flatMap((item) => item.sourceSaleIds || []))];
-		if (saleIds.length === 0) { showToast('รายการที่เลือกมีเฉพาะยอด Match', 'warning'); return; }
-		await Promise.all(saleIds.map((id) => voidPOSSale(id, 'รวมกลับเข้าตะกร้า')));
-		setCart(targets.flatMap((item) => item.items).filter((item) => !item.product.id.startsWith('billing-match-'))); setDiscountState(0); setDiscountTypeState('amount'); setActiveTab('pos');
-        await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
-        showToast(`รวม ${targets.length} รายการพักยอดเข้าสู่ตะกร้าเรียบร้อยแล้ว`, 'success');
-      } catch (requestError) { showToast(requestError instanceof Error ? requestError.message : 'รวมรายการพักยอดไม่สำเร็จ', 'error'); }
-    })();
+    if (targets.length !== 1) {
+      showToast('เพื่อป้องกันสต็อกซ้ำ กรุณาดึงกลับมาแก้ไขครั้งละ 1 บิล', 'warning');
+      return;
+    }
+    resumeHeldOrder(targets[0].id);
   };
 
   const processBatchHeldPayment = async ({
@@ -1624,12 +1635,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     cashReceived,
     referenceNumber,
     customerNote,
+    discountType: settlementDiscountType = 'amount',
+    discountValue = 0,
   }: {
     heldIds: string[];
     paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
+    discountType?: 'amount' | 'percent';
+    discountValue?: number;
   }): Promise<Order | null> => {
     const targets = heldOrders.filter((h) => heldIds.includes(h.id));
     if (targets.length === 0) {
@@ -1644,29 +1659,42 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     try {
       const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
-      const totalSatang = summaries.reduce((sum, summary) => sum + summary.totalSatang, 0);
+      const grossTotalSatang = summaries.reduce((sum, summary) => sum + summary.totalSatang, 0);
+      const posTotalSatang = summaries.reduce((sum, summary) => sum + summary.posTotalSatang, 0);
+      const discountSatang = settlementDiscountType === 'percent'
+        ? Math.round(posTotalSatang * Math.min(100, Math.max(0, discountValue)) / 100)
+        : Math.min(posTotalSatang, Math.round(Math.max(0, discountValue) * 100));
+      const totalSatang = grossTotalSatang - discountSatang;
       const receivedSatang = Math.round((cashReceived || 0) * 100);
       if (paymentMethod === 'cash' && receivedSatang < totalSatang) {
         showToast('ยอดเงินสดไม่เพียงพอสำหรับยอดรวม Match และ POS', 'warning');
         return null;
       }
       let allocatedCashSatang = 0;
+	  let allocatedDiscountSatang = 0;
 	  const settledSummaries: POSBillingSummary[] = [];
       for (let index = 0; index < summaries.length; index += 1) {
         const summary = summaries[index];
         const isLast = index === summaries.length - 1;
+        const accountDiscountSatang = isLast
+          ? discountSatang - allocatedDiscountSatang
+          : Math.floor(discountSatang * summary.posTotalSatang / Math.max(1, posTotalSatang));
+        const accountTotalSatang = summary.totalSatang - accountDiscountSatang;
         const accountCashSatang = paymentMethod === 'cash'
-          ? (isLast ? receivedSatang - allocatedCashSatang : summary.totalSatang)
+          ? (isLast ? receivedSatang - allocatedCashSatang : accountTotalSatang)
           : 0;
 		const settlement = await settlePOSAccount({
           billingAccountId: summary.billingAccountId,
           method: paymentMethod === 'promptpay' ? 'promptpay' : 'cash',
-          expectedTotalSatang: summary.totalSatang,
+          expectedTotalSatang: accountTotalSatang,
           cashReceivedSatang: accountCashSatang,
           referenceNumber,
+          discountType: 'amount',
+          discountAmountSatang: accountDiscountSatang,
         });
 		settledSummaries.push(settlement.summary);
         allocatedCashSatang += accountCashSatang;
+        allocatedDiscountSatang += accountDiscountSatang;
       }
       await refreshPOSSales();
       const customerNames = summaries.map((summary) => summary.displayName).join(', ');
@@ -1687,10 +1715,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 	  let receiptCashAllocated = 0;
 	  const receipts = settledSummaries.map((summary, index): Order => {
 		const accountTotal = summary.totalSatang / 100;
+		const accountSubtotal = summaries[index].totalSatang / 100;
+		const accountDiscount = Math.max(0, accountSubtotal - accountTotal);
 		const isLast = index === settledSummaries.length - 1;
 		const accountCash = paymentMethod === 'cash' ? (isLast ? (cashReceived || accountTotal) - receiptCashAllocated : accountTotal) : undefined;
 		receiptCashAllocated += accountCash || 0;
-		return { id: summary.paymentId || `payment-${Date.now()}-${index}`, orderNumber: summary.paymentId || `PAY-${Date.now()}-${index + 1}`, items: itemsForSummary(summary), subtotal: accountTotal, discount: 0, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: accountTotal, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived: accountCash, change: Math.max(0, (accountCash || 0) - accountTotal), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || summary.displayName, referenceNumber, matchTotal: summary.matchTotalSatang / 100, posTotal: summary.posTotalSatang / 100, billingLines: summary.lines };
+		return { id: summary.paymentId || `payment-${Date.now()}-${index}`, orderNumber: summary.paymentId || `PAY-${Date.now()}-${index + 1}`, items: itemsForSummary(summary), subtotal: accountSubtotal, discount: accountDiscount, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: accountTotal, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived: accountCash, change: Math.max(0, (accountCash || 0) - accountTotal), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || summary.displayName, referenceNumber, matchTotal: summary.matchTotalSatang / 100, posTotal: summary.posTotalSatang / 100, billingLines: summary.lines };
 	  });
 	  setReceiptBatch(receipts);
 	  setSelectedOrderForReceipt(receipts[0] || null);
@@ -1844,6 +1874,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
         cashReceivedSatang: Math.round((cashReceived || 0) * 100), referenceNumber,
+        replaceSaleIds: editingHeldSaleIDsRef.current,
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, note: item.note })),
       });
       const apiSales = await listPOSSales();
@@ -1852,6 +1883,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setHeldOrders(apiSales.filter((sale) => sale.status === 'open').map(saleToHeldOrder));
       setOrders(apiSales.filter((sale) => sale.status !== 'open').map(saleToOrder));
       clearCart();
+      editingHeldSaleIDsRef.current = [];
       checkoutRequestIDRef.current = '';
       await Promise.all([refreshPOSCatalog(), refreshPOSStock()]);
       playBeep('success');
@@ -2124,6 +2156,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   return (
     <PosContext.Provider
       value={{
+        permissions,
         activeTab,
         setActiveTab,
         theme,

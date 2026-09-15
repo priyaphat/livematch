@@ -486,17 +486,21 @@ func TestCreateManualPendingMatchKeepsSelectedPositionsWithoutCoupon(t *testing.
 	}
 }
 
-func TestCreateManualPendingMatchSupportsOneOrTwoPlayersPerTeam(t *testing.T) {
+func TestCreateManualPendingMatchRejectsUnevenTeamSizes(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"middle"}},
-		Players:  []Player{{ID: 1, Active: true}, {ID: 2, Active: true}, {ID: 3, Active: true}},
+		Players:  []Player{{ID: 1, Active: true}, {ID: 2, Active: true}, {ID: 3, Active: true}, {ID: 4, Active: true}},
 	}
-	created, err := createManualPendingMatch(&state, Match{A1: 1, B1: 2, B2: 3, Level: "middle"})
-	if err != nil {
-		t.Fatalf("expected 1v2 match to be accepted: %v", err)
+	for _, requested := range []Match{
+		{A1: 1, B1: 2, B2: 3, Level: "middle"},
+		{A1: 1, A2: 2, B1: 3, Level: "middle"},
+	} {
+		if _, err := createManualPendingMatch(&state, requested); err == nil {
+			t.Fatalf("expected uneven manual match to be rejected: %#v", requested)
+		}
 	}
-	if created.A2 != 0 || created.B2 != 3 || created.ShuttlePricingMode != shuttlePricingSplit {
-		t.Fatalf("unexpected flexible team match: %#v", created)
+	if len(state.Pending) != 0 {
+		t.Fatalf("uneven matches must not be created: %#v", state.Pending)
 	}
 }
 

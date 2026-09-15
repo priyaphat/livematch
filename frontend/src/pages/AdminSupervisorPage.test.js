@@ -12,6 +12,7 @@ function mountDashboard(features) {
         memberCount: 7,
         bookingCount: 12,
         defaultSettings: { dashboardAnnouncements: ['กรุณาเตรียมตัวลงสนาม'] },
+        dashboardPeriod: 'all',
         liveMatchSessionCost: 1,
         liveShareSessionCost: 1
       },

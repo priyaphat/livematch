@@ -186,6 +186,7 @@ export function createPOSSale(input: {
   expectedTotalSatang: number;
   cashReceivedSatang?: number;
   referenceNumber?: string;
+  replaceSaleIds?: string[];
   items: Array<{ productId: string; quantity: number; note?: string }>;
 }) {
   return posRequest<{ saleId: string; status: string; totalSatang: number; paymentId?: string; billingAccountId?: string }>('/api/admin/pos/sales', {
@@ -227,7 +228,7 @@ export function listPOSPaymentHistoryPage(params: {
   return posRequest<POSPaymentHistoryPage>(`/api/admin/pos/payment-history?${query.toString()}`);
 }
 
-export function settlePOSAccount(input: { billingAccountId: string; method: 'cash' | 'promptpay'; expectedTotalSatang: number; cashReceivedSatang?: number; referenceNumber?: string }) {
+export function settlePOSAccount(input: { billingAccountId: string; method: 'cash' | 'promptpay'; expectedTotalSatang: number; cashReceivedSatang?: number; referenceNumber?: string; discountType?: 'amount' | 'percent'; discountAmountSatang?: number; discountRateBps?: number }) {
   return posRequest<{ status: string; summary: POSBillingSummary }>('/api/admin/pos/settlements', { method: 'POST', body: JSON.stringify(input) });
 }
 

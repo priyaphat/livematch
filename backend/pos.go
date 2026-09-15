@@ -3108,6 +3108,7 @@ type posSaleRequest struct {
 	DiscountRateBPS      int      `json:"discountRateBps"`
 	CashReceivedSatang   int64    `json:"cashReceivedSatang"`
 	ReferenceNumber      string   `json:"referenceNumber"`
+	ReplaceSaleIDs       []string `json:"replaceSaleIds"`
 	Items                []struct {
 		ProductID string `json:"productId"`
 		Quantity  int    `json:"quantity"`
@@ -3137,6 +3138,35 @@ func equalSplitShares(total int64, count int) []int64 {
 		}
 	}
 	return shares
+}
+
+// saleTotalsAfterFinalDiscount keeps the accounting identity intact for both
+// VAT-inclusive and VAT-exclusive stores when a cashier discounts the final bill.
+func saleTotalsAfterFinalDiscount(subtotalSatang, currentTotalSatang, requestedFinalDiscount int64, vatRateBPS int, pricesIncludeTax bool) (discountSatang, netBeforeVATSatang, vatSatang, totalSatang int64) {
+	if requestedFinalDiscount < 0 {
+		requestedFinalDiscount = 0
+	}
+	if requestedFinalDiscount > currentTotalSatang {
+		requestedFinalDiscount = currentTotalSatang
+	}
+	totalSatang = currentTotalSatang - requestedFinalDiscount
+	if vatRateBPS <= 0 {
+		netBeforeVATSatang = totalSatang
+	} else if pricesIncludeTax {
+		netBeforeVATSatang = totalSatang
+		vatSatang = roundDivHalfUp(netBeforeVATSatang*int64(vatRateBPS), int64(10000+vatRateBPS))
+	} else {
+		netBeforeVATSatang = roundDivHalfUp(totalSatang*10000, int64(10000+vatRateBPS))
+		if netBeforeVATSatang > totalSatang {
+			netBeforeVATSatang = totalSatang
+		}
+		vatSatang = totalSatang - netBeforeVATSatang
+	}
+	discountSatang = subtotalSatang - netBeforeVATSatang
+	if discountSatang < 0 {
+		discountSatang = 0
+	}
+	return
 }
 
 func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUser) {
@@ -3203,6 +3233,48 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 			return
 		}
 	}
+	// Editing a parked sale must keep its stock reserved.  The old implementation
+	// voided the sale first (returning stock) and then attempted to sell synthetic
+	// billing item IDs.  Lock the original sale and treat its quantities as stock
+	// already reserved by this transaction instead.
+	oldReserved := map[string]int{}
+	replaceSaleID := ""
+	replaceAccountID, replaceBuyerName, replaceStockLocation := "", "", ""
+	if len(b.ReplaceSaleIDs) > 1 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "แก้ไขพร้อมกันได้ครั้งละ 1 บิล"})
+		return
+	}
+	if len(b.ReplaceSaleIDs) == 1 {
+		replaceSaleID = strings.TrimSpace(b.ReplaceSaleIDs[0])
+		var replaceStatus, replaceSplitMode string
+		err = tx.QueryRowContext(r.Context(), `select status,coalesce(billing_account_id,''),buyer_name,stock_location,split_mode from pos_sales where id=$1 and admin_id=$2 for update`, replaceSaleID, user.ID).Scan(&replaceStatus, &replaceAccountID, &replaceBuyerName, &replaceStockLocation, &replaceSplitMode)
+		if err != nil || replaceStatus != "open" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "บิลที่ดึงกลับถูกแก้ไขหรือชำระไปแล้ว กรุณารีเฟรช"})
+			return
+		}
+		if replaceSplitMode == "equal" {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "บิลหารต้องชำระหรือยกเลิกจากหน้าพักบิล ไม่สามารถดึงกลับมาแก้ไขได้"})
+			return
+		}
+		rows, rowErr := tx.QueryContext(r.Context(), `select product_id,quantity from pos_sale_items where sale_id=$1 and stock_tracked and product_id is not null for update`, replaceSaleID)
+		if rowErr != nil {
+			writePOSInternalError(w, r, rowErr)
+			return
+		}
+		for rows.Next() {
+			var productID string
+			var quantity int
+			if rowErr = rows.Scan(&productID, &quantity); rowErr != nil {
+				break
+			}
+			oldReserved[productID] += quantity
+		}
+		rows.Close()
+		if rowErr != nil {
+			writePOSInternalError(w, r, rowErr)
+			return
+		}
+	}
 	accountID, buyerName := "", b.BuyerName
 	splitAccountIDs := []string{}
 	splitNames := []string{}
@@ -3238,6 +3310,10 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 	if accountID != "" && buyerName == "" {
 		_ = tx.QueryRowContext(r.Context(), `select display_name from billing_accounts where id=$1`, accountID).Scan(&buyerName)
 	}
+	if replaceSaleID != "" {
+		accountID, buyerName = replaceAccountID, replaceBuyerName
+		saleStockLocation = replaceStockLocation
+	}
 	saleID := "sale-" + randHex(8)
 	type lockedProduct struct{ record posProductRecord }
 	requestedTotals := map[string]int{}
@@ -3257,7 +3333,7 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 	for _, productID := range productIDs {
 		var p posProductRecord
 		err = tx.QueryRowContext(r.Context(), `select id,sku,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,secondary_stock_quantity,track_stock from pos_products where id=$1 and admin_id=$2 and active and deleted_at is null for update`, productID, user.ID).Scan(&p.ID, &p.SKU, &p.Name, &p.PriceTHB, &p.PriceSatang, &p.CostTHB, &p.CostSatang, &p.StockQuantity, &p.SecondaryStockQuantity, &p.TrackStock)
-		available := productStockAt(p, saleStockLocation)
+		available := productStockAt(p, saleStockLocation) + oldReserved[productID]
 		if err != nil || (p.TrackStock && available < requestedTotals[productID]) {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": "สต็อกสินค้าไม่เพียงพอ", "productId": productID, "available": available, "stockLocation": saleStockLocation})
 			return
@@ -3329,6 +3405,17 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		writePOSInternalError(w, r, err)
 		return
 	}
+	newReserved := map[string]int{}
+	for _, item := range items {
+		newReserved[item.ProductID] += item.Quantity
+	}
+	if replaceSaleID != "" {
+		_, err = tx.ExecContext(r.Context(), `update pos_sales set status='void',note=case when note='' then 'แก้ไขบิลและสร้างรายการใหม่' else note end,voided_at=now(),updated_at=now() where id=$1 and admin_id=$2 and status='open'`, replaceSaleID, user.ID)
+		if err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+	}
 	for _, item := range items {
 		_, err = tx.ExecContext(r.Context(), `insert into pos_sale_items (sale_id,product_id,product_name,sku,quantity,unit_price_thb,unit_cost_thb,unit_cost_satang,line_total_thb,unit_price_satang,line_total_satang,note,stock_tracked) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`, saleID, item.ProductID, item.ProductName, item.SKU, item.Quantity, item.UnitPrice, roundedBaht(item.UnitCostSatang), item.UnitCostSatang, item.LineTotal, item.UnitPriceSatang, item.LineTotalSatang, item.Note, item.StockTracked)
 		if err != nil {
@@ -3338,15 +3425,48 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		if !item.StockTracked {
 			continue
 		}
+		delta := oldReserved[item.ProductID] - newReserved[item.ProductID]
+		delete(oldReserved, item.ProductID)
+		if delta == 0 {
+			continue
+		}
 		var balance int
 		if saleStockLocation == "secondary" {
-			err = tx.QueryRowContext(r.Context(), `update pos_products set secondary_stock_quantity=secondary_stock_quantity-$3,updated_at=now() where id=$1 and admin_id=$2 and secondary_stock_quantity>=$3 returning secondary_stock_quantity`, item.ProductID, user.ID, item.Quantity).Scan(&balance)
+			err = tx.QueryRowContext(r.Context(), `update pos_products set secondary_stock_quantity=secondary_stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 and secondary_stock_quantity+$3>=0 returning secondary_stock_quantity`, item.ProductID, user.ID, delta).Scan(&balance)
 		} else {
-			err = tx.QueryRowContext(r.Context(), `update pos_products set stock_quantity=stock_quantity-$3,updated_at=now() where id=$1 and admin_id=$2 and stock_quantity>=$3 returning stock_quantity`, item.ProductID, user.ID, item.Quantity).Scan(&balance)
+			err = tx.QueryRowContext(r.Context(), `update pos_products set stock_quantity=stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 and stock_quantity+$3>=0 returning stock_quantity`, item.ProductID, user.ID, delta).Scan(&balance)
 		}
 		if err == nil {
-			lineCostSatang := item.UnitCostSatang * int64(item.Quantity)
-			_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,sale_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,$3,$4,$5,'sale',$6,$7,$8,$9,$10,$11,$10,$10,$12,$13,$13,$12,$12,$14)`, user.ID, item.ProductID, saleID, -item.Quantity, balance, "ขายสินค้า", posActorID(user), posActorType(user), posActorName(user), roundedBaht(item.UnitCostSatang), roundedBaht(lineCostSatang), item.UnitCostSatang, lineCostSatang, saleStockLocation)
+			absoluteDelta := delta
+			if absoluteDelta < 0 {
+				absoluteDelta = -absoluteDelta
+			}
+			lineCostSatang := item.UnitCostSatang * int64(absoluteDelta)
+			reason, note := "sale", "ขายสินค้าเพิ่มจากการแก้ไขบิล"
+			if delta > 0 {
+				reason, note = "void", "คืนจากการลดจำนวนสินค้าในบิลที่แก้ไข"
+			}
+			_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,sale_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$11,$11,$13,$14,$14,$13,$13,$15)`, user.ID, item.ProductID, saleID, delta, balance, reason, note, posActorID(user), posActorType(user), posActorName(user), roundedBaht(item.UnitCostSatang), roundedBaht(lineCostSatang), item.UnitCostSatang, lineCostSatang, saleStockLocation)
+		}
+		if err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+	}
+	// Products removed from the edited cart are returned only when the revised
+	// bill is saved, never at the moment the cashier opens it for editing.
+	for productID, quantity := range oldReserved {
+		if quantity <= 0 {
+			continue
+		}
+		var balance int
+		if saleStockLocation == "secondary" {
+			err = tx.QueryRowContext(r.Context(), `update pos_products set secondary_stock_quantity=secondary_stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 returning secondary_stock_quantity`, productID, user.ID, quantity).Scan(&balance)
+		} else {
+			err = tx.QueryRowContext(r.Context(), `update pos_products set stock_quantity=stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 returning stock_quantity`, productID, user.ID, quantity).Scan(&balance)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,sale_id,delta,balance,reason,note,actor_id,actor_type,actor_name,stock_location) values ($1,$2,$3,$4,$5,'void',$6,$7,$8,$9,$10)`, user.ID, productID, saleID, quantity, balance, "คืนจากการลบสินค้าในบิลที่แก้ไข", posActorID(user), posActorType(user), posActorName(user), saleStockLocation)
 		}
 		if err != nil {
 			writePOSInternalError(w, r, err)
@@ -3514,15 +3634,16 @@ func (a *app) posSaleBillingSnapshot(ctx context.Context, adminID, saleID string
 	if a.db.QueryRowContext(ctx, `select id,buyer_name,subtotal_satang,discount_satang,vat_satang,total_satang,prices_include_tax,to_char(created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from pos_sales where id=$1 and admin_id=$2`, saleID, adminID).Scan(&sale.ID, &sale.BuyerName, &sale.SubtotalSatang, &sale.DiscountSatang, &sale.VATSatang, &sale.TotalSatang, &sale.PricesIncludeTax, &sale.CreatedAt) != nil {
 		return json.RawMessage(`{}`)
 	}
-	rows, err := a.db.QueryContext(ctx, `select product_name,sku,quantity,unit_price_satang,line_total_satang,note from pos_sale_items where sale_id=$1 order by id`, saleID)
+	rows, err := a.db.QueryContext(ctx, `select coalesce(product_id,''),product_name,sku,quantity,unit_price_satang,unit_cost_satang,line_total_satang,note,stock_tracked from pos_sale_items where sale_id=$1 order by id`, saleID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
-			var name, sku, note string
+			var productID, name, sku, note string
 			var quantity int
-			var unitPrice, lineTotal int64
-			if rows.Scan(&name, &sku, &quantity, &unitPrice, &lineTotal, &note) == nil {
-				sale.Items = append(sale.Items, map[string]any{"name": name, "sku": sku, "quantity": quantity, "unitPriceSatang": unitPrice, "amountSatang": lineTotal, "note": note})
+			var unitPrice, unitCost, lineTotal int64
+			var stockTracked bool
+			if rows.Scan(&productID, &name, &sku, &quantity, &unitPrice, &unitCost, &lineTotal, &note, &stockTracked) == nil {
+				sale.Items = append(sale.Items, map[string]any{"productId": productID, "name": name, "sku": sku, "quantity": quantity, "unitPriceSatang": unitPrice, "unitCostSatang": unitCost, "amountSatang": lineTotal, "note": note, "stockTracked": stockTracked})
 			}
 		}
 	}
@@ -3914,6 +4035,10 @@ func (a *app) writeSessionBillingSync(w http.ResponseWriter, r *http.Request, st
 }
 
 func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountID, method string, expectedTotalSatang, cashReceivedSatang int64, referenceNumber string, includePOS bool, originSystem string) (billingSummary, error) {
+	return a.settleBillingAccountWithDiscount(ctx, user, accountID, method, expectedTotalSatang, cashReceivedSatang, referenceNumber, includePOS, originSystem, "amount", 0, 0)
+}
+
+func (a *app) settleBillingAccountWithDiscount(ctx context.Context, user adminUser, accountID, method string, expectedTotalSatang, cashReceivedSatang int64, referenceNumber string, includePOS bool, originSystem, discountType string, discountAmountSatang int64, discountRateBPS int) (billingSummary, error) {
 	if !validPaymentMethod(method) {
 		return billingSummary{}, errors.New("invalid payment method")
 	}
@@ -3967,6 +4092,68 @@ func (a *app) settleBillingAccount(ctx context.Context, user adminUser, accountI
 	summary, err = a.billingSummaryForAccount(ctx, user.ID, accountID, includePOS)
 	if err != nil {
 		return summary, err
+	}
+	if discountType == "" {
+		discountType = "amount"
+	}
+	if discountType != "amount" && discountType != "percent" || discountAmountSatang < 0 || discountRateBPS < 0 || discountRateBPS > 10000 {
+		return summary, errors.New("ข้อมูลส่วนลดไม่ถูกต้อง")
+	}
+	requestedDiscount := discountAmountSatang
+	if discountType == "percent" {
+		requestedDiscount = roundDivHalfUp(summary.POSTotalSatang*int64(discountRateBPS), 10000)
+	}
+	if requestedDiscount > summary.POSTotalSatang {
+		requestedDiscount = summary.POSTotalSatang
+	}
+	if requestedDiscount > 0 {
+		remaining, remainingBase := requestedDiscount, summary.POSTotalSatang
+		for index := range summary.Lines {
+			line := &summary.Lines[index]
+			if line.SourceType != "pos" || line.AmountSatang <= 0 {
+				continue
+			}
+			allocated := remaining
+			if line.AmountSatang < remainingBase {
+				allocated = line.AmountSatang * requestedDiscount / summary.POSTotalSatang
+			}
+			if allocated > remaining {
+				allocated = remaining
+			}
+			if allocated > line.AmountSatang {
+				allocated = line.AmountSatang
+			}
+			if allocated == 0 {
+				remainingBase -= line.AmountSatang
+				continue
+			}
+			var saleSubtotal, saleTotal int64
+			var saleVATRate int
+			var salePricesIncludeTax bool
+			saleID := line.SourceID
+			if splitID, split := parseSplitPOSSourceID(line.SourceID); split {
+				err = tx.QueryRowContext(ctx, `select s.id,s.subtotal_satang,s.total_satang,s.vat_rate_bps,s.prices_include_tax from pos_sale_splits sp join pos_sales s on s.id=sp.sale_id where sp.id=$1 and s.admin_id=$2 and sp.status='open' and s.status='open' for update of sp,s`, splitID, user.ID).Scan(&saleID, &saleSubtotal, &saleTotal, &saleVATRate, &salePricesIncludeTax)
+				if err == nil {
+					_, err = tx.ExecContext(ctx, `update pos_sale_splits set share_satang=greatest(0,share_satang-$2),updated_at=now() where id=$1 and status='open'`, splitID, allocated)
+				}
+			} else {
+				err = tx.QueryRowContext(ctx, `select subtotal_satang,total_satang,vat_rate_bps,prices_include_tax from pos_sales where id=$1 and admin_id=$2 and status='open' for update`, saleID, user.ID).Scan(&saleSubtotal, &saleTotal, &saleVATRate, &salePricesIncludeTax)
+			}
+			if err != nil {
+				return summary, err
+			}
+			newDiscount, newNet, newVAT, newTotal := saleTotalsAfterFinalDiscount(saleSubtotal, saleTotal, allocated, saleVATRate, salePricesIncludeTax)
+			_, err = tx.ExecContext(ctx, `update pos_sales set discount_type='amount',discount_rate_bps=0,discount_satang=$3,net_before_vat_satang=$4,vat_satang=$5,total_satang=$6,total_thb=$7,updated_at=now() where id=$1 and admin_id=$2 and status='open'`, saleID, user.ID, newDiscount, newNet, newVAT, newTotal, roundedBaht(newTotal))
+			if err != nil {
+				return summary, err
+			}
+			line.AmountSatang -= allocated
+			line.AmountTHB = roundedBaht(line.AmountSatang)
+			remaining -= allocated
+			remainingBase -= line.AmountSatang + allocated
+		}
+		summary.POSTotalSatang -= requestedDiscount - remaining
+		summary.TotalSatang -= requestedDiscount - remaining
 	}
 	if expectedTotalSatang > 0 && expectedTotalSatang != summary.TotalSatang {
 		return summary, errors.New("ยอดชำระเปลี่ยนแปลง กรุณาตรวจสอบยอดล่าสุด")
@@ -4041,6 +4228,7 @@ func writePOSSettlementError(w http.ResponseWriter, r *http.Request, summary bil
 		"ไม่มียอดค้างชำระ": true, "ยอด POS เปลี่ยนแปลง กรุณาลองใหม่": true,
 		"invalid match reference": true, "ยอด Match เปลี่ยนแปลง กรุณาลองใหม่": true,
 		"ยอดชำระเปลี่ยนแปลง กรุณาตรวจสอบยอดล่าสุด": true, "ยอดเงินสดไม่เพียงพอ": true,
+		"ข้อมูลส่วนลดไม่ถูกต้อง": true,
 	}
 	if publicMessages[message] {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": message, "summary": summary})
@@ -4051,12 +4239,15 @@ func writePOSSettlementError(w http.ResponseWriter, r *http.Request, summary bil
 
 func (a *app) handlePOSSettlement(w http.ResponseWriter, r *http.Request, user adminUser) {
 	var b struct {
-		BillingAccountID    string `json:"billingAccountId"`
-		Method              string `json:"method"`
-		ExpectedTotal       int    `json:"expectedTotalThb"`
-		ExpectedTotalSatang int64  `json:"expectedTotalSatang"`
-		CashReceivedSatang  int64  `json:"cashReceivedSatang"`
-		ReferenceNumber     string `json:"referenceNumber"`
+		BillingAccountID     string `json:"billingAccountId"`
+		Method               string `json:"method"`
+		ExpectedTotal        int    `json:"expectedTotalThb"`
+		ExpectedTotalSatang  int64  `json:"expectedTotalSatang"`
+		CashReceivedSatang   int64  `json:"cashReceivedSatang"`
+		ReferenceNumber      string `json:"referenceNumber"`
+		DiscountType         string `json:"discountType"`
+		DiscountAmountSatang int64  `json:"discountAmountSatang"`
+		DiscountRateBPS      int    `json:"discountRateBps"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&b) != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid settlement"})
@@ -4065,7 +4256,10 @@ func (a *app) handlePOSSettlement(w http.ResponseWriter, r *http.Request, user a
 	if b.ExpectedTotalSatang == 0 && b.ExpectedTotal > 0 {
 		b.ExpectedTotalSatang = int64(b.ExpectedTotal) * 100
 	}
-	summary, err := a.settleBillingAccount(r.Context(), user, strings.TrimSpace(b.BillingAccountID), strings.TrimSpace(b.Method), b.ExpectedTotalSatang, b.CashReceivedSatang, b.ReferenceNumber, true, "pos")
+	if (b.DiscountAmountSatang > 0 || b.DiscountRateBPS > 0) && !requirePOSPermission(w, user, "discounts") {
+		return
+	}
+	summary, err := a.settleBillingAccountWithDiscount(r.Context(), user, strings.TrimSpace(b.BillingAccountID), strings.TrimSpace(b.Method), b.ExpectedTotalSatang, b.CashReceivedSatang, b.ReferenceNumber, true, "pos", strings.TrimSpace(b.DiscountType), b.DiscountAmountSatang, b.DiscountRateBPS)
 	if err != nil {
 		writePOSSettlementError(w, r, summary, err)
 		return
