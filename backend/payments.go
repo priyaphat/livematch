@@ -89,6 +89,7 @@ type slipOKLogMeta struct {
 	AdminEmail   string
 	SourceSystem string
 	ReferenceID  string
+	Attempt      int
 }
 
 var slipOKAPIBaseURL = "https://api.slipok.com"
@@ -333,7 +334,7 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		return result
 	}
 	digest := sha256.Sum256(raw)
-	requestSummary, _ := json.Marshal(map[string]any{"amount": expectedAmount, "log": true, "fileName": "slip.png", "fileSize": len(raw), "sha256": hex.EncodeToString(digest[:])})
+	requestSummary, _ := json.Marshal(map[string]any{"amount": expectedAmount, "log": true, "fileName": "slip.png", "fileSize": len(raw), "sha256": hex.EncodeToString(digest[:]), "attempt": max(1, meta.Attempt)})
 	requestPayload = string(requestSummary)
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -362,13 +363,25 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 	result.Sent = true
 	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if err != nil {
-		result.Note = "เรียก Auto Slip ไม่สำเร็จ: " + err.Error()
+		result.Note = "เชื่อมต่อ Auto Slip ไม่สำเร็จชั่วคราว ระบบจะตรวจซ้ำอัตโนมัติ: " + err.Error()
+		if !errors.Is(err, context.Canceled) {
+			result.Retryable = true
+			result.RetryAfter = 30 * time.Second
+			result.Status = "pending_retry"
+		}
 		return result
 	}
 	defer resp.Body.Close()
 	httpStatus = resp.StatusCode
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	responsePayload = string(responseBody)
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooEarly || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		result.Retryable = true
+		result.RetryAfter = slipOKRetryAfter(resp.Header.Get("Retry-After"), 30*time.Second)
+		result.Status = "pending_retry"
+		result.Note = fmt.Sprintf("Auto Slip ตอบ HTTP %d ชั่วคราว ระบบจะตรวจซ้ำอัตโนมัติ", resp.StatusCode)
+		return result
+	}
 	var payload struct {
 		Success bool   `json:"success"`
 		Code    int    `json:"code"`
@@ -444,6 +457,19 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		result.Note = fmt.Sprintf("Auto Slip ไม่ผ่าน (code %d)", payload.Code)
 	}
 	return result
+}
+
+func slipOKRetryAfter(value string, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return min(time.Duration(seconds)*time.Second, 10*time.Minute)
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(at); delay > 0 {
+			return min(delay, 10*time.Minute)
+		}
+	}
+	return fallback
 }
 
 func (a *app) promptPaySettings(ctx context.Context) promptPaySettings {

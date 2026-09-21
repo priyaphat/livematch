@@ -79,6 +79,7 @@ export const PosView: React.FC = () => {
     discountType,
     setDiscount,
     cartTotals,
+    editingHeldOrder,
     holdCurrentCart,
     members,
     categories,
@@ -92,6 +93,7 @@ export const PosView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [mobileTab, setMobileTab] = useState<"menu" | "cart">("menu");
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
+  const [isReholdingEditedOrder, setIsReholdingEditedOrder] = useState(false);
   const [isHoldModalOpen, setIsHoldModalOpen] = useState<boolean>(false);
   const [holdMode, setHoldMode] = useState<"single" | "split">("single");
   const [holdCustomerName, setHoldCustomerName] = useState<string>("");
@@ -370,6 +372,20 @@ export const PosView: React.FC = () => {
       setHoldCustomerName("");
 	  setHoldSingleMember(null);
 		setHoldSplitMembers([]);
+    }
+  };
+
+  const handleHoldButtonClick = async () => {
+    if (!editingHeldOrder) {
+      setIsHoldModalOpen(true);
+      return;
+    }
+    if (isReholdingEditedOrder) return;
+    setIsReholdingEditedOrder(true);
+    try {
+      await holdCurrentCart([], []);
+    } finally {
+      setIsReholdingEditedOrder(false);
     }
   };
 
@@ -1068,12 +1084,15 @@ export const PosView: React.FC = () => {
             <div className="grid grid-cols-12 gap-2 pt-1">
               <button
                 id="pos-hold-bill-btn"
-                disabled={cart.length === 0}
-                onClick={() => setIsHoldModalOpen(true)}
-                className="col-span-4 flex items-center justify-center gap-1.5 py-2.5 sm:py-3 rounded-2xl bg-yellow-100 dark:bg-yellow-500/15 hover:bg-yellow-200 dark:hover:bg-yellow-500/25 border border-yellow-300 dark:border-yellow-500/40 text-yellow-800 dark:text-yellow-400 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                disabled={cart.length === 0 || isReholdingEditedOrder}
+                onClick={() => void handleHoldButtonClick()}
+                title={editingHeldOrder ? `พักบิล ${editingHeldOrder.customerName}` : 'พักยอด'}
+                className="col-span-4 flex min-w-0 items-center justify-center gap-1.5 overflow-hidden py-2.5 sm:py-3 rounded-2xl bg-yellow-100 dark:bg-yellow-500/15 hover:bg-yellow-200 dark:hover:bg-yellow-500/25 border border-yellow-300 dark:border-yellow-500/40 text-yellow-800 dark:text-yellow-400 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
               >
-                <PauseCircle className="w-4 h-4" />
-                <span>พักยอด</span>
+                <PauseCircle className="h-4 w-4 shrink-0" />
+                <span className={`min-w-0 truncate ${editingHeldOrder ? 'text-[10px] sm:text-xs' : ''}`}>
+                  {isReholdingEditedOrder ? 'กำลังพักบิล…' : editingHeldOrder ? `พักบิล ${editingHeldOrder.customerName}` : 'พักยอด'}
+                </span>
               </button>
 
               <button

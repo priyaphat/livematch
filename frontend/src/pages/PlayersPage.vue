@@ -23,6 +23,8 @@ const props = defineProps([
   'saveSettings',
   'togglePayment',
   'resumePlayer',
+  'withdrawPlayer',
+  'restoreWithdrawnPlayer',
   'isSessionReadOnly',
   'apiRequest'
 ])
@@ -50,6 +52,7 @@ const filteredPlayers = computed(() => {
     (paymentFilter === 'unpaid' && outstandingCost(player) > 0)
   ))
 })
+const withdrawnPlayers = computed(() => props.state.players.filter((player) => player.withdrawn && !player.active))
 
 const playerSortKey = ref('')
 const playerSortDirection = ref('desc')
@@ -367,6 +370,26 @@ function memberAlreadyInMatch(member) {
   )
 }
 
+async function withdrawPlayer(player) {
+  if (Number(player.games || 0) >= 1) return
+  if (!window.confirm(`ยืนยันให้ ${player.name} ถอนตัวโดยไม่คิดเงิน?\nประวัติเกมที่ยกเลิกจะยังคงอยู่`)) return
+  const note = window.prompt('หมายเหตุการถอนตัว', 'ไม่ได้เล่น')
+  if (note === null) return
+  await props.withdrawPlayer(player, note.trim() || 'ถอนตัวโดยผู้ดูแล')
+}
+
+async function restoreWithdrawnPlayer(player) {
+  if (!window.confirm(`คืน ${player.name} กลับเข้าสู่รายชื่อผู้เล่น?`)) return
+  await props.restoreWithdrawnPlayer(player)
+}
+
+function withdrawnMeta(player) {
+  const at = player.withdrawnAt
+    ? new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'Asia/Bangkok' }).format(new Date(player.withdrawnAt))
+    : ''
+  return [at, player.withdrawnBy ? `โดย ${player.withdrawnBy}` : ''].filter(Boolean).join(' · ')
+}
+
 async function selectMember(member) {
   if (memberAlreadyInMatch(member) || addingMemberId.value) return
   clearTimeout(memberBlurTimer)
@@ -622,15 +645,24 @@ async function exportExcel() {
           </div>
           <div class="ml-auto flex max-w-full flex-wrap items-center justify-end gap-2" data-testid="player-actions">
             <button
-              v-if="!player.paid || !player.memberId"
+              v-if="!player.memberId"
               class="inline-flex h-8 items-center gap-1 rounded-md border border-court-200 bg-court-500/10 px-2 text-xs font-bold text-court-700 dark:border-court-900/60 dark:text-court-300"
               :disabled="isSessionReadOnly"
-              :aria-label="player.memberId ? 'ลบสมาชิกออกจาก Match' : 'แก้ไขสมาชิก'"
+              aria-label="แก้ไขสมาชิก"
               @click.stop="openEditPlayer(player)"
             >
-              <Trash2 v-if="player.memberId" class="h-3.5 w-3.5" />
-              <Pencil v-else class="h-3.5 w-3.5" />
-              {{ player.memberId ? 'ลบออก' : 'แก้ไข' }}
+              <Pencil class="h-3.5 w-3.5" />
+              แก้ไข
+            </button>
+            <button
+              v-if="Number(player.games || 0) === 0"
+              class="inline-flex h-8 items-center gap-1 rounded-md border border-rose-200 bg-rose-50 px-2 text-xs font-bold text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/20 dark:text-rose-300"
+              :disabled="isSessionReadOnly"
+              aria-label="ถอนตัวโดยไม่คิดเงิน"
+              data-testid="withdraw-player"
+              @click.stop="withdrawPlayer(player)"
+            >
+              <X class="h-3.5 w-3.5" /> ถอนตัว
             </button>
             <button
               class="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-bold"
@@ -786,6 +818,21 @@ async function exportExcel() {
         </div>
       </div>
     </div>
+
+    <section v-if="withdrawnPlayers.length" class="rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900" data-testid="withdrawn-players">
+      <h2 class="font-black">ผู้เล่นที่ถอนตัว</h2>
+      <p class="mt-1 text-xs font-semibold text-stone-500">เก็บไว้เป็นประวัติ แต่ไม่ถูกนำไปคิดค่าใช้จ่ายหรือแสดงเป็นบิลค้าง POS</p>
+      <div class="mt-3 divide-y divide-stone-100 dark:divide-stone-800">
+        <div v-for="player in withdrawnPlayers" :key="player.id" class="flex items-center justify-between gap-3 py-3">
+          <div class="min-w-0">
+            <p class="truncate font-black">#{{ player.id }} {{ player.name }}</p>
+            <p class="text-xs font-semibold text-stone-500">{{ player.withdrawalNote || 'ถอนตัวโดยผู้ดูแล' }}</p>
+            <p v-if="withdrawnMeta(player)" class="mt-0.5 text-xs text-stone-400">{{ withdrawnMeta(player) }}</p>
+          </div>
+          <button type="button" class="h-9 shrink-0 rounded-md border border-court-200 px-3 text-xs font-black text-court-700 disabled:opacity-40 dark:border-court-900 dark:text-court-300" :disabled="isSessionReadOnly" @click="restoreWithdrawnPlayer(player)">คืนสถานะ</button>
+        </div>
+      </div>
+    </section>
 
     <div
       v-if="paymentConfirmOpen && paymentPlayer"

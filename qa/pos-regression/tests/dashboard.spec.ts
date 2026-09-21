@@ -4,6 +4,7 @@ import { csrfHeaders, ownerApi } from './helpers';
 test.describe.configure({ mode: 'serial' });
 
 let api: APIRequestContext;
+let editableHeldCustomerName = '';
 
 test.beforeAll(async () => {
   api = await ownerApi();
@@ -18,6 +19,37 @@ test.beforeAll(async () => {
     },
   });
   expect([200, 201]).toContain(response.status());
+
+  const suffix = Date.now().toString().slice(-8);
+  for (let index = 1; index <= 2; index += 1) {
+    const memberName = `สมาชิกแก้บิล QA ${suffix}-${index}`;
+    const member = await api.post('/api/admin/pos/members', {
+      headers,
+      data: {
+        name: memberName,
+        phone: `09${suffix.slice(0, 6)}${index}`,
+        memberTypeId: 'qa-member-type-a-general',
+      },
+    });
+    expect(member.status(), await member.text()).toBe(201);
+    const memberPayload = await member.json();
+    const hold = await api.post('/api/admin/pos/sales', {
+      headers,
+      data: {
+        requestId: `qa-edit-held-${suffix}-${index}`,
+        action: 'hold',
+        buyerType: 'member',
+        buyerId: memberPayload.id,
+        discountType: 'amount',
+        discountAmountSatang: 0,
+        discountRateBps: 0,
+        expectedTotalSatang: 4500,
+        items: [{ productId: 'qa-product-coffee-a', quantity: 1 }],
+      },
+    });
+    expect(hold.status(), await hold.text()).toBe(201);
+    if (index === 1) editableHeldCustomerName = memberName;
+  }
 });
 
 test.afterAll(async () => {
@@ -89,6 +121,38 @@ test('POS-BILL-005 โหลดเฉพาะข้อมูลของแท�
   await page.locator('#tab-history-bills-btn').click();
   await expect.poll(() => requests.filter((path) => path.endsWith('/payment-history')).length).toBeGreaterThan(0);
   expect(requests.filter((path) => path.endsWith('/receivables'))).toHaveLength(0);
+});
+
+test('POS-BILL-006 ดึงบิลกลับแล้วพักซ้ำเข้าชื่อเดิมโดยไม่เปิด modal เลือกสมาชิก', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'บิล & ประวัติ' }).click();
+  await page.locator('#tab-held-bills-btn').click();
+  const heldCard = page.locator('[id^="held-card-"]').filter({ hasText: editableHeldCustomerName });
+  await expect(heldCard).toBeVisible();
+  await heldCard.locator('button[title="ดึงรายการ POS กลับไปแก้ไขในหน้าขาย"]').click();
+
+  const holdButton = page.locator('#pos-hold-bill-btn');
+  await expect(holdButton).toHaveAttribute('title', `พักบิล ${editableHeldCustomerName}`);
+  await expect(holdButton).toContainText(`พักบิล ${editableHeldCustomerName}`);
+  await holdButton.click();
+  await expect(page.getByText('พักยอดคำสั่งซื้อ (Hold Order)')).toHaveCount(0);
+  await expect(holdButton).toHaveAttribute('title', 'พักยอด');
+});
+
+test('POS-BILL-007 เลือกหลายบิลแล้วเหลือเฉพาะปุ่มชำระรวม', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'บิล & ประวัติ' }).click();
+  await page.locator('#tab-held-bills-btn').click();
+  const cards = page.locator('[id^="held-card-"]');
+  await expect.poll(() => cards.count()).toBeGreaterThanOrEqual(2);
+  await cards.nth(0).click();
+  await cards.nth(1).click();
+
+  const actions = page.locator('#held-batch-actions');
+  await expect(actions).toBeVisible();
+  await expect(actions.getByRole('button')).toHaveCount(1);
+  await expect(actions.getByRole('button', { name: /ชำระรวมทันที/ })).toBeVisible();
+  await expect(actions.getByText('รวมเข้าตะกร้า')).toHaveCount(0);
 });
 
 test('POS-BILL-001 ประวัติการขายเปิดดูรายละเอียดการชำระและรายการสินค้าได้', async ({ page }) => {

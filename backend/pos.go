@@ -3192,7 +3192,12 @@ func (a *app) createPOSSale(w http.ResponseWriter, r *http.Request, user adminUs
 		writeJSON(w, 400, map[string]string{"error": "บิลหารต้องเลือกสมาชิกอย่างน้อย 2 คน"})
 		return
 	}
-	if b.Action == "hold" && !isSplit && (b.BuyerType != "member" || b.BuyerID == "") {
+	isReplacingHeldSale := len(b.ReplaceSaleIDs) == 1
+	if isReplacingHeldSale && isSplit {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "บิลที่ดึงกลับต้องพักกลับเจ้าของเดิมและไม่สามารถเปลี่ยนเป็นบิลหารได้"})
+		return
+	}
+	if b.Action == "hold" && !isSplit && !isReplacingHeldSale && (b.BuyerType != "member" || b.BuyerID == "") {
 		writeJSON(w, 400, map[string]string{"error": "บิลพักยอดต้องเลือกสมาชิกในระบบ"})
 		return
 	}

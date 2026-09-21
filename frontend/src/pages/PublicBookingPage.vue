@@ -286,6 +286,8 @@ function status(court, minute) {
       text: closure.note || "ปิดสนาม",
       tone: "closed",
     };
+  if (state.settings.allowPastBooking === false && start < state.now - 60000)
+    return { text: "เวลาผ่านแล้ว", tone: "closed" };
   return { text: "ว่าง", tone: "free" };
 }
 function isSelected(court, minute) {

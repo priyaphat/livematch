@@ -34,7 +34,7 @@ import {
   Eye,
 } from 'lucide-react';
 import type { Order } from '../types';
-import { printIminBitmap, printIminQrOnly } from '../utils/iminPrinter';
+import { printPaymentQrSlip } from '../utils/paymentQrSlip';
 
 const HISTORY_PAGE_SIZE = 20;
 
@@ -127,8 +127,6 @@ export const BillsView: React.FC = () => {
     refreshHeldOrders,
     resumeHeldOrder,
     deleteHeldOrder,
-    batchDeleteHeldOrders,
-    mergeHeldOrdersIntoCart,
     processBatchHeldPayment,
     orders,
     refundOrder,
@@ -365,22 +363,6 @@ export const BillsView: React.FC = () => {
     setSelectedHeldIds([]);
   };
 
-  // Batch delete handler
-  const handleConfirmBatchDelete = () => {
-    if (selectedHeldIds.length === 0) return;
-    if (window.confirm(`ยืนยันการลบรายการพักยอดที่เลือก ${selectedHeldIds.length} รายการ?`)) {
-      batchDeleteHeldOrders(selectedHeldIds);
-      setSelectedHeldIds([]);
-    }
-  };
-
-  // Batch merge into cart handler
-  const handleConfirmBatchMerge = () => {
-    if (selectedHeldIds.length === 0) return;
-    mergeHeldOrdersIntoCart(selectedHeldIds);
-    setSelectedHeldIds([]);
-  };
-
   const handleConfirmRefund = () => {
     if (selectedOrderForRefund) {
       refundOrder(selectedOrderForRefund, refundReason);
@@ -426,18 +408,39 @@ export const BillsView: React.FC = () => {
   const handlePrintBatchQrOnly = async () => {
     if (!batchQrDataUrl) return;
     try {
-      if (/Android/i.test(navigator.userAgent)) {
-        const paperWidth = settings.printerType === 'thermal_58mm' ? '58mm' : '80mm';
-        if (batchQrPayload) await printIminQrOnly(batchQrPayload, paperWidth);
-        else await printIminBitmap(batchQrDataUrl, paperWidth);
-      } else {
-        const popup = window.open('', '_blank', 'width=420,height=520');
-        if (!popup) throw new Error('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up');
-        popup.document.write(`<!doctype html><html><head><title>PromptPay QR</title><style>@page{margin:8mm}body{font-family:sans-serif;text-align:center}img{width:280px;height:280px}.amount{font-size:28px;font-weight:800}</style></head><body><img src="${batchQrDataUrl}"><div class="amount">${formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)}</div><script>onload=()=>{print();onafterprint=()=>close()}<\/script></body></html>`);
-        popup.document.close();
-      }
-      showToast('ส่งพิมพ์เฉพาะ PromptPay QR แล้ว', 'success');
-    } catch (error) { showToast(error instanceof Error ? error.message : 'พิมพ์ QR ไม่สำเร็จ', 'error'); }
+      const posLines = selectedHeldObjects.flatMap((held) => held.items.map((item) => ({
+        name: item.product.name,
+        quantity: item.quantity,
+        amount: Number(item.allocatedTotal ?? item.product.price * item.quantity),
+      })));
+      const matchLines = (billingSummary?.lines || []).filter((line) => line.sourceType === 'match').flatMap((line) => {
+        const items = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+        if (!items.length) return [{ name: line.label, quantity: 1, amount: line.amountSatang / 100 }];
+        return items.map((item: Record<string, unknown>) => ({
+          name: String(item.label || line.label),
+          quantity: Math.max(1, Number(item.quantity || 1)),
+          amount: Number(item.amountSatang ?? Math.round(Number(item.amountThb || 0) * 100)) / 100,
+        }));
+      });
+      await printPaymentQrSlip({
+        storeName: settings.storeName,
+        phone: settings.phone,
+        logoData: settings.logoData,
+        customerName: selectedHeldObjects.map((item) => item.customerName).filter(Boolean).join(', ') || billingSummary?.displayName || 'ลูกค้าทั่วไป',
+        reference: selectedHeldObjects.map((item) => item.heldNumber).join(', '),
+        receiverName: batchQrReceiverName,
+        lines: [...posLines, ...matchLines],
+        subtotal: basePaymentTotal,
+        discount: batchDiscountAmount,
+        total: paymentTotal,
+        currencySymbol: settings.currencySymbol,
+        decimalPlaces: settings.decimalPlaces,
+        qrDataUrl: batchQrDataUrl,
+        qrPayload: batchQrPayload,
+        paperWidth: settings.printerType === 'thermal_58mm' ? '58mm' : '80mm',
+      });
+      showToast('ส่งพิมพ์ใบแจ้งชำระ PromptPay แล้ว', 'success');
+    } catch (error) { showToast(error instanceof Error ? error.message : 'พิมพ์ใบแจ้งชำระ QR ไม่สำเร็จ', 'error'); }
   };
 
   useEffect(() => {
@@ -776,7 +779,7 @@ export const BillsView: React.FC = () => {
 
           {/* Sticky Floating Multi-Select Action Toolbar */}
           {selectedHeldIds.length > 0 && (
-            <div className="fixed bottom-24 sm:bottom-24 left-1/2 -translate-x-1/2 w-[calc(100%-1.5rem)] sm:w-[calc(100%-2rem)] max-w-2xl z-30 bg-white/95 dark:bg-slate-900/95 border-2 border-amber-500 rounded-3xl p-3 sm:p-4 shadow-2xl backdrop-blur-xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-5">
+            <div id="held-batch-actions" className="fixed bottom-24 sm:bottom-24 left-1/2 -translate-x-1/2 w-[calc(100%-1.5rem)] sm:w-[calc(100%-2rem)] max-w-2xl z-30 bg-white/95 dark:bg-slate-900/95 border-2 border-amber-500 rounded-3xl p-3 sm:p-4 shadow-2xl backdrop-blur-xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-5">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-base shadow-md shadow-amber-500/30 shrink-0">
                   {selectedHeldIds.length}
@@ -792,23 +795,6 @@ export const BillsView: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap justify-end">
-                <button
-                  onClick={handleConfirmBatchDelete}
-                  className="p-2.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 hover:bg-rose-100 dark:hover:bg-rose-900/50 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800 transition-colors shrink-0"
-                  title="ลบรายการที่เลือก"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
-
-                <button
-                  onClick={handleConfirmBatchMerge}
-                  className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 text-xs font-bold border border-slate-200 dark:border-slate-700 transition-colors whitespace-nowrap"
-                  title="รวมสินค้าทั้งหมดเข้าสู่ตะกร้าหน้าร้าน"
-                >
-                  <ShoppingBag className="w-4 h-4" />
-                  <span>รวมเข้าตะกร้า</span>
-                </button>
-
                 <button
                   id="batch-pay-submit-btn"
                   onClick={() => handleOpenBatchPay()}
@@ -1507,7 +1493,7 @@ export const BillsView: React.FC = () => {
                   className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-3 text-xs font-black text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
                 >
                   <Printer className="h-4 w-4" />
-                  <span className="hidden sm:inline">พิมพ์เฉพาะ QR</span>
+                  <span className="hidden sm:inline">พิมพ์ใบแจ้งชำระ QR</span>
                 </button>
               )}
 

@@ -3,7 +3,7 @@ import { usePos } from '../context/PosContext';
 import { formatCurrency } from '../utils/formatters';
 import QRCode from 'qrcode';
 import { getPOSPaymentQR } from '../api/posSales';
-import { printIminBitmap, printIminQrOnly } from '../utils/iminPrinter';
+import { printPaymentQrSlip } from '../utils/paymentQrSlip';
 import {
   X,
   Banknote,
@@ -21,7 +21,7 @@ interface PaymentModalProps {
 }
 
 export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) => {
-  const { cartTotals, settings, processPayment, broadcastCustomerDisplay, showToast } = usePos();
+  const { cart, cartTotals, settings, processPayment, broadcastCustomerDisplay, showToast } = usePos();
   const [method, setMethod] = useState<'cash' | 'promptpay'>('cash');
   const [cashInput, setCashInput] = useState<string>('');
   const [referenceNumber, setReferenceNumber] = useState<string>('');
@@ -235,19 +235,26 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
   const handlePrintQrOnly = async () => {
     if (!qrDataUrl) return;
     try {
-      if (/Android/i.test(navigator.userAgent)) {
-        const paperWidth = settings.printerType === 'thermal_58mm' ? '58mm' : '80mm';
-        if (qrPayload) await printIminQrOnly(qrPayload, paperWidth);
-        else await printIminBitmap(qrDataUrl, paperWidth);
-      } else {
-        const popup = window.open('', '_blank', 'width=420,height=520');
-        if (!popup) throw new Error('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up');
-        popup.document.write(`<!doctype html><html><head><title>PromptPay QR</title><style>@page{margin:8mm}body{font-family:sans-serif;text-align:center}img{width:280px;height:280px}.amount{font-size:28px;font-weight:800}</style></head><body><img src="${qrDataUrl}"><div class="amount">${formatCurrency(totalDue, settings.currencySymbol, settings.decimalPlaces)}</div><script>onload=()=>{print();onafterprint=()=>close()}<\/script></body></html>`);
-        popup.document.close();
-      }
-      showToast('ส่งพิมพ์เฉพาะ PromptPay QR แล้ว', 'success');
+      await printPaymentQrSlip({
+        storeName: settings.storeName,
+        phone: settings.phone,
+        logoData: settings.logoData,
+        customerName: customerNote || 'ลูกค้าทั่วไป',
+        reference: 'หน้าการขาย',
+        receiverName: qrReceiverName,
+        lines: cart.map((item) => ({ name: item.product.name, quantity: item.quantity, amount: Number(item.allocatedTotal ?? item.product.price * item.quantity) })),
+        subtotal: cartTotals.subtotal,
+        discount: cartTotals.discountAmount,
+        total: totalDue,
+        currencySymbol: settings.currencySymbol,
+        decimalPlaces: settings.decimalPlaces,
+        qrDataUrl,
+        qrPayload,
+        paperWidth: settings.printerType === 'thermal_58mm' ? '58mm' : '80mm',
+      });
+      showToast('ส่งพิมพ์ใบแจ้งชำระ PromptPay แล้ว', 'success');
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'พิมพ์ QR ไม่สำเร็จ', 'error');
+      showToast(error instanceof Error ? error.message : 'พิมพ์ใบแจ้งชำระ QR ไม่สำเร็จ', 'error');
     }
   };
 
@@ -548,7 +555,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({ isOpen, onClose }) =
               className="inline-flex h-11 shrink-0 items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-4 text-xs font-black text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
             >
               <Printer className="h-4 w-4" />
-              <span className="hidden sm:inline">พิมพ์เฉพาะ QR</span>
+              <span className="hidden sm:inline">พิมพ์ใบแจ้งชำระ QR</span>
             </button>
           )}
 

@@ -144,12 +144,16 @@ interface PosContextType {
 
   // Held Orders
   heldOrders: HeldOrder[];
+  editingHeldOrder: {
+    saleIds: string[];
+    billingAccountId?: string;
+    customerName: string;
+    heldNumber: string;
+  } | null;
   refreshHeldOrders: () => Promise<void>;
   holdCurrentCart: (memberIds: string[], customerNames: string[]) => Promise<boolean>;
   resumeHeldOrder: (heldId: string) => void;
   deleteHeldOrder: (heldId: string) => void;
-  batchDeleteHeldOrders: (heldIds: string[]) => void;
-  mergeHeldOrdersIntoCart: (heldIds: string[]) => void;
   processBatchHeldPayment: (params: {
     heldIds: string[];
     paymentMethod: 'cash' | 'promptpay';
@@ -350,7 +354,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' | 'warning' } | null>(null);
   const checkoutRequestIDRef = useRef('');
   const holdRequestIDRef = useRef('');
-  const editingHeldSaleIDsRef = useRef<string[]>([]);
+  const [editingHeldOrder, setEditingHeldOrder] = useState<{
+    saleIds: string[];
+    billingAccountId?: string;
+    customerName: string;
+    heldNumber: string;
+  } | null>(null);
   const currentPOSActorNameRef = useRef('Admin');
 
   // Sync to local storage
@@ -1518,9 +1527,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearCart = () => {
+    const shouldRestoreHeldList = editingHeldOrder !== null;
     setCart([]);
     setDiscountState(0);
-    editingHeldSaleIDsRef.current = [];
+    setEditingHeldOrder(null);
+    holdRequestIDRef.current = '';
+    if (shouldRestoreHeldList) {
+      void refreshPOSSales({ includeMembers: false, includeSettings: false, includePayments: false });
+    }
   };
 
   const setDiscount = (amount: number, type: 'amount' | 'percent' = 'amount') => {
@@ -1547,28 +1561,29 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       showToast('ไม่มีสินค้าในตะกร้าสำหรับพักยอด', 'warning');
       return false;
     }
-    if (memberIds.length === 0) {
+    const editedOrder = editingHeldOrder;
+    if (!editedOrder && memberIds.length === 0) {
       showToast('กรุณาเลือกสมาชิกจากระบบ', 'warning');
       return false;
     }
-	const isSplit = memberIds.length > 1;
+	const isSplit = !editedOrder && memberIds.length > 1;
     try {
       const requestId = holdRequestIDRef.current || crypto.randomUUID(); holdRequestIDRef.current = requestId;
       const result = await createPOSSale({
-        requestId, action: 'hold', buyerType: 'member', buyerId: isSplit ? undefined : memberIds[0],
+        requestId, action: 'hold', buyerType: editedOrder ? 'anonymous' : 'member', buyerId: editedOrder ? undefined : isSplit ? undefined : memberIds[0],
 		buyerIds: isSplit ? memberIds : undefined, splitMode: isSplit ? 'equal' : 'none',
         discountType, discountAmountSatang: discountType === 'amount' ? Math.round(discount * 100) : 0,
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
-        replaceSaleIds: editingHeldSaleIDsRef.current,
+        replaceSaleIds: editedOrder?.saleIds || [],
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, note: item.note })),
       });
       clearCart();
-      editingHeldSaleIDsRef.current = [];
       holdRequestIDRef.current = '';
       await Promise.all([refreshPOSCatalog(), refreshPOSSales(), refreshPOSStock()]);
       playBeep('success');
-      showToast(`${isSplit ? `พักยอดแบบหาร ${memberIds.length} คน` : `พักยอดของ ${customerNames[0]}`} เรียบร้อยแล้ว (${result.saleId})`, 'success');
+      const heldFor = editedOrder?.customerName || customerNames[0];
+      showToast(`${isSplit ? `พักยอดแบบหาร ${memberIds.length} คน` : `พักบิลของ ${heldFor}`} เรียบร้อยแล้ว (${result.saleId})`, 'success');
       return true;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'พักยอดไม่สำเร็จ', 'error');
@@ -1591,7 +1606,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 		if (saleIds.length !== 1 || found.splitAllocations?.length) { showToast('ดึงกลับมาแก้ไขได้ครั้งละ 1 บิลที่ไม่ได้หารเท่านั้น', 'warning'); return; }
 		const editableItems = found.items.filter((item) => !item.product.id.startsWith('billing-match-') && !item.product.id.startsWith('billing-pos-'));
 		if (editableItems.length === 0) { showToast('ไม่พบรหัสสินค้าจริงในบิลนี้ กรุณารีเฟรชข้อมูลก่อน', 'error'); return; }
-		editingHeldSaleIDsRef.current = saleIds;
+		setEditingHeldOrder({
+		  saleIds,
+		  billingAccountId: found.billingAccountId,
+		  customerName: found.customerName || 'ไม่ระบุชื่อ',
+		  heldNumber: found.heldNumber,
+		});
 		setCart(editableItems); setDiscountState(found.discount); setDiscountTypeState(found.discountType); setActiveTab('pos');
 		setHeldOrders((current) => current.filter((item) => item.id !== found.id));
 		showToast(`เปิดบิล ${found.heldNumber} เพื่อแก้ไขแล้ว สต็อกยังคงถูกจองไว้จนกว่าจะบันทึก`, 'success');
@@ -1607,26 +1627,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
       showToast('ลบรายการพักยอดและคืนสต็อกแล้ว', 'info');
     }).catch((requestError) => showToast(requestError instanceof Error ? requestError.message : 'ลบรายการพักยอดไม่สำเร็จ', 'error'));
-  };
-
-  const batchDeleteHeldOrders = (heldIds: string[]) => {
-    if (heldIds.length === 0) return;
-	const saleIds = [...new Set(heldOrders.filter((item) => heldIds.includes(item.id)).flatMap((item) => item.sourceSaleIds || []))];
-	if (saleIds.length === 0) { showToast('รายการที่เลือกมีเฉพาะยอด Match', 'warning'); return; }
-	void Promise.all(saleIds.map((id) => voidPOSSale(id, 'ยกเลิกรายการพักยอดหลายรายการ'))).then(async () => {
-      await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
-      showToast(`ลบรายการพักยอดจำนวน ${heldIds.length} รายการและคืนสต็อกแล้ว`, 'info');
-    }).catch((requestError) => showToast(requestError instanceof Error ? requestError.message : 'ลบรายการพักยอดไม่สำเร็จ', 'error'));
-  };
-
-  const mergeHeldOrdersIntoCart = (heldIds: string[]) => {
-    const targets = heldOrders.filter((h) => heldIds.includes(h.id));
-    if (targets.length === 0) return;
-    if (targets.length !== 1) {
-      showToast('เพื่อป้องกันสต็อกซ้ำ กรุณาดึงกลับมาแก้ไขครั้งละ 1 บิล', 'warning');
-      return;
-    }
-    resumeHeldOrder(targets[0].id);
   };
 
   const processBatchHeldPayment = async ({
@@ -1874,7 +1874,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
         cashReceivedSatang: Math.round((cashReceived || 0) * 100), referenceNumber,
-        replaceSaleIds: editingHeldSaleIDsRef.current,
+        replaceSaleIds: editingHeldOrder?.saleIds || [],
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, note: item.note })),
       });
       const apiSales = await listPOSSales();
@@ -1883,7 +1883,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setHeldOrders(apiSales.filter((sale) => sale.status === 'open').map(saleToHeldOrder));
       setOrders(apiSales.filter((sale) => sale.status !== 'open').map(saleToOrder));
       clearCart();
-      editingHeldSaleIDsRef.current = [];
       checkoutRequestIDRef.current = '';
       await Promise.all([refreshPOSCatalog(), refreshPOSStock()]);
       playBeep('success');
@@ -2196,12 +2195,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDiscount,
         cartTotals,
         heldOrders,
+        editingHeldOrder,
         refreshHeldOrders,
         holdCurrentCart,
         resumeHeldOrder,
         deleteHeldOrder,
-        batchDeleteHeldOrders,
-        mergeHeldOrdersIntoCart,
         processBatchHeldPayment,
         orders,
         processPayment,

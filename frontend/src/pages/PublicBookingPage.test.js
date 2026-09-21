@@ -66,6 +66,24 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
+  it("disables a past slot unless the venue explicitly allows it", async () => {
+    const locked = availability();
+    locked.serverNow = "2026-07-22T18:04:00+07:00";
+    locked.settings.allowPastBooking = false;
+    const lockedApi = vi.fn((url) => url.includes('/availability') ? Promise.resolve(locked) : apiMock()(url));
+    const lockedWrapper = mount(PublicBookingPage, { props: { apiRequest: lockedApi, token: 'tenant-token' } });
+    await vi.waitFor(() => expect(lockedWrapper.get('[data-testid="slot-court-1-960"]').text()).toBe('เวลาผ่านแล้ว'));
+    lockedWrapper.unmount();
+
+    const allowed = availability();
+    allowed.serverNow = "2026-07-22T18:04:00+07:00";
+    allowed.settings.allowPastBooking = true;
+    const allowedApi = vi.fn((url) => url.includes('/availability') ? Promise.resolve(allowed) : apiMock()(url));
+    const allowedWrapper = mount(PublicBookingPage, { props: { apiRequest: allowedApi, token: 'tenant-token' } });
+    await vi.waitFor(() => expect(allowedWrapper.get('[data-testid="slot-court-1-960"]').text()).toBe('ว่าง'));
+    allowedWrapper.unmount();
+  });
+
   it("shows only the booker name for a confirmed slot", async () => {
     const confirmedAvailability = availability();
     confirmedAvailability.bookings.push({

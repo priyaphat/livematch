@@ -266,6 +266,23 @@ func TestPublicBookingServerValidationRejectsTamperedPayloadTimes(t *testing.T) 
 	}
 }
 
+func TestPublicBookingCanAllowPastSlotOnlyForToday(t *testing.T) {
+	now := time.Date(2026, 8, 12, 18, 4, 0, 0, bangkokLocation)
+	settings := bookingSettingsRecord{OpenTime: "16:00", CloseTime: "22:00", IntervalMinutes: 60, AllowPastBooking: true}
+	pastToday := time.Date(2026, 8, 12, 16, 0, 0, 0, bangkokLocation)
+	if err := validatePublicBookingWindow(settings, pastToday, pastToday.Add(time.Hour), now); err != nil {
+		t.Fatalf("enabled past booking should accept a free slot from today: %v", err)
+	}
+	yesterday := pastToday.AddDate(0, 0, -1)
+	if err := validatePublicBookingWindow(settings, yesterday, yesterday.Add(time.Hour), now); !errors.Is(err, errPublicBookingDateNotAllowed) {
+		t.Fatalf("past calendar dates must remain blocked, got %v", err)
+	}
+	settings.AllowPastBooking = false
+	if err := validatePublicBookingWindow(settings, pastToday, pastToday.Add(time.Hour), now); err == nil {
+		t.Fatal("disabled past booking must reject a slot that already started")
+	}
+}
+
 func TestAdminBookingCanCrossDaysWhenPublicAdvanceBookingIsDisabled(t *testing.T) {
 	settings := bookingSettingsRecord{
 		OpenTime:        "16:00",

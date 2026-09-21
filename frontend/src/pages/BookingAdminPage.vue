@@ -1830,6 +1830,7 @@ onUnmounted(() => {
           <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.bookingAcceptanceEnabled" type="checkbox" />จำกัดเวลาเปิดรับการจอง</label>
           <label v-if="settings.bookingAcceptanceEnabled" class="grid gap-1 text-sm font-bold">เปิดรับเวลา<input v-model="settings.bookingAcceptanceOpenTime" type="time" required class="h-10 rounded-lg border bg-transparent px-3" /></label>
           <label v-if="settings.bookingAcceptanceEnabled" class="grid gap-1 text-sm font-bold">ปิดรับเวลา<input v-model="settings.bookingAcceptanceCloseTime" type="time" required class="h-10 rounded-lg border bg-transparent px-3" /></label>
+          <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.allowPastBooking" data-testid="allow-past-booking" type="checkbox" />อนุญาตให้ผู้ใช้จองช่วงเวลาที่ผ่านไปแล้วของวันนี้</label>
           <label class="flex items-center gap-2 font-bold sm:col-span-2"><input v-model="settings.singleSlotPurchaseEnabled" type="checkbox" />ซื้อได้ครั้งละ 1 สนาม × 1 ช่วงเวลา</label>
         </div>
 

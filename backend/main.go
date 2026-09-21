@@ -129,6 +129,10 @@ type Player struct {
 	WaitStartedAt           string `json:"waitStartedAt"`
 	SettledAmountSatang     int64  `json:"settledAmountSatang"`
 	OutstandingAmountSatang int64  `json:"outstandingAmountSatang"`
+	Withdrawn               bool   `json:"withdrawn,omitempty"`
+	WithdrawnAt             string `json:"withdrawnAt,omitempty"`
+	WithdrawnBy             string `json:"withdrawnBy,omitempty"`
+	WithdrawalNote          string `json:"withdrawalNote,omitempty"`
 }
 
 type MemberType struct {
@@ -510,6 +514,9 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players add column if not exists member_type_id text;
 		alter table players add column if not exists wait_started_at timestamptz default now();
 		alter table players add column if not exists settled_amount_satang bigint not null default 0;
+		alter table players add column if not exists withdrawn_at timestamptz;
+		alter table players add column if not exists withdrawn_by text not null default '';
+		alter table players add column if not exists withdrawal_note text not null default '';
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -989,6 +996,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_settings add column if not exists booking_acceptance_enabled boolean not null default false;
 		alter table booking_settings add column if not exists booking_acceptance_open_time time;
 		alter table booking_settings add column if not exists booking_acceptance_close_time time;
+		alter table booking_settings add column if not exists allow_past_booking boolean not null default false;
 		alter table booking_settings add column if not exists single_slot_purchase_enabled boolean not null default false;
 		alter table booking_settings add column if not exists popup_enabled boolean not null default false;
 		alter table booking_settings add column if not exists show_booker_name boolean not null default true;
@@ -1629,6 +1637,9 @@ func (a *app) migrate(ctx context.Context) error {
 	if err := a.backfillJSONStates(ctx); err != nil {
 		return err
 	}
+	if err := a.backfillBookingSlipAliases(ctx); err != nil {
+		return err
+	}
 	return a.backfillMatchShuttlePriceSnapshots(ctx)
 }
 
@@ -2258,6 +2269,70 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "withdraw":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		var body struct {
+			Note string `json:"note"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		for index := range state.Players {
+			player := &state.Players[index]
+			if player.ID != playerID || !player.Active {
+				continue
+			}
+			if completedMatchCountForPlayer(state, playerID) > 0 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นมีเกมที่จบแล้ว ไม่สามารถถอนตัวโดยไม่คิดเงิน", "code": "PLAYER_HAS_COMPLETED_MATCH"})
+				return
+			}
+			if matchListContainsPlayer(state.Pending, playerID) || matchListContainsPlayer(state.Queue, playerID) || matchListContainsPlayer(state.Live, playerID) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นยังอยู่ในรายการจับคู่ คิว หรือกำลังแข่งขัน", "code": "PLAYER_BUSY"})
+				return
+			}
+			if player.Paid || player.SettledAmountSatang > 0 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นมีประวัติชำระเงินแล้ว ไม่สามารถถอนตัวโดยไม่คิดเงิน", "code": "PLAYER_HAS_PAYMENT"})
+				return
+			}
+			if cancelledMatchHasUnreturnedShuttle(state, playerID) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "เกมที่ยกเลิกยังมีลูกแบดที่ไม่ได้คืน กรุณาจัดการลูกแบดก่อน", "code": "PLAYER_HAS_UNRETURNED_SHUTTLE"})
+				return
+			}
+			player.Active = false
+			player.Coupon = false
+			player.Withdrawn = true
+			player.WithdrawnAt = time.Now().UTC().Format(time.RFC3339)
+			player.WithdrawnBy = firstNonEmpty(routeUser.Name, routeUser.Email, routeUser.ID)
+			player.WithdrawalNote = strings.TrimSpace(body.Note)
+			state.Couples = slices.DeleteFunc(state.Couples, func(c Couple) bool { return c.A == playerID || c.B == playerID })
+			a.respondSavedWithActivity(w, r, state, "withdraw_player", "player", strconv.Itoa(playerID), map[string]any{"note": player.WithdrawalNote})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "restore-withdrawn":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		for index := range state.Players {
+			player := &state.Players[index]
+			if player.ID != playerID || !player.Withdrawn {
+				continue
+			}
+			player.Active = true
+			player.Coupon = false
+			player.Withdrawn = false
+			player.WithdrawnAt = ""
+			player.WithdrawnBy = ""
+			player.WithdrawalNote = ""
+			player.WaitStartedAt = time.Now().UTC().Format(time.RFC3339)
+			a.respondSavedWithActivity(w, r, state, "restore_withdrawn_player", "player", strconv.Itoa(playerID), map[string]any{})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "withdrawn player not found"})
 	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "resume":
 		playerID, err := strconv.Atoi(parts[2])
 		if err != nil {
@@ -2763,7 +2838,7 @@ func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, se
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang from players p left join member_types mt on mt.id=p.member_type_id where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from players p left join member_types mt on mt.id=p.member_type_id where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2772,13 +2847,17 @@ func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, se
 	items := []Player{}
 	for rows.Next() {
 		var item Player
-		var wait sql.NullTime
-		if err = rows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang); err != nil {
+		var wait, withdrawnAt sql.NullTime
+		if err = rows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 		if wait.Valid {
 			item.WaitStartedAt = wait.Time.UTC().Format(time.RFC3339)
+		}
+		if withdrawnAt.Valid {
+			item.Withdrawn = true
+			item.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
 		}
 		items = append(items, item)
 	}
@@ -2815,7 +2894,7 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 		history = append(history, item)
 	}
 	rows.Close()
-	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id order by p.id`, sessionID, search, pattern, pageSize, offset)
+	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id order by p.id`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2824,10 +2903,14 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 	players := []Player{}
 	for playerRows.Next() {
 		var item Player
-		var wait sql.NullTime
-		if err = playerRows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang); err != nil {
+		var wait, withdrawnAt sql.NullTime
+		if err = playerRows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
+		}
+		if withdrawnAt.Valid {
+			item.Withdrawn = true
+			item.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
 		}
 		players = append(players, item)
 	}
@@ -3347,9 +3430,9 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz, $18)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang, withdrawn_at, withdrawn_by, withdrawal_note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz, $18, nullif($19, '')::timestamptz, $20, $21)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang, player.WithdrawnAt, player.WithdrawnBy, player.WithdrawalNote); err != nil {
 			return err
 		}
 	}
@@ -3539,7 +3622,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang
+		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang, p.withdrawn_at, p.withdrawn_by, p.withdrawal_note
 		from players p
 		left join member_types mt on mt.id=p.member_type_id
 		where p.session_id = $1
@@ -3551,12 +3634,16 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		var waitStartedAt sql.NullTime
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang); err != nil {
+		var waitStartedAt, withdrawnAt sql.NullTime
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang, &withdrawnAt, &player.WithdrawnBy, &player.WithdrawalNote); err != nil {
 			return SessionState{}, err
 		}
 		if waitStartedAt.Valid {
 			player.WaitStartedAt = waitStartedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if withdrawnAt.Valid {
+			player.Withdrawn = true
+			player.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
 		}
 		state.Players = append(state.Players, player)
 		if player.ID > state.NextIDs.Player {
@@ -4245,6 +4332,25 @@ func deletePlayer(state *SessionState, playerID int) error {
 		return nil
 	}
 	return errPlayerNotFound
+}
+
+func completedMatchCountForPlayer(state SessionState, playerID int) int {
+	count := 0
+	for _, match := range state.History {
+		if !isCancelledMatch(match) && slices.Contains(matchPlayers(match), playerID) {
+			count++
+		}
+	}
+	return count
+}
+
+func cancelledMatchHasUnreturnedShuttle(state SessionState, playerID int) bool {
+	for _, match := range state.History {
+		if isCancelledMatch(match) && match.Shuttles > 0 && !match.ShuttleReturned && slices.Contains(matchPlayers(match), playerID) {
+			return true
+		}
+	}
+	return false
 }
 
 func playerReferenced(state SessionState, playerID int) bool {

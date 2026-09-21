@@ -33,6 +33,8 @@ function mountPlayers(apiRequest, overrides = {}) {
       saveSettings: vi.fn(),
       togglePayment: overrides.togglePayment || vi.fn(),
       resumePlayer: overrides.resumePlayer || vi.fn(),
+      withdrawPlayer: overrides.withdrawPlayer || vi.fn(),
+      restoreWithdrawnPlayer: overrides.restoreWithdrawnPlayer || vi.fn(),
       isSessionReadOnly: false,
       apiRequest
     }
@@ -40,7 +42,10 @@ function mountPlayers(apiRequest, overrides = {}) {
   return { wrapper, forms }
 }
 
-afterEach(() => vi.useRealTimers())
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 describe('PlayersPage member combobox', () => {
   it('searches a phone from the first digit and selects a member', async () => {
@@ -298,28 +303,32 @@ describe('PlayersPage player sorting', () => {
 })
 
 describe('PlayersPage linked member protection', () => {
-  it('disables name and phone changes and leaves only removal for a linked member', async () => {
+  it('offers withdrawal without editing a linked member that has no completed game', async () => {
     const renamePlayer = vi.fn()
     const deletePlayer = vi.fn().mockResolvedValue()
+    const withdrawPlayer = vi.fn().mockResolvedValue()
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.spyOn(window, 'prompt').mockReturnValue('ไม่ได้เล่น')
     const linkedPlayer = { id: 9, name: 'Linked Member', memberId: 'member-9', games: 0, shuttles: 0, paid: false, active: true }
     const { wrapper } = mountPlayers(vi.fn(), {
       state: { players: [linkedPlayer], settings: { showPaymentOnShare: true, showTotalOnShare: true }, session: { type: 'liveMatch' } },
       renamePlayer,
       deletePlayer,
+      withdrawPlayer,
     })
 
-    const removeFromMatchButton = wrapper.get('button[aria-label="ลบสมาชิกออกจาก Match"]')
-    expect(removeFromMatchButton.text()).toContain('ลบออก')
-    await removeFromMatchButton.trigger('click')
-
-    expect(wrapper.get('input[aria-label="แก้ชื่อสมาชิก"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.get('input[inputmode="tel"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.text()).toContain('ชื่อและเบอร์โทรต้องแก้ไขจากระบบสมาชิกเท่านั้น')
-    expect(wrapper.findAll('button').some((button) => button.text() === 'บันทึกชื่อ')).toBe(false)
-
-    await wrapper.findAll('button').find((button) => button.text() === 'ลบชื่อ').trigger('click')
-    expect(deletePlayer).toHaveBeenCalledWith(linkedPlayer)
+    await wrapper.get('[data-testid="withdraw-player"]').trigger('click')
+    expect(withdrawPlayer).toHaveBeenCalledWith(linkedPlayer, 'ไม่ได้เล่น')
+    expect(deletePlayer).not.toHaveBeenCalled()
     expect(renamePlayer).not.toHaveBeenCalled()
+  })
+
+  it('hides withdrawal after the first completed game', () => {
+    const linkedPlayer = { id: 9, name: 'Linked Member', memberId: 'member-9', games: 1, shuttles: 0, paid: false, active: true }
+    const { wrapper } = mountPlayers(vi.fn(), {
+      state: { players: [linkedPlayer], settings: {}, session: { type: 'liveMatch' } },
+    })
+    expect(wrapper.find('[data-testid="withdraw-player"]').exists()).toBe(false)
   })
 })
 

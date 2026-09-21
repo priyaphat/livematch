@@ -3580,6 +3580,31 @@ async function resumePlayerApi(player) {
   }
 }
 
+async function withdrawPlayerApi(player, note = '') {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ note })
+    }))
+    showToast(`${player.name} ถอนตัวแล้ว และไม่นำไปคิดยอด Match`)
+  } catch (error) {
+    showToast(error.message || 'ถอนตัวไม่สำเร็จ')
+    throw error
+  }
+}
+
+async function restoreWithdrawnPlayerApi(player) {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}/restore-withdrawn`, { method: 'POST' }))
+    showToast(`${player.name} กลับเข้าสู่รายชื่อผู้เล่นแล้ว`)
+  } catch (error) {
+    showToast(error.message || 'คืนสถานะผู้เล่นไม่สำเร็จ')
+    throw error
+  }
+}
+
 async function updatePlayerLevelApi(playerId, level) {
   if (!ensureSessionActive()) return
   try {
@@ -3916,6 +3941,8 @@ const pageProps = computed(() => ({
   copyQrLink,
   togglePayment: togglePaymentApi,
   resumePlayer: resumePlayerApi,
+  withdrawPlayer: withdrawPlayerApi,
+  restoreWithdrawnPlayer: restoreWithdrawnPlayerApi,
   updatePlayerLevel: updatePlayerLevelApi,
   updatePlayerRandomStatus: updatePlayerRandomStatusApi,
   randomMatch: randomMatchApi,

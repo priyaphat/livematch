@@ -300,6 +300,22 @@ func TestSlipOKCode1010SchedulesRetry(t *testing.T) {
 	}
 }
 
+func TestSlipOKTransientHTTPFailureSchedulesRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "45")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"message": "temporarily unavailable"})
+	}))
+	defer server.Close()
+	previous := slipOKAPIBaseURL
+	slipOKAPIBaseURL = server.URL
+	defer func() { slipOKAPIBaseURL = previous }()
+
+	result := (&app{}).checkSlipOK(t.Context(), slipOKSettings{Enabled: true, BranchID: "branch-1", APIKey: "secret"}, "data:image/png;base64,aGVsbG8=", 100)
+	if !result.Retryable || result.Definitive || result.Status != "pending_retry" || result.RetryAfter != 45*time.Second {
+		t.Fatalf("transient provider failure must schedule retry: %#v", result)
+	}
+}
+
 func TestMaskSecret(t *testing.T) {
 	if got := maskSecret("1234567890abcdef"); got != "1234••••••••cdef" {
 		t.Fatalf("unexpected masked secret %q", got)
@@ -1407,6 +1423,29 @@ func TestDeletePlayerRejectsReferencedPlayer(t *testing.T) {
 	reasons := playerDeleteBlockReasons(state, 1)
 	if len(reasons) != 1 || reasons[0] != "history" {
 		t.Fatalf("expected history delete block reason, got %#v", reasons)
+	}
+}
+
+func TestWithdrawEligibilityCountsOnlyCompletedMatches(t *testing.T) {
+	state := SessionState{History: []Match{
+		{ID: 1, A1: 7, A2: 2, B1: 3, B2: 4, Status: "cancelled", ShuttleReturned: true, Shuttles: 1},
+	}}
+	if got := completedMatchCountForPlayer(state, 7); got != 0 {
+		t.Fatalf("cancelled history must not count as completed, got %d", got)
+	}
+	if cancelledMatchHasUnreturnedShuttle(state, 7) {
+		t.Fatal("returned shuttle must not block withdrawal")
+	}
+	state.History = append(state.History, Match{ID: 2, A1: 7, A2: 2, B1: 3, B2: 4, Status: "finished"})
+	if got := completedMatchCountForPlayer(state, 7); got != 1 {
+		t.Fatalf("one finished match must hide and block withdrawal, got %d", got)
+	}
+}
+
+func TestWithdrawEligibilityBlocksUnreturnedCancelledShuttle(t *testing.T) {
+	state := SessionState{History: []Match{{ID: 1, A1: 7, A2: 2, B1: 3, B2: 4, Status: "cancelled", Shuttles: 1}}}
+	if !cancelledMatchHasUnreturnedShuttle(state, 7) {
+		t.Fatal("cancelled match with an unreturned shuttle must block free withdrawal")
 	}
 }
 

@@ -835,6 +835,10 @@ func TestPOSEditHeldSaleStockDiscountAndProfitIntegration(t *testing.T) {
 		t.Fatalf("hold status=%d payload=%#v", status, held)
 	}
 	heldID := held["saleId"].(string)
+	var originalAccountID string
+	if err = db.QueryRow(`select billing_account_id from pos_sales where id=$1`, heldID).Scan(&originalAccountID); err != nil {
+		t.Fatal(err)
+	}
 	if snapshot := string(a.posSaleBillingSnapshot(t.Context(), adminID, heldID)); !strings.Contains(snapshot, `"productId":"`+productID+`"`) || !strings.Contains(snapshot, `"unitCostSatang":4000`) {
 		t.Fatalf("editable billing snapshot lost product identity or cost: %s", snapshot)
 	}
@@ -846,7 +850,7 @@ func TestPOSEditHeldSaleStockDiscountAndProfitIntegration(t *testing.T) {
 
 	// Opening the editor performs no server mutation. Saving one remaining item
 	// replaces the open sale and returns exactly one unit, not both units.
-	status, revised := requestSale(map[string]any{"requestId": "revise-" + randHex(4), "replaceSaleIds": []string{heldID}, "action": "hold", "buyerType": "member", "buyerId": memberID, "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	status, revised := requestSale(map[string]any{"requestId": "revise-" + randHex(4), "replaceSaleIds": []string{heldID}, "action": "hold", "buyerType": "anonymous", "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
 	if status != http.StatusCreated {
 		t.Fatalf("revise status=%d payload=%#v", status, revised)
 	}
@@ -860,9 +864,20 @@ func TestPOSEditHeldSaleStockDiscountAndProfitIntegration(t *testing.T) {
 	if oldStatus != "void" {
 		t.Fatalf("replaced sale status=%q", oldStatus)
 	}
+	status, stale := requestSale(map[string]any{"requestId": "stale-revise-" + randHex(4), "replaceSaleIds": []string{heldID}, "action": "hold", "buyerType": "anonymous", "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if status != http.StatusConflict {
+		t.Fatalf("stale revision status=%d payload=%#v want 409", status, stale)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 4 {
+		t.Fatalf("stale revision changed stock: %d", stock)
+	}
 
 	var accountID string
 	_ = db.QueryRow(`select billing_account_id from pos_sales where id=$1`, revisedID).Scan(&accountID)
+	if accountID != originalAccountID {
+		t.Fatalf("revised sale account=%q want original account %q", accountID, originalAccountID)
+	}
 	paid, err := a.settleBillingAccountWithDiscount(t.Context(), owner, accountID, "cash", 9000, 9000, "", true, "pos", "amount", 1000, 0)
 	if err != nil {
 		t.Fatal(err)
