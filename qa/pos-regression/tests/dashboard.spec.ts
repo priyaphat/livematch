@@ -223,3 +223,36 @@ test('POS-DASH-006 การ์ดพักยอด สต็อกต่ำ �
   await expect(page.getByRole('button', { name: /สินค้าสต็อกต่ำ/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /ดูใบเสร็จ/ }).first()).toBeVisible();
 });
+
+test('POS-RPT-010 ตัวกรองวันนี้เปิด 7 วันและเลื่อนเมาส์เข้าเมนูได้โดยไม่ยุบ', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: /รายงาน/ }).click();
+
+  const todayButton = page.locator('#report-today-filter-btn');
+  const menuButton = page.locator('#report-quick-day-menu-btn');
+  await todayButton.hover();
+  const menu = page.getByRole('menu', { name: 'เลือกวันที่ใน 7 วันล่าสุด' });
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitemradio')).toHaveCount(7);
+  const todayBox = await todayButton.boundingBox();
+  const menuBox = await menu.boundingBox();
+  expect(todayBox).toBeTruthy();
+  expect(menuBox).toBeTruthy();
+  await page.mouse.move(todayBox!.x + (todayBox!.width / 2), todayBox!.y + todayBox!.height - 1);
+  await page.mouse.move(menuBox!.x + 20, menuBox!.y + 2, { steps: 8 });
+  await expect(menu).toBeVisible();
+
+  await menu.getByRole('menuitemradio').nth(2).click();
+  const expectedDate = new Date(Date.now() - (2 * 24 * 60 * 60 * 1000)).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+  const customInputs = page.locator('input[type="date"]');
+  await expect(customInputs).toHaveCount(2);
+  await expect(customInputs.nth(0)).toHaveValue(expectedDate);
+  await expect(customInputs.nth(1)).toHaveValue(expectedDate);
+
+  await menuButton.evaluate((element: HTMLButtonElement) => element.click());
+  await expect(menu).toBeVisible();
+  await expect(menuButton).toHaveAttribute('aria-expanded', 'true');
+  await todayButton.click();
+  await expect(todayButton).toHaveClass(/bg-emerald-500/);
+  await expect(customInputs).toHaveCount(0);
+});

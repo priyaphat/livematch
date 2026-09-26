@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateShort } from '../utils/formatters';
 import { authorizePOSReportExport, getPOSInventoryReport, getPOSPurchasesReport, getPOSReports, getPOSSoldProductsReport, getPOSSpecialReport, getPOSTransfersReport, POSInventoryFilters, POSInventoryReport, POSPurchaseReportItem, POSPurchasesReport, POSReportData, POSReportRange, POSReportStockLocation, POSSoldProductsReport, POSSpecialReport, POSTransfersReport } from '../api/posReports';
@@ -21,6 +21,7 @@ import {
   FileSpreadsheet,
   Search,
   X,
+  ChevronDown,
 } from 'lucide-react';
 
 type ReportType = 'overview' | 'top_sellers' | 'vat' | 'payments' | 'sold_products' | 'purchases' | 'inventory' | 'transfers' | 'special';
@@ -40,6 +41,8 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   const [dateRange, setDateRange] = useState<POSReportRange>('day');
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
+  const [isQuickDayMenuOpen, setIsQuickDayMenuOpen] = useState(false);
+  const quickDayMenuRef = useRef<HTMLDivElement>(null);
   const [reportType, setReportType] = useState<ReportType>(() => (Object.keys(REPORT_PERMISSION_BY_TYPE) as ReportType[]).find((type) => permissions[REPORT_PERMISSION_BY_TYPE[type]]) || 'overview');
   const [stockLocation, setStockLocation] = useState<POSReportStockLocation>('all');
   const [report, setReport] = useState<POSReportData | null>(null);
@@ -70,6 +73,41 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   const [printLines, setPrintLines] = useState<string[] | null>(null);
   const [inventoryFilters, setInventoryFilters] = useState<POSInventoryFilters>({ status: 'all', stockStatus: 'all', packStatus: 'all' });
   const [extraLoading, setExtraLoading] = useState(false);
+
+  const quickDays = Array.from({ length: 7 }, (_, index) => {
+    const value = new Date(new Date(`${today}T12:00:00+07:00`).getTime() - (index * 24 * 60 * 60 * 1000));
+    const date = value.toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+    const formatted = new Intl.DateTimeFormat('th-TH', {
+      weekday: 'short', day: 'numeric', month: 'short', year: '2-digit', timeZone: 'Asia/Bangkok',
+    }).format(value);
+    return {
+      date,
+      label: index === 0 ? `วันนี้ · ${formatted}` : index === 1 ? `เมื่อวาน · ${formatted}` : formatted,
+    };
+  });
+
+  const selectQuickDay = (date: string) => {
+    setStartDate(date);
+    setEndDate(date);
+    setDateRange(date === today ? 'day' : 'custom');
+    setIsQuickDayMenuOpen(false);
+  };
+
+  useEffect(() => {
+    if (!isQuickDayMenuOpen) return;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!quickDayMenuRef.current?.contains(event.target as Node)) setIsQuickDayMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsQuickDayMenuOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [isQuickDayMenuOpen]);
 
   useEffect(() => {
     if (permissions[REPORT_PERMISSION_BY_TYPE[reportType]]) return;
@@ -512,16 +550,64 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
         <div className="flex flex-wrap items-center gap-2">
           {/* Date tabs */}
           <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shadow-xs">
-            <button
-              onClick={() => setDateRange('day')}
-              className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
-                dateRange === 'day'
-                  ? 'bg-emerald-500 text-slate-950 shadow-xs'
-                  : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
+            <div
+              ref={quickDayMenuRef}
+              className="relative flex"
+              onPointerEnter={(event) => { if (event.pointerType === 'mouse') setIsQuickDayMenuOpen(true); }}
+              onPointerLeave={(event) => { if (event.pointerType === 'mouse') setIsQuickDayMenuOpen(false); }}
             >
-              วันนี้
-            </button>
+              <button
+                id="report-today-filter-btn"
+                type="button"
+                onClick={() => selectQuickDay(today)}
+                className={`rounded-l-xl py-1.5 pl-3 pr-2 font-bold transition-colors ${
+                  dateRange === 'day'
+                    ? 'bg-emerald-500 text-slate-950 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900 dark:text-slate-400 dark:hover:text-white'
+                }`}
+              >
+                วันนี้
+              </button>
+              <button
+                id="report-quick-day-menu-btn"
+                type="button"
+                aria-label="เลือกวันย้อนหลัง 7 วัน"
+                aria-haspopup="menu"
+                aria-expanded={isQuickDayMenuOpen}
+                onClick={() => setIsQuickDayMenuOpen((current) => !current)}
+                className={`grid w-7 place-items-center rounded-r-xl border-l transition-colors ${
+                  dateRange === 'day'
+                    ? 'border-emerald-700/20 bg-emerald-500 text-slate-950 shadow-xs'
+                    : 'border-slate-200 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white'
+                }`}
+              >
+                <ChevronDown className={`h-3.5 w-3.5 transition-transform ${isQuickDayMenuOpen ? 'rotate-180' : ''}`} />
+              </button>
+
+              {isQuickDayMenuOpen && (
+                <div className="absolute left-0 top-full z-50 w-56 pt-2">
+                  <div role="menu" aria-label="เลือกวันที่ใน 7 วันล่าสุด" className="overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+                    <div className="px-2.5 pb-1.5 pt-1 text-[10px] font-black uppercase tracking-wider text-slate-400">เลือกวันย้อนหลัง 7 วัน</div>
+                    {quickDays.map((item) => {
+                      const selected = (dateRange === 'day' && item.date === today) || (dateRange === 'custom' && startDate === item.date && endDate === item.date);
+                      return (
+                        <button
+                          key={item.date}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={selected}
+                          onClick={() => selectQuickDay(item.date)}
+                          className={`flex w-full items-center justify-between rounded-xl px-2.5 py-2 text-left text-xs font-bold transition-colors ${selected ? 'bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-300' : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'}`}
+                        >
+                          <span>{item.label}</span>
+                          {selected && <span className="text-emerald-600 dark:text-emerald-400">✓</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
             <button
               onClick={() => setDateRange('week')}
               className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${

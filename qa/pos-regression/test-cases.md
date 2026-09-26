@@ -113,6 +113,7 @@
 | POS-RPT-007 | P2 | มีเอกสารรับเข้าที่ระบุซัพพลายเออร์และส่วนลด | ค้นหาชื่อ เลือกซัพพลายเออร์ ดูรายละเอียด และส่งออก Excel รวม/รายเอกสาร | ค่าเริ่มต้นเป็นวันนี้และซัพพลายเออร์ทั้งหมด ตัวกรองทำงาน รายการย่อย/ยอดตรงเอกสาร และคอลัมน์เงินใน Excel เป็นตัวเลข 2 ตำแหน่ง | Playwright | API/Chromium/Excel |
 | POS-RPT-008 | P1 | สินค้าคงเหลือกำหนดจำนวนต่อแพ็ก | พิมพ์รายงานสินค้าคงเหลือแบบสลิปย่อ | แสดงแพ็กเต็ม เศษ และยอดรวมหน่วย ส่วนสินค้าไม่กำหนดแพ็กแสดงจำนวนหน่วย | Playwright | Chromium |
 | POS-RPT-009 | P0 | Staff เปิดรายงานสินค้าคงเหลือแต่ถูกปิดสิทธิ์มูลค่า | เปิดตาราง ตรวจ Network และ Export Excel | ตาราง/Excel แสดง `***` และ API ไม่มี cost/price fields ทั้ง 4 ฟิลด์ | Playwright | API/Chromium/Excel |
+| POS-RPT-010 | P2 | เปิดเมนูรายงาน | ชี้เมาส์ที่วันนี้ หรือกดลูกศรบนจอสัมผัส แล้วเลือกหนึ่งวัน | แสดงวันที่ล่าสุด 7 วัน เลือกวันเดียวได้ และกดวันนี้โดยตรงเพื่อกลับมาวันนี้ | Playwright | Chromium Desktop/Touch |
 | POS-QC-006 | P1 | Admin มี Session, Coin order และ ledger มากกว่า 20 รายการ | เปิดรายละเอียด Admin แล้วเปลี่ยนหน้าของทั้ง 3 ตาราง | แต่ละตารางใช้ server pagination แยกกันและ request ส่ง page/pageSize ถูกต้อง | Playwright | Chromium/API |
 | POS-QC-007 | P0 | Production Compose ใช้ project/port/volume QA แยก | เปิดทุก service, ตรวจไม่มี Vite HMR, recreate PostgreSQL แล้วอ่าน marker เดิม | Frontend/POS/Backend/pgAdmin พร้อมใช้ และข้อมูลใน named volume ไม่หาย | Docker smoke | Nginx/PostgreSQL |
 | POS-NF-001 | P2 | Desktop/Mobile | เปิด critical pages/modals | ไม่มี overflow/modal หลุด/nav ทับ action | Playwright | Chromium Desktop/Mobile |
