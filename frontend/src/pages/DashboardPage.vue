@@ -8,6 +8,7 @@ const props = defineProps([
   'state',
   'activePlayerCount',
   'totalRecordedMatches',
+  'pairingPatternSummary',
   'cancelledMatches',
   'averageGames',
   'minGames',
@@ -63,6 +64,30 @@ const reportMatches = computed(() => [
   ...(props.state.live || []).map((match) => ({ ...match, reportPhase: 'live' })),
   ...completedMatches.value.map((match) => ({ ...match, reportPhase: 'history' }))
 ])
+const pairingPatternDefinitions = [
+  { id: 'pair_pair', name: 'คู่ พบ คู่', detail: 'ผู้เล่นมาเป็นคู่ทั้ง 2 ฝั่ง', tone: 'bg-court-500' },
+  { id: 'pair_two_singles', name: 'คู่และคนเดี่ยว', detail: '1 คู่ รวมกับผู้เล่นเดี่ยว 2 คน', tone: 'bg-sky-500' },
+  { id: 'four_singles', name: 'คนเดี่ยว 4 คน', detail: 'ผู้เล่นส่งชื่อแยกกันทั้งหมด', tone: 'bg-amber-500' },
+  { id: 'one_one', name: 'เกมเดี่ยว', detail: 'ผู้เล่นเดี่ยวพบกัน 2 คน', tone: 'bg-violet-500' },
+  { id: 'manual_four', name: 'สร้างทีม 4 คนเอง', detail: 'ผู้ดูแลจัดผู้เล่นทั้ง 2 ทีมเอง', tone: 'bg-rose-500' }
+]
+const pairingPatternReport = computed(() => {
+  const source = props.pairingPatternSummary && typeof props.pairingPatternSummary === 'object'
+    ? props.pairingPatternSummary
+    : [...(props.state.live || []), ...completedMatches.value].reduce((counts, match) => {
+        const pattern = pairingPatternDefinitions.some((item) => item.id === match.pairingPattern)
+          ? match.pairingPattern
+          : 'legacy_unknown'
+        counts[pattern] = (counts[pattern] || 0) + 1
+        return counts
+      }, {})
+  const total = pairingPatternDefinitions.reduce((sum, item) => sum + Number(source[item.id] || 0), 0)
+  return pairingPatternDefinitions.map((item) => {
+    const count = Number(source[item.id] || 0)
+    return { ...item, count, percent: total ? Math.round((count / total) * 100) : 0 }
+  })
+})
+const pairingPatternTotal = computed(() => pairingPatternReport.value.reduce((sum, item) => sum + item.count, 0))
 
 function matchDurationMinutes(match) {
   if (!match?.startedAt || !match?.endedAt) return 0
@@ -305,6 +330,30 @@ async function exportExcel() {
           <p class="mt-1 text-xs font-semibold text-stone-500">{{ unpaidPlayers.length }} คนยังไม่ชำระ</p>
         </article>
       </div>
+
+      <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5" data-testid="pairing-pattern-report">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-semibold text-stone-500">รูปแบบต้นทางของผู้เล่น</p>
+            <h3 class="mt-1 text-xl font-black">การจับคู่ที่เกิดขึ้น</h3>
+            <p class="mt-1 text-xs font-semibold text-stone-500">นับเกมกำลังแข่งและเกมที่จบแล้ว · ไม่รวมรอคิวและเกมยกเลิก</p>
+          </div>
+          <div class="flex items-center gap-2 rounded-md bg-paper-100 px-3 py-2 dark:bg-stone-800">
+            <Shuffle class="h-5 w-5 text-court-500" />
+            <span class="text-sm font-black">รวม {{ pairingPatternTotal }} เกม</span>
+          </div>
+        </div>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div v-for="item in pairingPatternReport" :key="item.id" class="rounded-md border border-stone-200 p-3 dark:border-stone-700" :data-testid="`pairing-pattern-${item.id}`">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0"><p class="text-base font-black sm:text-lg">{{ item.name }}</p><p class="mt-0.5 text-xs font-semibold text-stone-500">{{ item.detail }}</p></div>
+              <span class="text-2xl font-black">{{ item.count }}</span>
+            </div>
+            <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800"><div class="h-full rounded-full" :class="item.tone" :style="{ width: `${item.percent}%` }" /></div>
+            <p class="mt-1 text-right text-xs font-bold text-stone-500">{{ item.percent }}%</p>
+          </div>
+        </div>
+      </article>
 
       <div class="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">

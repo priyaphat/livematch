@@ -20,7 +20,8 @@ const playerLabel = (id) => {
   const minutes = waitMinutes(player?.waitStartedAt, waitClock.value)
   return minutes === null ? name : `${name} · ${minutes} นาที`
 }
-const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0).map(playerLabel).join(' + ')
+const playerById = (id) => (props.state.players || []).find((item) => item.id === Number(id))
+const teamPlayerIds = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.b1, match.b2]).filter((id) => Number(id) > 0)
 </script>
 
 <template>
@@ -54,17 +55,21 @@ const teamName = (match, side) => (side === 'A' ? [match.a1, match.a2] : [match.
         <div class="grid gap-4">
           <div>
             <p class="text-sm font-bold text-stone-500">ระดับ {{ matchLevelLabel(match) }}</p>
-            <h2 class="mt-1 text-xl font-black">{{ teamName(match, 'A') }} vs {{ teamName(match, 'B') }}</h2>
+            <h2 class="mt-1 flex flex-wrap items-center gap-1.5 text-xl font-black">
+              <template v-for="(id, index) in teamPlayerIds(match, 'A')" :key="`title-a-${id}`"><span v-if="index">+</span><span>{{ playerLabel(id) }}</span><span v-if="playerById(id)?.libero" class="rounded bg-sky-100 px-1.5 py-0.5 text-xs font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span></template>
+              <span class="mx-1 text-stone-400">vs</span>
+              <template v-for="(id, index) in teamPlayerIds(match, 'B')" :key="`title-b-${id}`"><span v-if="index">+</span><span>{{ playerLabel(id) }}</span><span v-if="playerById(id)?.libero" class="rounded bg-sky-100 px-1.5 py-0.5 text-xs font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span></template>
+            </h2>
           </div>
 
           <div class="grid gap-2 sm:grid-cols-2">
             <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <p class="text-xs font-black text-stone-500 dark:text-stone-400">ทีม A</p>
-              <p class="mt-1 font-black">{{ teamName(match, 'A') }}</p>
+              <p class="mt-1 flex flex-wrap items-center gap-1.5 font-black"><template v-for="(id, index) in teamPlayerIds(match, 'A')" :key="`a-${id}`"><span v-if="index">+</span><span>{{ playerLabel(id) }}</span><span v-if="playerById(id)?.libero" class="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span></template></p>
             </div>
             <div class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
               <p class="text-xs font-black text-stone-500 dark:text-stone-400">ทีม B</p>
-              <p class="mt-1 font-black">{{ teamName(match, 'B') }}</p>
+              <p class="mt-1 flex flex-wrap items-center gap-1.5 font-black"><template v-for="(id, index) in teamPlayerIds(match, 'B')" :key="`b-${id}`"><span v-if="index">+</span><span>{{ playerLabel(id) }}</span><span v-if="playerById(id)?.libero" class="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span></template></p>
             </div>
           </div>
 

@@ -28,10 +28,6 @@ function playerLabel(player) {
   return minutes === null ? player.name : `${player.name} · ${minutes} นาที`
 }
 
-function groupLabel(group) {
-  return group.ids.map((id) => playerLabel(props.state.players.find((player) => player.id === id))).join(' + ')
-}
-
 const activePlayers = computed(() => props.state.players.filter((player) => player.active))
 const couponFiltered = computed(() => {
   const keyword = (props.forms.couponSearch || '').trim().toLocaleLowerCase('th-TH')
@@ -67,6 +63,23 @@ function optionLabel(player) {
 
 function selectedPlayer(id) {
   return activePlayers.value.find((player) => player.id === Number(id))
+}
+
+function isLibero(id) {
+  return Boolean(selectedPlayer(id)?.libero)
+}
+
+function liberoScheduleLabel(id) {
+  if (!isLibero(id)) return ''
+  const hasPlayer = (match) => [match.a1, match.a2, match.b1, match.b2].map(Number).includes(Number(id))
+  const pendingCount = (props.state.pending || []).filter(hasPlayer).length
+  const queueCount = (props.state.queue || []).filter(hasPlayer).length
+  const liveMatch = (props.state.live || []).find(hasPlayer)
+  const parts = []
+  if (liveMatch) parts.push(liveMatch.court && liveMatch.court !== '-' ? `กำลังแข่ง ${liveMatch.court}` : 'กำลังแข่ง')
+  if (pendingCount) parts.push(`Pending ${pendingCount}`)
+  if (queueCount) parts.push(`รอคิว ${queueCount}`)
+  return parts.join(' · ')
 }
 
 watch(
@@ -164,7 +177,14 @@ function changeGroupStatus(group, event) {
           class="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
           <span class="font-bold">{{ group.ids.join('/') }}</span>
-          <span class="min-w-0 truncate">{{ groupLabel(group) }}</span>
+          <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+            <template v-for="(id, index) in group.ids" :key="id">
+              <span v-if="index" class="font-bold text-stone-400">+</span>
+              <span class="truncate">{{ playerLabel(selectedPlayer(id)) }}</span>
+              <span v-if="isLibero(id)" class="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span>
+              <span v-if="liberoScheduleLabel(id)" class="text-[11px] font-bold text-sky-700 dark:text-sky-300">{{ liberoScheduleLabel(id) }}</span>
+            </template>
+          </span>
           <select
             class="h-10 rounded-md border border-stone-200 bg-white px-2 text-sm font-semibold dark:border-stone-700 dark:bg-stone-900"
             :value="groupValue(group)"
@@ -210,7 +230,7 @@ function changeGroupStatus(group, event) {
                 class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-paper-100 dark:hover:bg-stone-800"
                 @mousedown.prevent="selectCouplePlayer('a', player)"
               >
-                <span class="truncate">{{ playerLabel(player) }}</span>
+                <span class="flex min-w-0 items-center gap-1.5"><span class="truncate">{{ playerLabel(player) }}</span><span v-if="player.libero" class="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span></span>
                 <span class="text-xs text-stone-500">#{{ player.id }}</span>
               </button>
               <p v-if="!filteredCouplePlayers(coupleAQuery, forms.coupleBId).length" class="px-3 py-2 text-sm font-semibold text-stone-500">ไม่พบสมาชิก</p>
@@ -236,7 +256,7 @@ function changeGroupStatus(group, event) {
                 class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm font-semibold hover:bg-paper-100 dark:hover:bg-stone-800"
                 @mousedown.prevent="selectCouplePlayer('b', player)"
               >
-                <span class="truncate">{{ playerLabel(player) }}</span>
+                <span class="flex min-w-0 items-center gap-1.5"><span class="truncate">{{ playerLabel(player) }}</span><span v-if="player.libero" class="shrink-0 rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span></span>
                 <span class="text-xs text-stone-500">#{{ player.id }}</span>
               </button>
               <p v-if="!filteredCouplePlayers(coupleBQuery, forms.coupleAId).length" class="px-3 py-2 text-sm font-semibold text-stone-500">ไม่พบสมาชิก</p>
@@ -254,7 +274,11 @@ function changeGroupStatus(group, event) {
           :key="couple.id"
           class="flex items-center justify-between rounded-md bg-paper-100 p-3 dark:bg-stone-800"
         >
-          <span>{{ playerLabel(selectedPlayer(couple.a)) }} + {{ playerLabel(selectedPlayer(couple.b)) }}</span>
+          <span class="flex min-w-0 flex-wrap items-center gap-1.5">
+            <span>{{ playerLabel(selectedPlayer(couple.a)) }}</span><span v-if="isLibero(couple.a)" class="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span>
+            <span class="font-bold text-stone-400">+</span>
+            <span>{{ playerLabel(selectedPlayer(couple.b)) }}</span><span v-if="isLibero(couple.b)" class="rounded bg-sky-100 px-1.5 py-0.5 text-[11px] font-black text-sky-700 dark:bg-sky-900/50 dark:text-sky-200">ริโบโร่</span>
+          </span>
           <button class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 disabled:cursor-not-allowed disabled:opacity-45 dark:border-stone-700" :disabled="isSessionReadOnly" aria-label="ลบคู่" @click="removeCouple(couple.id)">
             <X class="h-4 w-4" />
           </button>

@@ -81,32 +81,34 @@ type SessionInfo struct {
 }
 
 type Settings struct {
-	EntryFee                int            `json:"entryFee"`
-	ClubEntryFee            int            `json:"clubEntryFee"`
-	MemberEntryFees         map[string]int `json:"memberEntryFees"`
-	CourtFeePerHour         int            `json:"courtFeePerHour"`
-	ShuttleFee              int            `json:"shuttleFee"`
-	ShuttleBrands           []ShuttleBrand `json:"shuttleBrands"`
-	SessionFee              int            `json:"sessionFee"`
-	CourtCount              int            `json:"courtCount"`
-	CourtNames              []string       `json:"courtNames"`
-	Levels                  []string       `json:"levels"`
-	AllowCrossLevel         bool           `json:"allowCrossLevel"`
-	CrossLevelRange         int            `json:"crossLevelRange"`
-	RandomPriority          string         `json:"randomPriority"`
-	ShowPaymentOnShare      bool           `json:"showPaymentOnShare"`
-	ShowTotalOnShare        bool           `json:"showTotalOnShare"`
-	ShowWaitingOnQueueShare bool           `json:"showWaitingOnQueueShare"`
-	ShowWaitTimePlayers     bool           `json:"showWaitTimePlayers"`
-	ShowWaitTimePairing     bool           `json:"showWaitTimePairing"`
-	ShowWaitTimeQueue       bool           `json:"showWaitTimeQueue"`
-	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
-	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
-	AnnouncementTemplate    string         `json:"announcementTemplate"`
-	AnnouncementBellKey     string         `json:"announcementBellKey,omitempty"`
-	AnnouncementBellName    string         `json:"announcementBellName,omitempty"`
-	AnnouncementBellMIME    string         `json:"announcementBellMime,omitempty"`
-	DashboardAnnouncements  []string       `json:"dashboardAnnouncements,omitempty"`
+	EntryFee                   int            `json:"entryFee"`
+	ClubEntryFee               int            `json:"clubEntryFee"`
+	MemberEntryFees            map[string]int `json:"memberEntryFees"`
+	CourtFeePerHour            int            `json:"courtFeePerHour"`
+	ShuttleFee                 int            `json:"shuttleFee"`
+	ShuttleBrands              []ShuttleBrand `json:"shuttleBrands"`
+	SessionFee                 int            `json:"sessionFee"`
+	CourtCount                 int            `json:"courtCount"`
+	CourtNames                 []string       `json:"courtNames"`
+	Levels                     []string       `json:"levels"`
+	AllowCrossLevel            bool           `json:"allowCrossLevel"`
+	CrossLevelRange            int            `json:"crossLevelRange"`
+	RandomPriority             string         `json:"randomPriority"`
+	ShowPaymentOnShare         bool           `json:"showPaymentOnShare"`
+	ShowTotalOnShare           bool           `json:"showTotalOnShare"`
+	ShowWaitingOnQueueShare    bool           `json:"showWaitingOnQueueShare"`
+	ShowWaitTimePlayers        bool           `json:"showWaitTimePlayers"`
+	ShowWaitTimePairing        bool           `json:"showWaitTimePairing"`
+	ShowWaitTimeQueue          bool           `json:"showWaitTimeQueue"`
+	IdleWaitAlertEnabled       bool           `json:"idleWaitAlertEnabled"`
+	MatchStartAnimationEnabled bool           `json:"matchStartAnimationEnabled"`
+	ResetPlayersAfterFinish    bool           `json:"resetPlayersAfterFinish"`
+	StartMatchWithShuttle      bool           `json:"startMatchWithShuttle"`
+	AnnouncementTemplate       string         `json:"announcementTemplate"`
+	AnnouncementBellKey        string         `json:"announcementBellKey,omitempty"`
+	AnnouncementBellName       string         `json:"announcementBellName,omitempty"`
+	AnnouncementBellMIME       string         `json:"announcementBellMime,omitempty"`
+	DashboardAnnouncements     []string       `json:"dashboardAnnouncements,omitempty"`
 }
 
 type Player struct {
@@ -121,10 +123,12 @@ type Player struct {
 	Active                  bool   `json:"active"`
 	Level                   string `json:"level"`
 	Coupon                  bool   `json:"coupon"`
+	Libero                  bool   `json:"libero"`
 	ClubMember              bool   `json:"clubMember"`
 	MemberTypeID            string `json:"memberTypeId,omitempty"`
 	MemberTypeName          string `json:"memberTypeName,omitempty"`
 	MemberID                string `json:"memberId,omitempty"`
+	AvatarURL               string `json:"avatarUrl,omitempty"`
 	BillingAccountID        string `json:"billingAccountId,omitempty"`
 	WaitStartedAt           string `json:"waitStartedAt"`
 	SettledAmountSatang     int64  `json:"settledAmountSatang"`
@@ -267,11 +271,18 @@ type Match struct {
 	ShuttlePricingMode     string           `json:"shuttlePricingMode"`
 	ShuttlePriceSnapshot   []ShuttleBrand   `json:"shuttlePriceSnapshot,omitempty"`
 	LegacyShuttleFee       int              `json:"legacyShuttleFee,omitempty"`
+	PairingPattern         string           `json:"pairingPattern"`
 }
 
 const (
-	shuttlePricingLegacy = "legacy_per_player"
-	shuttlePricingSplit  = "split_per_match"
+	shuttlePricingLegacy         = "legacy_per_player"
+	shuttlePricingSplit          = "split_per_match"
+	pairingPatternPairPair       = "pair_pair"
+	pairingPatternPairTwoSingles = "pair_two_singles"
+	pairingPatternFourSingles    = "four_singles"
+	pairingPatternOneOne         = "one_one"
+	pairingPatternManualFour     = "manual_four"
+	pairingPatternLegacyUnknown  = "legacy_unknown"
 )
 
 type LiveShareHours struct {
@@ -373,6 +384,7 @@ func main() {
 	mux.HandleFunc("/api/public-auth/", a.handlePublicAuth)
 	mux.HandleFunc("/api/public-booking/", a.handlePublicBooking)
 	mux.HandleFunc("/api/profile/", a.handleProfile)
+	mux.HandleFunc("/api/member-avatar/", a.serveMemberAvatar)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
 	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
 	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
@@ -460,6 +472,8 @@ func (a *app) migrate(ctx context.Context) error {
 			show_wait_time_players boolean not null default true,
 			show_wait_time_pairing boolean not null default true,
 			show_wait_time_queue boolean not null default true,
+			idle_wait_alert_enabled boolean not null default true,
+			match_start_animation_enabled boolean not null default true,
 			reset_players_after_finish boolean not null default true,
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
@@ -480,6 +494,8 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists show_wait_time_players boolean not null default true;
 		alter table session_settings add column if not exists show_wait_time_pairing boolean not null default true;
 		alter table session_settings add column if not exists show_wait_time_queue boolean not null default true;
+		alter table session_settings add column if not exists idle_wait_alert_enabled boolean not null default true;
+		alter table session_settings add column if not exists match_start_animation_enabled boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
 		alter table session_settings add column if not exists session_fee integer not null default 0;
@@ -510,6 +526,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players add column if not exists losses integer not null default 0;
 		alter table players alter column coupon set default false;
 		alter table players add column if not exists club_member boolean not null default false;
+		alter table players add column if not exists libero boolean not null default false;
 		alter table players add column if not exists member_id text;
 		alter table players add column if not exists member_type_id text;
 		alter table players add column if not exists wait_started_at timestamptz default now();
@@ -548,6 +565,7 @@ func (a *app) migrate(ctx context.Context) error {
 			shuttle_pricing_mode text not null default 'legacy_per_player',
 			shuttle_price_snapshot jsonb not null default '[]'::jsonb,
 			legacy_shuttle_fee integer not null default 0,
+			pairing_pattern text not null default 'legacy_unknown',
 			primary key (session_id, id)
 		);
 		alter table matches drop constraint if exists matches_phase_check;
@@ -562,10 +580,14 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add column if not exists shuttle_pricing_mode text not null default 'legacy_per_player';
 		alter table matches add column if not exists shuttle_price_snapshot jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists legacy_shuttle_fee integer not null default 0;
+		alter table matches add column if not exists pairing_pattern text not null default 'legacy_unknown';
 		update matches set shuttle_price_snapshot='[]'::jsonb where jsonb_typeof(shuttle_price_snapshot) is distinct from 'array';
 		update matches set shuttle_sequence_items='[]'::jsonb where jsonb_typeof(shuttle_sequence_items) is distinct from 'array';
 		alter table matches drop constraint if exists matches_shuttle_pricing_mode_check;
 		alter table matches add constraint matches_shuttle_pricing_mode_check check (shuttle_pricing_mode in ('legacy_per_player','split_per_match'));
+		update matches set pairing_pattern='legacy_unknown' where pairing_pattern not in ('pair_pair','pair_two_singles','four_singles','one_one','manual_four','legacy_unknown');
+		alter table matches drop constraint if exists matches_pairing_pattern_check;
+		alter table matches add constraint matches_pairing_pattern_check check (pairing_pattern in ('pair_pair','pair_two_singles','four_singles','one_one','manual_four','legacy_unknown'));
 		update matches m
 		set shuttle_price_snapshot = case
 		      when jsonb_array_length(s.shuttle_brands) = 0 then jsonb_build_array(jsonb_build_object('id', 'default', 'name', 'ลูกแบดทั่วไป', 'price', s.shuttle_fee, 'active', true))
@@ -933,6 +955,9 @@ func (a *app) migrate(ctx context.Context) error {
 		select 'member-type-'||md5(id||':club'),id,'club','สมาชิกชมรม',true,true from admin_users
 		on conflict do nothing;
 		alter table members add column if not exists profile_token text not null default '';
+		alter table members add column if not exists avatar_data bytea;
+		alter table members add column if not exists avatar_mime text not null default '';
+		alter table members add column if not exists avatar_version bigint not null default 0;
 		alter table members add column if not exists member_type_id text;
 		update members m set member_type_id=mt.id from member_types mt
 		where m.member_type_id is null and mt.admin_id=m.admin_id and mt.code=case when m.member_type='club' then 'club' else 'general' end and mt.deleted_at is null;
@@ -2463,6 +2488,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Paid         *bool   `json:"paid"`
 			Level        *string `json:"level"`
 			Coupon       *bool   `json:"coupon"`
+			Libero       *bool   `json:"libero"`
 			Active       *bool   `json:"active"`
 			ClubMember   *bool   `json:"clubMember"`
 			MemberID     *string `json:"memberId"`
@@ -2523,6 +2549,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 				if body.Coupon != nil {
 					logDetails["coupon"] = *body.Coupon
 					state.Players[i].Coupon = *body.Coupon
+				}
+				if body.Libero != nil {
+					logDetails["libero"] = *body.Libero
+					state.Players[i].Libero = *body.Libero
 				}
 				if body.Active != nil {
 					logDetails["active"] = *body.Active
@@ -2598,13 +2628,25 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPut && action == "settings":
 		var body struct {
 			Settings
-			SessionName *string `json:"sessionName"`
+			SessionName                     *string `json:"sessionName"`
+			IdleWaitAlertEnabledValue       *bool   `json:"idleWaitAlertEnabled"`
+			MatchStartAnimationEnabledValue *bool   `json:"matchStartAnimationEnabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid settings"})
 			return
 		}
 		settings := body.Settings
+		if body.IdleWaitAlertEnabledValue == nil {
+			settings.IdleWaitAlertEnabled = state.Settings.IdleWaitAlertEnabled
+		} else {
+			settings.IdleWaitAlertEnabled = *body.IdleWaitAlertEnabledValue
+		}
+		if body.MatchStartAnimationEnabledValue == nil {
+			settings.MatchStartAnimationEnabled = state.Settings.MatchStartAnimationEnabled
+		} else {
+			settings.MatchStartAnimationEnabled = *body.MatchStartAnimationEnabledValue
+		}
 		// Bell files are server-owned. Session settings may not point at arbitrary files.
 		settings.AnnouncementBellKey = state.Settings.AnnouncementBellKey
 		settings.AnnouncementBellName = state.Settings.AnnouncementBellName
@@ -2703,12 +2745,24 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		a.respondSavedWithActivity(w, r, state, "cancel_pending_match", "match", strconv.Itoa(matchID), map[string]any{})
 	case r.Method == http.MethodGet && action == "coupons":
 		busy := map[int]bool{}
-		for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+		for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
 			for _, id := range matchPlayers(match) {
-				busy[id] = true
+				player := playerByID(state.Players, id)
+				if player == nil || !player.Libero {
+					busy[id] = true
+				}
 			}
 		}
-		groups := buildAvailableGroups(state, busy)
+		for _, match := range state.Live {
+			for _, id := range matchPlayers(match) {
+				player := playerByID(state.Players, id)
+				if player == nil || !player.Libero {
+					busy[id] = true
+				}
+			}
+		}
+		includeNotReady := r.URL.Query().Get("includeNotReady") == "1" || r.URL.Query().Get("includeNotReady") == "true"
+		groups := buildPairingGroups(state, busy, !includeNotReady)
 		items := []map[string]any{}
 		for _, group := range groups {
 			names := []string{}
@@ -2719,11 +2773,17 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			pendingCount, queueCount, liveCourts := pairingScheduleForPlayers(state, group.ids)
 			items = append(items, map[string]any{
-				"ids":   group.ids,
-				"name":  strings.Join(names, " + "),
-				"level": group.level,
-				"games": group.games,
+				"ids":          group.ids,
+				"name":         strings.Join(names, " + "),
+				"level":        group.level,
+				"games":        group.games,
+				"coupon":       group.coupon,
+				"libero":       group.libero,
+				"pendingCount": pendingCount,
+				"queueCount":   queueCount,
+				"liveCourts":   liveCourts,
 			})
 		}
 		search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
@@ -2747,6 +2807,23 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body.Court == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "court is required"})
+			return
+		}
+		if conflicts := queuedMatchLiveConflicts(state, matchID); len(conflicts) > 0 {
+			playerIDs := make([]int, 0, len(conflicts))
+			playerNames := make([]string, 0, len(conflicts))
+			details := make([]string, 0, len(conflicts))
+			for _, conflict := range conflicts {
+				playerIDs = append(playerIDs, conflict.PlayerID)
+				playerNames = append(playerNames, conflict.PlayerName)
+				details = append(details, fmt.Sprintf("%sกำลังเล่น%s", conflict.PlayerName, conflict.Court))
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"code":        "PLAYER_STILL_LIVE",
+				"error":       "ยังเริ่มเกมไม่ได้: " + strings.Join(details, ", "),
+				"playerIds":   playerIDs,
+				"playerNames": playerNames,
+			})
 			return
 		}
 		brandID := selectableShuttleBrandID(state, body.BrandID)
@@ -2838,7 +2915,7 @@ func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, se
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from players p left join member_types mt on mt.id=p.member_type_id where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from players p left join member_types mt on mt.id=p.member_type_id left join members mem on mem.id=p.member_id and mem.deleted_at is null where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2847,11 +2924,13 @@ func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, se
 	items := []Player{}
 	for rows.Next() {
 		var item Player
+		var avatarVersion int64
 		var wait, withdrawnAt sql.NullTime
-		if err = rows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
+		if err = rows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.Libero, &item.ClubMember, &item.MemberID, &avatarVersion, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		item.AvatarURL = memberAvatarURL(item.MemberID, avatarVersion)
 		if wait.Valid {
 			item.WaitStartedAt = wait.Time.UTC().Format(time.RFC3339)
 		}
@@ -2874,7 +2953,7 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `select m.id,m.court,m.level,m.a1,m.a2,m.b1,m.b2,m.shuttles,m.winner,m.scores,m.shuttle_sequence,m.shuttle_sequence_items,m.shuttle_returned,m.returned_shuttle_brand_id,m.returned_shuttle_number,m.status,m.started_at,m.ended_at,m.note,m.shuttle_pricing_mode,m.shuttle_price_snapshot,m.legacy_shuttle_fee from matches m where `+filter+` order by m.id desc limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	rows, err := a.db.QueryContext(r.Context(), `select m.id,m.court,m.level,m.a1,m.a2,m.b1,m.b2,m.shuttles,m.winner,m.scores,m.shuttle_sequence,m.shuttle_sequence_items,m.shuttle_returned,m.returned_shuttle_brand_id,m.returned_shuttle_number,m.status,m.started_at,m.ended_at,m.note,m.shuttle_pricing_mode,m.shuttle_price_snapshot,m.legacy_shuttle_fee,m.pairing_pattern from matches m where `+filter+` order by m.id desc limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2883,7 +2962,7 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 	for rows.Next() {
 		var item Match
 		var scoresRaw, seqItemsRaw, priceRaw []byte
-		if err = rows.Scan(&item.ID, &item.Court, &item.Level, &item.A1, &item.A2, &item.B1, &item.B2, &item.Shuttles, &item.Winner, &scoresRaw, &item.ShuttleSeq, &seqItemsRaw, &item.ShuttleReturned, &item.ReturnedShuttleBrandID, &item.ReturnedShuttleNumber, &item.Status, &item.StartedAt, &item.EndedAt, &item.Note, &item.ShuttlePricingMode, &priceRaw, &item.LegacyShuttleFee); err != nil {
+		if err = rows.Scan(&item.ID, &item.Court, &item.Level, &item.A1, &item.A2, &item.B1, &item.B2, &item.Shuttles, &item.Winner, &scoresRaw, &item.ShuttleSeq, &seqItemsRaw, &item.ShuttleReturned, &item.ReturnedShuttleBrandID, &item.ReturnedShuttleNumber, &item.Status, &item.StartedAt, &item.EndedAt, &item.Note, &item.ShuttlePricingMode, &priceRaw, &item.LegacyShuttleFee, &item.PairingPattern); err != nil {
 			rows.Close()
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -2891,10 +2970,11 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 		_ = json.Unmarshal(scoresRaw, &item.Scores)
 		_ = json.Unmarshal(seqItemsRaw, &item.ShuttleSeqItems)
 		_ = json.Unmarshal(priceRaw, &item.ShuttlePriceSnapshot)
+		item.PairingPattern = normalizedPairingPattern(item.PairingPattern)
 		history = append(history, item)
 	}
 	rows.Close()
-	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.club_member,coalesce(p.member_id,''),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id order by p.id`, sessionID, search, pattern, pageSize, offset)
+	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id left join members mem on mem.id=p.member_id and mem.deleted_at is null order by p.id`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2903,11 +2983,13 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 	players := []Player{}
 	for playerRows.Next() {
 		var item Player
+		var avatarVersion int64
 		var wait, withdrawnAt sql.NullTime
-		if err = playerRows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.ClubMember, &item.MemberID, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
+		if err = playerRows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.Libero, &item.ClubMember, &item.MemberID, &avatarVersion, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		item.AvatarURL = memberAvatarURL(item.MemberID, avatarVersion)
 		if withdrawnAt.Valid {
 			item.Withdrawn = true
 			item.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
@@ -3324,9 +3406,9 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
+			session_id, entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, idle_wait_alert_enabled, match_start_animation_enabled, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			club_entry_fee = excluded.club_entry_fee,
@@ -3347,13 +3429,15 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 			show_wait_time_players = excluded.show_wait_time_players,
 			show_wait_time_pairing = excluded.show_wait_time_pairing,
 			show_wait_time_queue = excluded.show_wait_time_queue,
+			idle_wait_alert_enabled = excluded.idle_wait_alert_enabled,
+			match_start_animation_enabled = excluded.match_start_animation_enabled,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template,
 			announcement_bell_key = excluded.announcement_bell_key,
 			announcement_bell_name = excluded.announcement_bell_name,
 			announcement_bell_mime = excluded.announcement_bell_mime
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.IdleWaitAlertEnabled, state.Settings.MatchStartAnimationEnabled, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
 		return err
 	}
 
@@ -3422,6 +3506,36 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 		}
 	}
 
+	pairingRows, pairingErr := tx.QueryContext(ctx, `select id,pairing_pattern from matches where session_id=$1`, state.Session.ID)
+	if pairingErr != nil {
+		return pairingErr
+	}
+	existingPairingPatterns := map[int]string{}
+	for pairingRows.Next() {
+		var matchID int
+		var pattern string
+		if err = pairingRows.Scan(&matchID, &pattern); err != nil {
+			pairingRows.Close()
+			return err
+		}
+		existingPairingPatterns[matchID] = normalizedPairingPattern(pattern)
+	}
+	if err = pairingRows.Close(); err != nil {
+		return err
+	}
+	preservePairingPatterns := func(matches []Match) {
+		for index := range matches {
+			if matches[index].PairingPattern == "" {
+				matches[index].PairingPattern = existingPairingPatterns[matches[index].ID]
+			}
+			matches[index].PairingPattern = normalizedPairingPattern(matches[index].PairingPattern)
+		}
+	}
+	preservePairingPatterns(state.Pending)
+	preservePairingPatterns(state.Queue)
+	preservePairingPatterns(state.Live)
+	preservePairingPatterns(state.History)
+
 	for _, table := range []string{"players", "couples", "matches", "live_share_hours", "returned_shuttles"} {
 		if _, err = tx.ExecContext(ctx, "delete from "+table+" where session_id = $1", state.Session.ID); err != nil {
 			return err
@@ -3430,9 +3544,9 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang, withdrawn_at, withdrawn_by, withdrawal_note)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz, $18, nullif($19, '')::timestamptz, $20, $21)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang, player.WithdrawnAt, player.WithdrawnBy, player.WithdrawalNote); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, libero, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang, withdrawn_at, withdrawn_by, withdrawal_note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15, ''), nullif($16, ''), nullif($17, ''), nullif($18, '')::timestamptz, $19, nullif($20, '')::timestamptz, $21, $22)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.Libero, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang, player.WithdrawnAt, player.WithdrawnBy, player.WithdrawalNote); err != nil {
 			return err
 		}
 	}
@@ -3471,12 +3585,13 @@ func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error 
 		if pricingMode == "" {
 			pricingMode = shuttlePricingLegacy
 		}
+		pairingPattern := normalizedPairingPattern(match.PairingPattern)
 		_, err = tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee, pairing_pattern
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, scores, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, scores, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee, pairingPattern)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -3567,7 +3682,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw, shuttleBrandsRaw, memberEntryFeesRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
+		select entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, idle_wait_alert_enabled, match_start_animation_enabled, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -3590,6 +3705,8 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.ShowWaitTimePlayers,
 		&state.Settings.ShowWaitTimePairing,
 		&state.Settings.ShowWaitTimeQueue,
+		&state.Settings.IdleWaitAlertEnabled,
+		&state.Settings.MatchStartAnimationEnabled,
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
@@ -3622,9 +3739,10 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang, p.withdrawn_at, p.withdrawn_by, p.withdrawal_note
+		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.libero, p.club_member, coalesce(p.member_id, ''), coalesce(mem.avatar_version,0), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang, p.withdrawn_at, p.withdrawn_by, p.withdrawal_note
 		from players p
 		left join member_types mt on mt.id=p.member_type_id
+		left join members mem on mem.id=p.member_id and mem.deleted_at is null
 		where p.session_id = $1
 		order by p.id
 	`, id)
@@ -3634,10 +3752,12 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
+		var avatarVersion int64
 		var waitStartedAt, withdrawnAt sql.NullTime
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang, &withdrawnAt, &player.WithdrawnBy, &player.WithdrawalNote); err != nil {
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.Libero, &player.ClubMember, &player.MemberID, &avatarVersion, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang, &withdrawnAt, &player.WithdrawnBy, &player.WithdrawalNote); err != nil {
 			return SessionState{}, err
 		}
+		player.AvatarURL = memberAvatarURL(player.MemberID, avatarVersion)
 		if waitStartedAt.Valid {
 			player.WaitStartedAt = waitStartedAt.Time.UTC().Format(time.RFC3339)
 		}
@@ -3679,7 +3799,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee, pairing_pattern
 		from matches
 		where session_id = $1
 		order by id
@@ -3692,7 +3812,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		var phase string
 		var match Match
 		var scoresRaw, seqItemsRaw, priceSnapshotRaw []byte
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &scoresRaw, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &scoresRaw, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee, &match.PairingPattern); err != nil {
 			return SessionState{}, err
 		}
 		if len(seqItemsRaw) > 0 {
@@ -3705,6 +3825,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 			_ = json.Unmarshal(priceSnapshotRaw, &match.ShuttlePriceSnapshot)
 		}
 		match.ShuttleSeqItems = normalizedShuttleSeqItems(match, state)
+		match.PairingPattern = normalizedPairingPattern(match.PairingPattern)
 		switch phase {
 		case "pending":
 			state.Pending = append(state.Pending, match)
@@ -3812,28 +3933,30 @@ func defaultState(id, name, passcode string) SessionState {
 			Unlocked:      false,
 		},
 		Settings: Settings{
-			EntryFee:                120,
-			ClubEntryFee:            120,
-			MemberEntryFees:         map[string]int{},
-			CourtFeePerHour:         150,
-			ShuttleFee:              85,
-			ShuttleBrands:           []ShuttleBrand{{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: 85, Active: true}},
-			SessionFee:              0,
-			CourtCount:              4,
-			CourtNames:              []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
-			Levels:                  []string{"เบา", "กลาง", "หนัก"},
-			AllowCrossLevel:         true,
-			CrossLevelRange:         1,
-			RandomPriority:          "level",
-			ShowPaymentOnShare:      true,
-			ShowTotalOnShare:        true,
-			ShowWaitingOnQueueShare: false,
-			ShowWaitTimePlayers:     true,
-			ShowWaitTimePairing:     true,
-			ShowWaitTimeQueue:       true,
-			ResetPlayersAfterFinish: true,
-			StartMatchWithShuttle:   true,
-			AnnouncementTemplate:    defaultAnnouncementTemplate,
+			EntryFee:                   120,
+			ClubEntryFee:               120,
+			MemberEntryFees:            map[string]int{},
+			CourtFeePerHour:            150,
+			ShuttleFee:                 85,
+			ShuttleBrands:              []ShuttleBrand{{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: 85, Active: true}},
+			SessionFee:                 0,
+			CourtCount:                 4,
+			CourtNames:                 []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
+			Levels:                     []string{"เบา", "กลาง", "หนัก"},
+			AllowCrossLevel:            true,
+			CrossLevelRange:            1,
+			RandomPriority:             "level",
+			ShowPaymentOnShare:         true,
+			ShowTotalOnShare:           true,
+			ShowWaitingOnQueueShare:    false,
+			ShowWaitTimePlayers:        true,
+			ShowWaitTimePairing:        true,
+			ShowWaitTimeQueue:          true,
+			IdleWaitAlertEnabled:       true,
+			MatchStartAnimationEnabled: true,
+			ResetPlayersAfterFinish:    true,
+			StartMatchWithShuttle:      true,
+			AnnouncementTemplate:       defaultAnnouncementTemplate,
 		},
 		Players: []Player{},
 		Couples: []Couple{},
@@ -3854,9 +3977,20 @@ func defaultState(id, name, passcode string) SessionState {
 
 func randomMatch(state *SessionState) error {
 	busy := map[int]bool{}
-	for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+	for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
 		for _, id := range matchPlayers(match) {
-			busy[id] = true
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
+		}
+	}
+	for _, match := range state.Live {
+		for _, id := range matchPlayers(match) {
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
 		}
 	}
 
@@ -3884,6 +4018,7 @@ func randomMatch(state *SessionState) error {
 			B1:                 teams[2],
 			B2:                 teams[3],
 			ShuttlePricingMode: shuttlePricingSplit,
+			PairingPattern:     pairingPatternForMatch(Match{A1: teams[0], A2: teams[1], B1: teams[2], B2: teams[3]}, state.Couples),
 		})
 		for _, id := range selected {
 			busy[id] = true
@@ -3916,9 +4051,20 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 	}
 
 	busy := map[int]bool{}
-	for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+	for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
 		for _, id := range matchPlayers(match) {
-			busy[id] = true
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
+		}
+	}
+	for _, match := range state.Live {
+		for _, id := range matchPlayers(match) {
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
 		}
 	}
 	for _, id := range ids {
@@ -3966,18 +4112,83 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 		B1:                 requested.B1,
 		B2:                 requested.B2,
 		ShuttlePricingMode: shuttlePricingSplit,
+		PairingPattern:     manualPairingPatternForMatch(requested),
 	}
 	state.Pending = append(state.Pending, created)
 	return created, nil
 }
 
+func manualPairingPatternForMatch(match Match) string {
+	players := matchPlayers(match)
+	if len(players) == 2 && match.A1 > 0 && match.A2 == 0 && match.B1 > 0 && match.B2 == 0 {
+		return pairingPatternOneOne
+	}
+	if len(players) == 4 && match.A1 > 0 && match.A2 > 0 && match.B1 > 0 && match.B2 > 0 {
+		return pairingPatternManualFour
+	}
+	return pairingPatternLegacyUnknown
+}
+
+func normalizedPairingPattern(pattern string) string {
+	switch pattern {
+	case pairingPatternPairPair, pairingPatternPairTwoSingles, pairingPatternFourSingles, pairingPatternOneOne, pairingPatternManualFour, pairingPatternLegacyUnknown:
+		return pattern
+	default:
+		return pairingPatternLegacyUnknown
+	}
+}
+
+func pairingPatternForMatch(match Match, couples []Couple) string {
+	players := matchPlayers(match)
+	if len(players) == 2 && match.A1 > 0 && match.A2 == 0 && match.B1 > 0 && match.B2 == 0 {
+		return pairingPatternOneOne
+	}
+	if len(players) != 4 {
+		return pairingPatternLegacyUnknown
+	}
+	teamByPlayer := map[int]int{
+		match.A1: 0,
+		match.A2: 0,
+		match.B1: 1,
+		match.B2: 1,
+	}
+	pairCount := 0
+	for _, couple := range couples {
+		teamA, hasA := teamByPlayer[couple.A]
+		teamB, hasB := teamByPlayer[couple.B]
+		if !hasA || !hasB {
+			continue
+		}
+		if teamA != teamB {
+			return pairingPatternLegacyUnknown
+		}
+		pairCount++
+	}
+	switch pairCount {
+	case 0:
+		return pairingPatternFourSingles
+	case 1:
+		return pairingPatternPairTwoSingles
+	case 2:
+		return pairingPatternPairPair
+	default:
+		return pairingPatternLegacyUnknown
+	}
+}
+
 type group struct {
-	ids   []int
-	level string
-	games int
+	ids    []int
+	level  string
+	games  int
+	coupon bool
+	libero bool
 }
 
 func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
+	return buildPairingGroups(state, busy, true)
+}
+
+func buildPairingGroups(state SessionState, busy map[int]bool, requireCoupon bool) []group {
 	playersByID := map[int]Player{}
 	for _, p := range state.Players {
 		playersByID[p.ID] = p
@@ -3985,7 +4196,7 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 	used := map[int]bool{}
 	var groups []group
 	for _, p := range state.Players {
-		if used[p.ID] || !p.Active || p.Paid || !p.Coupon || busy[p.ID] {
+		if used[p.ID] || !p.Active || p.Paid || (requireCoupon && !p.Coupon) || busy[p.ID] {
 			continue
 		}
 		if c, ok := coupleForPlayer(state.Couples, p.ID); ok {
@@ -3994,13 +4205,19 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 				mateID = c.B
 			}
 			mate, exists := playersByID[mateID]
-			if exists && mate.Active && !mate.Paid && mate.Coupon && !busy[mateID] {
-				groups = append(groups, group{ids: []int{p.ID, mateID}, level: p.Level, games: p.Games + mate.Games})
+			if exists && mate.Active && !mate.Paid && (!requireCoupon || mate.Coupon) && !busy[mateID] {
+				groups = append(groups, group{
+					ids: []int{p.ID, mateID}, level: p.Level, games: p.Games + mate.Games,
+					coupon: p.Coupon && mate.Coupon, libero: p.Libero || mate.Libero,
+				})
 				used[p.ID], used[mateID] = true, true
 				continue
 			}
+			// A configured couple is one pairing unit. If the mate is unavailable,
+			// neither player may fall through as a single candidate.
+			continue
 		}
-		groups = append(groups, group{ids: []int{p.ID}, level: p.Level, games: p.Games})
+		groups = append(groups, group{ids: []int{p.ID}, level: p.Level, games: p.Games, coupon: p.Coupon, libero: p.Libero})
 		used[p.ID] = true
 	}
 	slices.SortFunc(groups, func(a, b group) int {
@@ -4010,6 +4227,47 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 		return len(b.ids) - len(a.ids)
 	})
 	return groups
+}
+
+func pairingScheduleForPlayers(state SessionState, playerIDs []int) (int, int, []string) {
+	wanted := map[int]bool{}
+	for _, id := range playerIDs {
+		wanted[id] = true
+	}
+	containsWanted := func(match Match) bool {
+		for _, id := range matchPlayers(match) {
+			if wanted[id] {
+				return true
+			}
+		}
+		return false
+	}
+	pendingCount := 0
+	for _, match := range state.Pending {
+		if containsWanted(match) {
+			pendingCount++
+		}
+	}
+	queueCount := 0
+	for _, match := range state.Queue {
+		if containsWanted(match) {
+			queueCount++
+		}
+	}
+	liveCourts := []string{}
+	for _, match := range state.Live {
+		if !containsWanted(match) {
+			continue
+		}
+		court := strings.TrimSpace(match.Court)
+		if court == "" || court == "-" {
+			court = "กำลังแข่ง"
+		}
+		if !slices.Contains(liveCourts, court) {
+			liveCourts = append(liveCourts, court)
+		}
+	}
+	return pendingCount, queueCount, liveCourts
 }
 
 func pickFour(groups []group) []int {
@@ -4295,6 +4553,49 @@ func startMatch(state *SessionState, matchID int, court string, brandIDs ...stri
 	return false
 }
 
+type livePlayerConflict struct {
+	PlayerID   int
+	PlayerName string
+	Court      string
+}
+
+func queuedMatchLiveConflicts(state SessionState, matchID int) []livePlayerConflict {
+	queuedPlayerIDs := []int{}
+	for _, match := range state.Queue {
+		if match.ID == matchID {
+			queuedPlayerIDs = matchPlayers(match)
+			break
+		}
+	}
+	if len(queuedPlayerIDs) == 0 {
+		return nil
+	}
+	wanted := map[int]bool{}
+	for _, id := range queuedPlayerIDs {
+		wanted[id] = true
+	}
+	seen := map[int]bool{}
+	conflicts := []livePlayerConflict{}
+	for _, match := range state.Live {
+		for _, id := range matchPlayers(match) {
+			if !wanted[id] || seen[id] {
+				continue
+			}
+			seen[id] = true
+			name := "ผู้เล่น #" + strconv.Itoa(id)
+			if player := playerByID(state.Players, id); player != nil {
+				name = player.Name
+			}
+			court := strings.TrimSpace(match.Court)
+			if court != "" && court != "-" {
+				court = "สนาม " + strings.TrimPrefix(court, "สนาม ")
+			}
+			conflicts = append(conflicts, livePlayerConflict{PlayerID: id, PlayerName: name, Court: court})
+		}
+	}
+	return conflicts
+}
+
 func confirmPendingMatch(state *SessionState, matchID int) bool {
 	for i, match := range state.Pending {
 		if match.ID == matchID {
@@ -4545,7 +4846,10 @@ func closeLiveWithScores(state *SessionState, matchID int, cancelled bool, note 
 				}
 				state.Players[j].Games++
 				if state.Settings.ResetPlayersAfterFinish {
-					state.Players[j].Coupon = false
+					hasFutureMatch := matchListContainsPlayer(state.Pending, state.Players[j].ID) || matchListContainsPlayer(state.Queue, state.Players[j].ID)
+					if !state.Players[j].Libero || !hasFutureMatch {
+						state.Players[j].Coupon = false
+					}
 				}
 				if winner == "A" && (state.Players[j].ID == match.A1 || state.Players[j].ID == match.A2) {
 					state.Players[j].Wins++
@@ -4645,6 +4949,27 @@ func realRecordedMatchCount(state SessionState) int {
 	return total
 }
 
+func pairingPatternSummary(state SessionState) map[string]int {
+	result := map[string]int{
+		pairingPatternPairPair:       0,
+		pairingPatternPairTwoSingles: 0,
+		pairingPatternFourSingles:    0,
+		pairingPatternOneOne:         0,
+		pairingPatternManualFour:     0,
+		pairingPatternLegacyUnknown:  0,
+	}
+	for _, match := range state.Live {
+		result[normalizedPairingPattern(match.PairingPattern)]++
+	}
+	for _, match := range state.History {
+		if isCancelledMatch(match) {
+			continue
+		}
+		result[normalizedPairingPattern(match.PairingPattern)]++
+	}
+	return result
+}
+
 func dashboardPayload(state SessionState) map[string]any {
 	return map[string]any{
 		"version":  state.Version,
@@ -4677,6 +5002,7 @@ func dashboardPayload(state SessionState) map[string]any {
 			"realHistoryMatches":    len(state.History) - cancelledMatchCount(state),
 			"historyMatches":        len(state.History),
 			"availableCourtCount":   len(state.Settings.CourtNames),
+			"pairingPatterns":       pairingPatternSummary(state),
 		},
 	}
 }

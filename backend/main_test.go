@@ -28,6 +28,32 @@ type countingTTSSynthesizer struct {
 	calls int
 }
 
+func TestValidateMemberAvatar(t *testing.T) {
+	valid := image.NewRGBA(image.Rect(0, 0, 720, 480))
+	var validPNG bytes.Buffer
+	if err := png.Encode(&validPNG, valid); err != nil {
+		t.Fatal(err)
+	}
+	if mimeType, err := validateMemberAvatar(validPNG.Bytes()); err != nil || mimeType != "image/png" {
+		t.Fatalf("validateMemberAvatar(valid) = %q, %v", mimeType, err)
+	}
+
+	oversized := image.NewRGBA(image.Rect(0, 0, 721, 300))
+	var oversizedPNG bytes.Buffer
+	if err := png.Encode(&oversizedPNG, oversized); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMemberAvatar(oversizedPNG.Bytes()); err == nil || !strings.Contains(err.Error(), "720") {
+		t.Fatalf("expected dimension rejection, got %v", err)
+	}
+	if _, err := validateMemberAvatar([]byte("not-an-image")); err == nil {
+		t.Fatal("expected invalid image rejection")
+	}
+	if got := memberAvatarURL("member 1", 3); got != "/api/member-avatar/member%201?v=3" {
+		t.Fatalf("memberAvatarURL = %q", got)
+	}
+}
+
 func TestBackofficeDetailPagination(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -499,6 +525,145 @@ func TestCreateManualPendingMatchKeepsSelectedPositionsWithoutCoupon(t *testing.
 	}
 	if len(state.Pending) != 1 || state.NextIDs.Pending != 1 {
 		t.Fatalf("expected one pending match, state=%#v", state)
+	}
+}
+
+func TestLiberoCanBePreparedWhileLiveButCannotStartTwice(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Active: true, Libero: true, Coupon: true, Level: "middle"},
+			{ID: 2, Name: "คู่เดิม", Active: true, Level: "middle"},
+			{ID: 3, Name: "คนใหม่ A", Active: true, Level: "middle"},
+			{ID: 4, Name: "คนใหม่ B", Active: true, Level: "middle"},
+			{ID: 5, Name: "คนใหม่ C", Active: true, Level: "middle"},
+		},
+		Live: []Match{{ID: 10, Court: "สนาม 2", A1: 1, B1: 2}},
+	}
+	created, err := createManualPendingMatch(&state, Match{A1: 1, A2: 3, B1: 4, B2: 5, Level: "middle"})
+	if err != nil {
+		t.Fatalf("live libero should be available for a future match: %v", err)
+	}
+	state.NextIDs.Match++
+	created.ID = state.NextIDs.Match
+	state.Pending = nil
+	state.Queue = []Match{created}
+	conflicts := queuedMatchLiveConflicts(state, created.ID)
+	if len(conflicts) != 1 || conflicts[0].PlayerID != 1 || conflicts[0].Court != "สนาม 2" {
+		t.Fatalf("expected the live libero to block starting the queued match: %#v", conflicts)
+	}
+	state.Live = nil
+	if conflicts = queuedMatchLiveConflicts(state, created.ID); len(conflicts) != 0 {
+		t.Fatalf("finished live match should release the libero: %#v", conflicts)
+	}
+}
+
+func TestLiberoCanBePreparedInMultiplePendingAndQueuedMatches(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Active: true, Libero: true, Coupon: true, Level: "middle"},
+			{ID: 2, Active: true, Level: "middle"},
+			{ID: 3, Active: true, Level: "middle"},
+			{ID: 4, Active: true, Level: "middle"},
+			{ID: 5, Active: true, Level: "middle"},
+			{ID: 6, Active: true, Level: "middle"},
+			{ID: 7, Active: true, Level: "middle"},
+		},
+		Queue: []Match{{ID: 10, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	created, err := createManualPendingMatch(&state, Match{A1: 1, A2: 5, B1: 6, B2: 7, Level: "middle"})
+	if err != nil {
+		t.Fatalf("queued libero should be available for another future match: %v", err)
+	}
+	if !slices.Contains(matchPlayers(created), 1) || len(state.Pending) != 1 {
+		t.Fatalf("unexpected future match: %#v", created)
+	}
+	if _, err := createManualPendingMatch(&state, Match{A1: 1, A2: 1, B1: 6, B2: 7, Level: "middle"}); err == nil {
+		t.Fatal("the same libero must not appear twice in one match")
+	}
+}
+
+func TestRandomMatchUsesLiberoOncePerActionAndAgainOnNextAction(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Libero: true, Level: "middle"},
+			{ID: 2, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Active: true, Coupon: true, Level: "middle"},
+		},
+	}
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("first random failed: %v", err)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("one random action should create one match with the available libero, got %d", len(state.Pending))
+	}
+	state.Players = append(state.Players,
+		Player{ID: 5, Active: true, Coupon: true, Level: "middle"},
+		Player{ID: 6, Active: true, Coupon: true, Level: "middle"},
+		Player{ID: 7, Active: true, Coupon: true, Level: "middle"},
+	)
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("second random should reuse the queued libero: %v", err)
+	}
+	if len(state.Pending) != 2 || !slices.Contains(matchPlayers(state.Pending[1]), 1) {
+		t.Fatalf("expected the next action to schedule the libero again: %#v", state.Pending)
+	}
+}
+
+func TestPairingGroupsExposeQueuedLiberoAndOptionalNotReadyPlayers(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Active: true, Coupon: true, Libero: true, Level: "middle"},
+			{ID: 2, Name: "ยังไม่เปิดคูปอง", Active: true, Coupon: false, Level: "middle"},
+		},
+		Pending: []Match{{ID: -1, A1: 1}},
+		Queue:   []Match{{ID: 2, B1: 1}},
+		Live:    []Match{{ID: 1, Court: "สนาม 3", A1: 1}},
+	}
+	busy := map[int]bool{}
+	for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
+		for _, id := range matchPlayers(match) {
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
+		}
+	}
+	groups := buildPairingGroups(state, busy, false)
+	if len(groups) != 2 || groups[0].ids[0] != 1 || !groups[0].libero || groups[1].coupon {
+		t.Fatalf("unexpected coupon groups: %#v", groups)
+	}
+	pendingCount, queueCount, liveCourts := pairingScheduleForPlayers(state, []int{1})
+	if pendingCount != 1 || queueCount != 1 || !slices.Equal(liveCourts, []string{"สนาม 3"}) {
+		t.Fatalf("unexpected libero schedule pending=%d queue=%d courts=%#v", pendingCount, queueCount, liveCourts)
+	}
+	readyOnly := buildPairingGroups(state, busy, true)
+	if len(readyOnly) != 1 || readyOnly[0].ids[0] != 1 {
+		t.Fatalf("ready-only groups should preserve compatibility: %#v", readyOnly)
+	}
+}
+
+func TestRandomMatchIncludesLiveLiberoButNotRegularLivePlayer(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Libero: true, Level: "middle"},
+			{ID: 2, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Active: true, Coupon: true, Level: "middle"},
+			{ID: 5, Active: true, Coupon: true, Level: "middle"},
+		},
+		Live: []Match{{ID: 10, A1: 1, B1: 5}},
+	}
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("random should use a live libero with three free players: %v", err)
+	}
+	if len(state.Pending) != 1 || !slices.Contains(matchPlayers(state.Pending[0]), 1) || slices.Contains(matchPlayers(state.Pending[0]), 5) {
+		t.Fatalf("unexpected random selection: %#v", state.Pending)
 	}
 }
 
@@ -1180,6 +1345,33 @@ func TestCloseLiveResetsPlayerReadinessAfterFinishOnly(t *testing.T) {
 	}
 }
 
+func TestCloseLiveKeepsLiberoCouponUntilFutureQueueIsEmpty(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{ResetPlayersAfterFinish: true},
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Coupon: true, Libero: true},
+			{ID: 2, Coupon: true},
+		},
+		Live:  []Match{{ID: 1, A1: 1, B1: 2}},
+		Queue: []Match{{ID: 2, A1: 1, B1: 3}},
+	}
+	if !closeLive(&state, 1, false, "", "", false) {
+		t.Fatal("expected first live match to finish")
+	}
+	if !state.Players[0].Coupon {
+		t.Fatal("libero coupon must remain enabled while a future queue exists")
+	}
+
+	state.Live = []Match{state.Queue[0]}
+	state.Queue = nil
+	if !closeLive(&state, 2, false, "", "", false) {
+		t.Fatal("expected final live match to finish")
+	}
+	if state.Players[0].Coupon {
+		t.Fatal("libero coupon must reset after the final queued match finishes")
+	}
+}
+
 func TestCoupledPlayersShareRandomStatus(t *testing.T) {
 	state := SessionState{
 		Players: []Player{
@@ -1549,6 +1741,96 @@ func TestRealRecordedMatchCountExcludesCancelledHistory(t *testing.T) {
 	}
 }
 
+func TestPairingPatternForMatchClassifiesSnapshottedGroups(t *testing.T) {
+	tests := []struct {
+		name    string
+		match   Match
+		couples []Couple
+		want    string
+	}{
+		{"pair versus pair", Match{A1: 1, A2: 2, B1: 3, B2: 4}, []Couple{{A: 1, B: 2}, {A: 3, B: 4}}, pairingPatternPairPair},
+		{"pair and two singles", Match{A1: 1, A2: 2, B1: 3, B2: 4}, []Couple{{A: 1, B: 2}}, pairingPatternPairTwoSingles},
+		{"four singles", Match{A1: 1, A2: 2, B1: 3, B2: 4}, nil, pairingPatternFourSingles},
+		{"one versus one", Match{A1: 1, B1: 2}, nil, pairingPatternOneOne},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pairingPatternForMatch(test.match, test.couples); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+func TestRandomAndManualMatchesSnapshotPairingPattern(t *testing.T) {
+	randomState := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Level: "middle"},
+			{ID: 2, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Active: true, Coupon: true, Level: "middle"},
+		},
+		Couples: []Couple{{A: 1, B: 2}, {A: 3, B: 4}},
+	}
+	if err := randomMatch(&randomState); err != nil {
+		t.Fatalf("random match failed: %v", err)
+	}
+	if got := randomState.Pending[0].PairingPattern; got != pairingPatternPairPair {
+		t.Fatalf("expected random pair snapshot, got %q", got)
+	}
+	randomState.Couples = nil
+	if got := randomState.Pending[0].PairingPattern; got != pairingPatternPairPair {
+		t.Fatalf("snapshot changed after couples were removed: %q", got)
+	}
+
+	manualState := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Level: "middle"},
+			{ID: 2, Active: true, Level: "middle"},
+			{ID: 3, Active: true, Level: "middle"},
+			{ID: 4, Active: true, Level: "middle"},
+		},
+		Couples: []Couple{{A: 1, B: 2}},
+	}
+	created, err := createManualPendingMatch(&manualState, Match{A1: 1, A2: 2, B1: 3, B2: 4, Level: "middle"})
+	if err != nil {
+		t.Fatalf("manual match failed: %v", err)
+	}
+	if created.PairingPattern != pairingPatternManualFour {
+		t.Fatalf("expected manually arranged 2v2 to use its own snapshot category, got %q", created.PairingPattern)
+	}
+	manualSingles := manualState
+	manualSingles.Pending = nil
+	manualSingles.Couples = nil
+	manualSingles.NextIDs.Pending = 0
+	created, err = createManualPendingMatch(&manualSingles, Match{A1: 1, B1: 3, Level: "middle"})
+	if err != nil {
+		t.Fatalf("manual 1v1 match failed: %v", err)
+	}
+	if created.PairingPattern != pairingPatternOneOne {
+		t.Fatalf("expected manually arranged 1v1 snapshot, got %q", created.PairingPattern)
+	}
+}
+
+func TestPairingPatternSummaryCountsOnlyStartedNonCancelledMatches(t *testing.T) {
+	state := SessionState{
+		Pending: []Match{{ID: -1, PairingPattern: pairingPatternPairPair}},
+		Queue:   []Match{{ID: 1, PairingPattern: pairingPatternPairPair}},
+		Live:    []Match{{ID: 2, PairingPattern: pairingPatternPairTwoSingles}},
+		History: []Match{
+			{ID: 3, Status: "finished", PairingPattern: pairingPatternFourSingles},
+			{ID: 4, Status: "finished"},
+			{ID: 5, Status: "cancelled", PairingPattern: pairingPatternOneOne},
+		},
+	}
+	got := pairingPatternSummary(state)
+	if got[pairingPatternPairPair] != 0 || got[pairingPatternPairTwoSingles] != 1 || got[pairingPatternFourSingles] != 1 || got[pairingPatternLegacyUnknown] != 1 || got[pairingPatternOneOne] != 0 {
+		t.Fatalf("unexpected pairing summary: %#v", got)
+	}
+}
+
 func TestDashboardPayloadIncludesMenuSummaryOnly(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{EntryFee: 100, ShuttleFee: 50, CourtNames: []string{"1", "2"}},
@@ -1570,6 +1852,10 @@ func TestDashboardPayloadIncludesMenuSummaryOnly(t *testing.T) {
 	}
 	if summary["totalShuttles"] != 3 {
 		t.Fatalf("expected live + real history shuttles 3, got %#v", summary["totalShuttles"])
+	}
+	patterns := summary["pairingPatterns"].(map[string]int)
+	if patterns[pairingPatternLegacyUnknown] != 2 {
+		t.Fatalf("expected legacy live and history matches in pairing summary, got %#v", patterns)
 	}
 	if _, exists := payload["pending"]; exists {
 		t.Fatal("dashboard payload should not include pending matches")

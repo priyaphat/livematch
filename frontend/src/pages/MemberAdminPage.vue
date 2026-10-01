@@ -1,8 +1,9 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { ArrowLeft, CalendarDays, CreditCard, Download, Eye, History, Pencil, Plus, RefreshCw, Trash2, Users, X } from '@lucide/vue'
+import { ArrowLeft, CalendarDays, CreditCard, Download, Eye, History, ImagePlus, Pencil, Plus, RefreshCw, Trash2, UserRound, Users, X } from '@lucide/vue'
 import { statusText } from '../statusDefinitions'
 import { exportMembersAdminExcel } from '../adminExcelExport'
+import { uploadCompressedProfileImage } from '../profileImage'
 
 const props = defineProps(['apiRequest', 'auth', 'showToast'])
 const state = reactive({ items: [], total: 0, page: 1, pageSize: 20, search: '', loading: false, error: '' })
@@ -19,6 +20,7 @@ const manager = reactive({ open: false, items: [], total: 0, page: 1, pageSize: 
 const managerChanges = reactive({})
 const memberTypes = ref([])
 const typeManager = reactive({ open: false, name: '', loading: false, saving: false, error: '', editingId: '' })
+const avatarUploading = ref(false)
 let searchTimer
 let managerSearchTimer
 const totalPages = computed(() => Math.max(1, Math.ceil(state.total / state.pageSize)))
@@ -105,6 +107,37 @@ async function save() {
     if (props.showToast) props.showToast(message, 'error')
     else state.error = message
   }
+}
+async function uploadAvatar(event) {
+  const file = event.target.files?.[0]
+  event.target.value = ''
+  const member = modal.value
+  if (!file || !member?.id || avatarUploading.value) return
+  avatarUploading.value = true
+  state.error = ''
+  try {
+    const result = await uploadCompressedProfileImage(props.apiRequest, `/api/admin/members/${member.id}/avatar`, file)
+    member.avatarUrl = result.avatarUrl || ''
+    const listed = state.items.find((item) => item.id === member.id)
+    if (listed) listed.avatarUrl = member.avatarUrl
+    props.showToast?.('อัปเดตรูปโปรไฟล์แล้ว', 'success')
+  } catch (error) {
+    props.showToast?.(error.message || 'อัปโหลดรูปโปรไฟล์ไม่สำเร็จ', 'error')
+  } finally { avatarUploading.value = false }
+}
+async function deleteAvatar() {
+  const member = modal.value
+  if (!member?.id || !member.avatarUrl || avatarUploading.value) return
+  avatarUploading.value = true
+  try {
+    await props.apiRequest(`/api/admin/members/${member.id}/avatar`, { method: 'DELETE' })
+    member.avatarUrl = ''
+    const listed = state.items.find((item) => item.id === member.id)
+    if (listed) listed.avatarUrl = ''
+    props.showToast?.('ลบรูปโปรไฟล์แล้ว', 'success')
+  } catch (error) {
+    props.showToast?.(error.message || 'ลบรูปโปรไฟล์ไม่สำเร็จ', 'error')
+  } finally { avatarUploading.value = false }
 }
 async function loadMemberTypes() {
   const data = await props.apiRequest('/api/admin/member-types')
@@ -198,13 +231,13 @@ onUnmounted(() => { clearTimeout(searchTimer); clearTimeout(managerSearchTimer) 
       <p v-if="state.error" class="mt-3 rounded-lg bg-red-50 p-3 font-bold text-red-700 dark:bg-red-950/40 dark:text-red-200">{{ state.error }}</p>
       <div class="mt-4 hidden max-w-full overflow-x-auto md:block">
         <table class="w-full min-w-[760px] text-sm"><thead><tr class="bg-paper-100 text-left text-stone-600 dark:bg-stone-800 dark:text-stone-300"><th class="rounded-l-lg p-3">ชื่อ</th><th class="p-3">เบอร์</th><th class="p-3">อีเมล</th><th class="p-3">ประเภท</th><th class="p-3">สถานะ</th><th class="rounded-r-lg p-3 text-right">จัดการ</th></tr></thead>
-          <tbody><tr v-for="item in state.items" :key="item.id" class="border-b border-stone-100 transition hover:bg-paper-50 dark:border-stone-800 dark:hover:bg-stone-800/60"><td class="p-3 font-black">{{ item.name }}</td><td class="p-3 font-semibold">{{ item.phone }}</td><td class="p-3 text-stone-500">{{ item.email || '-' }}</td><td class="p-3">{{ item.memberTypeName || (item.memberType === 'club' ? 'สมาชิกชมรม' : 'สมาชิกทั่วไป') }}</td><td class="p-3"><span class="rounded-full px-2 py-1 text-xs font-black" :class="item.active ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-600'">{{ item.active ? 'ใช้งาน' : 'ปิดใช้งาน' }}</span></td><td class="p-3"><div class="flex justify-end gap-2"><button class="inline-flex h-9 items-center gap-1 rounded-lg border border-stone-200 px-2 font-bold transition hover:border-court-400 hover:text-court-700 dark:border-stone-700 dark:hover:text-court-300" @click="openDetail(item)"><Eye class="h-4 w-4" />ดูข้อมูล</button><button class="grid h-9 w-9 place-items-center rounded-lg border border-stone-200 transition hover:border-court-400 hover:text-court-700 dark:border-stone-700 dark:hover:text-court-300" aria-label="แก้ไข" @click="openEdit(item)"><Pencil class="h-4 w-4" /></button><button class="grid h-9 w-9 place-items-center rounded-lg border border-red-200 text-red-700 transition hover:bg-red-50 dark:hover:bg-red-950/30" aria-label="ลบ" @click="confirmDelete=item"><Trash2 class="h-4 w-4" /></button></div></td></tr></tbody>
+          <tbody><tr v-for="item in state.items" :key="item.id" class="border-b border-stone-100 transition hover:bg-paper-50 dark:border-stone-800 dark:hover:bg-stone-800/60"><td class="p-3"><div class="flex items-center gap-2 font-black"><span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700"><img v-if="item.avatarUrl" :src="item.avatarUrl" alt="" class="h-full w-full object-cover" /><UserRound v-else class="h-5 w-5" /></span><span class="truncate">{{ item.name }}</span></div></td><td class="p-3 font-semibold">{{ item.phone }}</td><td class="p-3 text-stone-500">{{ item.email || '-' }}</td><td class="p-3">{{ item.memberTypeName || (item.memberType === 'club' ? 'สมาชิกชมรม' : 'สมาชิกทั่วไป') }}</td><td class="p-3"><span class="rounded-full px-2 py-1 text-xs font-black" :class="item.active ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-600'">{{ item.active ? 'ใช้งาน' : 'ปิดใช้งาน' }}</span></td><td class="p-3"><div class="flex justify-end gap-2"><button class="inline-flex h-9 items-center gap-1 rounded-lg border border-stone-200 px-2 font-bold transition hover:border-court-400 hover:text-court-700 dark:border-stone-700 dark:hover:text-court-300" @click="openDetail(item)"><Eye class="h-4 w-4" />ดูข้อมูล</button><button class="grid h-9 w-9 place-items-center rounded-lg border border-stone-200 transition hover:border-court-400 hover:text-court-700 dark:border-stone-700 dark:hover:text-court-300" aria-label="แก้ไข" @click="openEdit(item)"><Pencil class="h-4 w-4" /></button><button class="grid h-9 w-9 place-items-center rounded-lg border border-red-200 text-red-700 transition hover:bg-red-50 dark:hover:bg-red-950/30" aria-label="ลบ" @click="confirmDelete=item"><Trash2 class="h-4 w-4" /></button></div></td></tr></tbody>
         </table>
         <p v-if="!state.loading && !state.items.length" class="p-8 text-center text-stone-500"><Users class="mx-auto mb-2 h-8 w-8" />ยังไม่มีสมาชิก</p>
       </div>
       <div class="mt-4 grid gap-3 md:hidden">
         <article v-for="item in state.items" :key="item.id" class="min-w-0 rounded-xl border border-stone-200 bg-paper-50/60 p-3 shadow-sm dark:border-stone-700 dark:bg-stone-800/50" data-i18n-ignore>
-          <div class="flex min-w-0 items-start justify-between gap-3"><div class="min-w-0"><h2 class="truncate text-lg font-black">{{ item.name }}</h2><p class="break-all text-sm text-stone-500">{{ item.phone }} · {{ item.email || '-' }}</p></div><span class="shrink-0 rounded-full px-2 py-1 text-xs font-black" :class="item.active ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-600'">{{ item.active ? 'ใช้งาน' : 'ปิดใช้งาน' }}</span></div>
+          <div class="flex min-w-0 items-start justify-between gap-3"><div class="flex min-w-0 items-center gap-2"><span class="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700"><img v-if="item.avatarUrl" :src="item.avatarUrl" alt="" class="h-full w-full object-cover" /><UserRound v-else class="h-6 w-6" /></span><div class="min-w-0"><h2 class="truncate text-lg font-black">{{ item.name }}</h2><p class="break-all text-sm text-stone-500">{{ item.phone }} · {{ item.email || '-' }}</p></div></div><span class="shrink-0 rounded-full px-2 py-1 text-xs font-black" :class="item.active ? 'bg-green-100 text-green-700' : 'bg-stone-200 text-stone-600'">{{ item.active ? 'ใช้งาน' : 'ปิดใช้งาน' }}</span></div>
           <p class="mt-2 text-sm font-bold">{{ item.memberTypeName || (item.memberType === 'club' ? 'สมาชิกชมรม' : 'สมาชิกทั่วไป') }}</p>
           <div class="mt-3 grid grid-cols-[1fr_auto_auto] gap-2"><button class="inline-flex h-10 items-center justify-center gap-1 rounded-lg border font-bold dark:border-stone-700" @click="openDetail(item)"><Eye class="h-4 w-4" />ดูข้อมูล</button><button class="grid h-10 w-10 place-items-center rounded-lg border dark:border-stone-700" aria-label="แก้ไข" @click="openEdit(item)"><Pencil class="h-4 w-4" /></button><button class="grid h-10 w-10 place-items-center rounded-lg border border-red-200 text-red-700" aria-label="ลบ" @click="confirmDelete=item"><Trash2 class="h-4 w-4" /></button></div>
         </article>
@@ -305,7 +338,7 @@ onUnmounted(() => { clearTimeout(searchTimer); clearTimeout(managerSearchTimer) 
         </div>
       </form>
     </div>
-    <div v-if="modal" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" @click.self="modal=null"><form class="w-full max-w-md rounded-xl bg-white p-4 dark:bg-stone-900" @submit.prevent="save"><div class="flex justify-between"><h2 class="text-xl font-black">{{ modal.id ? 'แก้ไขสมาชิก' : 'ลงทะเบียนสมาชิก' }}</h2><button type="button" @click="modal=null"><X class="h-5 w-5" /></button></div><div class="mt-4 grid gap-3"><label class="grid gap-1 text-sm font-bold">ชื่อ<input v-model="modal.name" required class="h-11 rounded-lg border bg-transparent px-3" /></label><label class="grid gap-1 text-sm font-bold">เบอร์โทร<input v-model="modal.phone" required inputmode="tel" class="h-11 rounded-lg border bg-transparent px-3" /></label><label class="grid gap-1 text-sm font-bold">ประเภท<select v-model="modal.memberTypeId" required class="h-11 rounded-lg border bg-transparent px-3"><option v-for="type in memberTypes.filter(type => type.active || type.id === modal.memberTypeId)" :key="type.id" :value="type.id">{{ type.name }}</option></select></label><label v-if="modal.id" class="flex items-center gap-2 font-bold"><input v-model="modal.active" type="checkbox" />เปิดใช้งาน</label><button class="h-11 rounded-lg bg-court-500 font-black text-white">บันทึก</button></div></form></div>
+    <div v-if="modal" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" @click.self="modal=null"><form class="w-full max-w-md rounded-xl bg-white p-4 dark:bg-stone-900" @submit.prevent="save"><div class="flex justify-between"><h2 class="text-xl font-black">{{ modal.id ? 'แก้ไขสมาชิก' : 'ลงทะเบียนสมาชิก' }}</h2><button type="button" @click="modal=null"><X class="h-5 w-5" /></button></div><div class="mt-4 grid gap-3"><div v-if="modal.id" class="flex items-center gap-3 rounded-xl border p-3 dark:border-stone-700"><span class="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700"><img v-if="modal.avatarUrl" :src="modal.avatarUrl" alt="รูปโปรไฟล์" class="h-full w-full object-cover" /><UserRound v-else class="h-8 w-8" /></span><div class="min-w-0 flex-1"><b>รูปโปรไฟล์</b><p class="text-xs text-stone-500">ไม่เกิน 5 MB · บีบเหลือไม่เกิน 720px</p><div class="mt-2 flex gap-2"><label class="inline-flex h-9 cursor-pointer items-center gap-1 rounded-lg bg-court-500 px-3 text-sm font-black text-white" :class="avatarUploading && 'pointer-events-none opacity-60'"><ImagePlus class="h-4 w-4" />เลือกรูป<input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" data-testid="admin-member-avatar-input" :disabled="avatarUploading" @change="uploadAvatar" /></label><button v-if="modal.avatarUrl" type="button" class="h-9 rounded-lg border border-red-200 px-3 text-sm font-black text-red-700" :disabled="avatarUploading" @click="deleteAvatar">ลบ</button></div></div></div><label class="grid gap-1 text-sm font-bold">ชื่อ<input v-model="modal.name" required class="h-11 rounded-lg border bg-transparent px-3" /></label><label class="grid gap-1 text-sm font-bold">เบอร์โทร<input v-model="modal.phone" required inputmode="tel" class="h-11 rounded-lg border bg-transparent px-3" /></label><label class="grid gap-1 text-sm font-bold">ประเภท<select v-model="modal.memberTypeId" required class="h-11 rounded-lg border bg-transparent px-3"><option v-for="type in memberTypes.filter(type => type.active || type.id === modal.memberTypeId)" :key="type.id" :value="type.id">{{ type.name }}</option></select></label><label v-if="modal.id" class="flex items-center gap-2 font-bold"><input v-model="modal.active" type="checkbox" />เปิดใช้งาน</label><button class="h-11 rounded-lg bg-court-500 font-black text-white">บันทึก</button></div></form></div>
     <div v-if="typeManager.open" class="fixed inset-0 z-[60] grid place-items-end bg-black/50 p-3 sm:place-items-center" @click.self="typeManager.open=false"><section class="max-h-[90dvh] w-full max-w-xl overflow-auto rounded-xl bg-white p-4 dark:bg-stone-900"><div class="flex items-start justify-between gap-3"><div><p class="text-sm font-black text-court-700">ระบบสมาชิก</p><h2 class="text-xl font-black">จัดการประเภทสมาชิก</h2></div><button class="grid h-9 w-9 place-items-center rounded-lg border" @click="typeManager.open=false"><X class="h-5 w-5" /></button></div><form class="mt-4 flex gap-2" @submit.prevent="createMemberType"><input v-model="typeManager.name" required maxlength="80" class="h-11 min-w-0 flex-1 rounded-lg border bg-transparent px-3" placeholder="ชื่อประเภทใหม่" /><button class="h-11 rounded-lg bg-court-500 px-4 font-black text-white disabled:opacity-50" :disabled="typeManager.saving">เพิ่ม</button></form><p v-if="typeManager.error" class="mt-3 rounded-lg bg-red-50 p-3 font-bold text-red-700">{{ typeManager.error }}</p><div class="mt-4 grid gap-2"><article v-for="type in memberTypes" :key="type.id" class="rounded-lg border p-3 dark:border-stone-700"><div class="flex flex-wrap items-center gap-2"><input v-if="typeManager.editingId===type.id" v-model="type.name" class="h-10 min-w-0 flex-1 rounded-lg border bg-transparent px-2" /><b v-else class="min-w-0 flex-1 truncate">{{ type.name }}</b><span v-if="type.system" class="rounded bg-court-500/10 px-2 py-1 text-xs font-black text-court-700">ประเภทหลัก</span><button v-if="typeManager.editingId===type.id" class="rounded-lg border px-3 py-2 font-bold" @click="updateMemberType(type,{name:type.name})">บันทึก</button><button v-else class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="type.inUse && !type.system" @click="typeManager.editingId=type.id">แก้ชื่อ</button><button v-if="!type.system" class="rounded-lg border px-3 py-2 font-bold disabled:opacity-40" :disabled="type.inUse" @click="updateMemberType(type,{active:!type.active})">{{ type.active ? 'ปิดใช้' : 'เปิดใช้' }}</button><button v-if="!type.system" class="rounded-lg border border-red-200 px-3 py-2 font-bold text-red-700 disabled:opacity-40" :disabled="type.inUse" @click="deleteMemberType(type)">ลบ</button></div><p class="mt-1 text-xs font-semibold text-stone-500">{{ type.inUse ? 'มีสมาชิกใช้งานอยู่ จึงล็อกการจัดการ' : type.hasHistory ? 'มีประวัติการใช้งาน ลบแล้วจะซ่อนโดยไม่ทำลายประวัติ' : 'ยังไม่เคยถูกใช้งาน' }}</p></article></div></section></div>
     <div v-if="confirmDelete" class="fixed inset-0 z-50 grid place-items-center bg-black/50 p-3"><div class="w-full max-w-sm rounded-xl bg-white p-4 dark:bg-stone-900"><h2 class="text-xl font-black">ยืนยันการลบ</h2><p class="mt-2">ลบ {{ confirmDelete.name }}? หากมีประวัติ ระบบจะปิดใช้งานแทน</p><div class="mt-4 grid grid-cols-2 gap-2"><button class="h-11 rounded-lg border" @click="confirmDelete=null">ยกเลิก</button><button class="h-11 rounded-lg bg-red-600 font-black text-white" @click="remove">ยืนยัน</button></div></div></div>
   </section>

@@ -19,7 +19,7 @@ describe('Excel export data', () => {
       ],
       queue: [{ id: 3, court: 'สนาม 2', a1: 1, a2: 2, level: 'middle' }],
       live: [],
-      history: [{ id: 2, court: 'สนาม 1', a1: 1, a2: 2, winner: 'A', status: 'finished', shuttles: 2 }]
+      history: [{ id: 2, court: 'สนาม 1', a1: 1, a2: 2, winner: 'A', status: 'finished', shuttles: 2, pairingPattern: 'pair_pair' }]
     }
     const data = buildDashboardExportData({
       state,
@@ -49,6 +49,13 @@ describe('Excel export data', () => {
     expect(data.courts).toEqual([
       ['สนาม 1', 0, 0, 1, 0, 1, 2],
       ['สนาม 2', 1, 0, 0, 0, 1, 0]
+    ])
+    expect(data.pairingPatterns).toEqual([
+      ['คู่ พบ คู่', 'ผู้เล่นมาเป็นคู่ทั้ง 2 ฝั่ง', 1, 100],
+      ['คู่และคนเดี่ยว', '1 คู่ รวมกับผู้เล่นเดี่ยว 2 คน', 0, 0],
+      ['คนเดี่ยว 4 คน', 'ผู้เล่นส่งชื่อแยกกันทั้งหมด', 0, 0],
+      ['เกมเดี่ยว', 'ผู้เล่นเดี่ยวพบกัน 2 คน', 0, 0],
+      ['สร้างทีม 4 คนเอง', 'ผู้ดูแลจัดผู้เล่นทั้ง 2 ทีมเอง', 0, 0]
     ])
   })
 

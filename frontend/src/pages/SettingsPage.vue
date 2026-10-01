@@ -15,6 +15,7 @@ const props = defineProps([
   'usedCourtNames',
   'usedLevels',
   'saveSettings',
+  'updatePlayerLibero',
   'isSessionReadOnly'
 ])
 
@@ -22,6 +23,42 @@ const activeSettingsTab = ref('general')
 const isLiveShare = computed(() => props.state.session?.type === 'liveShare')
 const usedCourtSet = computed(() => props.usedCourtNames || new Set())
 const usedLevelSet = computed(() => props.usedLevels || new Set())
+const liberoSearch = ref('')
+const liberoComboboxOpen = ref(false)
+const liberoSavingId = ref(0)
+const liberoPlayers = computed(() => (props.state.players || []).filter((player) => player.active && !player.paid && player.libero))
+const availableLiberoPlayers = computed(() => {
+  const search = liberoSearch.value.trim().toLowerCase()
+  return (props.state.players || [])
+    .filter((player) => player.active && !player.paid && !player.libero)
+    .filter((player) => !search || player.name.toLowerCase().includes(search) || String(player.id).includes(search))
+    .sort((a, b) => a.id - b.id)
+})
+
+async function setLibero(playerId, enabled) {
+  if (!playerId || !props.updatePlayerLibero) return
+  liberoSavingId.value = Number(playerId)
+  try {
+    await props.updatePlayerLibero(Number(playerId), enabled)
+    if (enabled) {
+      liberoSearch.value = ''
+      liberoComboboxOpen.value = false
+    }
+  } finally {
+    liberoSavingId.value = 0
+  }
+}
+
+function closeLiberoCombobox() {
+  window.setTimeout(() => {
+    liberoComboboxOpen.value = false
+  }, 120)
+}
+
+async function selectLiberoPlayer(player) {
+  liberoSearch.value = `#${player.id} ${player.name}`
+  await setLibero(player.id, true)
+}
 
 function applyLinkedShuttleProduct(brand, product) {
   if (product) {
@@ -52,6 +89,7 @@ const settingsTabs = computed(() => [
   { id: 'courts', label: 'สนาม', hint: 'ชื่อสนามทั้งหมด' },
   ...(!isLiveShare.value ? [
     { id: 'waiting', label: 'เวลารอเล่น', hint: 'แสดงเวลาแยกแต่ละหน้า' },
+    { id: 'libero', label: 'ริโบโร่', hint: 'เตรียมผู้เล่นลงเกมถัดไป' },
     { id: 'match', label: 'จัดคู่ / เสียง', hint: 'ระดับมือ การสุ่ม และคำอ่าน' }
   ] : [])
 ])
@@ -227,6 +265,20 @@ watch(settingsTabs, (tabs) => {
       </div>
 
       <div v-else-if="activeSettingsTab === 'waiting'" class="grid gap-4 lg:grid-cols-3">
+        <label class="flex items-center justify-between gap-4 rounded-lg border border-court-200 bg-court-50/60 p-4 dark:border-court-900 dark:bg-court-950/20 lg:col-span-3">
+          <span>
+            <span class="block font-black">เล่นอนิเมชันเมื่อเริ่มการแข่งขัน</span>
+            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">แสดงการ์ดเปิดตัวผู้เล่น 5 วินาทีบนหน้าคิวจอ PC เท่านั้น</span>
+          </span>
+          <input v-model="state.settings.matchStartAnimationEnabled" type="checkbox" class="h-5 w-5 shrink-0" @change="saveSettings" />
+        </label>
+        <label class="flex items-center justify-between gap-4 rounded-lg border border-amber-200 bg-amber-50/60 p-4 dark:border-amber-900 dark:bg-amber-950/20 lg:col-span-3">
+          <span>
+            <span class="block font-black">แจ้งเตือนผู้เล่นที่รอนาน</span>
+            <span class="mt-1 block text-sm font-semibold text-stone-500 dark:text-stone-400">แจ้งเมื่อผู้เล่นที่เปิดคูปองยังไม่ได้เล่นครบ 20 นาที และแจ้งซ้ำทุก 10 นาที</span>
+          </span>
+          <input v-model="state.settings.idleWaitAlertEnabled" type="checkbox" class="h-5 w-5 shrink-0" @change="saveSettings" />
+        </label>
         <label class="flex items-center justify-between gap-4 rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
           <span>
             <span class="block font-black">หน้าเมนูสมาชิก</span>
@@ -251,6 +303,72 @@ watch(settingsTabs, (tabs) => {
         <div class="rounded-lg border border-court-200 bg-court-500/10 p-4 text-sm font-semibold text-court-800 dark:border-court-900 dark:text-court-200 lg:col-span-3">
           เวลาเริ่มนับเมื่อเพิ่มผู้เล่นหรือจบการแข่งขัน และหยุดนับทันทีเมื่อกดเริ่มเกม ผู้เล่นแต่ละคนมีเวลาแยกกัน
         </div>
+      </div>
+
+      <div v-else-if="activeSettingsTab === 'libero'" class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <section class="rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <h2 class="font-black">เพิ่มริโบโร่</h2>
+          <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">เลือกจากผู้เล่นที่อยู่ใน Session นี้ ริโบโร่ที่กำลังแข่งสามารถถูกจัดทีมและ Random สำหรับเกมถัดไปได้</p>
+          <div class="relative mt-4">
+            <input
+              v-model="liberoSearch"
+              type="search"
+              role="combobox"
+              aria-label="ค้นหาและเพิ่มริโบโร่"
+              :aria-expanded="liberoComboboxOpen"
+              aria-controls="libero-player-options"
+              autocomplete="off"
+              class="h-11 w-full rounded-md border border-stone-200 bg-paper-50 px-3 pr-10 font-semibold outline-none focus:border-court-500 focus:ring-2 focus:ring-court-500/20 dark:border-stone-700 dark:bg-stone-800"
+              placeholder="ค้นหาชื่อหรือเลขผู้เล่น"
+              :disabled="Boolean(liberoSavingId)"
+              @focus="liberoComboboxOpen = true"
+              @input="liberoComboboxOpen = true"
+              @blur="closeLiberoCombobox"
+              @keydown.escape="liberoComboboxOpen = false"
+            />
+            <span class="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-stone-400">⌄</span>
+            <div
+              v-if="liberoComboboxOpen"
+              id="libero-player-options"
+              role="listbox"
+              class="absolute inset-x-0 top-[calc(100%+0.35rem)] z-20 max-h-64 overflow-y-auto rounded-md border border-stone-200 bg-white p-1 shadow-xl dark:border-stone-700 dark:bg-stone-900"
+            >
+              <button
+                v-for="player in availableLiberoPlayers"
+                :key="player.id"
+                type="button"
+                role="option"
+                class="flex w-full items-center justify-between gap-3 rounded px-3 py-2.5 text-left hover:bg-court-50 dark:hover:bg-court-950/30"
+                @mousedown.prevent="selectLiberoPlayer(player)"
+              >
+                <span class="min-w-0 truncate font-black">#{{ player.id }} {{ player.name }}</span>
+                <span class="shrink-0 text-xs font-semibold text-stone-500">{{ player.games || 0 }} เกม</span>
+              </button>
+              <p v-if="!availableLiberoPlayers.length" class="px-3 py-4 text-center text-sm font-semibold text-stone-500">ไม่พบผู้เล่นที่เพิ่มได้</p>
+            </div>
+          </div>
+        </section>
+
+        <section class="rounded-lg border border-stone-200 bg-white p-4 dark:border-stone-700 dark:bg-stone-900">
+          <h2 class="font-black">รายชื่อริโบโร่ {{ liberoPlayers.length }} คน</h2>
+          <div v-if="liberoPlayers.length" class="mt-4 overflow-hidden rounded-lg border border-stone-200 dark:border-stone-700">
+            <div class="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 bg-paper-100 px-3 py-2 text-xs font-black text-stone-500 dark:bg-stone-800 dark:text-stone-400">
+              <span>ผู้เล่น</span><span>เล่นแล้ว</span><span class="w-9 text-center">จัดการ</span>
+            </div>
+            <div class="divide-y divide-stone-200 dark:divide-stone-700">
+              <article v-for="player in liberoPlayers" :key="player.id" class="grid min-h-14 grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 px-3 py-2">
+                <div class="min-w-0">
+                  <p class="truncate font-black">{{ player.name }}</p>
+                  <p class="text-xs font-semibold text-stone-500">#{{ player.id }} · ริโบโร่</p>
+                </div>
+                <span class="whitespace-nowrap rounded-md bg-court-50 px-2.5 py-1 text-sm font-black text-court-800 dark:bg-court-950/30 dark:text-court-200">{{ player.games || 0 }} ตา</span>
+                <button type="button" class="grid h-9 w-9 place-items-center rounded-md border border-stone-200 text-stone-500 hover:border-red-300 hover:bg-red-50 hover:text-red-600 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-red-950/30" :disabled="liberoSavingId === player.id" :aria-label="`นำ ${player.name} ออกจากริโบโร่`" @click="setLibero(player.id, false)"><X class="h-4 w-4" /></button>
+              </article>
+            </div>
+          </div>
+          <p v-else class="mt-4 rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีรายชื่อริโบโร่</p>
+          <p class="mt-4 rounded-md bg-amber-50 p-3 text-xs font-semibold text-amber-900 dark:bg-amber-950/30 dark:text-amber-200">ริโบโร่จัดเข้าคิวล่วงหน้าได้ แต่ระบบจะบล็อกการเริ่มเกมใหม่จนกว่าเกมเดิมจะจบ</p>
+        </section>
       </div>
 
       <div v-else-if="activeSettingsTab === 'match'" class="grid gap-4 lg:grid-cols-2">

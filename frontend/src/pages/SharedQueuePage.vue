@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import QRCode from 'qrcode'
 import '@fontsource/dseg7/700.css'
 import { Activity, Clock3, ListOrdered, Medal, UsersRound } from '@lucide/vue'
+import { waitMinutes } from '../waitTime'
 
 const props = defineProps([
   'state',
@@ -14,6 +15,10 @@ const props = defineProps([
 
 const waitingMatches = computed(() => [...props.state.queue].sort((a, b) => a.id - b.id))
 const liveMatches = computed(() => [...props.state.live].sort((a, b) => a.id - b.id))
+const hiddenDesktopLiveMatchIds = ref(new Set())
+const desktopLiveMatches = computed(() => liveMatches.value.filter((match) => !hiddenDesktopLiveMatchIds.value.has(Number(match.id))))
+const matchIntro = ref(null)
+const pendingMatchIntros = []
 const occupiedPlayerIds = computed(() => new Set(
   [...(props.state.queue || []), ...(props.state.live || [])]
     .flatMap((match) => [match.a1, match.a2, match.b1, match.b2])
@@ -29,6 +34,7 @@ const pendingPlayerIds = computed(() => new Set(
 const waitingPlayers = computed(() => (props.state.players || [])
   .filter((player) => player.active && (player.coupon || pendingPlayerIds.value.has(Number(player.id))) && !occupiedPlayerIds.value.has(Number(player.id)))
   .sort((a, b) => Number(a.id) - Number(b.id)))
+const showWaitingPlayerTime = computed(() => props.state.settings?.showWaitTimePairing !== false)
 const waitingPlayerColumnCount = computed(() => Math.max(1, Math.ceil(waitingPlayers.value.length / 10)))
 const waitingPlayerColumns = computed(() => {
   const size = Math.ceil(waitingPlayers.value.length / waitingPlayerColumnCount.value)
@@ -58,7 +64,66 @@ const queueNavbarClock = computed(() => queueClockFormatter.format(now.value))
 const queueQrDataUrl = ref('')
 let elapsedTimer = null
 let fadeTimer = null
+let matchIntroTimer = null
+let matchIntroGapTimer = null
 let qrRequestSequence = 0
+
+function matchPlayerCards(match) {
+  return [
+    { id: Number(match.a1 || 0), side: 'A', slot: 'A1' },
+    { id: Number(match.a2 || 0), side: 'A', slot: 'A2' },
+    { id: Number(match.b1 || 0), side: 'B', slot: 'B1' },
+    { id: Number(match.b2 || 0), side: 'B', slot: 'B2' }
+  ]
+    .filter((player) => player.id > 0)
+    .map((player) => {
+      const detail = (props.state.players || []).find((item) => Number(item.id) === player.id)
+      return { ...player, name: detail?.name || props.playerName(player.id), avatarUrl: detail?.avatarUrl || '' }
+    })
+}
+
+function showNextMatchIntro() {
+  if (matchIntro.value || !pendingMatchIntros.length) return
+  matchIntro.value = pendingMatchIntros.shift()
+  showWaitingSlide.value = false
+  matchIntroTimer = window.setTimeout(() => {
+    const finishedId = Number(matchIntro.value?.id || 0)
+    matchIntro.value = null
+    hiddenDesktopLiveMatchIds.value = new Set(
+      [...hiddenDesktopLiveMatchIds.value].filter((id) => id !== finishedId)
+    )
+    matchIntroGapTimer = window.setTimeout(showNextMatchIntro, 900)
+  }, 5000)
+}
+
+watch(
+  () => [
+    waitingMatches.value.map((match) => Number(match.id)),
+    liveMatches.value.map((match) => Number(match.id))
+  ],
+  ([, liveIds], [previousWaitingIds = [], previousLiveIds = []]) => {
+    const previousWaiting = new Set(previousWaitingIds)
+    const previousLive = new Set(previousLiveIds)
+    const startedIds = liveIds.filter((id) => previousWaiting.has(id) && !previousLive.has(id))
+    if (!startedIds.length) return
+    if (props.state.settings?.matchStartAnimationEnabled === false) return
+
+    const startedIdSet = new Set(startedIds)
+    hiddenDesktopLiveMatchIds.value = new Set([...hiddenDesktopLiveMatchIds.value, ...startedIds])
+    liveMatches.value
+      .filter((match) => startedIdSet.has(Number(match.id)))
+      .forEach((match) => {
+        const players = matchPlayerCards(match)
+        pendingMatchIntros.push({
+          ...match,
+          players,
+          isSingles: players.filter((player) => player.side === 'A').length === 1 && players.filter((player) => player.side === 'B').length === 1,
+          courtLabel: matchCourt(match)
+        })
+      })
+    showNextMatchIntro()
+  }
+)
 
 watch(() => props.shareLink, async (link) => {
   const sequence = ++qrRequestSequence
@@ -83,7 +148,9 @@ onMounted(() => {
     now.value = new Date()
   }, 1000)
   fadeTimer = window.setInterval(() => {
-    if (props.state.settings.showWaitingOnQueueShare && waitingPlayers.value.length) {
+    if (matchIntro.value) {
+      showWaitingSlide.value = false
+    } else if (props.state.settings.showWaitingOnQueueShare && waitingPlayers.value.length) {
       showWaitingSlide.value = !showWaitingSlide.value
     } else {
       showWaitingSlide.value = false
@@ -94,6 +161,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (elapsedTimer) window.clearInterval(elapsedTimer)
   if (fadeTimer) window.clearInterval(fadeTimer)
+  if (matchIntroTimer) window.clearTimeout(matchIntroTimer)
+  if (matchIntroGapTimer) window.clearTimeout(matchIntroGapTimer)
 })
 
 watch(() => props.state.settings.showWaitingOnQueueShare, (enabled) => {
@@ -101,6 +170,17 @@ watch(() => props.state.settings.showWaitingOnQueueShare, (enabled) => {
     showWaitingSlide.value = false
     showMobileCoupons.value = false
   }
+})
+
+watch(() => props.state.settings?.matchStartAnimationEnabled, (enabled) => {
+  if (enabled !== false) return
+  if (matchIntroTimer) window.clearTimeout(matchIntroTimer)
+  if (matchIntroGapTimer) window.clearTimeout(matchIntroGapTimer)
+  matchIntroTimer = null
+  matchIntroGapTimer = null
+  pendingMatchIntros.splice(0)
+  matchIntro.value = null
+  hiddenDesktopLiveMatchIds.value = new Set()
 })
 
 watch(() => waitingPlayers.value.length, (count) => {
@@ -118,6 +198,13 @@ function matchCourt(match) {
   return match.court && match.court !== '-' ? match.court : 'รอเลือกสนาม'
 }
 
+function showcaseCourtLabel(value) {
+  const label = String(value || '').trim()
+  if (!label || label === 'รอเลือกสนาม') return 'COURT TBA'
+  const courtName = label.replace(/^สนาม\s*/i, '').replace(/^court\s*/i, '').trim()
+  return `COURT ${courtName || label}`
+}
+
 function elapsedTime(match) {
   if (!match.startedAt) return '-'
   const [hourText, minuteText] = match.startedAt.split(':')
@@ -133,6 +220,15 @@ function elapsedTime(match) {
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
   if (hours > 0) return `${hours} ชม. ${minutes} นาที`
+  return `${minutes} นาที`
+}
+
+function waitingPlayerTime(player) {
+  const minutes = waitMinutes(player?.waitStartedAt, now.value.getTime())
+  if (minutes === null) return '-'
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  if (hours > 0) return `${hours} ชม. ${remainingMinutes} นาที`
   return `${minutes} นาที`
 }
 
@@ -168,7 +264,7 @@ function tvContentStyle() {
 
 <template>
   <section :class="['shared-queue-page min-h-screen bg-paper-50 px-3 py-4 dark:bg-paper-900 sm:px-4', tvDensityClass]">
-    <div class="shared-flight-board mx-auto hidden min-h-[calc(100dvh-2rem)] w-full max-w-[1600px] flex-col overflow-hidden rounded-xl border border-stone-700 bg-[#171a18] text-white shadow-2xl md:flex">
+    <div class="shared-flight-board relative mx-auto hidden min-h-[calc(100dvh-2rem)] w-full max-w-[1600px] flex-col overflow-hidden rounded-xl border border-stone-700 bg-[#171a18] text-white shadow-2xl md:flex">
       <header class="shared-flight-header grid min-h-[4.25rem] shrink-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-5 border-b border-white/10 bg-[#222725] px-4 py-2.5">
         <div class="flex min-w-0 items-center gap-3">
           <h1 class="truncate text-lg font-black lg:text-xl">{{ state.session.name }}</h1>
@@ -209,11 +305,11 @@ function tvContentStyle() {
       <div v-if="showWaitingSlide" key="waiting-players" class="shared-waiting-people min-h-0 flex-1 overflow-hidden bg-[#fbfaf4] text-stone-900">
         <div class="grid gap-x-4" :style="{ gridTemplateColumns: `repeat(${waitingPlayerColumns.length}, minmax(0, 1fr))` }">
           <div v-for="column in waitingPlayerColumns" :key="column.offset" class="shared-coupon-list overflow-hidden border-y border-stone-300 bg-white">
-            <div class="shared-flight-columns coupon-flight-columns grid bg-[#eeeae0] px-4 py-2.5 text-xs font-black text-stone-600">
-              <span>เลขสมาชิก</span><span>ผู้เล่น</span><span>ระดับ</span><span>สถานะ</span>
+            <div :class="['shared-flight-columns coupon-flight-columns grid bg-[#eeeae0] px-4 py-2.5 text-xs font-black text-stone-600', { 'coupon-flight-columns--with-wait': showWaitingPlayerTime }]">
+              <span>เลขสมาชิก</span><span>ผู้เล่น</span><span>ระดับ</span><span>สถานะ</span><span v-if="showWaitingPlayerTime">เวลาที่รอ</span>
             </div>
-            <article v-for="player in column.players" :key="player.id" class="shared-flight-row coupon-flight-row grid min-h-12 items-center border-t border-stone-200 px-4 py-1.5">
-              <span class="font-black text-court-700">#{{ player.id }}</span><p class="coupon-player-name truncate">{{ player.name }}</p><p class="truncate text-sm font-bold text-stone-600">{{ player.level || '-' }}</p><span><span v-if="pendingPlayerIds.has(Number(player.id))" class="coupon-pending-badge">กำลังจับคู่</span></span>
+            <article v-for="player in column.players" :key="player.id" :class="['shared-flight-row coupon-flight-row grid min-h-12 items-center border-t border-stone-200 px-4 py-1.5', { 'coupon-flight-row--with-wait': showWaitingPlayerTime }]">
+              <span class="font-black text-court-700">#{{ player.id }}</span><p class="coupon-player-name flex min-w-0 items-center gap-2"><span class="grid h-8 w-8 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700"><img v-if="player.avatarUrl" :src="player.avatarUrl" alt="" class="h-full w-full object-cover" /><UsersRound v-else class="h-4 w-4" /></span><span class="truncate">{{ player.name }}</span></p><p class="truncate text-sm font-bold text-stone-600">{{ player.level || '-' }}</p><span><span v-if="pendingPlayerIds.has(Number(player.id))" class="coupon-pending-badge">กำลังจับคู่</span></span><span v-if="showWaitingPlayerTime" class="coupon-wait-time">รอ {{ waitingPlayerTime(player) }}</span>
             </article>
           </div>
         </div>
@@ -225,26 +321,36 @@ function tvContentStyle() {
 
         <section v-if="liveMatches.length" class="shared-flight-section">
           <div class="shared-flight-section-label border-b border-court-300/20 bg-court-500/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-court-200">กำลังแข่งขัน</div>
-          <article v-for="match in liveMatches" :key="`live-${match.id}`" class="shared-flight-row shared-flight-row--live grid items-center border-b border-white/10 px-4 py-1.5">
-            <span class="shared-flight-status bg-court-400/15 text-court-200"><span class="h-2 w-2 rounded-full bg-court-300"></span>เริ่ม {{ match.startedAt || '-' }}</span>
-            <span class="text-center text-sm font-black text-white/30">–</span>
-            <p class="shared-flight-team">{{ teamText(match, 'A') }}</p>
-            <p class="shared-flight-team">{{ teamText(match, 'B') }}</p>
-            <p class="font-black text-court-200">{{ matchCourt(match) }}</p>
-            <p class="text-xs font-bold text-white/50">เล่นมาแล้ว {{ elapsedTime(match) }}</p>
-          </article>
+          <TransitionGroup name="live-start" tag="div" class="shared-flight-transition-list">
+            <article v-for="match in desktopLiveMatches" :key="`match-${match.id}`" class="shared-flight-row shared-flight-row--live grid items-center border-b border-white/10 px-4 py-1.5">
+              <span class="shared-flight-status bg-court-400/15 text-court-200"><span class="h-2 w-2 rounded-full bg-court-300"></span>เริ่ม {{ match.startedAt || '-' }}</span>
+              <span class="text-center text-sm font-black text-white/30">–</span>
+              <p class="shared-flight-team">{{ teamText(match, 'A') }}</p>
+              <p class="shared-flight-team">{{ teamText(match, 'B') }}</p>
+              <p class="font-black text-court-200">{{ matchCourt(match) }}</p>
+              <p class="text-xs font-bold text-white/50">เล่นมาแล้ว {{ elapsedTime(match) }}</p>
+            </article>
+          </TransitionGroup>
         </section>
 
         <section v-if="waitingMatches.length" class="shared-flight-section">
           <div class="shared-flight-section-label border-b border-amber-300/20 bg-amber-400/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-amber-200">รอคิวลงสนาม</div>
-          <article v-for="(match, index) in waitingMatches" :key="`waiting-${match.id}`" class="shared-flight-row shared-flight-row--waiting grid items-center border-b border-white/10 px-4 py-1.5">
-            <span class="shared-flight-status bg-amber-300/15 text-amber-200"><span class="h-2 w-2 rounded-full bg-amber-300"></span>รอคิว</span>
-            <p class="text-center text-base font-black text-amber-200">#{{ index + 1 }}</p>
-            <p class="shared-flight-team">{{ teamText(match, 'A') }}</p>
-            <p class="shared-flight-team">{{ teamText(match, 'B') }}</p>
-            <p class="font-black" :class="match.court && match.court !== '-' ? 'text-white' : 'text-white/45'">{{ matchCourt(match) }}</p>
-            <p class="text-sm font-bold text-white/45">รอเรียกลงสนาม</p>
-          </article>
+          <TransitionGroup name="queue-bout" tag="div" class="shared-flight-transition-list">
+            <article
+              v-for="(match, index) in waitingMatches"
+              :key="`match-${match.id}`"
+              class="shared-flight-row shared-flight-row--waiting shared-fight-entry grid items-center border-b border-white/10 px-4 py-1.5"
+              :class="{ 'shared-next-fight-row': index === 0 }"
+              :style="{ '--fight-index': index }"
+            >
+              <span class="shared-flight-status bg-amber-300/15 text-amber-200"><span class="h-2 w-2 rounded-full bg-amber-300"></span>{{ index === 0 ? 'คู่ถัดไป' : 'รอคิว' }}</span>
+              <p class="text-center text-base font-black text-amber-200">#{{ index + 1 }}</p>
+              <p class="shared-flight-team shared-fighter-name shared-fighter-name--a">{{ teamText(match, 'A') }}</p>
+              <p class="shared-flight-team shared-fighter-name shared-fighter-name--b">{{ teamText(match, 'B') }}</p>
+              <p class="font-black" :class="match.court && match.court !== '-' ? 'text-white' : 'text-white/45'">{{ matchCourt(match) }}</p>
+              <p class="text-sm font-bold text-white/45">รอเรียกลงสนาม</p>
+            </article>
+          </TransitionGroup>
         </section>
 
         <div v-if="!liveMatches.length && !waitingMatches.length" class="grid min-h-72 place-content-center text-center">
@@ -253,6 +359,63 @@ function tvContentStyle() {
           <p class="mt-1 font-semibold text-white/45">รายการจะแสดงอัตโนมัติเมื่อผู้ดูแลจัดคู่</p>
         </div>
       </div>
+      </Transition>
+
+      <Transition name="match-showcase">
+        <div
+          v-if="matchIntro"
+          class="match-start-showcase absolute inset-0 z-50 hidden items-center justify-center overflow-hidden md:flex"
+          role="status"
+          aria-live="assertive"
+          data-testid="match-start-showcase"
+        >
+          <div class="match-showcase-rays" aria-hidden="true"></div>
+          <div class="match-showcase-arena" aria-hidden="true"></div>
+          <div class="match-showcase-content relative z-10 w-full max-w-6xl px-8">
+            <div class="match-showcase-heading text-center">
+              <p class="match-showcase-kicker">MATCH STARTING</p>
+              <h2>MATCH {{ matchIntro.id }}</h2>
+              <div class="match-showcase-court"><Activity class="h-5 w-5" /> {{ showcaseCourtLabel(matchIntro.courtLabel) }}</div>
+            </div>
+
+            <div class="match-showcase-lineup" :class="{ 'match-showcase-lineup--singles': matchIntro.isSingles }">
+              <div class="match-showcase-team match-showcase-team--a">
+                <article
+                  v-for="(player, index) in matchIntro.players.filter((item) => item.side === 'A')"
+                  :key="`intro-${matchIntro.id}-${player.slot}`"
+                  class="match-showcase-player match-showcase-player--a"
+                  :style="{ '--player-delay': `${index * 120}ms` }"
+                >
+                  <span class="match-showcase-portrait">
+                    <img v-if="player.avatarUrl" :src="player.avatarUrl" :alt="player.name" class="match-showcase-portrait-image" />
+                    <span v-else class="match-showcase-portrait-fallback"><UsersRound class="h-14 w-14" /></span>
+                  </span>
+                  <span class="match-showcase-nameplate"><small>PLAYER {{ player.slot }}</small><strong>{{ player.name }}</strong></span>
+                </article>
+              </div>
+
+              <div class="match-showcase-versus" aria-label="พบกัน">
+                <span>VS</span>
+              </div>
+
+              <div class="match-showcase-team match-showcase-team--b">
+                <article
+                  v-for="(player, index) in matchIntro.players.filter((item) => item.side === 'B')"
+                  :key="`intro-${matchIntro.id}-${player.slot}`"
+                  class="match-showcase-player match-showcase-player--b"
+                  :style="{ '--player-delay': `${index * 120}ms` }"
+                >
+                  <span class="match-showcase-portrait">
+                    <img v-if="player.avatarUrl" :src="player.avatarUrl" :alt="player.name" class="match-showcase-portrait-image" />
+                    <span v-else class="match-showcase-portrait-fallback"><UsersRound class="h-14 w-14" /></span>
+                  </span>
+                  <span class="match-showcase-nameplate"><small>PLAYER {{ player.slot }}</small><strong>{{ player.name }}</strong></span>
+                </article>
+              </div>
+            </div>
+            <p class="match-showcase-status">READY TO PLAY</p>
+          </div>
+        </div>
       </Transition>
 
       <aside v-if="queueQrDataUrl" class="shared-queue-qr fixed bottom-4 right-4 z-30 hidden rounded-xl border border-stone-200 bg-white p-2.5 text-center text-stone-900 shadow-2xl md:block" data-testid="shared-queue-qr">
@@ -323,14 +486,14 @@ function tvContentStyle() {
       <template v-else>
       <div v-if="showMobileCoupons && state.settings.showWaitingOnQueueShare" class="mobile-coupon-board min-h-0 overflow-hidden rounded-xl bg-white">
         <div class="mobile-coupon-columns grid bg-[#f0ede5] px-4 py-2 text-xs font-black text-stone-600">
-          <span>เลขสมาชิก</span><span>ผู้เล่น</span><span>ระดับ</span><span>สถานะ</span>
+          <span>เลขสมาชิก</span><span>ผู้เล่น</span><span>ระดับ</span><span>{{ showWaitingPlayerTime ? 'สถานะ / เวลารอ' : 'สถานะ' }}</span>
         </div>
         <div class="mobile-coupon-scroll max-h-[calc(100dvh-15rem)] overflow-y-auto">
           <article v-for="player in waitingPlayers" :key="player.id" class="mobile-coupon-row grid min-h-14 items-center px-4 py-2">
             <span class="text-sm font-black text-court-700">#{{ player.id }}</span>
             <p class="mobile-coupon-name coupon-player-name truncate">{{ player.name }}</p>
             <p class="mobile-coupon-level truncate text-sm font-bold">{{ player.level || '-' }}</p>
-            <span><span v-if="pendingPlayerIds.has(Number(player.id))" class="coupon-pending-badge">กำลังจับคู่</span></span>
+            <span class="grid gap-0.5"><span v-if="pendingPlayerIds.has(Number(player.id))" class="coupon-pending-badge">กำลังจับคู่</span><span v-if="showWaitingPlayerTime" class="coupon-wait-time">รอ {{ waitingPlayerTime(player) }}</span></span>
           </article>
         </div>
       </div>
@@ -423,6 +586,440 @@ function tvContentStyle() {
 .queue-fade-enter-from,
 .queue-fade-leave-to { opacity: 0; }
 
+.match-start-showcase {
+  background: rgb(39 39 42 / 72%);
+  backdrop-filter: blur(5px) saturate(0.72);
+  color: #fff;
+  font-family: 'Arial Black', Arial, sans-serif;
+  isolation: isolate;
+}
+
+.match-start-showcase::before,
+.match-start-showcase::after {
+  position: absolute;
+  inset: -30%;
+  content: '';
+  pointer-events: none;
+}
+
+.match-start-showcase::before {
+  background: repeating-conic-gradient(from 20deg, rgb(255 255 255 / 7%) 0deg 1.2deg, transparent 1.2deg 12deg);
+  mask-image: radial-gradient(circle, #000 0 38%, transparent 70%);
+  animation: showcase-rays-spin 12s linear infinite;
+}
+
+.match-start-showcase::after {
+  background: linear-gradient(90deg, transparent 0 40%, rgb(255 255 255 / 13%) 49%, rgb(255 255 255 / 36%) 50%, rgb(255 255 255 / 13%) 51%, transparent 60% 100%);
+  transform: skewX(-18deg) translateX(-85%);
+  animation: showcase-flash-sweep 1.15s 0.25s ease-out both;
+}
+
+.match-showcase-rays {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(105deg, transparent 0 44%, rgb(255 255 255 / 10%) 49%, transparent 54%),
+    linear-gradient(75deg, transparent 0 44%, rgb(255 255 255 / 7%) 49%, transparent 54%);
+  animation: showcase-energy 2.2s ease-in-out infinite alternate;
+}
+
+.match-showcase-arena {
+  position: absolute;
+  right: 6%;
+  bottom: -20%;
+  left: 6%;
+  height: 52%;
+  border: 2px solid rgb(255 255 255 / 13%);
+  background:
+    linear-gradient(90deg, transparent 49.7%, rgb(255 255 255 / 18%) 50%, transparent 50.3%),
+    linear-gradient(rgb(255 255 255 / 12%) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 12%) 1px, transparent 1px),
+    rgb(63 63 70 / 14%);
+  background-size: 100% 100%, 52px 52px, 52px 52px, 100% 100%;
+  box-shadow: 0 0 60px rgb(255 255 255 / 8%);
+  transform: perspective(680px) rotateX(62deg);
+}
+
+.match-showcase-heading {
+  animation: showcase-title-drop 0.55s cubic-bezier(0.18, 0.9, 0.2, 1.1) both;
+}
+
+.match-showcase-kicker {
+  color: #86efac;
+  font-size: clamp(0.78rem, 1vw, 1rem);
+  font-weight: 1000;
+  letter-spacing: 0.38em;
+  text-shadow: 0 0 18px rgb(74 222 128 / 70%);
+}
+
+.match-showcase-heading h2 {
+  margin-top: 0.15rem;
+  font-size: clamp(2rem, 4.8vw, 4.4rem);
+  font-weight: 1000;
+  letter-spacing: 0.055em;
+  line-height: 1;
+  text-shadow: 0 8px 30px rgb(0 0 0 / 65%);
+}
+
+.match-showcase-court {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-top: 0.7rem;
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 999px;
+  background: rgb(0 0 0 / 34%);
+  padding: 0.42rem 1rem;
+  color: #fef3c7;
+  font-size: clamp(0.95rem, 1.3vw, 1.2rem);
+  font-weight: 900;
+  letter-spacing: 0.075em;
+  backdrop-filter: blur(8px);
+}
+
+.match-showcase-lineup {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(1rem, 3vw, 3.2rem);
+  margin-top: clamp(1.5rem, 4vh, 3rem);
+}
+
+.match-showcase-team {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: clamp(0.7rem, 1.4vw, 1.2rem);
+}
+
+.match-showcase-lineup--singles .match-showcase-team {
+  grid-template-columns: minmax(0, min(15rem, 100%));
+  justify-content: center;
+}
+
+.match-showcase-lineup--singles .match-showcase-player {
+  width: min(15rem, 100%);
+  justify-self: center;
+}
+
+.match-showcase-player {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  min-height: clamp(15rem, 34vh, 20rem);
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 1.15rem 1.15rem 0.45rem 0.45rem;
+  padding: 0;
+  box-shadow: 0 22px 55px rgb(0 0 0 / 48%);
+  animation-duration: 0.72s;
+  animation-delay: calc(0.2s + var(--player-delay));
+  animation-timing-function: cubic-bezier(0.16, 0.9, 0.22, 1.08);
+  animation-fill-mode: both;
+}
+
+.match-showcase-player--a {
+  background: linear-gradient(155deg, rgb(14 165 233 / 46%), rgb(8 47 73 / 88%) 62%, rgb(2 20 31 / 96%));
+  animation-name: showcase-card-from-left;
+}
+
+.match-showcase-player--b {
+  background: linear-gradient(155deg, rgb(245 158 11 / 46%), rgb(120 53 15 / 88%) 62%, rgb(35 20 3 / 96%));
+  animation-name: showcase-card-from-right;
+}
+
+.match-showcase-player::before {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 15%, rgb(255 255 255 / 18%) 48%, transparent 65%);
+  content: '';
+  z-index: 4;
+  transform: translateX(-120%);
+  animation: showcase-card-shine 1.5s calc(0.65s + var(--player-delay)) ease-out both;
+}
+
+.match-showcase-portrait {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.match-showcase-portrait::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 35%, rgb(0 0 0 / 18%) 58%, rgb(0 0 0 / 92%) 100%);
+  content: '';
+}
+
+.match-showcase-portrait-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 22%;
+}
+
+.match-showcase-portrait-fallback {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background:
+    radial-gradient(circle at 50% 38%, rgb(255 255 255 / 20%), transparent 24%),
+    linear-gradient(145deg, rgb(255 255 255 / 8%), rgb(0 0 0 / 26%));
+  color: rgb(255 255 255 / 72%);
+}
+
+.match-showcase-nameplate {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 3;
+  display: grid;
+  gap: 0.2rem;
+  padding: 2.8rem 0.8rem 1rem;
+  background: linear-gradient(180deg, transparent, rgb(0 0 0 / 88%));
+  text-align: center;
+}
+
+.match-showcase-nameplate small {
+  color: rgb(255 255 255 / 62%);
+  font-family: 'Arial Black', Arial, sans-serif;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+}
+
+.match-showcase-nameplate strong {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #fff;
+  font-family: Arial, 'Noto Sans Thai', sans-serif;
+  font-size: clamp(1.15rem, 1.8vw, 1.7rem);
+  font-weight: 1000;
+  letter-spacing: 0.025em;
+  line-height: 1.1;
+  text-shadow: 0 3px 12px rgb(0 0 0 / 70%);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.match-showcase-versus {
+  display: grid;
+  width: clamp(4.8rem, 7vw, 6.8rem);
+  aspect-ratio: 1;
+  place-items: center;
+  border: 2px solid rgb(255 255 255 / 34%);
+  border-radius: 999px;
+  background: radial-gradient(circle, #fff 0 4%, #fbbf24 5% 16%, #b45309 48%, #301603 72%);
+  box-shadow: 0 0 0 8px rgb(255 255 255 / 5%), 0 0 42px rgb(251 191 36 / 58%);
+  animation: showcase-vs-pop 0.55s 0.7s cubic-bezier(0.15, 1.25, 0.35, 1) both;
+}
+
+.match-showcase-versus span {
+  font-size: clamp(1.7rem, 3vw, 2.8rem);
+  font-style: italic;
+  font-weight: 1000;
+  letter-spacing: 0.035em;
+  text-shadow: 0 4px 12px rgb(0 0 0 / 70%);
+}
+
+.match-showcase-status {
+  margin-top: clamp(1rem, 3vh, 2rem);
+  color: rgb(255 255 255 / 75%);
+  font-size: clamp(0.9rem, 1.1vw, 1.1rem);
+  font-weight: 900;
+  letter-spacing: 0.24em;
+  text-align: center;
+  animation: showcase-status-pulse 0.8s 1.1s ease-in-out infinite alternate;
+}
+
+.match-showcase-enter-active { animation: showcase-screen-in 0.38s ease-out both; }
+.match-showcase-leave-active { animation: showcase-screen-out 0.82s ease-in both; }
+.match-showcase-leave-active .match-showcase-heading { animation: showcase-title-rise 0.58s ease-in both; }
+.match-showcase-leave-active .match-showcase-player--a { animation: showcase-card-to-left 0.72s cubic-bezier(0.55, 0, 0.85, 0.35) both; }
+.match-showcase-leave-active .match-showcase-player--b { animation: showcase-card-to-right 0.72s cubic-bezier(0.55, 0, 0.85, 0.35) both; }
+.match-showcase-leave-active .match-showcase-versus { animation: showcase-vs-away 0.55s 0.08s ease-in both; }
+.match-showcase-leave-active .match-showcase-status { animation: showcase-status-away 0.35s ease-in both; }
+
+@keyframes showcase-screen-in {
+  from { opacity: 0; transform: scale(1.06); filter: brightness(1.8); }
+  to { opacity: 1; transform: scale(1); filter: brightness(1); }
+}
+@keyframes showcase-screen-out {
+  from { opacity: 1; filter: brightness(1); }
+  72% { opacity: 1; filter: brightness(1); }
+  to { opacity: 0; filter: brightness(1.8); }
+}
+@keyframes showcase-title-drop {
+  from { opacity: 0; transform: translateY(-24px) scale(1.08); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes showcase-card-from-left {
+  from { opacity: 0; transform: translateX(-72vw) rotateY(42deg) scale(0.8); }
+  72% { opacity: 1; transform: translateX(2.5%) rotateY(-2deg) scale(1.025); }
+  to { opacity: 1; transform: translateX(0) rotateY(0) scale(1); }
+}
+@keyframes showcase-card-from-right {
+  from { opacity: 0; transform: translateX(72vw) rotateY(-42deg) scale(0.8); }
+  72% { opacity: 1; transform: translateX(-2.5%) rotateY(2deg) scale(1.025); }
+  to { opacity: 1; transform: translateX(0) rotateY(0) scale(1); }
+}
+@keyframes showcase-title-rise {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-24px) scale(1.08); }
+}
+@keyframes showcase-card-to-left {
+  from { opacity: 1; transform: translateX(0) rotateY(0) scale(1); }
+  28% { opacity: 1; transform: translateX(2.5%) rotateY(-2deg) scale(1.025); }
+  to { opacity: 0; transform: translateX(-72vw) rotateY(42deg) scale(0.8); }
+}
+@keyframes showcase-card-to-right {
+  from { opacity: 1; transform: translateX(0) rotateY(0) scale(1); }
+  28% { opacity: 1; transform: translateX(-2.5%) rotateY(2deg) scale(1.025); }
+  to { opacity: 0; transform: translateX(72vw) rotateY(-42deg) scale(0.8); }
+}
+@keyframes showcase-vs-away {
+  from { opacity: 1; transform: scale(1) rotate(0); filter: blur(0); }
+  to { opacity: 0; transform: scale(2.4) rotate(-16deg); filter: blur(8px); }
+}
+@keyframes showcase-status-away {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes showcase-vs-pop {
+  from { opacity: 0; transform: scale(2.4) rotate(-16deg); filter: blur(8px); }
+  to { opacity: 1; transform: scale(1) rotate(0); filter: blur(0); }
+}
+@keyframes showcase-card-shine {
+  from { transform: translateX(-120%); }
+  to { transform: translateX(140%); }
+}
+@keyframes showcase-flash-sweep {
+  from { opacity: 0; transform: skewX(-18deg) translateX(-85%); }
+  28% { opacity: 1; }
+  to { opacity: 0; transform: skewX(-18deg) translateX(85%); }
+}
+@keyframes showcase-rays-spin { to { transform: rotate(360deg); } }
+@keyframes showcase-energy {
+  from { opacity: 0.35; transform: scale(0.96); }
+  to { opacity: 0.78; transform: scale(1.04); }
+}
+@keyframes showcase-status-pulse {
+  from { opacity: 0.45; }
+  to { opacity: 1; text-shadow: 0 0 16px rgb(255 255 255 / 55%); }
+}
+
+.shared-fight-entry {
+  animation: fight-card-enter 0.58s cubic-bezier(0.22, 0.78, 0.25, 1) both;
+  animation-delay: calc(var(--fight-index, 0) * 70ms);
+}
+
+.shared-next-fight-row {
+  position: relative;
+  z-index: 1;
+  animation-name: fight-card-enter, fight-card-float;
+  animation-duration: 0.58s, 3.6s;
+  animation-timing-function: cubic-bezier(0.22, 0.78, 0.25, 1), ease-in-out;
+  animation-delay: 0ms, 0.65s;
+  animation-iteration-count: 1, infinite;
+  animation-fill-mode: both, none;
+}
+
+.shared-fighter-name--a { animation: fighter-from-left 0.72s cubic-bezier(0.2, 0.85, 0.25, 1) both; }
+.shared-fighter-name--b { animation: fighter-from-right 0.72s cubic-bezier(0.2, 0.85, 0.25, 1) both; }
+
+.shared-next-fight-row::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid rgb(245 158 11 / 42%);
+  border-radius: inherit;
+  content: '';
+  animation: fight-ring 2.4s ease-in-out infinite;
+}
+
+.queue-bout-leave-active {
+  z-index: 6;
+  pointer-events: none;
+  animation: fight-to-court 0.9s cubic-bezier(0.32, 0, 0.18, 1) both !important;
+}
+.queue-bout-move { transition: transform 0.65s cubic-bezier(0.2, 0.8, 0.25, 1); }
+.live-start-enter-active {
+  position: relative;
+  z-index: 5;
+  animation: live-match-arrive 0.9s cubic-bezier(0.16, 0.84, 0.3, 1) both;
+}
+.live-start-enter-active::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(100deg, transparent 15%, rgb(52 211 153 / 28%) 48%, transparent 78%);
+  content: '';
+  animation: live-match-sweep 0.9s ease-out both;
+}
+.live-start-move { transition: transform 0.65s cubic-bezier(0.2, 0.8, 0.25, 1); }
+
+@keyframes fight-card-enter {
+  from { opacity: 0; transform: translateY(20px) scale(0.975); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes fight-card-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+@keyframes fighter-from-left {
+  from { opacity: 0; transform: translateX(-20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes fighter-from-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+@keyframes fight-ring {
+  0%, 100% { opacity: 0.35; box-shadow: 0 0 0 0 rgb(245 158 11 / 10%); }
+  50% { opacity: 1; box-shadow: 0 0 0 5px rgb(245 158 11 / 8%); }
+}
+@keyframes fight-to-court {
+  0% { opacity: 1; transform: translateY(0) scale(1); filter: brightness(1); }
+  38% { opacity: 1; transform: translateY(-8px) scale(1.018); filter: brightness(1.18); box-shadow: 0 0 0 2px rgb(245 158 11 / 50%); }
+  100% { opacity: 0; transform: translateY(-42px) scale(0.96); filter: brightness(1.25); }
+}
+@keyframes live-match-arrive {
+  0% { opacity: 0; transform: translateY(-26px) scale(0.97); background-color: rgb(16 185 129 / 22%); }
+  58% { opacity: 1; transform: translateY(3px) scale(1.008); background-color: rgb(16 185 129 / 16%); }
+  100% { opacity: 1; transform: translateY(0) scale(1); background-color: transparent; }
+}
+@keyframes live-match-sweep {
+  from { opacity: 0; transform: translateX(-70%); }
+  35% { opacity: 1; }
+  to { opacity: 0; transform: translateX(70%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shared-fight-entry,
+  .shared-next-fight-row,
+  .shared-fighter-name,
+  .shared-next-fight-row::after,
+  .queue-bout-leave-active,
+  .live-start-enter-active,
+  .live-start-enter-active::after,
+  .match-start-showcase,
+  .match-start-showcase::before,
+  .match-start-showcase::after,
+  .match-showcase-rays,
+  .match-showcase-heading,
+  .match-showcase-player,
+  .match-showcase-player::before,
+  .match-showcase-versus,
+  .match-showcase-status {
+    animation: none !important;
+  }
+  .queue-bout-move,
+  .live-start-move { transition: none !important; }
+}
+
 .shared-queue-page { background: #f5f3ed !important; color-scheme: light; color: #1c1917; }
 .shared-flight-board { border-color: #d6d3d1 !important; border-radius: 0.75rem !important; background: #fbfaf4 !important; color: #1c1917 !important; box-shadow: 0 14px 35px rgb(41 37 36 / 10%) !important; }
 .shared-flight-header { border-color: #d6d3d1 !important; background: #ffffff !important; color: #1c1917 !important; }
@@ -480,6 +1077,9 @@ function tvContentStyle() {
 .shared-coupon-list > article p:last-of-type { color: #57534e !important; }
 .coupon-flight-columns { grid-template-columns: 4rem minmax(0, 1fr) 5rem 6.5rem !important; column-gap: clamp(0.45rem, 0.7vw, 0.7rem) !important; font-size: 0.88rem !important; letter-spacing: 0.06em; }
 .coupon-flight-row { position: relative; grid-template-columns: 4rem minmax(0, 1fr) 5rem 6.5rem !important; column-gap: clamp(0.45rem, 0.7vw, 0.7rem) !important; }
+.coupon-flight-columns--with-wait,
+.coupon-flight-row--with-wait { grid-template-columns: 4rem minmax(0, 1fr) 5rem 6.5rem 7rem !important; }
+.coupon-wait-time { white-space: nowrap; font-size: 0.82rem; font-weight: 800; color: #78716c; }
 .coupon-flight-row > p { font-size: 1.12rem !important; }
 .coupon-player-name { color: #1c1917 !important; font-size: clamp(1.2rem, 1.55vw, 1.55rem) !important; font-weight: 500 !important; line-height: 1.25; }
 .coupon-pending-badge { border-radius: 999px; background: #fff0c9 !important; padding: 0.22rem 0.5rem; color: #855b08 !important; font-size: 0.66rem; font-weight: 900; white-space: nowrap; }
@@ -612,6 +1212,7 @@ function tvContentStyle() {
   .mobile-coupon-row { border: 0 !important; background: #fff !important; }
   .mobile-coupon-columns,
   .mobile-coupon-row { grid-template-columns: 3.2rem minmax(0, 1fr) 3.8rem 5.3rem !important; column-gap: 0.35rem; }
+  .mobile-coupon-row .coupon-wait-time { font-size: 0.72rem; }
   .mobile-coupon-row:nth-child(even) { background: #f8f7f3 !important; }
   .mobile-coupon-row > span { color: #287565 !important; }
   .mobile-coupon-name { color: #1c1917 !important; font-size: 1.25rem !important; }

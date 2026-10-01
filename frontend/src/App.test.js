@@ -637,6 +637,48 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('fieldset').find('input').exists()).toBe(true)
   })
 
+  it('manages session libero players and exposes the long-wait alert setting', async () => {
+    const updatePlayerLibero = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(SettingsPage, {
+      props: {
+        state: {
+          session: { type: 'liveMatch' },
+          players: [
+            { id: 1, name: 'ปุ้ย', active: true, paid: false, libero: false },
+            { id: 2, name: 'นัท', active: true, paid: false, libero: true, games: 7 }
+          ],
+          settings: {
+            entryFee: 100,
+            shuttleFee: 80,
+            sessionFee: 0,
+            idleWaitAlertEnabled: true,
+            courtNames: ['1'],
+            levels: ['middle']
+          }
+        },
+        forms: { newCourtName: '', newLevelName: '' },
+        usedCourtNames: new Set(),
+        usedLevels: new Set(),
+        saveSettings: vi.fn(),
+        updatePlayerLibero
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('เวลารอเล่น')).trigger('click')
+    expect(wrapper.text()).toContain('แจ้งเตือนผู้เล่นที่รอนาน')
+
+    await wrapper.findAll('button').find((button) => button.text().includes('ริโบโร่')).trigger('click')
+    expect(wrapper.text()).toContain('รายชื่อริโบโร่ 1 คน')
+    expect(wrapper.text()).toContain('นัท')
+    expect(wrapper.text()).toContain('7 ตา')
+    const combobox = wrapper.get('[role="combobox"]')
+    await combobox.trigger('focus')
+    await combobox.setValue('ปุ้ย')
+    await wrapper.get('[role="option"]').trigger('mousedown')
+    await flushPromises()
+    expect(updatePlayerLibero).toHaveBeenCalledWith(1, true)
+  })
+
   it('shows provider quota and selectable monthly history in Admin DB Preview', async () => {
     const loadBackofficeAdminSlipOKUsage = vi.fn()
     const forms = {
@@ -974,6 +1016,33 @@ describe('LiveMatch app', () => {
     await flushPromises()
 
     expect(forms.couponPage).toBe(1)
+  })
+
+  it('shows live and future queue counts beside a libero in the coupon list', () => {
+    const player = { id: 1, name: 'ปุ้ย', active: true, coupon: true, libero: true, level: 'middle' }
+    const wrapper = mount(MatchSetupModal, {
+      props: {
+        state: {
+          settings: { levels: ['middle'] },
+          players: [player],
+          couples: [],
+          pending: [{ id: -1, a1: 1 }],
+          queue: [{ id: 2, a1: 1 }, { id: 3, b1: 1 }],
+          live: [{ id: 1, court: 'สนาม 2', a1: 1 }]
+        },
+        forms: { couponPage: 1, couponPageSize: 8, couponSearch: '' },
+        ui: { showCouponModal: true, showCoupleModal: false },
+        couponGroups: [{ ids: [1], name: 'ปุ้ย', level: 'middle', coupon: true, games: 2 }],
+        levelLabel: (level) => level,
+        playerName: () => 'ปุ้ย',
+        addCouple: () => {},
+        removeCouple: () => {},
+        updatePlayerRandomStatus: () => {}
+      }
+    })
+
+    expect(wrapper.text()).toContain('ริโบโร่')
+    expect(wrapper.text()).toContain('กำลังแข่ง สนาม 2 · Pending 1 · รอคิว 2')
   })
 
   it('opens couple modal with empty player inputs', async () => {
@@ -1320,7 +1389,8 @@ describe('LiveMatch app', () => {
     const players = Array.from({ length: 12 }, (_, index) => ({
       id: index + 1,
       name: `player ${index + 1}`,
-      active: true
+      active: true,
+      libero: index === 0
     }))
     const wrapper = mount(MatchSetupModal, {
       props: {
@@ -1339,6 +1409,7 @@ describe('LiveMatch app', () => {
     const firstInput = wrapper.findAll('input').at(0)
     await firstInput.trigger('focus')
     expect(wrapper.get('[data-testid="couple-a-options"]').findAll('button')).toHaveLength(12)
+    expect(wrapper.get('[data-testid="couple-a-options"]').text()).toContain('ริโบโร่')
 
     await firstInput.setValue('1')
     expect(forms.coupleAId).toBe('')
@@ -1368,6 +1439,23 @@ describe('LiveMatch app', () => {
       '#1 Old coupon · 2 เกม',
       '#2 Current coupon · light · 1 เกม'
     ])
+  })
+
+  it('shows a queued libero in manual team options with every current status', () => {
+    const wrapper = mount(ManualTeamModal, {
+      props: {
+        state: {
+          settings: { levels: ['middle'], showWaitTimePairing: false },
+          pending: [{ id: -1, a1: 1 }],
+          queue: [{ id: 2, b1: 1 }],
+          live: [{ id: 1, court: 'สนาม 1', a1: 1 }]
+        },
+        players: [{ id: 1, name: 'ริโบโร่หนึ่ง', level: 'middle', coupon: true, libero: true, games: 4 }],
+        createManualMatch: () => {}
+      }
+    })
+
+    expect(wrapper.findAll('option').map((option) => option.text()).join(' ')).toContain('ริโบโร่ · กำลังแข่ง สนาม 1 · Pending 1 · รอคิว 1')
   })
 
   it('confirms shuttle add without rendering a decrement button', async () => {
@@ -1664,7 +1752,7 @@ describe('LiveMatch app', () => {
         state: {
           session: { name: 'Test Session' },
           players: [
-            { id: 1, name: 'p1', games: 2, wins: 1, draws: 1, losses: 0, shuttles: 2, paid: false, active: true }
+            { id: 1, name: 'p1', avatarUrl: '/api/member-avatar/m1?v=2', games: 2, wins: 1, draws: 1, losses: 0, shuttles: 2, paid: false, active: true }
           ]
         },
         share: { loading: false, error: '', showPayment: false, showTotal: true },
@@ -1676,6 +1764,7 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('แต้ม')
     expect(wrapper.text()).toContain('1.5')
     expect(wrapper.text()).toContain('เสมอ 1')
+    expect(wrapper.get('img[alt="รูป p1"]').attributes('src')).toBe('/api/member-avatar/m1?v=2')
   })
 
   it('hides the shared players total when disabled', () => {
@@ -1776,7 +1865,7 @@ describe('LiveMatch app', () => {
   it('renders member rename and delete controls', async () => {
     let renamed = ''
     let deleted = null
-    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, libero: true }
     const wrapper = mount(PlayersPage, {
       props: {
         state: {
@@ -1943,7 +2032,7 @@ describe('LiveMatch app', () => {
   })
 
   it('disables member delete when the player has references', async () => {
-    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, libero: true }
     const wrapper = mount(PlayersPage, {
       props: {
         state: {
@@ -1980,12 +2069,20 @@ describe('LiveMatch app', () => {
     expect(deleteButton.element.disabled).toBe(true)
     expect(wrapper.text()).toContain('ลบไม่ได้')
     expect(wrapper.text()).toContain('มีคู่จับ')
+    expect(wrapper.text()).toContain('ริโบโร่')
   })
 
   it('keeps pairing drafts separate from queue controls', () => {
     const wrapper = mount(LiveMatchPage, {
       props: {
         state: {
+          settings: { showWaitTimePairing: false },
+          players: [
+            { id: 1, name: 'p1', libero: true },
+            { id: 2, name: 'p2' },
+            { id: 3, name: 'p3' },
+            { id: 4, name: 'p4' }
+          ],
           pending: [
             { id: -1, level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4 }
           ]
@@ -2004,6 +2101,7 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('เกมที่')
     expect(wrapper.text()).not.toContain('เริ่ม')
     expect(wrapper.find('select').exists()).toBe(false)
+    expect(wrapper.text()).toContain('ริโบโร่')
   })
 
   it('renders queue controls for confirmed games', async () => {
@@ -2195,6 +2293,13 @@ describe('LiveMatch app', () => {
         },
         activePlayerCount: 4,
         totalRecordedMatches: 2,
+        pairingPatternSummary: {
+          pair_pair: 1,
+          pair_two_singles: 1,
+          four_singles: 0,
+          one_one: 0,
+          legacy_unknown: 0
+        },
         cancelledMatches: [{ id: 14, status: 'cancelled' }],
         averageGames: 1,
         minGames: 0,
@@ -2218,6 +2323,10 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('2')
     expect(wrapper.text()).toContain('ยกเลิก 1')
     expect(wrapper.get('[data-testid="export-dashboard"]').text()).toContain('Export Excel')
+    expect(wrapper.get('[data-testid="pairing-pattern-report"]').text()).toContain('การจับคู่ที่เกิดขึ้น')
+    expect(wrapper.get('[data-testid="pairing-pattern-pair_pair"]').text()).toContain('1')
+    expect(wrapper.get('[data-testid="pairing-pattern-pair_two_singles"]').text()).toContain('1')
+    expect(wrapper.get('[data-testid="pairing-pattern-four_singles"]').text()).toContain('0')
   })
 
   it('paginates the dashboard player performance report without changing its total', async () => {
@@ -2444,7 +2553,12 @@ describe('LiveMatch app', () => {
         resetPlayersAfterFinish: true,
         startMatchWithShuttle: true
       },
-      players: [],
+      players: [
+        { id: 1, name: 'Player 1', avatarUrl: '/api/member-avatar/m1?v=1' },
+        { id: 2, name: 'Player 2' },
+        { id: 3, name: 'Player 3' },
+        { id: 4, name: 'Player 4' }
+      ],
       couples: [],
       pending: [],
       queue: [],
@@ -2507,15 +2621,138 @@ describe('LiveMatch app', () => {
     vi.useRealTimers()
   })
 
+  it('plays a five-second desktop player showcase when a queued match starts', async () => {
+    vi.useFakeTimers()
+    const queuedMatch = {
+      id: 21,
+      court: '-',
+      level: 'middle',
+      a1: 1,
+      a2: 2,
+      b1: 3,
+      b2: 4
+    }
+    const baseState = {
+      session: { name: 'Showcase Session' },
+      settings: { courtNames: ['สนาม 1'] },
+      players: [
+        { id: 1, name: 'Player 1', avatarUrl: '/api/member-avatar/m1?v=1' },
+        { id: 2, name: 'Player 2' },
+        { id: 3, name: 'Player 3' },
+        { id: 4, name: 'Player 4' }
+      ],
+      pending: [],
+      queue: [queuedMatch],
+      live: []
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    await wrapper.setProps({
+      state: {
+        ...baseState,
+        queue: [],
+        live: [{ ...queuedMatch, court: 'สนาม 1', startedAt: '18:30' }]
+      }
+    })
+    await flushPromises()
+
+    const showcase = wrapper.get('[data-testid="match-start-showcase"]')
+    expect(showcase.text()).toContain('MATCH 21')
+    expect(showcase.text()).toContain('COURT 1')
+    expect(showcase.text()).toContain('READY TO PLAY')
+    expect(showcase.text()).toContain('Player 1')
+    expect(showcase.text()).toContain('Player 4')
+    expect(showcase.findAll('.match-showcase-player')).toHaveLength(4)
+    expect(showcase.get('.match-showcase-portrait-image').attributes('src')).toBe('/api/member-avatar/m1?v=1')
+    expect(wrapper.find('.shared-flight-row--live').exists()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    expect(wrapper.get('.shared-flight-row--live').text()).toContain('Player 1')
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('centers the two player cards for a singles match showcase', async () => {
+    vi.useFakeTimers()
+    const queuedMatch = { id: 22, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+    const baseState = {
+      session: { name: 'Singles Showcase' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: true },
+      players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
+      pending: [],
+      queue: [queuedMatch],
+      live: []
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    await wrapper.setProps({ state: { ...baseState, queue: [], live: [{ ...queuedMatch, court: 'สนาม 1', startedAt: '18:30' }] } })
+    await flushPromises()
+
+    const lineup = wrapper.get('.match-showcase-lineup')
+    expect(lineup.classes()).toContain('match-showcase-lineup--singles')
+    expect(lineup.findAll('.match-showcase-player')).toHaveLength(2)
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('does not play the desktop match showcase when the session setting is disabled', async () => {
+    const queuedMatch = { id: 23, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+    const baseState = {
+      session: { name: 'No Showcase' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: false },
+      players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
+      pending: [],
+      queue: [queuedMatch],
+      live: []
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    await wrapper.setProps({ state: { ...baseState, queue: [], live: [{ ...queuedMatch, court: 'สนาม 1', startedAt: '18:30' }] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    expect(wrapper.get('.shared-flight-row--live').text()).toContain('Player 1')
+    wrapper.unmount()
+  })
+
   it('fades to available players after ten seconds when enabled', async () => {
     vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-17T10:15:00+07:00'))
     const wrapper = mount(SharedQueuePage, {
       props: {
         state: {
           session: { name: 'Fade Session' },
-          settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true },
+          settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true, showWaitTimePairing: true },
           players: [
-            { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle' },
+            { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle', waitStartedAt: '2026-06-17T03:00:00.000Z' },
             { id: 2, name: 'คนไม่มีสิทธิ์', active: true, paid: false, coupon: false, games: 0, level: 'light' },
             { id: 3, name: 'เข้าแถวรอคิวแล้ว', active: true, paid: false, coupon: true, games: 0, level: 'heavy' },
             { id: 4, name: 'ทีมสร้างเอง', active: true, paid: false, coupon: false, games: 0, level: 'middle' }
@@ -2536,6 +2773,8 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('.shared-waiting-people').text()).toContain('คนรอจับคู่')
     expect(wrapper.find('.shared-waiting-people').text()).toContain('ทีมสร้างเอง')
     expect(wrapper.find('.shared-waiting-people').text()).toContain('กำลังจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('เวลาที่รอ')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('รอ 15 นาที')
     expect(wrapper.find('.shared-waiting-people').text()).not.toContain('คนไม่มีสิทธิ์')
     expect(wrapper.find('.shared-waiting-people').text()).not.toContain('เข้าแถวรอคิวแล้ว')
     wrapper.unmount()
@@ -2589,6 +2828,10 @@ describe('LiveMatch app', () => {
     expect(board.classes()).toContain('md:flex')
     expect(wrapper.get('.shared-queue-shell').classes()).toContain('md:hidden')
     expect(board.findAll('.shared-flight-row')).toHaveLength(2)
+    expect(board.get('.shared-next-fight-row').text()).toContain('คู่ถัดไป')
+    expect(board.findAll('.shared-fighter-name')).toHaveLength(2)
+    expect(wrapper.find('.shared-next-fight-card').exists()).toBe(false)
+    expect(wrapper.find('.shared-next-bout').exists()).toBe(false)
     expect(board.text()).toContain('รอเลือกสนาม')
     expect(board.text()).not.toContain('ระดับห้ามแสดง')
     expect(board.text()).not.toContain('ลูกแบด')

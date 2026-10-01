@@ -40,9 +40,18 @@ function optionsFor(slot) {
 
 function optionLabel(player) {
   const couponLabel = player.coupon ? ` · ${player.level || '-'}` : ''
+  const hasPlayer = (match) => [match.a1, match.a2, match.b1, match.b2].map(Number).includes(Number(player.id))
+  const liveMatch = (props.state.live || []).find(hasPlayer)
+  const pendingCount = (props.state.pending || []).filter(hasPlayer).length
+  const queueCount = (props.state.queue || []).filter(hasPlayer).length
+  const liberoStatuses = []
+  if (liveMatch) liberoStatuses.push(liveMatch.court && liveMatch.court !== '-' ? `กำลังแข่ง ${liveMatch.court}` : 'กำลังแข่ง')
+  if (pendingCount) liberoStatuses.push(`Pending ${pendingCount}`)
+  if (queueCount) liberoStatuses.push(`รอคิว ${queueCount}`)
+  const liberoLabel = player.libero ? ` · ริโบโร่${liberoStatuses.length ? ` · ${liberoStatuses.join(' · ')}` : ''}` : ''
   const minutes = props.state.settings?.showWaitTimePairing ? waitMinutes(player.waitStartedAt, waitClock.value) : null
   const waitLabel = minutes === null ? '' : ` · ${minutes} นาที`
-  return `#${player.id} ${player.name}${waitLabel}${couponLabel} · ${player.games || 0} เกม`
+  return `#${player.id} ${player.name}${liberoLabel}${waitLabel}${couponLabel} · ${player.games || 0} เกม`
 }
 
 async function submit() {
@@ -133,7 +142,7 @@ async function submit() {
           </select>
         </label>
 
-        <p class="rounded-md bg-stone-100 px-3 py-2 text-xs font-semibold text-stone-600 dark:bg-stone-800 dark:text-stone-300">ผู้เล่นที่จ่ายแล้ว อยู่ในคิว หรือกำลังแข่งจะไม่แสดง · คู่ที่กำหนดไว้ต้องเลือกมาด้วยกันและอยู่ทีมเดียวกัน</p>
+        <p class="rounded-md bg-stone-100 px-3 py-2 text-xs font-semibold text-stone-600 dark:bg-stone-800 dark:text-stone-300">ผู้เล่นที่จ่ายแล้วหรืออยู่ในคิวจะไม่แสดง · ริโบโร่ที่กำลังแข่งยังเลือกเตรียมเกมถัดไปได้ แต่เริ่มเกมซ้อนไม่ได้ · คู่ที่กำหนดไว้ต้องเลือกมาด้วยกันและอยู่ทีมเดียวกัน</p>
         <p v-if="players.length < 2" class="text-sm font-bold text-amber-700 dark:text-amber-300">ต้องมีผู้เล่นว่างอย่างน้อย 2 คน</p>
         <p v-if="error" class="text-sm font-bold text-red-600 dark:text-red-400">{{ error }}</p>
 

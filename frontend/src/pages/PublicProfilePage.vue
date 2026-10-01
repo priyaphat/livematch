@@ -5,6 +5,7 @@ import {
   CalendarDays,
   CreditCard,
   History,
+  ImagePlus,
   LogOut,
   Moon,
   Save,
@@ -14,6 +15,7 @@ import {
   X,
 } from "@lucide/vue";
 import { statusText, statusTone } from "../statusDefinitions";
+import { uploadCompressedProfileImage } from "../profileImage";
 
 const props = defineProps(["apiRequest", "token", "theme"]);
 const emit = defineEmits(["toggle-theme"]);
@@ -35,6 +37,7 @@ const saveStatus = ref("");
 const uploadingId = ref("");
 const uploadStatus = ref("");
 const loggingOut = ref(false);
+const avatarUploading = ref(false);
 const toastMessage = ref("");
 const paymentDetail = ref(null);
 const historyPages = reactive({ bookings: 1, payments: 1, matches: 1, pageSize: 10 });
@@ -101,6 +104,36 @@ async function save() {
     await load();
   } catch (error) {
     state.error = error.message;
+  }
+}
+async function uploadAvatar(event) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file || avatarUploading.value) return;
+  avatarUploading.value = true;
+  state.error = "";
+  try {
+    const result = await uploadCompressedProfileImage(props.apiRequest, `/api/profile/${props.token}/avatar`, file);
+    state.member.avatarUrl = result.avatarUrl || "";
+    showProfileToast("อัปเดตรูปโปรไฟล์แล้ว");
+  } catch (error) {
+    state.error = error.message || "อัปโหลดรูปโปรไฟล์ไม่สำเร็จ";
+  } finally {
+    avatarUploading.value = false;
+  }
+}
+async function deleteAvatar() {
+  if (!state.member?.avatarUrl || avatarUploading.value) return;
+  avatarUploading.value = true;
+  state.error = "";
+  try {
+    await props.apiRequest(`/api/profile/${props.token}/avatar`, { method: "DELETE" });
+    state.member.avatarUrl = "";
+    showProfileToast("ลบรูปโปรไฟล์แล้ว");
+  } catch (error) {
+    state.error = error.message || "ลบรูปโปรไฟล์ไม่สำเร็จ";
+  } finally {
+    avatarUploading.value = false;
   }
 }
 function goBooking() {
@@ -259,7 +292,10 @@ onUnmounted(() => {
 
     <template v-if="state.member">
       <section class="profile-overview">
-        <div class="profile-avatar"><UserRound class="h-8 w-8" /></div>
+        <div class="profile-avatar overflow-hidden">
+          <img v-if="state.member.avatarUrl" :src="state.member.avatarUrl" :alt="`รูปโปรไฟล์ ${state.member.name}`" class="h-full w-full object-cover" />
+          <UserRound v-else class="h-8 w-8" />
+        </div>
         <div class="min-w-0">
           <h2 class="truncate text-2xl font-black">{{ state.member.name }}</h2>
           <p class="truncate text-sm text-stone-500">
@@ -287,6 +323,25 @@ onUnmounted(() => {
             <h2 class="mt-1 text-lg font-black">ข้อมูลพื้นฐาน</h2>
           </div>
           <div class="mt-5 grid gap-4">
+            <div class="rounded-xl border border-stone-200 p-3">
+              <div class="flex items-center gap-3">
+                <div class="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700">
+                  <img v-if="state.member.avatarUrl" :src="state.member.avatarUrl" alt="รูปโปรไฟล์" class="h-full w-full object-cover" />
+                  <UserRound v-else class="h-7 w-7" />
+                </div>
+                <div class="min-w-0 flex-1">
+                  <b class="block">รูปโปรไฟล์</b>
+                  <p class="text-xs text-stone-500">JPEG, PNG หรือ WebP ไม่เกิน 5 MB · ระบบจะบีบเหลือไม่เกิน 720px</p>
+                  <div class="mt-2 flex flex-wrap gap-2">
+                    <label class="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-lg bg-court-500 px-3 text-sm font-black text-white" :class="avatarUploading && 'pointer-events-none opacity-60'">
+                      <ImagePlus class="h-4 w-4" />{{ avatarUploading ? 'กำลังบีบรูป...' : 'เลือกรูป' }}
+                      <input class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" :disabled="avatarUploading" data-testid="profile-avatar-input" @change="uploadAvatar" />
+                    </label>
+                    <button v-if="state.member.avatarUrl" type="button" class="h-9 rounded-lg border border-red-200 px-3 text-sm font-black text-red-700" :disabled="avatarUploading" @click="deleteAvatar">ลบรูป</button>
+                  </div>
+                </div>
+              </div>
+            </div>
             <label class="booking-field"
               ><span>ชื่อ</span><input v-model="state.member.name"
             /></label>

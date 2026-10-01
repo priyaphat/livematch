@@ -153,6 +153,8 @@ type memberRecord struct {
 	Active         bool   `json:"active"`
 	Linked         bool   `json:"linked"`
 	ProfileToken   string `json:"profileToken,omitempty"`
+	AvatarURL      string `json:"avatarUrl,omitempty"`
+	AvatarVersion  int64  `json:"avatarVersion,omitempty"`
 	CreatedAt      string `json:"createdAt"`
 }
 
@@ -690,7 +692,7 @@ func (a *app) listMembers(ctx context.Context, adminID, search, memberType strin
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := a.db.QueryContext(ctx, `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,m.profile_token_hash,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id left join member_types mt on mt.id=m.member_type_id where m.admin_id=$1 and m.deleted_at is null and (not $6 or m.active) and ($7='' or m.member_type_id=$7 or mt.code=$7) and ($2='' or lower(m.name) like $3 or lower(coalesce(nullif(m.contact_email,''),u.email,'')) like $3 or ($4<>'' and (m.phone like $5 or replace(m.phone,'+66','0') like $5))) order by m.created_at desc limit $8 offset $9`, adminID, search, like, phoneSearch, phoneLike, activeOnly, memberType, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(ctx, `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,m.profile_token_hash,m.avatar_version,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id left join member_types mt on mt.id=m.member_type_id where m.admin_id=$1 and m.deleted_at is null and (not $6 or m.active) and ($7='' or m.member_type_id=$7 or mt.code=$7) and ($2='' or lower(m.name) like $3 or lower(coalesce(nullif(m.contact_email,''),u.email,'')) like $3 or ($4<>'' and (m.phone like $5 or replace(m.phone,'+66','0') like $5))) order by m.created_at desc limit $8 offset $9`, adminID, search, like, phoneSearch, phoneLike, activeOnly, memberType, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -699,10 +701,11 @@ func (a *app) listMembers(ctx context.Context, adminID, search, memberType strin
 	for rows.Next() {
 		var m memberRecord
 		var phone, tokenHash string
-		if err = rows.Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.MemberTypeID, &m.MemberTypeName, &m.Active, &m.Linked, &tokenHash, &m.CreatedAt); err != nil {
+		if err = rows.Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.MemberTypeID, &m.MemberTypeName, &m.Active, &m.Linked, &tokenHash, &m.AvatarVersion, &m.CreatedAt); err != nil {
 			return nil, 0, err
 		}
 		m.Phone = displayPhone(phone)
+		m.AvatarURL = memberAvatarURL(m.ID, m.AvatarVersion)
 		items = append(items, m)
 	}
 	return items, total, rows.Err()
@@ -747,12 +750,15 @@ func maskPhone(phone string) string {
 
 func (a *app) handleAdminMembers(w http.ResponseWriter, r *http.Request, user adminUser, action string) {
 	path := strings.TrimPrefix(action, "members")
+	avatarMemberID, isAvatarPath := memberAvatarPath(path)
 	features := a.features(r.Context(), user.ID)
 	if !features.MemberEnabled && !(path == "/search" && features.BookingEnabled) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "feature disabled"})
 		return
 	}
 	switch {
+	case isAvatarPath && (r.Method == http.MethodPost || r.Method == http.MethodDelete):
+		a.handleMemberAvatarUpload(w, r, user.ID, avatarMemberID, "admin", user.ID)
 	case r.Method == http.MethodGet && (path == "" || path == "/"):
 		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 		size, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
@@ -1042,11 +1048,12 @@ func (a *app) writeAdminMemberDetail(w http.ResponseWriter, r *http.Request, adm
 	matchPage, _ := requestPage(r, "matchPage", "pageSize", 6, 50)
 	var m memberRecord
 	var phone string
-	if err := a.db.QueryRowContext(r.Context(), `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id left join member_types mt on mt.id=m.member_type_id where m.id=$1 and m.admin_id=$2 and m.deleted_at is null`, memberID, adminID).Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.MemberTypeID, &m.MemberTypeName, &m.Active, &m.Linked, &m.CreatedAt); err != nil {
+	if err := a.db.QueryRowContext(r.Context(), `select m.id,m.name,m.phone,coalesce(nullif(m.contact_email,''),u.email,''),coalesce(mt.code,m.member_type),coalesce(m.member_type_id,''),coalesce(mt.name,case when m.member_type='club' then 'สมาชิกชมรม' else 'สมาชิกทั่วไป' end),m.active,m.public_user_id is not null,m.avatar_version,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI') from members m left join public_users u on u.id=m.public_user_id left join member_types mt on mt.id=m.member_type_id where m.id=$1 and m.admin_id=$2 and m.deleted_at is null`, memberID, adminID).Scan(&m.ID, &m.Name, &phone, &m.Email, &m.MemberType, &m.MemberTypeID, &m.MemberTypeName, &m.Active, &m.Linked, &m.AvatarVersion, &m.CreatedAt); err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "member not found"})
 		return
 	}
 	m.Phone = displayPhone(phone)
+	m.AvatarURL = memberAvatarURL(m.ID, m.AvatarVersion)
 
 	var bookingTotal, paymentTotal, matchTotal int
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from bookings where member_id=$1 and admin_id=$2`, memberID, adminID).Scan(&bookingTotal)
@@ -4010,7 +4017,10 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 	if !a.requireRequestRate(w, r, "profile", 120, 10*time.Minute) {
 		return
 	}
-	token := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/profile/"), "/")
+	profilePath := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/profile/"), "/")
+	profileParts := strings.Split(profilePath, "/")
+	token := profileParts[0]
+	isAvatarPath := len(profileParts) == 2 && profileParts[1] == "avatar"
 	u, ok := a.currentPublicUser(r.Context(), r)
 	if !ok {
 		writeAuthFailure(w, r, publicSessionKind)
@@ -4018,7 +4028,7 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	var m memberRecord
 	var adminID, phone string
-	err := a.db.QueryRowContext(r.Context(), `select m.id,m.admin_id,m.name,m.phone,u.email,m.member_type,m.active from members m join public_users u on u.id=m.public_user_id where m.profile_token_hash=$1 and m.public_user_id=$2 and m.deleted_at is null`, tokenDigest(token), u.ID).Scan(&m.ID, &adminID, &m.Name, &phone, &m.Email, &m.MemberType, &m.Active)
+	err := a.db.QueryRowContext(r.Context(), `select m.id,m.admin_id,m.name,m.phone,u.email,m.member_type,m.active,m.avatar_version from members m join public_users u on u.id=m.public_user_id where m.profile_token_hash=$1 and m.public_user_id=$2 and m.deleted_at is null`, tokenDigest(token), u.ID).Scan(&m.ID, &adminID, &m.Name, &phone, &m.Email, &m.MemberType, &m.Active, &m.AvatarVersion)
 	if err != nil {
 		writeJSON(w, 404, map[string]string{"error": "profile not found"})
 		return
@@ -4029,6 +4039,10 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if features.BookingEnabled && !a.requireNoBookingBlock(w, r, adminID) {
+		return
+	}
+	if isAvatarPath {
+		a.handleMemberAvatarUpload(w, r, adminID, m.ID, "public_user", u.ID)
 		return
 	}
 	if r.Method == http.MethodPatch {
@@ -4043,6 +4057,7 @@ func (a *app) handleProfile(w http.ResponseWriter, r *http.Request) {
 	paymentPage, _ := requestPage(r, "paymentPage", "pageSize", 10, 50)
 	matchPage, _ := requestPage(r, "matchPage", "pageSize", 10, 50)
 	m.Phone = displayPhone(phone)
+	m.AvatarURL = memberAvatarURL(m.ID, m.AvatarVersion)
 	a.expireHolds(r.Context(), adminID)
 	bookingToken := ""
 	if features.BookingEnabled {

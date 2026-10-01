@@ -48,6 +48,7 @@ import AuthPage from './pages/AuthPage.vue'
 import BackofficePage from './pages/BackofficePage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 import { persistPublicTheme, persistTheme, readStoredPublicTheme, readStoredTheme } from './theme'
+import { collectIdleWaitAlerts } from './idleWaitAlerts'
 const AdminSupervisorPage = defineAsyncComponent(() => import('./pages/AdminSupervisorPage.vue'))
 const DashboardPage = defineAsyncComponent(() => import('./pages/DashboardPage.vue'))
 const HistoryPage = defineAsyncComponent(() => import('./pages/HistoryPage.vue'))
@@ -187,6 +188,8 @@ const state = reactive({
     showWaitTimePlayers: true,
     showWaitTimePairing: true,
     showWaitTimeQueue: true,
+    idleWaitAlertEnabled: true,
+    matchStartAnimationEnabled: true,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
     announcementTemplate: defaultAnnouncementTemplate,
@@ -224,6 +227,7 @@ const state = reactive({
   historyView: {
     items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: ''
   },
+  dashboardSummary: null,
   shuttleStockAvailability: [],
   liveShare: {
     courtHours: {},
@@ -477,6 +481,8 @@ const verifyEmail = reactive({
 const selectedLiveId = ref(null)
 const bookingBlock = reactive({ blockedUntil: '', targets: [], deadlineMs: 0, surfaceToken: '', now: Date.now() })
 let toastTimer = null
+let idleWaitAlertTimer = null
+const idleReminderQueue = []
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
 let bookingBlockTimer = null
@@ -527,7 +533,20 @@ function showToast(message, type = 'error') {
   toastTimer = window.setTimeout(() => {
     ui.toast = null
     toastTimer = null
+    showNextIdleReminder()
   }, 4200)
+}
+
+function showNextIdleReminder() {
+  if (ui.toast || !idleReminderQueue.length) return
+  const reminder = idleReminderQueue.shift()
+  showToast(reminder, 'idle-warning')
+}
+
+function enqueueIdleReminder(message) {
+  if (!message || idleReminderQueue.includes(message) || ui.toast?.message === message) return
+  idleReminderQueue.push(message)
+  showNextIdleReminder()
 }
 
 function closeToast() {
@@ -536,6 +555,7 @@ function closeToast() {
     window.clearTimeout(toastTimer)
     toastTimer = null
   }
+  window.setTimeout(showNextIdleReminder, 0)
 }
 
 async function api(path, options = {}) {
@@ -597,6 +617,7 @@ function applyServerState(nextState) {
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
   }
+  Promise.resolve().then(checkIdleWaitAlerts)
 }
 
 function mergeSessionPatch(patch = {}) {
@@ -612,10 +633,12 @@ function mergeSessionPatch(patch = {}) {
   if (patch.settings) state.settings = patch.settings
   if (Array.isArray(patch.memberTypes)) state.memberTypes = patch.memberTypes
   if (Array.isArray(patch.shuttleStockAvailability)) state.shuttleStockAvailability = patch.shuttleStockAvailability
+  if (patch.summary) state.dashboardSummary = patch.summary
   normalizeClientSettings()
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
   }
+  Promise.resolve().then(checkIdleWaitAlerts)
 }
 
 function normalizeClientSettings() {
@@ -638,6 +661,7 @@ function normalizeClientSettings() {
   state.settings.shuttleFee = Number(state.settings.shuttleBrands[0]?.price || state.settings.shuttleFee || 0)
   for (const player of state.players || []) {
     if (player.clubMember === undefined) player.clubMember = false
+    if (player.libero === undefined) player.libero = false
   }
   if (!state.settings.memberEntryFees || typeof state.settings.memberEntryFees !== 'object') state.settings.memberEntryFees = {}
   for (const memberType of state.memberTypes || []) {
@@ -667,6 +691,8 @@ function normalizeClientSettings() {
   if (state.settings.showWaitTimePlayers === undefined) state.settings.showWaitTimePlayers = true
   if (state.settings.showWaitTimePairing === undefined) state.settings.showWaitTimePairing = true
   if (state.settings.showWaitTimeQueue === undefined) state.settings.showWaitTimeQueue = true
+  if (state.settings.matchStartAnimationEnabled === undefined) state.settings.matchStartAnimationEnabled = true
+  if (state.settings.idleWaitAlertEnabled === undefined) state.settings.idleWaitAlertEnabled = true
   if (!String(state.settings.announcementTemplate || '').trim()) {
     state.settings.announcementTemplate = defaultAnnouncementTemplate
   }
@@ -709,7 +735,7 @@ async function reloadAdminTab(tabId) {
   case 'livematch': {
     await ensureOperationalContext()
     const [couponsPayload, couplesPayload, queuePayload] = await Promise.all([
-      api(`/api/sessions/${state.session.id}/coupons?page=1&pageSize=100`),
+      api(`/api/sessions/${state.session.id}/coupons?page=1&pageSize=100&includeNotReady=1`),
       api(`/api/sessions/${state.session.id}/couples?page=1&pageSize=100`),
       api(`/api/sessions/${state.session.id}/queue`)
     ])
@@ -816,8 +842,42 @@ async function refreshMatchBilling() {
   }
 }
 
+function idleAlertStorageKey(player) {
+  return `livematch:idle-wait:${state.session.id}:${player.id}`
+}
+
+function checkIdleWaitAlerts() {
+  const enabled = state.session.unlocked
+    && state.session.type === 'liveMatch'
+    && state.tab !== 'home'
+    && !adminFeaturePage
+    && !backoffice.isPage
+    && !share.isPublic
+    && !isSessionReadOnly.value
+    && state.settings.idleWaitAlertEnabled !== false
+    && document.visibilityState === 'visible'
+  if (!enabled) {
+    idleReminderQueue.splice(0)
+    return
+  }
+  for (const { player, threshold, signature } of collectIdleWaitAlerts(state)) {
+    const storageKey = idleAlertStorageKey(player)
+    try {
+      if (window.localStorage.getItem(storageKey) === signature) continue
+      window.localStorage.setItem(storageKey, signature)
+    } catch {
+      if (player.__idleWaitAlertSignature === signature) continue
+      player.__idleWaitAlertSignature = signature
+    }
+    enqueueIdleReminder(`${player.name} ยังไม่ได้เล่นมา ${threshold} นาทีแล้ว`)
+  }
+}
+
 function refreshMatchBillingOnFocus() {
-  if (document.visibilityState === 'visible') void refreshMatchBilling()
+  if (document.visibilityState === 'visible') {
+    void refreshMatchBilling()
+    checkIdleWaitAlerts()
+  }
 }
 
 onMounted(() => {
@@ -827,6 +887,7 @@ onMounted(() => {
 	window.addEventListener('focus', refreshMatchBillingOnFocus)
 	document.addEventListener('visibilitychange', refreshMatchBillingOnFocus)
 	billingSyncTimer = window.setInterval(refreshMatchBillingOnFocus, 10_000)
+	idleWaitAlertTimer = window.setInterval(checkIdleWaitAlerts, 60_000)
 	bookingBlockTimer = window.setInterval(() => {
 		bookingBlock.now = Date.now()
 		if (isBookingBlockSurface() && bookingBlock.deadlineMs && bookingBlock.deadlineMs <= bookingBlock.now) {
@@ -884,6 +945,7 @@ onUnmounted(() => {
 	window.removeEventListener('focus', refreshMatchBillingOnFocus)
 	document.removeEventListener('visibilitychange', refreshMatchBillingOnFocus)
 	if (billingSyncTimer) window.clearInterval(billingSyncTimer)
+	if (idleWaitAlertTimer) window.clearInterval(idleWaitAlertTimer)
 	if (bookingBlockTimer) window.clearInterval(bookingBlockTimer)
   stopSharedRefresh()
   stopAnnouncementAudio()
@@ -1048,6 +1110,7 @@ async function openOwnedSession(sessionId, requestedTab = 'dashboard') {
     state.queue = []
     state.live = []
     state.history = []
+    state.dashboardSummary = null
     state.historyView = { items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: '' }
     if (bootstrap.session) state.session = bootstrap.session
     mergeSessionPatch(bootstrap)
@@ -1909,7 +1972,7 @@ const usedLevels = computed(() => new Set([
 ].filter(Boolean)))
 const availablePlayers = computed(() =>
   state.players
-    .filter((player) => player.active && !player.paid && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
+    .filter((player) => player.active && !player.paid && (!queuedPlayerIds.value.has(player.id) || player.libero) && (!livePlayerIds.value.has(player.id) || player.libero))
     .sort((a, b) => a.games - b.games || a.id - b.id)
 )
 
@@ -1928,6 +1991,7 @@ const couponGroups = computed(() => {
         used.add(mate.id)
         continue
       }
+      continue
     }
     groups.push({ ids: [player.id], name: player.name, level: player.level, coupon: player.coupon, games: player.games })
     used.add(player.id)
@@ -1950,6 +2014,29 @@ const dashboardCards = computed(() => [
 
 function matchPlayers(match) {
   return [...new Set([match.a1, match.a2, match.b1, match.b2].map(Number).filter((id) => id > 0))]
+}
+
+function pairingPatternForMatch(match) {
+  const players = matchPlayers(match)
+  if (players.length === 2 && Number(match.a1) > 0 && !Number(match.a2) && Number(match.b1) > 0 && !Number(match.b2)) return 'one_one'
+  if (players.length !== 4) return 'legacy_unknown'
+  const teamByPlayer = new Map([
+    [Number(match.a1), 0], [Number(match.a2), 0], [Number(match.b1), 1], [Number(match.b2), 1]
+  ])
+  let pairCount = 0
+  for (const couple of state.couples || []) {
+    if (!teamByPlayer.has(Number(couple.a)) || !teamByPlayer.has(Number(couple.b))) continue
+    if (teamByPlayer.get(Number(couple.a)) !== teamByPlayer.get(Number(couple.b))) return 'legacy_unknown'
+    pairCount += 1
+  }
+  return ['four_singles', 'pair_two_singles', 'pair_pair'][pairCount] || 'legacy_unknown'
+}
+
+function manualPairingPatternForMatch(match) {
+  const players = matchPlayers(match)
+  if (players.length === 2 && Number(match.a1) > 0 && !Number(match.a2) && Number(match.b1) > 0 && !Number(match.b2)) return 'one_one'
+  if (players.length === 4 && Number(match.a1) > 0 && Number(match.a2) > 0 && Number(match.b1) > 0 && Number(match.b2) > 0) return 'manual_four'
+  return 'legacy_unknown'
 }
 
 function normalizedHours(hours = []) {
@@ -2319,13 +2406,15 @@ function normalizeSessionDefaults(input = {}) {
 }
 
 function randomMatch() {
+  const usedThisRun = new Set()
   while (true) {
-    const { selected, level } = pickRandomMatch(randomEligibleGroups.value)
+    const candidates = randomEligibleGroups.value.filter((group) => group.ids.every((id) => !usedThisRun.has(id)))
+    const { selected, level } = pickRandomMatch(candidates)
     if (selected.length < 4) return
 
     const teams = arrangeTeamsByTeammateHistory(selected, state.couples, state.history)
 
-    state.pending.push({
+    const pendingMatch = {
       id: nextPendingId(),
       court: '-',
       level,
@@ -2334,7 +2423,10 @@ function randomMatch() {
       b1: teams[2],
       b2: teams[3],
       shuttlePricingMode: 'split_per_match'
-    })
+    }
+    pendingMatch.pairingPattern = pairingPatternForMatch(pendingMatch)
+    state.pending.push(pendingMatch)
+    for (const id of selected) usedThisRun.add(id)
   }
 }
 
@@ -2424,6 +2516,8 @@ function pickFourGroupsFrom(groups, index, selected) {
 
 function startMatch(match, court = '', brandId = defaultShuttleBrand().id) {
   if (!court) return
+  const conflicts = matchPlayers(match).filter((id) => livePlayerIds.value.has(id)).map((id) => playerName(id))
+  if (conflicts.length) throw new Error(`ยังเริ่มเกมไม่ได้: ${conflicts.join(', ')} กำลังเล่นอยู่`)
   state.queue = state.queue.filter((item) => item.id !== match.id)
   const started = { ...match, court, shuttles: 0, shuttleSequence: '', shuttleSequenceItems: [], status: 'กำลังเล่น', startedAt: currentTime() }
   if (state.settings.startMatchWithShuttle) {
@@ -2489,7 +2583,7 @@ function createManualMatch(match) {
   }
   const level = state.settings.levels.includes(match.level) ? match.level : state.settings.levels[0]
   if (!level) throw new Error('กรุณาเลือกระดับมือที่ถูกต้อง')
-  state.pending.push({
+  const pendingMatch = {
     id: nextPendingId(),
     court: '-',
     level,
@@ -2498,7 +2592,9 @@ function createManualMatch(match) {
     b1: slots[2],
     b2: slots[3] || 0,
     shuttlePricingMode: 'split_per_match'
-  })
+  }
+  pendingMatch.pairingPattern = manualPairingPatternForMatch(pendingMatch)
+  state.pending.push(pendingMatch)
 }
 
 function closeLive(match, cancelled = false, note = '', shuttleReturned = false, scores = []) {
@@ -2533,7 +2629,10 @@ function closeLive(match, cancelled = false, note = '', shuttleReturned = false,
       player.shuttles += match.shuttles
       if (cancelled) continue
       player.games += 1
-      if (state.settings.resetPlayersAfterFinish) player.coupon = false
+      if (state.settings.resetPlayersAfterFinish) {
+        const hasFutureMatch = [...state.pending, ...state.queue].some((futureMatch) => matchPlayers(futureMatch).includes(id))
+        if (!player.libero || !hasFutureMatch) player.coupon = false
+      }
       const won = (ended.winner === 'A' && (id === match.a1 || id === match.a2)) || (ended.winner === 'B' && (id === match.b1 || id === match.b2))
       if (won) player.wins = (player.wins || 0) + 1
       else if (ended.winner === 'draw') player.draws = (player.draws || 0) + 1
@@ -3637,6 +3736,20 @@ async function updatePlayerRandomStatusApi(playerId, level) {
   }
 }
 
+async function updatePlayerLiberoApi(playerId, libero) {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${playerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ libero: Boolean(libero) })
+    }))
+    showToast(libero ? 'เพิ่มรายชื่อริโบโร่แล้ว' : 'นำรายชื่อริโบโร่ออกแล้ว', 'success')
+  } catch (error) {
+    showToast(error.message || 'บันทึกรายชื่อริโบโร่ไม่สำเร็จ')
+    throw error
+  }
+}
+
 async function randomMatchApi() {
   if (!ensureSessionActive()) return
   forms.randomError = ''
@@ -3890,6 +4003,7 @@ const pageProps = computed(() => ({
   ui,
   activePlayerCount: activePlayerCount.value,
   totalRecordedMatches: totalRecordedMatches.value,
+  pairingPatternSummary: state.dashboardSummary?.pairingPatterns || null,
   cancelledMatches: cancelledMatches.value,
   averageGames: averageGames.value,
   minGames: minGames.value,
@@ -3945,6 +4059,7 @@ const pageProps = computed(() => ({
   restoreWithdrawnPlayer: restoreWithdrawnPlayerApi,
   updatePlayerLevel: updatePlayerLevelApi,
   updatePlayerRandomStatus: updatePlayerRandomStatusApi,
+  updatePlayerLibero: updatePlayerLiberoApi,
   randomMatch: randomMatchApi,
   confirmPendingMatch: confirmPendingMatchApi,
   cancelPendingMatch: cancelPendingMatchApi,
@@ -4068,8 +4183,12 @@ const pageProps = computed(() => ({
     >
       <div
         v-if="ui.toast"
-        class="fixed inset-x-3 top-3 z-[100] mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
-        :class="ui.toast.type === 'error' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100' : 'border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100'"
+        class="fixed z-[100] flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft"
+        :class="ui.toast.type === 'idle-warning'
+          ? 'bottom-[max(5rem,env(safe-area-inset-bottom))] left-3 right-3 border-red-700 bg-red-600 text-white shadow-xl sm:right-auto sm:w-[26rem]'
+          : ui.toast.type === 'error'
+            ? 'inset-x-3 top-3 mx-auto border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100 sm:left-auto sm:right-4 sm:mx-0'
+            : 'inset-x-3 top-3 mx-auto border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100 sm:left-auto sm:right-4 sm:mx-0'"
         role="status"
         aria-live="polite"
       >
