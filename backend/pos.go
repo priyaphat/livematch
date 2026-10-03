@@ -1819,6 +1819,11 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 		writePOSInternalError(w, r, err)
 		return
 	}
+	bookingCount, bookingRevenue, err := a.posSpecialBookingRevenue(r.Context(), adminID, start, end)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
 
 	type sessionRef struct {
 		id         string
@@ -1864,10 +1869,34 @@ func (a *app) writePOSSpecialReport(w http.ResponseWriter, r *http.Request, admi
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"range": rangeKey, "startDate": startDate, "endDate": endDate, "stockLocation": stockLocation, "posItems": posItems, "sessions": sessions,
-		"summary":           map[string]any{"posQuantity": posQuantity, "posRevenueSatang": posRevenue, "matchPlayerCount": matchPlayers, "matchEntryFeeSatang": matchEntry, "matchShuttleQuantity": matchShuttleQuantity, "matchShuttleSatang": matchShuttle, "sessionCount": len(allSessions), "totalSatang": posRevenue + matchEntry + matchShuttle, "cashReceivedSatang": cashReceived, "promptPayReceivedSatang": promptPayReceived},
+		"summary":           map[string]any{"posQuantity": posQuantity, "posRevenueSatang": posRevenue, "matchPlayerCount": matchPlayers, "matchEntryFeeSatang": matchEntry, "matchShuttleQuantity": matchShuttleQuantity, "matchShuttleSatang": matchShuttle, "sessionCount": len(allSessions), "totalSatang": posRevenue + matchEntry + matchShuttle, "cashReceivedSatang": cashReceived, "promptPayReceivedSatang": promptPayReceived, "bookingCount": bookingCount, "bookingRevenueSatang": bookingRevenue},
 		"posPagination":     map[string]any{"page": posPage, "pageSize": pageSize, "total": posTotal, "totalPages": (posTotal + pageSize - 1) / pageSize},
 		"sessionPagination": map[string]any{"page": sessionPage, "pageSize": sessionPageSize, "total": len(allSessions), "totalPages": (len(allSessions) + sessionPageSize - 1) / sessionPageSize},
 	})
+}
+
+// posSpecialBookingRevenue reports confirmed court-booking batches that have
+// been fully paid. The report follows the booking dashboard convention and
+// filters by the time the booking batch was created, not by its play date.
+func (a *app) posSpecialBookingRevenue(ctx context.Context, adminID string, start, end time.Time) (int, int64, error) {
+	var count int
+	var revenue int64
+	err := a.db.QueryRowContext(ctx, `
+		with booking_groups as (
+			select coalesce(nullif(booking_batch_id,''),id) group_id,
+				min(created_at) created_at,
+				sum(total_price_thb)::bigint total_price_thb,
+				bool_and(status='confirmed') confirmed,
+				bool_and(payment_status='paid') paid
+			from bookings
+			where admin_id=$1
+			group by coalesce(nullif(booking_batch_id,''),id)
+		)
+		select count(*)::int,coalesce(sum(total_price_thb),0)::bigint*100
+		from booking_groups
+		where created_at >= $2 and created_at < $3 and confirmed and paid
+	`, adminID, start, end).Scan(&count, &revenue)
+	return count, revenue, err
 }
 
 // posSpecialPaymentTotals reports money actually received for POS and Match.

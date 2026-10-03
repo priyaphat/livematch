@@ -254,6 +254,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
         `ยอดเกิดจริง POS + LiveMatch ${formatCurrency((specialReport?.summary.totalSatang || 0) / 100, settings.currencySymbol, 2)}`,
         `รับเงินสด ${formatCurrency((specialReport?.summary.cashReceivedSatang || 0) / 100, settings.currencySymbol, 2)}`,
         `รับ QR ${formatCurrency((specialReport?.summary.promptPayReceivedSatang || 0) / 100, settings.currencySymbol, 2)}`,
+        `จองสนามชำระแล้ว ${formatCurrency((specialReport?.summary.bookingRevenueSatang || 0) / 100, settings.currencySymbol, 2)}`,
       );
     } else {
       lines.push(`ยอดขาย ${formatCurrency(totalSales, settings.currencySymbol, 2)}`, `กำไร ${formatCurrency(grossProfit, settings.currencySymbol, 2)}`);
@@ -387,6 +388,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       rows = exportSpecial ? [
         ['รับชำระจริง', 'เงินสด', 'ตามวันที่รับชำระ', '', '', exportSpecial.summary.cashReceivedSatang / 100],
         ['รับชำระจริง', 'QR', 'ตามวันที่รับชำระ', '', '', exportSpecial.summary.promptPayReceivedSatang / 100],
+        ['จองสนาม', 'ชำระแล้ว', 'ตามวันที่สร้างรายการจอง', exportSpecial.summary.bookingCount, '', exportSpecial.summary.bookingRevenueSatang / 100],
       ] : [];
       rows.push(...(exportSpecial?.posItems || []).map((item) => ['POS', item.name, `${item.billCount} บิล`, item.quantity, '', item.revenueSatang / 100]));
     }
@@ -1147,14 +1149,15 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
           <div className="rounded-3xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
             {nameFilter(specialSearch, (value) => { setSpecialPOSPage(1); setSpecialSearch(value); }, 'กรองชื่อสินค้า POS')}
           </div>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">{[
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 xl:grid-cols-7">{[
             ['สินค้า POS', `${specialReport?.summary.posQuantity || 0} ชิ้น`, specialReport?.summary.posRevenueSatang || 0],
             ['ค่าเข้าสนาม', `${specialReport?.summary.matchPlayerCount || 0} คน`, specialReport?.summary.matchEntryFeeSatang || 0],
             ['ลูกแบดใช้จริง', `${specialReport?.summary.matchShuttleQuantity || 0} ลูก`, specialReport?.summary.matchShuttleSatang || 0],
             ['ยอดรวม', `${specialReport?.summary.sessionCount || 0} Session`, specialReport?.summary.totalSatang || 0],
             ['เงินสด', 'รับชำระจริง', specialReport?.summary.cashReceivedSatang || 0],
             ['QR', 'รับชำระจริง', specialReport?.summary.promptPayReceivedSatang || 0],
-          ].map(([label, detail, amount]) => <div key={String(label)} className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><p className="text-xs text-slate-500">{label}</p><p className={`truncate text-lg font-black ${label === 'เงินสด' ? 'text-amber-500' : label === 'QR' ? 'text-sky-500' : 'text-emerald-600'}`}>{formatCurrency(Number(amount) / 100, settings.currencySymbol, 2)}</p><p className="text-[11px] text-slate-400">{detail}</p></div>)}</div>
+            ['จองสนาม', `${specialReport?.summary.bookingCount || 0} ชุด · ชำระแล้ว`, specialReport?.summary.bookingRevenueSatang || 0],
+          ].map(([label, detail, amount]) => <div key={String(label)} className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 shadow-md dark:border-slate-800 dark:bg-slate-900"><p className="text-xs text-slate-500">{label}</p><p className={`truncate text-lg font-black ${label === 'เงินสด' ? 'text-amber-500' : label === 'QR' ? 'text-sky-500' : label === 'จองสนาม' ? 'text-violet-500' : 'text-emerald-600'}`}>{formatCurrency(Number(amount) / 100, settings.currencySymbol, 2)}</p><p className="text-[11px] text-slate-400">{detail}</p></div>)}</div>
           {specialReport && specialDifferenceSatang !== 0 && <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-3 text-xs text-sky-800 dark:border-sky-900/60 dark:bg-sky-950/30 dark:text-sky-200"><strong className="text-sm">{specialDifferenceSatang > 0 ? 'ยอดขายมากกว่าเงินที่รับจริง' : 'รับเงินจริงมากกว่ายอดขาย'} {formatCurrency(Math.abs(specialDifferenceSatang) / 100, settings.currencySymbol, 2)}</strong><p className="mt-1">ยอดขายยึดวันที่ปิดบิลและวันที่เกิด Session ส่วนเงินสด/QR ยึดวันที่รับเงินจริง จึงอาจต่างกันเมื่อบิลหารชำระคนละวันหรือยังรับเงินไม่ครบ</p></div>}
           <div className="rounded-3xl border border-slate-200 bg-white overflow-hidden shadow-md dark:border-slate-800 dark:bg-slate-900"><div className="border-b border-slate-200 p-4 dark:border-slate-800"><p className="font-bold">สินค้าที่ขายในช่วงที่เลือก</p><p className="mt-1 text-xs text-slate-500">แสดงเฉพาะรายการขายจาก POS ไม่รวมค่าใช้จ่ายจาก LiveMatch</p></div><div className="overflow-x-auto"><table className="w-full min-w-[620px] text-xs"><thead className="bg-slate-100 dark:bg-slate-950/80"><tr><th className="p-3 text-left">สินค้า</th><th className="p-3 text-right">จำนวน</th><th className="p-3 text-right">บิล</th><th className="p-3 text-right">มูลค่า</th></tr></thead><tbody>{(specialReport?.posItems || []).map((item) => <tr key={`${item.productId}:${item.name}`} className="border-t border-slate-100 dark:border-slate-800"><td className="p-3 font-bold">{item.name}</td><td className="p-3 text-right">{item.quantity}</td><td className="p-3 text-right">{item.billCount}</td><td className="p-3 text-right font-bold text-emerald-600">{formatCurrency(item.revenueSatang / 100, settings.currencySymbol, 2)}</td></tr>)}</tbody></table></div>{specialReport && paginationBar(specialReport.posPagination.page, specialReport.posPagination.totalPages, specialReport.posPagination.total, setSpecialPOSPage)}</div>
           <div className="space-y-3">

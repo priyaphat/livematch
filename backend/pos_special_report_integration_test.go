@@ -185,3 +185,47 @@ func TestPOSSpecialReportSplitHasNoPhantomSaleIntegration(t *testing.T) {
 		t.Fatalf("cross-day split receipts cash=%d qr=%d; want cash=0 qr=2487", cash, qr)
 	}
 }
+
+func TestPOSSpecialBookingRevenueFollowsDateFilterAndBatchStatusIntegration(t *testing.T) {
+	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL POS booking report tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := &app{db: db}
+	adminID := "pos-booking-report-" + randHex(8)
+	if _, err = db.Exec(`insert into admin_users(id,email,name,password_hash,verified_at) values($1,$2,'POS Booking Report QA','unused',now())`, adminID, adminID+"@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = db.Exec(`delete from admin_users where id=$1`, adminID) }()
+	courtID := "booking-court-" + randHex(8)
+	if _, err = db.Exec(`insert into booking_courts(id,admin_id,name,price_per_interval) values($1,$2,'สนามทดสอบ',100)`, courtID, adminID); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	insertBooking := func(id, batchID, status, paymentStatus string, amount int, createdAt time.Time) {
+		t.Helper()
+		if _, insertErr := db.Exec(`insert into bookings(id,admin_id,court_id,booked_by,booker_name,start_at,end_at,interval_minutes,unit_price_thb,total_price_thb,status,payment_status,booking_batch_id,created_at) values($1,$2,$3,'admin','QA',$4,$5,60,$6,$6,$7,$8,nullif($9,''),$10)`, id, adminID, courtID, now.Add(time.Hour), now.Add(2*time.Hour), amount, status, paymentStatus, batchID, createdAt); insertErr != nil {
+			t.Fatal(insertErr)
+		}
+	}
+	batchID := "paid-batch-" + randHex(8)
+	insertBooking("paid-a-"+randHex(8), batchID, "confirmed", "paid", 100, now)
+	insertBooking("paid-b-"+randHex(8), batchID, "confirmed", "paid", 150, now.Add(time.Second))
+	insertBooking("unpaid-"+randHex(8), "", "confirmed", "unpaid", 300, now)
+	insertBooking("cancelled-"+randHex(8), "", "cancelled", "paid", 400, now)
+	insertBooking("outside-"+randHex(8), "", "confirmed", "paid", 500, now.Add(-48*time.Hour))
+
+	count, revenue, err := a.posSpecialBookingRevenue(t.Context(), adminID, now.Add(-time.Minute), now.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 || revenue != 25000 {
+		t.Fatalf("booking report count=%d revenue=%d; want one paid batch worth 25000 satang", count, revenue)
+	}
+}
