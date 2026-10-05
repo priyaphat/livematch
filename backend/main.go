@@ -48,22 +48,30 @@ type SessionRecord struct {
 }
 
 type SessionState struct {
-	Version          int64             `json:"version"`
-	Tab              string            `json:"tab"`
-	Theme            string            `json:"theme"`
-	Session          SessionInfo       `json:"session"`
-	Settings         Settings          `json:"settings"`
-	MemberTypes      []MemberType      `json:"memberTypes"`
-	Players          []Player          `json:"players"`
-	Couples          []Couple          `json:"couples"`
-	ReturnedShuttles []ReturnedShuttle `json:"returnedShuttles"`
-	Pending          []Match           `json:"pending"`
-	Queue            []Match           `json:"queue"`
-	Live             []Match           `json:"live"`
-	History          []Match           `json:"history"`
-	LiveShare        LiveShareHours    `json:"liveShare"`
-	NextIDs          NextIDs           `json:"nextIds"`
-	UpdatedAt        time.Time         `json:"updatedAt"`
+	Version           int64             `json:"version"`
+	Tab               string            `json:"tab"`
+	Theme             string            `json:"theme"`
+	Session           SessionInfo       `json:"session"`
+	Settings          Settings          `json:"settings"`
+	MemberTypes       []MemberType      `json:"memberTypes"`
+	Players           []Player          `json:"players"`
+	Couples           []Couple          `json:"couples"`
+	ReturnedShuttles  []ReturnedShuttle `json:"returnedShuttles"`
+	Pending           []Match           `json:"pending"`
+	Queue             []Match           `json:"queue"`
+	Live              []Match           `json:"live"`
+	History           []Match           `json:"history"`
+	LiveShare         LiveShareHours    `json:"liveShare"`
+	QueueAnnouncement QueueAnnouncement `json:"queueAnnouncement"`
+	NextIDs           NextIDs           `json:"nextIds"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+
+type QueueAnnouncement struct {
+	Sequence    int64  `json:"sequence"`
+	MatchID     int    `json:"matchId"`
+	Court       string `json:"court"`
+	AnnouncedAt string `json:"announcedAt,omitempty"`
 }
 
 type SessionInfo struct {
@@ -567,6 +575,13 @@ func (a *app) migrate(ctx context.Context) error {
 			legacy_shuttle_fee integer not null default 0,
 			pairing_pattern text not null default 'legacy_unknown',
 			primary key (session_id, id)
+		);
+		create table if not exists session_queue_announcements (
+			session_id text primary key references sessions(id) on delete cascade,
+			sequence bigint not null default 0,
+			match_id integer not null,
+			court text not null,
+			announced_at timestamptz not null default now()
 		);
 		alter table matches drop constraint if exists matches_phase_check;
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
@@ -1541,6 +1556,8 @@ func (a *app) migrate(ctx context.Context) error {
 		update pos_stock_movements set previous_cost_satang=previous_cost_thb::bigint*100 where previous_cost_satang=0 and previous_cost_thb<>0;
 		update pos_stock_movements set resulting_cost_satang=resulting_cost_thb::bigint*100 where resulting_cost_satang=0 and resulting_cost_thb<>0;
 		create index if not exists idx_pos_stock_product on pos_stock_movements(product_id, created_at desc);
+		create index if not exists idx_pos_stock_movements_admin_created on pos_stock_movements(admin_id, created_at desc, id desc);
+		create index if not exists idx_pos_stock_movements_admin_location_created on pos_stock_movements(admin_id, stock_location, created_at desc, id desc);
 		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
 		create table if not exists match_shuttle_stock_usage (
 			id bigserial primary key,
@@ -2207,7 +2224,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		action = parts[1]
 	}
 	var routeUser adminUser
-	if action != "state" {
+	publicSessionRead := action == "state" || (r.Method == http.MethodGet && action == "queue-announcement")
+	if !publicSessionRead {
 		user, ok := a.currentAdmin(r.Context(), r)
 		if !ok {
 			writeAuthFailure(w, r, adminSessionKind)
@@ -2232,6 +2250,19 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if r.Method == http.MethodGet && action == "queue-announcement" {
+		announcement, err := a.loadQueueAnnouncement(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, sql.ErrNoRows) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"queueAnnouncement": announcement})
+		return
+	}
 
 	state, err := a.loadState(r.Context(), id)
 	if err != nil {
@@ -2242,7 +2273,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
-	if action != "state" {
+	if !publicSessionRead {
 		user := routeUser
 		if r.Method == http.MethodGet && (action == "dashboard" || action == "bootstrap") && r.URL.Query().Get("open") == "1" {
 			a.insertActivityLog(r.Context(), "admin", user.ID, "open_session", "session", id, map[string]any{"name": state.Session.Name, "expired": state.Session.Expired, "readOnly": state.Session.ReadOnly, "readOnlyReason": state.Session.ReadOnlyReason})
@@ -2798,6 +2829,37 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		paged, page, pageSize := paginate(items, r)
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
+	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "announce":
+		matchID, _ := strconv.Atoi(parts[2])
+		var body struct {
+			Court string `json:"court"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		body.Court = strings.TrimSpace(body.Court)
+		if body.Court == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "court is required"})
+			return
+		}
+		found := false
+		for _, match := range state.Queue {
+			if match.ID == matchID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
+			return
+		}
+		announcement, err := a.recordQueueAnnouncement(r.Context(), state.Session.ID, matchID, body.Court)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if user, ok := a.currentAdmin(r.Context(), r); ok {
+			a.insertActivityLog(r.Context(), "admin", user.ID, "announce_queued_match", "match", strconv.Itoa(matchID), map[string]any{"sessionId": state.Session.ID, "court": body.Court})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"queueAnnouncement": announcement})
 	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "start":
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -2915,7 +2977,7 @@ func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, se
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from players p left join member_types mt on mt.id=p.member_type_id left join members mem on mem.id=p.member_id and mem.deleted_at is null where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,ba.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from players p left join member_types mt on mt.id=p.member_type_id left join billing_accounts ba on ba.id=p.billing_account_id left join members mem on mem.id=coalesce(p.member_id,ba.member_id) and mem.deleted_at is null where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -2974,7 +3036,7 @@ func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, se
 		history = append(history, item)
 	}
 	rows.Close()
-	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id left join members mem on mem.id=p.member_id and mem.deleted_at is null order by p.id`, sessionID, search, pattern, pageSize, offset)
+	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,ba.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id left join billing_accounts ba on ba.id=p.billing_account_id left join members mem on mem.id=coalesce(p.member_id,ba.member_id) and mem.deleted_at is null order by p.id`, sessionID, search, pattern, pageSize, offset)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -3671,6 +3733,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	state := defaultState(id, name, passcode)
 	state.Version = stateVersion
+	state.QueueAnnouncement, _ = a.loadQueueAnnouncement(ctx, id)
 	state.Session.Type = normalizeSessionType(sessionTypeValue)
 	state.Session.Unlocked = true
 	state.UpdatedAt = updatedAt
@@ -3739,10 +3802,11 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.libero, p.club_member, coalesce(p.member_id, ''), coalesce(mem.avatar_version,0), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang, p.withdrawn_at, p.withdrawn_by, p.withdrawal_note
+		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.libero, p.club_member, coalesce(p.member_id, ba.member_id, ''), coalesce(mem.avatar_version,0), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang, p.withdrawn_at, p.withdrawn_by, p.withdrawal_note
 		from players p
 		left join member_types mt on mt.id=p.member_type_id
-		left join members mem on mem.id=p.member_id and mem.deleted_at is null
+		left join billing_accounts ba on ba.id=p.billing_account_id
+		left join members mem on mem.id=coalesce(p.member_id,ba.member_id) and mem.deleted_at is null
 		where p.session_id = $1
 		order by p.id
 	`, id)
@@ -5014,8 +5078,43 @@ func queuePayload(state SessionState) map[string]any {
 		"live":                state.Live,
 		"players":             state.Players,
 		"settings":            state.Settings,
+		"queueAnnouncement":   state.QueueAnnouncement,
 		"availableCourtNames": availableCourtNames(state),
 	}
+}
+
+func (a *app) loadQueueAnnouncement(ctx context.Context, sessionID string) (QueueAnnouncement, error) {
+	var announcement QueueAnnouncement
+	var announcedAt sql.NullTime
+	err := a.db.QueryRowContext(ctx, `
+		select coalesce(a.sequence,0),coalesce(a.match_id,0),coalesce(a.court,''),a.announced_at
+		from sessions s
+		left join session_queue_announcements a on a.session_id=s.id
+		where s.id=$1
+	`, sessionID).Scan(&announcement.Sequence, &announcement.MatchID, &announcement.Court, &announcedAt)
+	if announcedAt.Valid {
+		announcement.AnnouncedAt = announcedAt.Time.UTC().Format(time.RFC3339Nano)
+	}
+	return announcement, err
+}
+
+func (a *app) recordQueueAnnouncement(ctx context.Context, sessionID string, matchID int, court string) (QueueAnnouncement, error) {
+	var announcement QueueAnnouncement
+	var announcedAt time.Time
+	err := a.db.QueryRowContext(ctx, `
+		insert into session_queue_announcements (session_id,sequence,match_id,court,announced_at)
+		values ($1,1,$2,$3,now())
+		on conflict (session_id) do update set
+			sequence=session_queue_announcements.sequence+1,
+			match_id=excluded.match_id,
+			court=excluded.court,
+			announced_at=excluded.announced_at
+		returning sequence,match_id,court,announced_at
+	`, sessionID, matchID, court).Scan(&announcement.Sequence, &announcement.MatchID, &announcement.Court, &announcedAt)
+	if err == nil {
+		announcement.AnnouncedAt = announcedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return announcement, err
 }
 
 func activePlayerCount(state SessionState) int {
@@ -6324,6 +6423,9 @@ func (a *app) withCORS(next http.Handler) http.Handler {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		log.Printf("write json: %v", err)

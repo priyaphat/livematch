@@ -840,10 +840,67 @@ func (a *app) listPOSStockMovements(ctx context.Context, adminID string, limit i
 	if limit < 1 || limit > 200 {
 		limit = 100
 	}
+	items, _, err := a.listPOSStockMovementsPage(ctx, adminID, posStockMovementFilters{Page: 1, PageSize: limit})
+	return items, err
+}
+
+type posStockMovementFilters struct {
+	Page          int
+	PageSize      int
+	Search        string
+	MovementType  string
+	StockLocation string
+	ProductID     string
+}
+
+const posStockMovementTypeSQL = `case
+	when coalesce(b.mode,'')<>'' then b.mode
+	when m.reason in ('restock','void') then 'in'
+	when m.reason='sale' then 'out'
+	else 'adjust'
+end`
+
+func normalizePOSStockMovementFilters(filters posStockMovementFilters) posStockMovementFilters {
+	if filters.Page < 1 {
+		filters.Page = 1
+	}
+	if filters.PageSize < 1 {
+		filters.PageSize = 20
+	} else if filters.PageSize > 100 {
+		filters.PageSize = 100
+	}
+	filters.Search = strings.TrimSpace(filters.Search)
+	filters.ProductID = strings.TrimSpace(filters.ProductID)
+	if !validStockLocation(filters.StockLocation) {
+		filters.StockLocation = ""
+	}
+	switch filters.MovementType {
+	case "in", "out", "adjust", "transfer":
+	default:
+		filters.MovementType = ""
+	}
+	return filters
+}
+
+func (a *app) listPOSStockMovementsPage(ctx context.Context, adminID string, rawFilters posStockMovementFilters) ([]map[string]any, int, error) {
+	filters := normalizePOSStockMovementFilters(rawFilters)
+	searchPattern := "%" + filters.Search + "%"
+	filterSQL := `m.admin_id=$1
+		and ($2='' or m.stock_location=$2)
+		and ($3='' or ` + posStockMovementTypeSQL + `=$3)
+		and ($4='' or m.product_id=$4)
+		and ($5='' or p.name ilike $6 or p.sku ilike $6 or coalesce(b.name,'') ilike $6 or coalesce(b.external_reference_no,'') ilike $6 or m.reason ilike $6 or m.note ilike $6 or coalesce(b.supplier_name,'') ilike $6)`
+	args := []any{adminID, filters.StockLocation, filters.MovementType, filters.ProductID, filters.Search, searchPattern}
+	var total int
+	if err := a.db.QueryRowContext(ctx, `select count(*) from pos_stock_movements m join pos_products p on p.id=m.product_id left join pos_stock_batches b on b.id=m.batch_id where `+filterSQL, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
 	items := []map[string]any{}
-	rows, err := a.db.QueryContext(ctx, `select m.id,m.product_id,p.name,p.sku,m.delta,m.balance,m.reason,m.note,coalesce(m.sale_id,''),coalesce(m.batch_id,''),coalesce(b.name,''),coalesce(b.supplier_name,''),coalesce(b.mode,''),m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang,m.resulting_cost_satang,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),m.actor_id,m.actor_type,m.actor_name,m.stock_location from pos_stock_movements m join pos_products p on p.id=m.product_id left join pos_stock_batches b on b.id=m.batch_id where m.admin_id=$1 order by m.created_at desc,m.id desc limit $2`, adminID, limit)
+	queryArgs := append(args, filters.PageSize, (filters.Page-1)*filters.PageSize)
+	rows, err := a.db.QueryContext(ctx, `select m.id,m.product_id,p.name,p.sku,m.delta,m.balance,m.reason,m.note,coalesce(m.sale_id,''),coalesce(m.batch_id,''),coalesce(b.name,''),coalesce(b.supplier_name,''),coalesce(b.mode,''),m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang,m.resulting_cost_satang,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),m.actor_id,m.actor_type,m.actor_name,m.stock_location from pos_stock_movements m join pos_products p on p.id=m.product_id left join pos_stock_batches b on b.id=m.batch_id where `+filterSQL+` order by m.created_at desc,m.id desc limit $7 offset $8`, queryArgs...)
 	if err != nil {
-		return items, err
+		return items, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
@@ -852,7 +909,7 @@ func (a *app) listPOSStockMovements(ctx context.Context, adminID string, limit i
 		var delta, balance int
 		var unitCostSatang, grossTotalSatang, allocatedDiscountSatang, netTotalSatang, previousCostSatang, resultingCostSatang int64
 		if err = rows.Scan(&id, &productID, &productName, &sku, &delta, &balance, &reason, &note, &saleID, &batchID, &referenceNo, &supplierName, &batchMode, &unitCostSatang, &grossTotalSatang, &allocatedDiscountSatang, &netTotalSatang, &previousCostSatang, &resultingCostSatang, &createdAt, &actorID, &actorType, &actorName, &stockLocation); err != nil {
-			return items, err
+			return items, 0, err
 		}
 		movementType := batchMode
 		if movementType == "" && (reason == "restock" || reason == "void") {
@@ -864,7 +921,7 @@ func (a *app) listPOSStockMovements(ctx context.Context, adminID string, limit i
 		}
 		items = append(items, map[string]any{"id": id, "referenceNo": referenceNo, "batchId": batchID, "productId": productID, "productName": productName, "productSku": sku, "type": movementType, "quantity": delta, "beforeStock": balance - delta, "afterStock": balance, "delta": delta, "balance": balance, "reason": reason, "note": note, "supplierName": supplierName, "saleId": saleID, "stockLocation": stockLocation, "unitCostSatang": unitCostSatang, "grossTotalSatang": grossTotalSatang, "allocatedDiscountSatang": allocatedDiscountSatang, "netTotalSatang": netTotalSatang, "previousCostSatang": previousCostSatang, "resultingCostSatang": resultingCostSatang, "createdAt": createdAt, "actorId": actorID, "actorType": actorType, "actorName": actorName})
 	}
-	return items, rows.Err()
+	return items, total, rows.Err()
 }
 
 func (a *app) listPOSStockBatches(ctx context.Context, adminID string, limit int) ([]posStockBatchRecord, error) {
@@ -936,22 +993,25 @@ func (a *app) writePOSStockBatches(w http.ResponseWriter, r *http.Request, admin
 }
 
 func (a *app) writePOSStockMovements(w http.ResponseWriter, r *http.Request, adminID string) {
-	items, err := a.listPOSStockMovements(r.Context(), adminID, stockListLimit(r))
+	page, pageSize, _ := paginationParams(r, 20, 100)
+	if r.URL.Query().Get("pageSize") == "" && r.URL.Query().Get("limit") != "" {
+		pageSize = stockListLimit(r)
+	}
+	filters := posStockMovementFilters{
+		Page:          page,
+		PageSize:      pageSize,
+		Search:        r.URL.Query().Get("search"),
+		MovementType:  strings.TrimSpace(r.URL.Query().Get("type")),
+		StockLocation: strings.TrimSpace(r.URL.Query().Get("stockLocation")),
+		ProductID:     r.URL.Query().Get("productId"),
+	}
+	filters = normalizePOSStockMovementFilters(filters)
+	items, total, err := a.listPOSStockMovementsPage(r.Context(), adminID, filters)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return
 	}
-	location := strings.TrimSpace(r.URL.Query().Get("stockLocation"))
-	if validStockLocation(location) {
-		filtered := items[:0]
-		for _, item := range items {
-			if item["stockLocation"] == location {
-				filtered = append(filtered, item)
-			}
-		}
-		items = filtered
-	}
-	writeJSON(w, 200, map[string]any{"items": items})
+	writeJSON(w, 200, map[string]any{"items": items, "page": filters.Page, "pageSize": filters.PageSize, "total": total, "totalPages": (total + filters.PageSize - 1) / filters.PageSize})
 }
 
 func (a *app) writePOSStockSummary(w http.ResponseWriter, r *http.Request, adminID string) {

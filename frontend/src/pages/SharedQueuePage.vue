@@ -15,10 +15,11 @@ const props = defineProps([
 
 const waitingMatches = computed(() => [...props.state.queue].sort((a, b) => a.id - b.id))
 const liveMatches = computed(() => [...props.state.live].sort((a, b) => a.id - b.id))
-const hiddenDesktopLiveMatchIds = ref(new Set())
-const desktopLiveMatches = computed(() => liveMatches.value.filter((match) => !hiddenDesktopLiveMatchIds.value.has(Number(match.id))))
+const desktopLiveMatches = computed(() => liveMatches.value)
 const matchIntro = ref(null)
 const pendingMatchIntros = []
+let observedAnnouncementSession = ''
+let observedAnnouncementSequence = 0
 const occupiedPlayerIds = computed(() => new Set(
   [...(props.state.queue || []), ...(props.state.live || [])]
     .flatMap((match) => [match.a1, match.a2, match.b1, match.b2])
@@ -87,42 +88,43 @@ function showNextMatchIntro() {
   matchIntro.value = pendingMatchIntros.shift()
   showWaitingSlide.value = false
   matchIntroTimer = window.setTimeout(() => {
-    const finishedId = Number(matchIntro.value?.id || 0)
     matchIntro.value = null
-    hiddenDesktopLiveMatchIds.value = new Set(
-      [...hiddenDesktopLiveMatchIds.value].filter((id) => id !== finishedId)
-    )
     matchIntroGapTimer = window.setTimeout(showNextMatchIntro, 900)
   }, 5000)
 }
 
 watch(
   () => [
-    waitingMatches.value.map((match) => Number(match.id)),
-    liveMatches.value.map((match) => Number(match.id))
+    Boolean(props.share.loading),
+    String(props.state.session?.id || ''),
+    Number(props.state.queueAnnouncement?.sequence || 0)
   ],
-  ([, liveIds], [previousWaitingIds = [], previousLiveIds = []]) => {
-    const previousWaiting = new Set(previousWaitingIds)
-    const previousLive = new Set(previousLiveIds)
-    const startedIds = liveIds.filter((id) => previousWaiting.has(id) && !previousLive.has(id))
-    if (!startedIds.length) return
+  ([loading, sessionId, sequence]) => {
+    if (loading) return
+    if (observedAnnouncementSession !== sessionId) {
+      observedAnnouncementSession = sessionId
+      observedAnnouncementSequence = sequence
+      return
+    }
+    if (sequence <= observedAnnouncementSequence) return
+    observedAnnouncementSequence = sequence
     if (props.state.settings?.matchStartAnimationEnabled === false) return
 
-    const startedIdSet = new Set(startedIds)
-    hiddenDesktopLiveMatchIds.value = new Set([...hiddenDesktopLiveMatchIds.value, ...startedIds])
-    liveMatches.value
-      .filter((match) => startedIdSet.has(Number(match.id)))
-      .forEach((match) => {
-        const players = matchPlayerCards(match)
-        pendingMatchIntros.push({
-          ...match,
-          players,
-          isSingles: players.filter((player) => player.side === 'A').length === 1 && players.filter((player) => player.side === 'B').length === 1,
-          courtLabel: matchCourt(match)
-        })
-      })
+    const announcement = props.state.queueAnnouncement || {}
+    const matchId = Number(announcement.matchId || 0)
+    const match = [...waitingMatches.value, ...liveMatches.value].find((item) => Number(item.id) === matchId)
+    if (!match) return
+    const players = matchPlayerCards(match)
+    pendingMatchIntros.push({
+      ...match,
+      court: announcement.court || match.court,
+      players,
+      isSingles: players.filter((player) => player.side === 'A').length === 1 && players.filter((player) => player.side === 'B').length === 1,
+      courtLabel: announcement.court || matchCourt(match)
+    })
     showNextMatchIntro()
-  }
+  },
+  { immediate: true }
 )
 
 watch(() => props.shareLink, async (link) => {
@@ -180,7 +182,6 @@ watch(() => props.state.settings?.matchStartAnimationEnabled, (enabled) => {
   matchIntroGapTimer = null
   pendingMatchIntros.splice(0)
   matchIntro.value = null
-  hiddenDesktopLiveMatchIds.value = new Set()
 })
 
 watch(() => waitingPlayers.value.length, (count) => {
@@ -373,7 +374,7 @@ function tvContentStyle() {
           <div class="match-showcase-arena" aria-hidden="true"></div>
           <div class="match-showcase-content relative z-10 w-full max-w-6xl px-8">
             <div class="match-showcase-heading text-center">
-              <p class="match-showcase-kicker">MATCH STARTING</p>
+              <p class="match-showcase-kicker">NOW CALLING</p>
               <h2>MATCH {{ matchIntro.id }}</h2>
               <div class="match-showcase-court"><Activity class="h-5 w-5" /> {{ showcaseCourtLabel(matchIntro.courtLabel) }}</div>
             </div>
@@ -413,7 +414,7 @@ function tvContentStyle() {
                 </article>
               </div>
             </div>
-            <p class="match-showcase-status">READY TO PLAY</p>
+            <p class="match-showcase-status">PLEASE REPORT TO COURT</p>
           </div>
         </div>
       </Transition>

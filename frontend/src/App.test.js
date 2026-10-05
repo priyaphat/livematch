@@ -2578,15 +2578,21 @@ describe('LiveMatch app', () => {
     await Promise.resolve()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
+    const stateRequestCount = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/sessions/test-session/state')).length
+    const announcementRequestCount = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/sessions/test-session/queue-announcement')).length
+
     await vi.advanceTimersByTimeAsync(8999)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(stateRequestCount()).toBe(1)
+    expect(announcementRequestCount()).toBe(8)
     await vi.advanceTimersByTimeAsync(1)
     await Promise.resolve()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(stateRequestCount()).toBe(2)
+    expect(announcementRequestCount()).toBe(9)
 
     wrapper.unmount()
+    const requestsBeforeUnmountWait = fetchMock.mock.calls.length
     await vi.advanceTimersByTimeAsync(9000)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeUnmountWait)
 
     globalThis.fetch = originalFetch
     window.history.pushState({}, '', originalUrl)
@@ -2621,7 +2627,7 @@ describe('LiveMatch app', () => {
     vi.useRealTimers()
   })
 
-  it('plays a five-second desktop player showcase when a queued match starts', async () => {
+  it('plays a five-second desktop player showcase when a queued match is announced', async () => {
     vi.useFakeTimers()
     const queuedMatch = {
       id: 21,
@@ -2643,7 +2649,8 @@ describe('LiveMatch app', () => {
       ],
       pending: [],
       queue: [queuedMatch],
-      live: []
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
     }
     const wrapper = mount(SharedQueuePage, {
       props: {
@@ -2658,8 +2665,7 @@ describe('LiveMatch app', () => {
     await wrapper.setProps({
       state: {
         ...baseState,
-        queue: [],
-        live: [{ ...queuedMatch, court: 'สนาม 1', startedAt: '18:30' }]
+        queueAnnouncement: { sequence: 1, matchId: 21, court: 'สนาม 1', announcedAt: '2026-10-05T02:00:00Z' }
       }
     })
     await flushPromises()
@@ -2667,19 +2673,19 @@ describe('LiveMatch app', () => {
     const showcase = wrapper.get('[data-testid="match-start-showcase"]')
     expect(showcase.text()).toContain('MATCH 21')
     expect(showcase.text()).toContain('COURT 1')
-    expect(showcase.text()).toContain('READY TO PLAY')
+    expect(showcase.text()).toContain('PLEASE REPORT TO COURT')
     expect(showcase.text()).toContain('Player 1')
     expect(showcase.text()).toContain('Player 4')
     expect(showcase.findAll('.match-showcase-player')).toHaveLength(4)
     expect(showcase.get('.match-showcase-portrait-image').attributes('src')).toBe('/api/member-avatar/m1?v=1')
-    expect(wrapper.find('.shared-flight-row--live').exists()).toBe(false)
+    expect(wrapper.get('.shared-next-fight-row').text()).toContain('Player 1')
 
     await vi.advanceTimersByTimeAsync(4999)
     expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(true)
     await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
     expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
-    expect(wrapper.get('.shared-flight-row--live').text()).toContain('Player 1')
+    expect(wrapper.get('.shared-next-fight-row').text()).toContain('Player 1')
 
     wrapper.unmount()
     vi.useRealTimers()
@@ -2694,7 +2700,8 @@ describe('LiveMatch app', () => {
       players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
       pending: [],
       queue: [queuedMatch],
-      live: []
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
     }
     const wrapper = mount(SharedQueuePage, {
       props: {
@@ -2705,7 +2712,7 @@ describe('LiveMatch app', () => {
       }
     })
 
-    await wrapper.setProps({ state: { ...baseState, queue: [], live: [{ ...queuedMatch, court: 'สนาม 1', startedAt: '18:30' }] } })
+    await wrapper.setProps({ state: { ...baseState, queueAnnouncement: { sequence: 1, matchId: 22, court: 'สนาม 1' } } })
     await flushPromises()
 
     const lineup = wrapper.get('.match-showcase-lineup')
@@ -2716,15 +2723,16 @@ describe('LiveMatch app', () => {
     vi.useRealTimers()
   })
 
-  it('does not play the desktop match showcase when the session setting is disabled', async () => {
-    const queuedMatch = { id: 23, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+  it('does not play the showcase when a match starts without a new announcement', async () => {
+    const queuedMatch = { id: 24, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
     const baseState = {
-      session: { name: 'No Showcase' },
-      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: false },
+      session: { id: 'start-only', name: 'Start Only' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: true },
       players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
       pending: [],
       queue: [queuedMatch],
-      live: []
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
     }
     const wrapper = mount(SharedQueuePage, {
       props: {
@@ -2740,6 +2748,34 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
     expect(wrapper.get('.shared-flight-row--live').text()).toContain('Player 1')
+    wrapper.unmount()
+  })
+
+  it('does not play the desktop match showcase when the session setting is disabled', async () => {
+    const queuedMatch = { id: 23, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+    const baseState = {
+      session: { name: 'No Showcase' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: false },
+      players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
+      pending: [],
+      queue: [queuedMatch],
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    await wrapper.setProps({ state: { ...baseState, queueAnnouncement: { sequence: 1, matchId: 23, court: 'สนาม 1' } } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    expect(wrapper.get('.shared-next-fight-row').text()).toContain('Player 1')
     wrapper.unmount()
   })
 

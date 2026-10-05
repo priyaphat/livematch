@@ -5,6 +5,7 @@ import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
 import { POSPermissions } from '../api/posAccess';
 import { isAndroidDevice } from '../utils/browserHardware';
+import { listPOSStockMovements, POSStockMovementRecord } from '../api/posStock';
 import {
   PlusCircle,
   MinusCircle,
@@ -34,6 +35,31 @@ import {
 
 const STOCK_PAGE_SIZE = 10;
 
+const stockMovementFromAPI = (item: POSStockMovementRecord): StockMovement => ({
+  id: String(item.id),
+  referenceNo: item.referenceNo || item.batchId || `MOV-${item.id}`,
+  batchId: item.batchId,
+  productId: item.productId,
+  productName: item.productName,
+  productSku: item.productSku,
+  type: item.type,
+  stockLocation: item.stockLocation,
+  quantity: item.quantity,
+  beforeStock: item.beforeStock,
+  afterStock: item.afterStock,
+  reason: item.reason || 'ทำรายการสต็อก',
+  supplierName: item.supplierName,
+  costPerUnit: (item.unitCostSatang ?? 0) / 100,
+  performedBy: item.actorName || 'Admin',
+  createdAt: item.createdAt,
+  note: item.note,
+  grossTotalValue: (item.grossTotalSatang ?? 0) / 100,
+  allocatedDiscountValue: (item.allocatedDiscountSatang ?? 0) / 100,
+  netTotalValue: (item.netTotalSatang ?? 0) / 100,
+  previousCostPerUnit: (item.previousCostSatang ?? 0) / 100,
+  resultingCostPerUnit: (item.resultingCostSatang ?? 0) / 100,
+});
+
 const normalizeWholeNumberInput = (value: string) => {
   if (value === '') return '';
   return value.replace(/\D/g, '').replace(/^0+(?=\d)/, '');
@@ -52,7 +78,6 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
   const {
     products,
     categories: catalogCategories,
-    stockMovements,
     stockBatches,
     stockSummary,
     batchStockOperation,
@@ -76,6 +101,14 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [currentPage, setCurrentPage] = useState(1);
   const [supplierPendingDelete, setSupplierPendingDelete] = useState<Supplier | null>(null);
+  const [movementItems, setMovementItems] = useState<StockMovement[]>([]);
+  const [movementPage, setMovementPage] = useState(1);
+  const [movementTotal, setMovementTotal] = useState(0);
+  const [movementTotalPages, setMovementTotalPages] = useState(0);
+  const [movementLoading, setMovementLoading] = useState(false);
+  const [movementError, setMovementError] = useState('');
+  const [debouncedMovementSearch, setDebouncedMovementSearch] = useState('');
+  const [movementRefreshKey, setMovementRefreshKey] = useState(0);
 
   // Batch Operation Modal state
   const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | 'transfer' | null>(null);
@@ -162,20 +195,6 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
     });
   }, [products, selectedCategory, searchQuery, stockStatusFilter, selectedStockLocation]);
 
-  // Filter Detailed Movements
-  const filteredMovements = useMemo(() => {
-    return stockMovements.filter((m) => {
-      const matchTab = movementFilterTab === 'all' || m.type === movementFilterTab;
-      const matchLocation = m.stockLocation === selectedStockLocation;
-      const matchSearch =
-        m.productName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.productSku.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.referenceNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.reason.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchTab && matchLocation && matchSearch;
-    });
-  }, [stockMovements, movementFilterTab, searchQuery, selectedStockLocation]);
-
   // Filter Batches
   const filteredBatches = useMemo(() => {
     return batchSummaries.filter((b) => {
@@ -203,14 +222,52 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
     : activeMainTab === 'batches'
       ? filteredBatches
       : activeMainTab === 'movements'
-        ? filteredMovements
+        ? []
         : filteredSuppliers;
   const totalPages = Math.ceil(activeItems.length / STOCK_PAGE_SIZE);
   const pageStart = (currentPage - 1) * STOCK_PAGE_SIZE;
   const paginatedProducts = filteredProducts.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
   const paginatedBatches = filteredBatches.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
-  const paginatedMovements = filteredMovements.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
   const paginatedSuppliers = filteredSuppliers.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedMovementSearch(searchQuery.trim());
+      setMovementPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (activeMainTab !== 'movements') return;
+    let cancelled = false;
+    setMovementLoading(true);
+    setMovementError('');
+    void listPOSStockMovements({
+      page: movementPage,
+      pageSize: STOCK_PAGE_SIZE,
+      search: debouncedMovementSearch,
+      type: movementFilterTab === 'all' ? undefined : movementFilterTab,
+      stockLocation: selectedStockLocation,
+    }).then((result) => {
+      if (cancelled) return;
+      setMovementItems(result.items.map(stockMovementFromAPI));
+      setMovementTotal(result.total);
+      setMovementTotalPages(result.totalPages);
+      if (result.totalPages > 0 && movementPage > result.totalPages) setMovementPage(result.totalPages);
+    }).catch((error) => {
+      if (cancelled) return;
+      setMovementItems([]);
+      setMovementTotal(0);
+      setMovementTotalPages(0);
+      setMovementError(error instanceof Error ? error.message : 'โหลดประวัติสต็อกไม่สำเร็จ');
+    }).finally(() => {
+      if (!cancelled) setMovementLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMainTab, debouncedMovementSearch, movementFilterTab, movementPage, movementRefreshKey, selectedStockLocation]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -230,6 +287,22 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
           <ChevronLeft className="h-4 w-4" /> ก่อนหน้า
         </button>
         <button type="button" disabled={currentPage >= totalPages || totalPages === 0} onClick={() => setCurrentPage((page) => page + 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          ถัดไป <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+
+  const movementPaginationBar = (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-xs dark:border-slate-800">
+      <span className="text-slate-500 dark:text-slate-400">
+        ทั้งหมด {movementTotal.toLocaleString('th-TH')} รายการ · หน้า {movementTotalPages > 0 ? movementPage : 0}/{movementTotalPages}
+      </span>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={movementLoading || movementPage <= 1} onClick={() => setMovementPage((page) => page - 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          <ChevronLeft className="h-4 w-4" /> ก่อนหน้า
+        </button>
+        <button type="button" disabled={movementLoading || movementPage >= movementTotalPages || movementTotalPages === 0} onClick={() => setMovementPage((page) => page + 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
           ถัดไป <ChevronRight className="h-4 w-4" />
         </button>
       </div>
@@ -394,6 +467,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
     if (saved) {
       setBatchModalMode(null);
       setBatchItems([]);
+      setMovementRefreshKey((key) => key + 1);
     }
   };
 
@@ -499,7 +573,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
 
         {/* Major Action Buttons (Red, Yellow, White theme) */}
         <div className="flex flex-wrap items-center gap-2.5">
-          {settings.secondaryStockEnabled && <select aria-label="เลือกสต็อก" value={selectedStockLocation} onChange={(e) => setSelectedStockLocation(e.target.value as 'primary' | 'secondary')} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"><option value="primary">{settings.primaryStockName}</option><option value="secondary">{settings.secondaryStockName}</option></select>}
+          {settings.secondaryStockEnabled && <select aria-label="เลือกสต็อก" value={selectedStockLocation} onChange={(e) => { setSelectedStockLocation(e.target.value as 'primary' | 'secondary'); setMovementPage(1); }} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"><option value="primary">{settings.primaryStockName}</option><option value="secondary">{settings.secondaryStockName}</option></select>}
           <button
             id="stock-in-batch-btn"
             onClick={() => handleOpenBatchModal('in')}
@@ -1002,7 +1076,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
             <div className="flex items-center gap-2">
               <div className="flex bg-slate-100 dark:bg-slate-950 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
                 <button
-                  onClick={() => setMovementFilterTab('all')}
+                  onClick={() => { setMovementFilterTab('all'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'all'
                       ? 'bg-red-600 text-white shadow-xs'
@@ -1012,7 +1086,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                   ทั้งหมด ({stockSummary.movementCount})
                 </button>
                 <button
-                  onClick={() => setMovementFilterTab('in')}
+                  onClick={() => { setMovementFilterTab('in'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'in'
                       ? 'bg-red-600 text-white shadow-xs'
@@ -1022,7 +1096,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                   รับเข้า (In)
                 </button>
                 <button
-                  onClick={() => setMovementFilterTab('out')}
+                  onClick={() => { setMovementFilterTab('out'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'out'
                       ? 'bg-yellow-500 text-slate-950 shadow-xs'
@@ -1032,7 +1106,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                   จ่ายออก (Out)
                 </button>
                 <button
-                  onClick={() => setMovementFilterTab('adjust')}
+                  onClick={() => { setMovementFilterTab('adjust'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'adjust'
                       ? 'bg-slate-800 text-white shadow-xs'
@@ -1060,14 +1134,26 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 bg-white dark:bg-slate-900/50">
-                  {filteredMovements.length === 0 ? (
+                  {movementLoading ? (
+                    <tr>
+                      <td colSpan={8} className="p-8 text-center text-slate-400 dark:text-slate-500">
+                        กำลังโหลดประวัติการเคลื่อนไหว...
+                      </td>
+                    </tr>
+                  ) : movementError ? (
+                    <tr>
+                      <td colSpan={8} className="p-8 text-center text-red-600 dark:text-red-400">
+                        {movementError}
+                      </td>
+                    </tr>
+                  ) : movementItems.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="p-8 text-center text-slate-400 dark:text-slate-500">
                         ไม่มีรายการเคลื่อนไหวสต็อกในเงื่อนไขนี้
                       </td>
                     </tr>
                   ) : (
-                    paginatedMovements.map((m) => (
+                    movementItems.map((m) => (
                       <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                         <td className="p-3.5 font-mono font-bold text-slate-900 dark:text-white">{m.referenceNo}</td>
                         <td className="p-3.5 text-slate-500 dark:text-slate-400 font-mono">
@@ -1125,7 +1211,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                 </tbody>
               </table>
             </div>
-            {paginationBar(filteredMovements.length)}
+            {movementPaginationBar}
           </div>
         )}
 

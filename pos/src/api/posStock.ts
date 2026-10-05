@@ -50,6 +50,23 @@ export interface POSStockMovementRecord {
   actorName: string;
 }
 
+export interface POSStockMovementPage {
+  items: POSStockMovementRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+export interface POSStockMovementQuery {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  type?: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation?: 'primary' | 'secondary';
+  productId?: string;
+}
+
 export interface POSStockBatchRecord {
   id: string;
   name: string;
@@ -117,8 +134,16 @@ export async function listPOSStockBatches(stockLocation?: 'primary' | 'secondary
   return (await posRequest<{ items: POSStockBatchRecord[] }>(`/api/admin/pos/stock/batches?limit=200${stockLocation ? `&stockLocation=${stockLocation}` : ''}`)).items;
 }
 
-export async function listPOSStockMovements(stockLocation?: 'primary' | 'secondary') {
-  return (await posRequest<{ items: POSStockMovementRecord[] }>(`/api/admin/pos/stock/movements?limit=200${stockLocation ? `&stockLocation=${stockLocation}` : ''}`)).items;
+export function listPOSStockMovements(query: POSStockMovementQuery = {}) {
+  const params = new URLSearchParams({
+    page: String(query.page ?? 1),
+    pageSize: String(query.pageSize ?? 20),
+  });
+  if (query.search?.trim()) params.set('search', query.search.trim());
+  if (query.type) params.set('type', query.type);
+  if (query.stockLocation) params.set('stockLocation', query.stockLocation);
+  if (query.productId) params.set('productId', query.productId);
+  return posRequest<POSStockMovementPage>(`/api/admin/pos/stock/movements?${params.toString()}`);
 }
 
 export function createPOSStockBatch(input: POSStockBatchInput) {

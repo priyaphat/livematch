@@ -141,6 +141,26 @@ func TestProductStockFieldsRespectSaleLocationAndTracking(t *testing.T) {
 	}
 }
 
+func TestNormalizePOSStockMovementFiltersCapsPageSizeAndValidatesFilters(t *testing.T) {
+	filters := normalizePOSStockMovementFilters(posStockMovementFilters{
+		Page:          0,
+		PageSize:      500,
+		Search:        "  Young แดง  ",
+		MovementType:  "unknown",
+		StockLocation: "warehouse",
+		ProductID:     " product-1 ",
+	})
+	if filters.Page != 1 || filters.PageSize != 100 {
+		t.Fatalf("pagination=%d/%d, want 1/100", filters.Page, filters.PageSize)
+	}
+	if filters.Search != "Young แดง" || filters.ProductID != "product-1" {
+		t.Fatalf("text filters were not normalized: %#v", filters)
+	}
+	if filters.MovementType != "" || filters.StockLocation != "" {
+		t.Fatalf("invalid enum filters were not cleared: %#v", filters)
+	}
+}
+
 func TestDecodePOSProductNormalizesText(t *testing.T) {
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":" W-01 ","category":" Drinks ","name":" Water ","priceThb":20,"costThb":10,"stockQuantity":4,"lowStockThreshold":2,"active":true}`))
 	recorder := httptest.NewRecorder()

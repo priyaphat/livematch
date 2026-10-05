@@ -40,11 +40,9 @@ import {
   deletePOSSupplier,
   getPOSStockSummary,
   listPOSStockBatches,
-  listPOSStockMovements,
   listPOSSuppliers,
   POSStockBatchInput,
   POSStockBatchRecord,
-  POSStockMovementRecord,
   POSSupplierRecord,
   updatePOSSupplier,
 } from '../api/posStock';
@@ -742,31 +740,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     productsCount: item.productsCount || 0,
   });
 
-  const movementFromAPI = (item: POSStockMovementRecord): StockMovement => ({
-    id: String(item.id),
-    referenceNo: item.referenceNo || item.batchId || `MOV-${item.id}`,
-    batchId: item.batchId,
-    productId: item.productId,
-    productName: item.productName,
-    productSku: item.productSku,
-    type: item.type,
-    stockLocation: item.stockLocation,
-    quantity: item.quantity,
-    beforeStock: item.beforeStock,
-    afterStock: item.afterStock,
-    reason: item.reason || 'ทำรายการสต็อก',
-    supplierName: item.supplierName,
-    costPerUnit: (item.unitCostSatang ?? 0) / 100,
-    performedBy: item.actorName || 'Admin',
-    createdAt: item.createdAt,
-    note: item.note,
-    grossTotalValue: (item.grossTotalSatang ?? 0) / 100,
-    allocatedDiscountValue: (item.allocatedDiscountSatang ?? 0) / 100,
-    netTotalValue: (item.netTotalSatang ?? 0) / 100,
-    previousCostPerUnit: (item.previousCostSatang ?? 0) / 100,
-    resultingCostPerUnit: (item.resultingCostSatang ?? 0) / 100,
-  });
-
   const batchFromAPI = (item: POSStockBatchRecord): StockBatchSummary => {
     const movements = item.items.map((line) => {
       const product = products.find((candidate) => candidate.id === line.productId);
@@ -820,9 +793,8 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const refreshPOSStock = async () => {
     try {
-      const [summary, apiMovements, apiBatches, apiSuppliers] = await Promise.all([
+      const [summary, apiBatches, apiSuppliers] = await Promise.all([
         getPOSStockSummary(settings.saleStockLocation),
-        listPOSStockMovements(),
         listPOSStockBatches(),
         listPOSSuppliers(),
       ]);
@@ -836,7 +808,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         batchCount: summary.batchCount,
         movementCount: summary.movementCount,
       });
-      setStockMovements(apiMovements.map(movementFromAPI));
       setStockBatches(apiBatches.map(batchFromAPI));
       setSuppliers(apiSuppliers.map(supplierFromAPI));
     } catch (requestError) {

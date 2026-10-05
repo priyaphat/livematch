@@ -128,7 +128,7 @@ function confirmStartMatch() {
               @click="announceQueuedMatch(match, forms.matchCourts[match.id])"
             >
               <Volume2 class="h-4 w-4" />
-              อ่านออกเสียง
+              ประกาศชื่อ
             </button>
             <button
               class="inline-flex h-10 items-center justify-center gap-2 rounded-md px-4 font-bold text-white transition disabled:cursor-not-allowed"

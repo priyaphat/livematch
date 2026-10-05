@@ -227,6 +227,7 @@ const state = reactive({
   historyView: {
     items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: ''
   },
+  queueAnnouncement: { sequence: 0, matchId: 0, court: '', announcedAt: '' },
   dashboardSummary: null,
   shuttleStockAvailability: [],
   liveShare: {
@@ -485,6 +486,8 @@ let idleWaitAlertTimer = null
 const idleReminderQueue = []
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
+let sharedAnnouncementRefreshTimer = null
+let sharedAnnouncementRefreshing = false
 let bookingBlockTimer = null
 let billingSyncTimer = null
 const terminalSessionCodes = new Set([
@@ -566,6 +569,7 @@ async function api(path, options = {}) {
   const isSessionMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && path.startsWith('/api/sessions/')
   const response = await fetch(`${apiUrl}${path}`, {
     ...fetchOptions,
+    cache: fetchOptions.cache || 'no-store',
     credentials: 'include',
     headers: {
       ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
@@ -629,6 +633,7 @@ function mergeSessionPatch(patch = {}) {
   if (Array.isArray(patch.queue)) state.queue = patch.queue
   if (Array.isArray(patch.live)) state.live = patch.live
   if (Array.isArray(patch.history)) state.history = patch.history
+  if (patch.queueAnnouncement) state.queueAnnouncement = patch.queueAnnouncement
   if (patch.liveShare) state.liveShare = patch.liveShare
   if (patch.settings) state.settings = patch.settings
   if (Array.isArray(patch.memberTypes)) state.memberTypes = patch.memberTypes
@@ -2977,6 +2982,14 @@ function speakAnnouncement(parts, thaiVoice = null) {
 
 async function announceQueuedMatch(match, court = '') {
   if (!court) return
+  try {
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/queue/${match.id}/announce`, {
+      method: 'POST',
+      body: JSON.stringify({ court })
+    }))
+  } catch (error) {
+    showToast(error.message || 'ส่งอนิเมชันไปยังหน้าคิวไม่สำเร็จ')
+  }
   const hasDeviceSpeech = 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance === 'function'
   const runId = ++announcementRunId
   const parts = announcementParts(match, court)
@@ -3509,18 +3522,40 @@ async function copyQrLink() {
 
 function startSharedRefresh(view) {
   const interval = view === 'queue' ? 9000 : 30000
-  if (sharedRefreshTimer && sharedRefreshInterval === interval) return
+  if (sharedRefreshTimer && sharedRefreshInterval === interval) {
+    if (view === 'queue') startSharedAnnouncementRefresh()
+    return
+  }
   stopSharedRefresh()
   sharedRefreshInterval = interval
   sharedRefreshTimer = window.setInterval(() => {
     loadSharedView({ silent: true })
   }, interval)
+  if (view === 'queue') startSharedAnnouncementRefresh()
+}
+
+function startSharedAnnouncementRefresh() {
+  if (sharedAnnouncementRefreshTimer || !state.session.id) return
+  sharedAnnouncementRefreshTimer = window.setInterval(async () => {
+    if (sharedAnnouncementRefreshing || document.hidden) return
+    sharedAnnouncementRefreshing = true
+    try {
+      const payload = await api(`/api/sessions/${state.session.id}/queue-announcement`)
+      mergeSessionPatch(payload)
+    } catch {
+      // The regular shared-view refresh remains the recovery path for transient failures.
+    } finally {
+      sharedAnnouncementRefreshing = false
+    }
+  }, 1000)
 }
 
 function stopSharedRefresh() {
-  if (!sharedRefreshTimer) return
-  window.clearInterval(sharedRefreshTimer)
+  if (sharedRefreshTimer) window.clearInterval(sharedRefreshTimer)
+  if (sharedAnnouncementRefreshTimer) window.clearInterval(sharedAnnouncementRefreshTimer)
   sharedRefreshTimer = null
+  sharedAnnouncementRefreshTimer = null
+  sharedAnnouncementRefreshing = false
   sharedRefreshInterval = 0
 }
 
