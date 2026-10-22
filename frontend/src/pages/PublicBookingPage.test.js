@@ -10,6 +10,8 @@ function availability() {
       closeTime: "19:00",
       intervalMinutes: 60,
       allowOvernight: false,
+      promptPayReceiverName: "สนามแบด QA",
+      logoUrl: "/api/public-booking/tenant-token/logo?v=qa-logo",
     },
     courts: [
       { id: "court-1", name: "สนาม 1", pricePerInterval: 100 },
@@ -64,6 +66,44 @@ function apiMock({ holdError = false, queues = [] } = {}) {
 }
 
 describe("PublicBookingPage", () => {
+  it("disables a past slot unless the venue explicitly allows it", async () => {
+    const locked = availability();
+    locked.serverNow = "2026-07-22T18:04:00+07:00";
+    locked.settings.allowPastBooking = false;
+    const lockedApi = vi.fn((url) => url.includes('/availability') ? Promise.resolve(locked) : apiMock()(url));
+    const lockedWrapper = mount(PublicBookingPage, { props: { apiRequest: lockedApi, token: 'tenant-token' } });
+    await vi.waitFor(() => expect(lockedWrapper.get('[data-testid="slot-court-1-960"]').text()).toBe('เวลาผ่านแล้ว'));
+    lockedWrapper.unmount();
+
+    const allowed = availability();
+    allowed.serverNow = "2026-07-22T18:04:00+07:00";
+    allowed.settings.allowPastBooking = true;
+    const allowedApi = vi.fn((url) => url.includes('/availability') ? Promise.resolve(allowed) : apiMock()(url));
+    const allowedWrapper = mount(PublicBookingPage, { props: { apiRequest: allowedApi, token: 'tenant-token' } });
+    await vi.waitFor(() => expect(allowedWrapper.get('[data-testid="slot-court-1-960"]').text()).toBe('ว่าง'));
+    allowedWrapper.unmount();
+  });
+
+  it("shows only the booker name for a confirmed slot", async () => {
+    const confirmedAvailability = availability();
+    confirmedAvailability.bookings.push({
+      id: "confirmed-1",
+      courtId: "court-1",
+      startAt: "2026-07-22T18:00:00+07:00",
+      endAt: "2026-07-22T19:00:00+07:00",
+      status: "confirmed",
+      bookerName: "คุณปุ้ย",
+    });
+    const baseApi = apiMock();
+    const apiRequest = vi.fn((url, options) =>
+      url.includes("/availability") ? Promise.resolve(confirmedAvailability) : baseApi(url, options),
+    );
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+    await vi.waitFor(() => expect(wrapper.get('[data-testid="slot-court-1-1080"]').text()).toBe("คุณปุ้ย"));
+    expect(wrapper.get('[data-testid="slot-court-1-1080"]').text()).not.toContain("จองแล้ว");
+    wrapper.unmount();
+  });
+
   it("locks the booking action while saving to prevent double submission", async () => {
     let resolveHold
     const pendingHold = new Promise((resolve) => { resolveHold = resolve })
@@ -102,6 +142,7 @@ describe("PublicBookingPage", () => {
       expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1"),
     );
     const summary = wrapper.get('[data-testid="guest-availability-summary"]');
+    expect(wrapper.get('img[alt="โลโก้สนาม"]').attributes('src')).toBe('/api/public-booking/tenant-token/logo?v=qa-logo');
     expect(summary.text()).toContain("ว่าง 7 ช่วง");
     expect(summary.text()).toContain("16:00");
     expect(summary.text()).toContain("กำลังจอง");
@@ -139,9 +180,11 @@ describe("PublicBookingPage", () => {
 
     await flushPromises();
     expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
-    await vi.advanceTimersByTimeAsync(10000);
+    await vi.advanceTimersByTimeAsync(18000);
     await flushPromises();
     expect(availabilityCalls).toBe(2);
+    expect(apiRequest.mock.calls.filter(([url]) => url.includes('/public-auth/me'))).toHaveLength(1);
+    expect(apiRequest.mock.calls.filter(([url]) => url.includes('/availability'))[1][0]).toContain('includeConfiguration=false');
     expect(wrapper.get('[data-testid="guest-availability-summary"]').text()).toContain("สนาม 1");
     expect(wrapper.get('[data-testid="guest-booking-table"]').exists()).toBe(true);
     expect(wrapper.text()).not.toContain("กำลังโหลดตารางจองสนาม");
@@ -150,6 +193,53 @@ describe("PublicBookingPage", () => {
     await flushPromises();
     wrapper.unmount();
     vi.useRealTimers();
+  });
+
+  it("shows a real booker name only when the availability API includes it", async () => {
+    const namedAvailability = availability();
+    namedAvailability.bookings[1].bookerName = "คุณปุ้ย";
+    namedAvailability.settings.showBookerName = true;
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(namedAvailability);
+      if (url.includes("/public-auth/me")) return Promise.reject(Object.assign(new Error("unauthorized"), { status: 401 }));
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+
+    await vi.waitFor(() => expect(wrapper.text()).toContain("คุณปุ้ย"));
+    expect(wrapper.find('.public-slot--pending').text()).toBe("รอตรวจสอบ · คุณปุ้ย");
+    wrapper.unmount();
+  });
+
+  it("shows the closure reason directly without the closed prefix", async () => {
+    const payload = availability();
+    payload.closures = [{
+      id: "closure-repair",
+      courtId: "court-1",
+      startAt: "2026-07-22T16:00:00+07:00",
+      endAt: "2026-07-22T17:00:00+07:00",
+      note: "ซ่อมพื้นสนาม",
+    }];
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(payload);
+      if (url.includes("/public-auth/me")) {
+        const error = new Error("unauthorized");
+        error.status = 401;
+        return Promise.reject(error);
+      }
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, {
+      props: { apiRequest, token: "tenant-token" },
+    });
+
+    await vi.waitFor(() =>
+      expect(wrapper.get('[data-testid="guest-booking-table"]').text()).toContain("ซ่อมพื้นสนาม"),
+    );
+    const closedSlot = wrapper.get('[data-testid="guest-booking-table"]').find(".public-slot--closed");
+    expect(closedSlot.text()).toBe("ซ่อมพื้นสนาม");
+    expect(closedSlot.text()).not.toContain("ปิด");
+    wrapper.unmount();
   });
 
   it("lists an active booking before the schedule and reopens its payment QR", async () => {
@@ -311,6 +401,33 @@ describe("PublicBookingPage", () => {
     wrapper.unmount();
   });
 
+  it("uses the uploaded bank payment QR when that mode is selected", async () => {
+    const data = availability();
+    data.settings.paymentQrMode = "uploaded";
+    data.settings.paymentQrImageUrl = "/api/public-booking/tenant-token/payment-qr-image?v=qr1";
+    const apiRequest = vi.fn((url) => {
+      if (url.includes("/availability")) return Promise.resolve(data);
+      if (url.includes("/mine")) return Promise.resolve({ items: [{
+        id: "uploaded-qr-booking",
+        status: "hold",
+        holdExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        totalPriceThb: 100,
+        promptPayPayload: "",
+        courtNames: ["สนาม 1"],
+        startAt: "2026-07-22T16:00:00+07:00",
+        endAt: "2026-07-22T17:00:00+07:00",
+      }] });
+      if (url.includes("/public-auth/me")) return Promise.resolve({ user: { name: "User" }, member: { name: "สมาชิก", phone: "0882250419" } });
+      return Promise.resolve({});
+    });
+    const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+    await vi.waitFor(() => expect(wrapper.text()).toContain("รายการจองที่กำลังดำเนินการ"));
+    const button = wrapper.get('[data-testid="active-booking-queues"]').findAll('button').find((item) => item.text().includes('แสดง QR'));
+    await button.trigger('click');
+    expect(wrapper.get('img[alt="QR PromptPay"]').attributes('src')).toBe('/api/public-booking/tenant-token/payment-qr-image?v=qr1');
+    wrapper.unmount();
+  });
+
   it("shows a toast and refreshes availability when hold creation loses the race", async () => {
     const apiRequest = apiMock({ holdError: true });
     const wrapper = mount(PublicBookingPage, {
@@ -385,4 +502,34 @@ describe("PublicBookingPage", () => {
     wrapper.unmount();
     vi.unstubAllGlobals();
   });
+
+	 it("explains that an SCB SlipOK 1010 response will be retried automatically", async () => {
+		 const baseApi = apiMock({
+			 queues: [{
+				 id: "batch-scb-retry",
+				 status: "hold",
+				 holdExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+				 totalPriceThb: 100,
+				 startAt: "2026-07-22T18:00:00+07:00",
+				 endAt: "2026-07-22T19:00:00+07:00",
+				 courtNames: ["สนาม 1"],
+				 promptPayPayload: "",
+			 }],
+		 });
+		 const apiRequest = vi.fn((url, options) => {
+			 if (url.includes("/slip/")) return Promise.resolve({ status: "pending_review", verificationStatus: "pending_retry" });
+			 return baseApi(url, options);
+		 });
+		 vi.stubGlobal("createImageBitmap", vi.fn(async () => ({ width: 640, height: 960, close: vi.fn() })));
+		 const wrapper = mount(PublicBookingPage, { props: { apiRequest, token: "tenant-token" } });
+		 await vi.waitFor(() => expect(wrapper.find('[data-testid="active-booking-queues"]').exists()).toBe(true));
+		 const reopenButton = wrapper.get('[data-testid="active-booking-queues"]').findAll("button").find((button) => button.text().includes("แสดง QR"));
+		 await reopenButton.trigger("click");
+		 const input = wrapper.get('input[type="file"]');
+		 Object.defineProperty(input.element, "files", { configurable: true, value: [new File(["slip"], "slip.png", { type: "image/png" })] });
+		 await input.trigger("change");
+		 await vi.waitFor(() => expect(wrapper.get('[data-testid="booking-toast"]').text()).toContain("ตรวจซ้ำอัตโนมัติประมาณ 2 นาที"));
+		 wrapper.unmount();
+		 vi.unstubAllGlobals();
+	 });
 });

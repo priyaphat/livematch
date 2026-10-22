@@ -154,6 +154,29 @@ test('POS-SALE-010 PromptPay API ล้มเหลวแล้วไม่ส�
   await expect(page.locator('#confirm-checkout-btn')).toBeDisabled();
 });
 
+test('POS-SALE-011 ปิด PromptPay แล้วล้างตะกร้าไม่เรียก QR ยอดศูนย์', async ({ page }) => {
+  const qrAmounts: number[] = [];
+  const badResponses: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().includes('/api/admin/pos/qr?')) {
+      qrAmounts.push(Number(new URL(request.url()).searchParams.get('amountSatang')));
+    }
+  });
+  page.on('response', (response) => {
+    if (response.url().includes('/api/admin/pos/qr?') && response.status() >= 400) badResponses.push(`${response.status()} ${response.url()}`);
+  });
+  await page.goto('/');
+  await page.locator('#pos-product-qa-product-coffee-a').click();
+  await page.locator('#pos-pay-btn').click();
+  await page.locator('#pay-method-promptpay-btn').click();
+  await expect.poll(() => qrAmounts.length).toBeGreaterThan(0);
+  await page.locator('#close-payment-modal-btn').click();
+  await page.locator('#clear-cart-btn').click();
+  await page.waitForTimeout(300);
+  expect(qrAmounts.every((amount) => amount > 0), `QR amounts: ${qrAmounts.join(', ')}`).toBeTruthy();
+  expect(badResponses).toEqual([]);
+});
+
 test('POS-CAT-007 @smoke Enter จากเครื่องยิง barcode ใน modal สินค้าไม่ submit form', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'จัดการสินค้า' }).click();
@@ -285,6 +308,7 @@ test('POS-PRINT-002 @smoke iMin Web Print พบ InnerPrinter และพิม
     Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 13; iMin D4) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
     (window as any).__printCalls = 0;
     (window as any).__iminCommands = [];
+    (window as any).__failIminBitmap = false;
     window.print = () => { (window as any).__printCalls += 1; };
 
     class MockIminWebSocket {
@@ -329,6 +353,116 @@ test('POS-PRINT-002 @smoke iMin Web Print พบ InnerPrinter และพิม
   await expect(page.locator('#imin-printer-status-message')).toContainText('พร้อมพิมพ์');
   await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toEqual(expect.arrayContaining([1, 2, 25, 12, 4, 5]));
   await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 12)?.data?.text || '')).toContain('ภาษาไทย');
+  await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
+});
+
+test('POS-PRINT-003 ใบเสร็จ Android ใช้ native text ที่เชื่อถือได้และไม่เปิด Android Print Dialog', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 13; iMin D4) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
+    (window as any).__printCalls = 0;
+    (window as any).__iminCommands = [];
+    window.print = () => { (window as any).__printCalls += 1; };
+    class MockIminWebSocket {
+      static OPEN = 1;
+      readonly OPEN = 1;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(public url: string) { window.setTimeout(() => { this.readyState = 1; this.onopen?.(new Event('open')); }, 0); }
+      send(payload: string) {
+        const command = JSON.parse(payload);
+        (window as any).__iminCommands.push(command);
+        if (command.type === 2) window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 2, data: { value: 0 } }) })), 0);
+      }
+      close() { this.readyState = 3; }
+    }
+    (window as any).WebSocket = MockIminWebSocket;
+  });
+
+  const api = await ownerApi();
+  const headers = await csrfHeaders(api);
+  const sale = await api.post('/api/admin/pos/sales', {
+    headers,
+    data: {
+      requestId: `qa-receipt-bitmap-${Date.now()}`,
+      action: 'pay',
+      buyerType: 'anonymous',
+      method: 'promptpay',
+      expectedTotalSatang: 4500,
+      referenceNumber: 'QA-RECEIPT-BITMAP',
+      items: [{ productId: 'qa-product-coffee-a', quantity: 1 }],
+    },
+  });
+  expect(sale.status(), await sale.text()).toBe(201);
+  await api.dispose();
+
+  await page.goto('/');
+  await page.locator('#nav-tab-dashboard').click();
+  await page.getByText('ดูใบเสร็จ ↗').first().click();
+  await expect(page.locator('#printable-receipt')).toContainText('ใบเสร็จรับเงิน');
+  await page.locator('#print-receipt-btn').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toContain(12);
+  expect(await page.evaluate(() => (window as any).__iminCommands.some((command: any) => command.type === 26))).toBeFalsy();
+  const printedText = await page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 12)?.data?.text || '');
+  expect(printedText).toContain('ใบเสร็จรับเงิน');
+  expect(printedText).toContain('QA-RECEIPT-BITMAP');
+  await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
+});
+
+test('POS-PRINT-004 @smoke WPOS I24D03 ใช้ native text และไม่ส่ง bitmap ที่ทำให้กระดาษเปล่า', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'userAgent', { configurable: true, get: () => 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 Chrome/125 Safari/537.36' });
+    Object.defineProperty(navigator, 'userAgentData', {
+      configurable: true,
+      value: { getHighEntropyValues: async () => ({ model: 'I24D03' }) },
+    });
+    (window as any).__printCalls = 0;
+    (window as any).__iminCommands = [];
+    window.print = () => { (window as any).__printCalls += 1; };
+    class MockWPOSWebSocket {
+      static OPEN = 1;
+      readonly OPEN = 1;
+      readyState = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      constructor(public url: string) { window.setTimeout(() => { this.readyState = 1; this.onopen?.(new Event('open')); }, 0); }
+      send(payload: string) {
+        const command = JSON.parse(payload);
+        (window as any).__iminCommands.push(command);
+        if (command.type === 2) window.setTimeout(() => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 2, data: { value: 0 } }) })), 0);
+      }
+      close() { this.readyState = 3; }
+    }
+    (window as any).WebSocket = MockWPOSWebSocket;
+  });
+
+  const api = await ownerApi();
+  const sale = await api.post('/api/admin/pos/sales', {
+    headers: await csrfHeaders(api),
+    data: {
+      requestId: `qa-receipt-wpos-${Date.now()}`,
+      action: 'pay',
+      buyerType: 'anonymous',
+      method: 'cash',
+      expectedTotalSatang: 4500,
+      cashReceivedSatang: 5000,
+      items: [{ productId: 'qa-product-coffee-a', quantity: 1 }],
+    },
+  });
+  expect(sale.status(), await sale.text()).toBe(201);
+  await api.dispose();
+
+  await page.goto('/');
+  await page.locator('#nav-tab-dashboard').click();
+  await page.getByText('ดูใบเสร็จ ↗').first().click();
+  await page.locator('#print-receipt-btn').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__iminCommands.map((command: any) => command.type))).toContain(12);
+  expect(await page.evaluate(() => (window as any).__iminCommands.some((command: any) => command.type === 26))).toBeFalsy();
+  expect(await page.evaluate(() => (window as any).__iminCommands.find((command: any) => command.type === 12)?.data?.text || '')).toContain('ใบเสร็จรับเงิน');
   await expect.poll(() => page.evaluate(() => (window as any).__printCalls)).toBe(0);
 });
 

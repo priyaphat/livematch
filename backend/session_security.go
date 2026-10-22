@@ -18,7 +18,7 @@ const (
 	publicSessionKind     authSessionKind = "public"
 	posStaffSessionKind   authSessionKind = "pos_staff"
 	sessionRotateAfter                    = 30 * time.Minute
-	sessionPreviousGrace                  = 30 * time.Second
+	sessionPreviousGrace                  = 5 * time.Minute
 )
 
 type authSessionConfig struct {
@@ -177,11 +177,9 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 	}
 	usingPrevious := hash == previousHash && hash != currentHash
 	if usingPrevious && (!previousUntil.Valid || !previousUntil.Time.After(now)) {
-		result.failure = "session_reuse_detected"
-		_, _ = tx.ExecContext(ctx, fmt.Sprintf(`update %s set revoked_at=now(),reuse_detected_at=now() where session_id=$1`, cfg.table), sessionID)
-		if err = tx.Commit(); err == nil {
-			a.insertActivityLog(ctx, string(kind), ownerID, "session_token_reuse_detected", "auth_session", sessionID, map[string]any{"sessionKind": kind})
-		}
+		// A delayed request from another browser tab can legitimately carry the
+		// previous cookie. Never revoke the current session based on that request.
+		result.failure = "session_token_stale"
 		return result
 	}
 	newIdle := now.Add(cfg.idle)
@@ -214,7 +212,9 @@ func (a *app) refreshRequestSessions(w http.ResponseWriter, r *http.Request) *ht
 		result := a.rotateAuthSession(r.Context(), kind, token)
 		if result.failure != "" {
 			failures[kind] = result.failure
-			clearSessionCookies(w, r, kind)
+			if result.failure != "session_token_stale" {
+				clearSessionCookies(w, r, kind)
+			}
 			continue
 		}
 		if result.newToken != "" {

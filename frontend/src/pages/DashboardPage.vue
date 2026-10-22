@@ -8,6 +8,7 @@ const props = defineProps([
   'state',
   'activePlayerCount',
   'totalRecordedMatches',
+  'pairingPatternSummary',
   'cancelledMatches',
   'averageGames',
   'minGames',
@@ -37,6 +38,8 @@ const outstandingCost = (player) => props.playerOutstandingCost ? props.playerOu
 
 const exportLoading = ref(false)
 const exportError = ref('')
+const playerReportPage = ref(1)
+const playerReportPageSize = ref(10)
 
 const shuttleBrandSummary = computed(() => {
   const counts = new Map()
@@ -61,6 +64,30 @@ const reportMatches = computed(() => [
   ...(props.state.live || []).map((match) => ({ ...match, reportPhase: 'live' })),
   ...completedMatches.value.map((match) => ({ ...match, reportPhase: 'history' }))
 ])
+const pairingPatternDefinitions = [
+  { id: 'pair_pair', name: 'คู่ พบ คู่', detail: 'ผู้เล่นมาเป็นคู่ทั้ง 2 ฝั่ง', tone: 'bg-court-500' },
+  { id: 'pair_two_singles', name: 'คู่และคนเดี่ยว', detail: '1 คู่ รวมกับผู้เล่นเดี่ยว 2 คน', tone: 'bg-sky-500' },
+  { id: 'four_singles', name: 'คนเดี่ยว 4 คน', detail: 'ผู้เล่นส่งชื่อแยกกันทั้งหมด', tone: 'bg-amber-500' },
+  { id: 'one_one', name: 'เกมเดี่ยว', detail: 'ผู้เล่นเดี่ยวพบกัน 2 คน', tone: 'bg-violet-500' },
+  { id: 'manual_four', name: 'สร้างทีม 4 คนเอง', detail: 'ผู้ดูแลจัดผู้เล่นทั้ง 2 ทีมเอง', tone: 'bg-rose-500' }
+]
+const pairingPatternReport = computed(() => {
+  const source = props.pairingPatternSummary && typeof props.pairingPatternSummary === 'object'
+    ? props.pairingPatternSummary
+    : [...(props.state.live || []), ...completedMatches.value].reduce((counts, match) => {
+        const pattern = pairingPatternDefinitions.some((item) => item.id === match.pairingPattern)
+          ? match.pairingPattern
+          : 'legacy_unknown'
+        counts[pattern] = (counts[pattern] || 0) + 1
+        return counts
+      }, {})
+  const total = pairingPatternDefinitions.reduce((sum, item) => sum + Number(source[item.id] || 0), 0)
+  return pairingPatternDefinitions.map((item) => {
+    const count = Number(source[item.id] || 0)
+    return { ...item, count, percent: total ? Math.round((count / total) * 100) : 0 }
+  })
+})
+const pairingPatternTotal = computed(() => pairingPatternReport.value.reduce((sum, item) => sum + item.count, 0))
 
 function matchDurationMinutes(match) {
   if (!match?.startedAt || !match?.endedAt) return 0
@@ -127,6 +154,18 @@ const levelReport = computed(() => {
 })
 const playerReport = computed(() => [...activePlayers.value]
   .sort((a, b) => Number(b.games || 0) - Number(a.games || 0) || String(a.name).localeCompare(String(b.name), 'th')))
+const playerReportTotalPages = computed(() => Math.max(1, Math.ceil(playerReport.value.length / playerReportPageSize.value)))
+const currentPlayerReportPage = computed(() => Math.min(playerReportPage.value, playerReportTotalPages.value))
+const paginatedPlayerReport = computed(() => {
+  const start = (currentPlayerReportPage.value - 1) * playerReportPageSize.value
+  return playerReport.value.slice(start, start + playerReportPageSize.value)
+})
+const playerReportFrom = computed(() => playerReport.value.length ? (currentPlayerReportPage.value - 1) * playerReportPageSize.value + 1 : 0)
+const playerReportTo = computed(() => Math.min(currentPlayerReportPage.value * playerReportPageSize.value, playerReport.value.length))
+
+function changePlayerReportPage(page) {
+  playerReportPage.value = Math.max(1, Math.min(Number(page) || 1, playerReportTotalPages.value))
+}
 const completedPercent = computed(() => {
   const decided = completedMatches.value.length + (props.cancelledMatches || []).length
   return decided ? Math.round((completedMatches.value.length / decided) * 100) : 0
@@ -292,6 +331,30 @@ async function exportExcel() {
         </article>
       </div>
 
+      <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5" data-testid="pairing-pattern-report">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p class="text-sm font-semibold text-stone-500">รูปแบบต้นทางของผู้เล่น</p>
+            <h3 class="mt-1 text-xl font-black">การจับคู่ที่เกิดขึ้น</h3>
+            <p class="mt-1 text-xs font-semibold text-stone-500">นับเกมกำลังแข่งและเกมที่จบแล้ว · ไม่รวมรอคิวและเกมยกเลิก</p>
+          </div>
+          <div class="flex items-center gap-2 rounded-md bg-paper-100 px-3 py-2 dark:bg-stone-800">
+            <Shuffle class="h-5 w-5 text-court-500" />
+            <span class="text-sm font-black">รวม {{ pairingPatternTotal }} เกม</span>
+          </div>
+        </div>
+        <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div v-for="item in pairingPatternReport" :key="item.id" class="rounded-md border border-stone-200 p-3 dark:border-stone-700" :data-testid="`pairing-pattern-${item.id}`">
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0"><p class="text-base font-black sm:text-lg">{{ item.name }}</p><p class="mt-0.5 text-xs font-semibold text-stone-500">{{ item.detail }}</p></div>
+              <span class="text-2xl font-black">{{ item.count }}</span>
+            </div>
+            <div class="mt-3 h-1.5 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800"><div class="h-full rounded-full" :class="item.tone" :style="{ width: `${item.percent}%` }" /></div>
+            <p class="mt-1 text-right text-xs font-bold text-stone-500">{{ item.percent }}%</p>
+          </div>
+        </div>
+      </article>
+
       <div class="grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
         <article class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:p-5">
           <div class="flex items-center justify-between gap-3">
@@ -439,9 +502,19 @@ async function exportExcel() {
     </div>
 
     <section class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900" aria-labelledby="player-report-title">
-      <div class="flex items-end justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700 sm:p-5">
+      <div class="flex flex-wrap items-end justify-between gap-3 border-b border-stone-200 p-4 dark:border-stone-700 sm:p-5">
         <div><p class="text-sm font-semibold text-stone-500">รายงานสมาชิก</p><h2 id="player-report-title" class="mt-1 text-xl font-black">ผลงานและสถานะชำระทั้งหมด</h2></div>
-        <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ playerReport.length }} คน</span>
+        <div class="flex items-center gap-2">
+          <label class="flex items-center gap-2 text-xs font-bold text-stone-500">
+            แสดง
+            <select v-model.number="playerReportPageSize" aria-label="จำนวนสมาชิกต่อหน้า" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-2 font-black text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100" @change="changePlayerReportPage(1)">
+              <option :value="10">10</option>
+              <option :value="20">20</option>
+              <option :value="50">50</option>
+            </select>
+          </label>
+          <span class="rounded-md bg-paper-100 px-3 py-1 text-sm font-black dark:bg-stone-800">{{ playerReport.length }} คน</span>
+        </div>
       </div>
       <div v-if="playerReport.length" class="overflow-x-auto">
         <table class="w-full min-w-[760px] text-left text-sm">
@@ -449,7 +522,7 @@ async function exportExcel() {
             <tr><th class="px-4 py-3">ผู้เล่น</th><th class="px-3 py-3">ระดับมือ</th><th class="px-3 py-3 text-center">เกม</th><th class="px-3 py-3 text-center">ชนะ</th><th class="px-3 py-3 text-center">เสมอ</th><th class="px-3 py-3 text-center">แพ้</th><th class="px-3 py-3 text-right">ค่าใช้จ่าย</th><th class="px-4 py-3 text-right">ชำระเงิน</th></tr>
           </thead>
           <tbody class="divide-y divide-stone-100 dark:divide-stone-800">
-            <tr v-for="player in playerReport" :key="player.id">
+            <tr v-for="player in paginatedPlayerReport" :key="player.id" data-testid="dashboard-player-report-row">
               <td class="px-4 py-3 font-black">{{ player.name }}</td>
               <td class="px-3 py-3 font-bold text-stone-500">{{ levelLabel(player.level) }}</td>
               <td class="px-3 py-3 text-center font-black">{{ player.games || 0 }}</td>
@@ -463,6 +536,14 @@ async function exportExcel() {
         </table>
       </div>
       <p v-else class="p-6 text-center text-sm font-bold text-stone-500">ยังไม่มีข้อมูลสมาชิกสำหรับรายงาน</p>
+      <footer v-if="playerReport.length" class="flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 px-4 py-3 text-sm dark:border-stone-700 sm:px-5" data-testid="dashboard-player-report-pagination">
+        <span class="font-semibold text-stone-500">แสดง {{ playerReportFrom }}–{{ playerReportTo }} จาก {{ playerReport.length }} คน</span>
+        <div class="flex items-center gap-2">
+          <button type="button" class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="currentPlayerReportPage <= 1" @click="changePlayerReportPage(currentPlayerReportPage - 1)">ก่อนหน้า</button>
+          <span class="min-w-20 text-center font-black">หน้า {{ currentPlayerReportPage }} / {{ playerReportTotalPages }}</span>
+          <button type="button" class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="currentPlayerReportPage >= playerReportTotalPages" @click="changePlayerReportPage(currentPlayerReportPage + 1)">ถัดไป</button>
+        </div>
+      </footer>
     </section>
   </section>
 </template>

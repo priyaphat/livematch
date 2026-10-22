@@ -23,6 +23,7 @@ export interface POSSaleItem {
   unitCostSatang: number;
   lineTotalSatang: number;
   note?: string;
+  stockTracked?: boolean;
 }
 
 export interface POSSale {
@@ -47,6 +48,9 @@ export interface POSSale {
   cashReceivedSatang?: number;
   changeSatang?: number;
   referenceNumber?: string;
+  stockLocation: 'primary' | 'secondary';
+  splitMode?: 'none' | 'equal';
+  splitCount?: number;
 }
 
 export interface POSSettingsRecord {
@@ -79,9 +83,14 @@ export interface POSSettingsRecord {
   effectivePromptPayIdMasked?: string;
   effectivePromptPaySource?: string;
   effectivePromptPayAvailable?: boolean;
+  secondaryStockEnabled: boolean;
+  primaryStockName: string;
+  secondaryStockName: string;
+  saleStockLocation: 'primary' | 'secondary';
 }
 
 export interface POSBillingSummary {
+  paymentId?: string;
   billingAccountId: string;
   memberId: string;
   displayName: string;
@@ -105,6 +114,9 @@ export interface POSReceivable {
   billingAccountId: string;
   memberId: string;
   displayName: string;
+  memberName?: string;
+  matchDisplayName?: string;
+  searchAliases?: string[];
   phone?: string;
   matchTotalSatang: number;
   posTotalSatang: number;
@@ -165,6 +177,8 @@ export function createPOSSale(input: {
   action: 'hold' | 'pay';
   buyerType: 'member' | 'anonymous';
   buyerId?: string;
+  buyerIds?: string[];
+  splitMode?: 'none' | 'equal';
   method?: 'cash' | 'promptpay';
   discountType: 'amount' | 'percent';
   discountAmountSatang: number;
@@ -172,6 +186,7 @@ export function createPOSSale(input: {
   expectedTotalSatang: number;
   cashReceivedSatang?: number;
   referenceNumber?: string;
+  replaceSaleIds?: string[];
   items: Array<{ productId: string; quantity: number; note?: string }>;
 }) {
   return posRequest<{ saleId: string; status: string; totalSatang: number; paymentId?: string; billingAccountId?: string }>('/api/admin/pos/sales', {
@@ -193,7 +208,7 @@ export function listPOSReceivables(search = '') {
 }
 
 export function listPOSPaymentHistory() {
-  return posRequest<{ items: POSPaymentHistory[] }>('/api/admin/pos/payment-history?page=1&pageSize=100').then((result) => result.items);
+  return posRequest<{ items: POSPaymentHistory[] }>('/api/admin/pos/payment-history?page=1&pageSize=20').then((result) => result.items);
 }
 
 export function listPOSPaymentHistoryPage(params: {
@@ -213,7 +228,7 @@ export function listPOSPaymentHistoryPage(params: {
   return posRequest<POSPaymentHistoryPage>(`/api/admin/pos/payment-history?${query.toString()}`);
 }
 
-export function settlePOSAccount(input: { billingAccountId: string; method: 'cash' | 'promptpay'; expectedTotalSatang: number; cashReceivedSatang?: number; referenceNumber?: string }) {
+export function settlePOSAccount(input: { billingAccountId: string; method: 'cash' | 'promptpay'; expectedTotalSatang: number; cashReceivedSatang?: number; referenceNumber?: string; discountType?: 'amount' | 'percent'; discountAmountSatang?: number; discountRateBps?: number }) {
   return posRequest<{ status: string; summary: POSBillingSummary }>('/api/admin/pos/settlements', { method: 'POST', body: JSON.stringify(input) });
 }
 
@@ -221,7 +236,7 @@ export function getPOSSettings() {
   return posRequest<POSSettingsRecord>('/api/admin/pos/settings');
 }
 
-export function savePOSSettings(input: POSSettingsRecord) {
+export function savePOSSettings(input: Partial<POSSettingsRecord>) {
   return posRequest<unknown>('/api/admin/pos/settings', { method: 'PUT', body: JSON.stringify(input) });
 }
 

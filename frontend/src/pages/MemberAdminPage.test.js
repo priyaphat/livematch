@@ -58,4 +58,23 @@ describe('MemberAdminPage', () => {
     const call = apiRequest.mock.calls.find(([url]) => url === '/api/admin/members/bulk-membership')
     expect(JSON.parse(call[1].body)).toEqual({ updates: [{ id: 'm1', memberTypeId: 'club-id' }] })
   })
+
+  it('shows shuttle counts and paid line-item details in member history', async () => {
+    const apiRequest = vi.fn((url) => {
+      if (String(url).startsWith('/api/admin/members/m1?')) return Promise.resolve({
+        member: { id: 'm1', name: 'สมาชิกหนึ่ง', phone: '0812345678', active: true }, bookings: [], players: [],
+        payments: [{ kind: 'match', id: '11', amountThb: 85, status: 'paid', createdAt: '01/09/2026 20:00', detailItems: [{ label: 'ค่าลูกแบด Yonex', quantity: 1, amountSatang: 8500 }] }],
+        matches: [{ sessionName: 'สนามเย็น', matchId: 7, court: '1', startedAt: '19:00', endedAt: '19:30', status: 'finished', shuttles: 2 }],
+        pagination: { bookings: { total: 0 }, payments: { total: 1 }, matches: { total: 1 } },
+      })
+      if (url === '/api/admin/member-types') return Promise.resolve({ items: [] })
+      return Promise.resolve({ items: [{ id: 'm1', name: 'สมาชิกหนึ่ง', phone: '0812345678', active: true }], total: 1, page: 1 })
+    })
+    const wrapper = mount(MemberAdminPage, { props: { apiRequest, auth: {} } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('สมาชิกหนึ่ง'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ดูข้อมูล')).trigger('click')
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ลูกแบด 2 ลูก'))
+    await wrapper.findAll('button').find((button) => button.text() === 'ดูเพิ่มเติม').trigger('click')
+    expect(wrapper.text()).toContain('ค่าลูกแบด Yonex')
+  })
 })

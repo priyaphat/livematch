@@ -48,6 +48,7 @@ import AuthPage from './pages/AuthPage.vue'
 import BackofficePage from './pages/BackofficePage.vue'
 import { installDomTranslator, language, levelText, t, toggleLanguage } from './i18n'
 import { persistPublicTheme, persistTheme, readStoredPublicTheme, readStoredTheme } from './theme'
+import { collectIdleWaitAlerts } from './idleWaitAlerts'
 const AdminSupervisorPage = defineAsyncComponent(() => import('./pages/AdminSupervisorPage.vue'))
 const DashboardPage = defineAsyncComponent(() => import('./pages/DashboardPage.vue'))
 const HistoryPage = defineAsyncComponent(() => import('./pages/HistoryPage.vue'))
@@ -80,7 +81,6 @@ function bookingBlockSurfaceToken() {
 	return ''
 }
 const isBookingBlockSurface = () => Boolean(bookingBlockSurfaceToken())
-const bookingBlockStorageKey = () => `livematch_booking_block:${bookingBlockSurfaceToken() || 'none'}`
 const adminNavigationKey = 'livematch_admin_navigation'
 const restorableAdminTabs = new Set(['dashboard', 'players', 'livematch', 'queue', 'liveboard', 'history', 'settings', 'liveShareHours', 'help'])
 const defaultAnnouncementTemplate = 'บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}'
@@ -152,6 +152,7 @@ const mobileTabs = computed(() => adminTabs.value)
 const currentTab = computed(() => tabs.value.find((tab) => tab.id === state.tab) || tabs.value[0])
 
 const state = reactive({
+  version: 0,
   tab: 'home',
   theme: isPublicBookingSurface ? readStoredPublicTheme() : readStoredTheme(),
   session: {
@@ -187,6 +188,8 @@ const state = reactive({
     showWaitTimePlayers: true,
     showWaitTimePairing: true,
     showWaitTimeQueue: true,
+    idleWaitAlertEnabled: true,
+    matchStartAnimationEnabled: true,
     resetPlayersAfterFinish: true,
     startMatchWithShuttle: true,
     announcementTemplate: defaultAnnouncementTemplate,
@@ -221,6 +224,12 @@ const state = reactive({
   history: [
     { id: 49, court: '2', level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4, shuttles: 2, winner: 'A', shuttleSequence: '1-2', startedAt: '18:50', endedAt: '19:08', note: 'เกมแรก' }
   ],
+  historyView: {
+    items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: ''
+  },
+  queueAnnouncement: { sequence: 0, matchId: 0, court: '', announcedAt: '' },
+  dashboardSummary: null,
+  shuttleStockAvailability: [],
   liveShare: {
     courtHours: {},
     playerHours: {},
@@ -274,7 +283,17 @@ const forms = reactive({
   backofficeTab: 'overview',
   backofficeOverviewTab: 'system',
   backofficeSummary: null,
+  backofficeAdminsSearch: '',
+  backofficeAdminsPage: 1,
+  backofficeAdminsPageSize: 20,
+  backofficeAdminsPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+  backofficeAdminOptions: [],
+  backofficeSlipOKLogsUserSearch: '',
+  backofficeActivityUserSearch: '',
   backofficeAdminDetail: null,
+  backofficeAdminSlipOKMonth: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit' }).slice(0, 7),
+  backofficeAdminSlipOKUsage: null,
+  backofficeAdminSlipOKLoading: false,
   backofficeDiscountPercent: 0,
   backofficeSubscriptionId: '',
   backofficeSubscriptionStartDate: '',
@@ -326,6 +345,14 @@ const forms = reactive({
   backofficeActivitySessionId: '',
   backofficeActivitySessionOptions: [],
   backofficeActivityPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+  backofficeSlipOKLogs: [],
+  backofficeSlipOKLogsPage: 1,
+  backofficeSlipOKLogsPageSize: 20,
+  backofficeSlipOKLogsUserId: '',
+  backofficeSlipOKLogsSystem: '',
+  backofficeSlipOKLogsStatus: '',
+  backofficeSlipOKLogsSearch: '',
+  backofficeSlipOKLogsPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
   backofficeSupportIssues: [],
   backofficeSupportIssueDetail: null,
   backofficeSupportStatus: '',
@@ -444,7 +471,8 @@ watch(
 const backoffice = reactive({
   isPage: window.location.pathname === '/backoffice' || window.location.pathname === '/supervisor',
   unlocked: false,
-  loading: false
+  loading: false,
+  loaded: {}
 })
 const verifyEmail = reactive({
   isPage: window.location.pathname === '/verify-email',
@@ -454,8 +482,12 @@ const verifyEmail = reactive({
 const selectedLiveId = ref(null)
 const bookingBlock = reactive({ blockedUntil: '', targets: [], deadlineMs: 0, surfaceToken: '', now: Date.now() })
 let toastTimer = null
+let idleWaitAlertTimer = null
+const idleReminderQueue = []
 let sharedRefreshTimer = null
 let sharedRefreshInterval = 0
+let sharedAnnouncementRefreshTimer = null
+let sharedAnnouncementRefreshing = false
 let bookingBlockTimer = null
 let billingSyncTimer = null
 const terminalSessionCodes = new Set([
@@ -504,7 +536,20 @@ function showToast(message, type = 'error') {
   toastTimer = window.setTimeout(() => {
     ui.toast = null
     toastTimer = null
+    showNextIdleReminder()
   }, 4200)
+}
+
+function showNextIdleReminder() {
+  if (ui.toast || !idleReminderQueue.length) return
+  const reminder = idleReminderQueue.shift()
+  showToast(reminder, 'idle-warning')
+}
+
+function enqueueIdleReminder(message) {
+  if (!message || idleReminderQueue.includes(message) || ui.toast?.message === message) return
+  idleReminderQueue.push(message)
+  showNextIdleReminder()
 }
 
 function closeToast() {
@@ -513,18 +558,24 @@ function closeToast() {
     window.clearTimeout(toastTimer)
     toastTimer = null
   }
+  window.setTimeout(showNextIdleReminder, 0)
 }
 
 async function api(path, options = {}) {
+  const { __staleRetried = false, ...fetchOptions } = options
   const isFormData = options.body instanceof FormData
   const csrfToken = document.cookie.split('; ').find((item) => item.startsWith('livematch_csrf='))?.split('=').slice(1).join('=') || ''
+  const method = String(options.method || 'GET').toUpperCase()
+  const isSessionMutation = method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS' && path.startsWith('/api/sessions/')
   const response = await fetch(`${apiUrl}${path}`, {
-    ...options,
+    ...fetchOptions,
+    cache: fetchOptions.cache || 'no-store',
     credentials: 'include',
     headers: {
       ...(!isFormData ? { 'Content-Type': 'application/json' } : {}),
       'Accept': 'application/json',
       ...(csrfToken ? { 'X-CSRF-Token': decodeURIComponent(csrfToken) } : {}),
+      ...(isSessionMutation && Number.isFinite(Number(state.version)) ? { 'X-Session-Version': String(Number(state.version)) } : {}),
       ...(options.headers || {})
     }
   })
@@ -535,11 +586,18 @@ async function api(path, options = {}) {
     requestError.retryAfter = Number(response.headers?.get?.('Retry-After') || 0)
     requestError.code = error.code || error.error || ''
     requestError.payload = error
+    if (requestError.code === 'session_token_stale' && (method === 'GET' || method === 'HEAD') && !__staleRetried) {
+      return api(path, { ...options, __staleRetried: true })
+    }
     if (requestError.code === 'booking_blacklisted') {
       window.dispatchEvent(new CustomEvent('livematch:booking-blocked', { detail: error }))
     }
     if (terminalSessionCodes.has(requestError.code)) {
       window.dispatchEvent(new CustomEvent('livematch:session-ended', { detail: { code: requestError.code } }))
+    }
+    if (requestError.code === 'SESSION_VERSION_CONFLICT') {
+      showToast('ข้อมูล Session ถูกแก้ไขจากแท็บอื่น ระบบกำลังโหลดข้อมูลล่าสุด')
+      Promise.resolve().then(() => reloadAdminTab(state.tab)).catch(() => {})
     }
     throw requestError
   }
@@ -563,9 +621,11 @@ function applyServerState(nextState) {
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
   }
+  Promise.resolve().then(checkIdleWaitAlerts)
 }
 
 function mergeSessionPatch(patch = {}) {
+  if (patch.version !== undefined) state.version = Number(patch.version || 0)
   if (Array.isArray(patch.players)) state.players = patch.players
   if (Array.isArray(patch.couples)) state.couples = patch.couples
   if (Array.isArray(patch.returnedShuttles)) state.returnedShuttles = patch.returnedShuttles
@@ -573,13 +633,17 @@ function mergeSessionPatch(patch = {}) {
   if (Array.isArray(patch.queue)) state.queue = patch.queue
   if (Array.isArray(patch.live)) state.live = patch.live
   if (Array.isArray(patch.history)) state.history = patch.history
+  if (patch.queueAnnouncement) state.queueAnnouncement = patch.queueAnnouncement
   if (patch.liveShare) state.liveShare = patch.liveShare
   if (patch.settings) state.settings = patch.settings
   if (Array.isArray(patch.memberTypes)) state.memberTypes = patch.memberTypes
+  if (Array.isArray(patch.shuttleStockAvailability)) state.shuttleStockAvailability = patch.shuttleStockAvailability
+  if (patch.summary) state.dashboardSummary = patch.summary
   normalizeClientSettings()
   if (state.players.length && !state.players.some((player) => player.id === forms.selectedPlayerId)) {
     forms.selectedPlayerId = state.players[0].id
   }
+  Promise.resolve().then(checkIdleWaitAlerts)
 }
 
 function normalizeClientSettings() {
@@ -593,14 +657,16 @@ function normalizeClientSettings() {
     state.settings.clubEntryFee = state.settings.entryFee || 0
   }
   if (!Array.isArray(state.settings.shuttleBrands) || !state.settings.shuttleBrands.length) {
-    state.settings.shuttleBrands = [{ id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), active: true }]
+    state.settings.shuttleBrands = [{ id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), priceSatang: Number(state.settings.shuttleFee || 0) * 100, active: true }]
   }
+  state.settings.shuttleBrands = state.settings.shuttleBrands.map((brand) => ({ ...brand, priceSatang: brand.priceSatang == null ? Math.round(Number(brand.price || 0) * 100) : Math.max(0, Number(brand.priceSatang || 0)) }))
   if (!activeShuttleBrands().length) {
     state.settings.shuttleBrands[0].active = true
   }
   state.settings.shuttleFee = Number(state.settings.shuttleBrands[0]?.price || state.settings.shuttleFee || 0)
   for (const player of state.players || []) {
     if (player.clubMember === undefined) player.clubMember = false
+    if (player.libero === undefined) player.libero = false
   }
   if (!state.settings.memberEntryFees || typeof state.settings.memberEntryFees !== 'object') state.settings.memberEntryFees = {}
   for (const memberType of state.memberTypes || []) {
@@ -630,6 +696,8 @@ function normalizeClientSettings() {
   if (state.settings.showWaitTimePlayers === undefined) state.settings.showWaitTimePlayers = true
   if (state.settings.showWaitTimePairing === undefined) state.settings.showWaitTimePairing = true
   if (state.settings.showWaitTimeQueue === undefined) state.settings.showWaitTimeQueue = true
+  if (state.settings.matchStartAnimationEnabled === undefined) state.settings.matchStartAnimationEnabled = true
+  if (state.settings.idleWaitAlertEnabled === undefined) state.settings.idleWaitAlertEnabled = true
   if (!String(state.settings.announcementTemplate || '').trim()) {
     state.settings.announcementTemplate = defaultAnnouncementTemplate
   }
@@ -647,23 +715,33 @@ function normalizeClientSettings() {
   }
 }
 
+let operationalContextSessionId = ''
+async function ensureOperationalContext() {
+  if (operationalContextSessionId === state.session.id) return
+  mergeSessionPatch(await api(`/api/sessions/${state.session.id}/dashboard`))
+  operationalContextSessionId = state.session.id
+}
+
 async function reloadAdminTab(tabId) {
   if (!state.session.id || !state.session.unlocked) return
   switch (tabId) {
   case 'dashboard': {
     const payload = await api(`/api/sessions/${state.session.id}/dashboard`)
     mergeSessionPatch(payload)
+    operationalContextSessionId = state.session.id
     break
   }
   case 'players': {
-    const payload = await api(`/api/sessions/${state.session.id}/players?all=1`)
+    await ensureOperationalContext()
+    const payload = await api(`/api/sessions/${state.session.id}/players?page=1&pageSize=100`)
     mergeSessionPatch({ players: payload.items || [] })
     break
   }
   case 'livematch': {
+    await ensureOperationalContext()
     const [couponsPayload, couplesPayload, queuePayload] = await Promise.all([
-      api(`/api/sessions/${state.session.id}/coupons?all=1`),
-      api(`/api/sessions/${state.session.id}/couples?all=1`),
+      api(`/api/sessions/${state.session.id}/coupons?page=1&pageSize=100&includeNotReady=1`),
+      api(`/api/sessions/${state.session.id}/couples?page=1&pageSize=100`),
       api(`/api/sessions/${state.session.id}/queue`)
     ])
     void couponsPayload
@@ -671,18 +749,22 @@ async function reloadAdminTab(tabId) {
     break
   }
   case 'queue':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/queue`))
     break
   case 'liveboard':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/live`))
     break
   case 'history':
-    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/history`))
+    await loadMatchHistory(state.historyView.page || 1, state.historyView.search || '')
     break
   case 'settings':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/settings`))
     break
   case 'liveShareHours':
+    await ensureOperationalContext()
     mergeSessionPatch(await api(`/api/sessions/${state.session.id}/live-share-hours`))
     break
   default:
@@ -709,6 +791,43 @@ async function selectAdminTab(tabId) {
   }
 }
 
+let matchHistoryRequest = 0
+async function loadMatchHistory(page = 1, search = state.historyView.search || '') {
+  if (!state.session.id || !state.session.unlocked) return
+  const request = ++matchHistoryRequest
+  const normalizedSearch = String(search || '').trim()
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(Math.max(1, Math.min(100, Number(state.historyView.pageSize || 20))))
+  })
+  if (normalizedSearch) params.set('search', normalizedSearch)
+  const payload = await api(`/api/sessions/${state.session.id}/history?${params}`)
+  if (request !== matchHistoryRequest) return
+  if (Array.isArray(payload.players)) mergeSessionPatch({ players: payload.players })
+  const pagination = payload.pagination || {}
+  state.historyView = {
+    items: payload.history || [],
+    page: Number(pagination.page || payload.page || 1),
+    pageSize: Number(pagination.pageSize || payload.pageSize || state.historyView.pageSize || 20),
+    total: Number(pagination.total ?? payload.total ?? 0),
+    totalPages: Number(pagination.totalPages || 0),
+    search: normalizedSearch
+  }
+  for (const match of state.historyView.items) normalizeMatchShuttleItems(match)
+}
+
+async function loadBackofficeBootstrap(options = {}) {
+  try {
+    return await api('/api/backoffice/bootstrap', options)
+  } catch (error) {
+    // A cached/new frontend can briefly run against the previous backend during
+    // a rolling deployment. Only a missing endpoint is safe to fall back from;
+    // authentication and server errors must remain visible to the operator.
+    if (error?.status !== 404) throw error
+    return api('/api/backoffice/summary', options)
+  }
+}
+
 async function refreshMatchBilling() {
   if (!auth.user || !state.session.unlocked || !state.session.id || state.session.id === 'demo-session' || document.visibilityState !== 'visible') return
   try {
@@ -728,8 +847,42 @@ async function refreshMatchBilling() {
   }
 }
 
+function idleAlertStorageKey(player) {
+  return `livematch:idle-wait:${state.session.id}:${player.id}`
+}
+
+function checkIdleWaitAlerts() {
+  const enabled = state.session.unlocked
+    && state.session.type === 'liveMatch'
+    && state.tab !== 'home'
+    && !adminFeaturePage
+    && !backoffice.isPage
+    && !share.isPublic
+    && !isSessionReadOnly.value
+    && state.settings.idleWaitAlertEnabled !== false
+    && document.visibilityState === 'visible'
+  if (!enabled) {
+    idleReminderQueue.splice(0)
+    return
+  }
+  for (const { player, threshold, signature } of collectIdleWaitAlerts(state)) {
+    const storageKey = idleAlertStorageKey(player)
+    try {
+      if (window.localStorage.getItem(storageKey) === signature) continue
+      window.localStorage.setItem(storageKey, signature)
+    } catch {
+      if (player.__idleWaitAlertSignature === signature) continue
+      player.__idleWaitAlertSignature = signature
+    }
+    enqueueIdleReminder(`${player.name} ยังไม่ได้เล่นมา ${threshold} นาทีแล้ว`)
+  }
+}
+
 function refreshMatchBillingOnFocus() {
-  if (document.visibilityState === 'visible') void refreshMatchBilling()
+  if (document.visibilityState === 'visible') {
+    void refreshMatchBilling()
+    checkIdleWaitAlerts()
+  }
 }
 
 onMounted(() => {
@@ -739,17 +892,13 @@ onMounted(() => {
 	window.addEventListener('focus', refreshMatchBillingOnFocus)
 	document.addEventListener('visibilitychange', refreshMatchBillingOnFocus)
 	billingSyncTimer = window.setInterval(refreshMatchBillingOnFocus, 10_000)
-	try {
-		const saved = JSON.parse(localStorage.getItem(bookingBlockStorageKey()) || 'null')
-		if (isBookingBlockSurface() && Number(saved?.deadlineMs) > Date.now()) Object.assign(bookingBlock, saved, { surfaceToken: bookingBlockSurfaceToken() })
-	} catch { /* Ignore invalid local state. */ }
+	idleWaitAlertTimer = window.setInterval(checkIdleWaitAlerts, 60_000)
 	bookingBlockTimer = window.setInterval(() => {
 		bookingBlock.now = Date.now()
 		if (isBookingBlockSurface() && bookingBlock.deadlineMs && bookingBlock.deadlineMs <= bookingBlock.now) {
 			bookingBlock.blockedUntil = ''
 			bookingBlock.targets = []
 			bookingBlock.deadlineMs = 0
-			localStorage.removeItem(bookingBlockStorageKey())
 			window.location.reload()
 		}
 	}, 1000)
@@ -801,6 +950,7 @@ onUnmounted(() => {
 	window.removeEventListener('focus', refreshMatchBillingOnFocus)
 	document.removeEventListener('visibilitychange', refreshMatchBillingOnFocus)
 	if (billingSyncTimer) window.clearInterval(billingSyncTimer)
+	if (idleWaitAlertTimer) window.clearInterval(idleWaitAlertTimer)
 	if (bookingBlockTimer) window.clearInterval(bookingBlockTimer)
   stopSharedRefresh()
   stopAnnouncementAudio()
@@ -821,7 +971,15 @@ function handleBookingBlocked(event) {
 		const parsedUntil = Date.parse(bookingBlock.blockedUntil)
 		bookingBlock.deadlineMs = Number.isFinite(parsedUntil) ? parsedUntil : 0
 	}
-	try { localStorage.setItem(bookingBlockStorageKey(), JSON.stringify({ blockedUntil: bookingBlock.blockedUntil, targets: bookingBlock.targets, deadlineMs: bookingBlock.deadlineMs })) } catch { /* Backend remains authoritative. */ }
+}
+
+async function leaveBlockedBookingAccount() {
+	try { await api('/api/public-auth/logout', { method: 'POST' }) } catch { /* A fresh load still checks the server. */ }
+	bookingBlock.blockedUntil = ''
+	bookingBlock.targets = []
+	bookingBlock.deadlineMs = 0
+	bookingBlock.surfaceToken = ''
+	window.location.reload()
 }
 
 const bookingBlockRemaining = computed(() => Math.max(0, Math.ceil((bookingBlock.deadlineMs - bookingBlock.now) / 1000)))
@@ -948,12 +1106,22 @@ async function resetPassword() {
 
 async function openOwnedSession(sessionId, requestedTab = 'dashboard') {
   try {
-    const nextState = await api(`/api/sessions/${sessionId}/dashboard?open=1`)
-    mergeSessionPatch(nextState)
-    const fullState = await api(`/api/sessions/${sessionId}/state`)
-    applyServerState(fullState)
+    operationalContextSessionId = ''
+    const bootstrap = await api(`/api/sessions/${sessionId}/bootstrap?open=1`)
+    state.players = []
+    state.couples = []
+    state.returnedShuttles = []
+    state.pending = []
+    state.queue = []
+    state.live = []
+    state.history = []
+    state.dashboardSummary = null
+    state.historyView = { items: [], page: 1, pageSize: 20, total: 0, totalPages: 0, search: '' }
+    if (bootstrap.session) state.session = bootstrap.session
+    mergeSessionPatch(bootstrap)
     state.session.unlocked = true
     state.tab = restorableAdminTabs.has(requestedTab) ? requestedTab : 'dashboard'
+    await reloadAdminTab(state.tab)
     persistAdminNavigation(sessionId, state.tab)
     if (state.session.readOnly || state.session.expired) {
       showToast(sessionReadOnlyMessage.value, 'info')
@@ -963,11 +1131,19 @@ async function openOwnedSession(sessionId, requestedTab = 'dashboard') {
   }
 }
 
-async function refreshAdminSupervisor() {
+async function refreshAdminSupervisor(filter = {}) {
   try {
-    applyAdminPayload(await api('/api/admin/supervisor'))
+    const params = new URLSearchParams()
+    if (filter?.period && filter.period !== 'all') params.set('period', filter.period)
+    if (filter?.period === 'custom') {
+      params.set('startDate', filter.startDate || '')
+      params.set('endDate', filter.endDate || '')
+    }
+    applyAdminPayload(await api(`/api/admin/supervisor${params.size ? `?${params.toString()}` : ''}`))
+    return true
   } catch (error) {
     showToast(error.message || 'โหลด dashboard admin ไม่สำเร็จ')
+    return false
   }
 }
 
@@ -982,11 +1158,10 @@ async function restoreBackoffice() {
   forms.backofficeError = ''
   backoffice.loading = true
   try {
-    forms.backofficeSummary = await api('/api/backoffice/summary')
+    forms.backofficeSummary = await loadBackofficeBootstrap()
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
-    syncBackofficeCoinShopForms()
-    await Promise.all([loadBackofficeCoinOrders(), loadBackofficeCoinLedger(), loadBackofficeActivityLogs(), loadBackofficeSupportIssues()])
+    backoffice.loaded = { system: true }
     backoffice.unlocked = true
   } catch (error) {
     backoffice.unlocked = false
@@ -1000,18 +1175,12 @@ async function loadBackoffice() {
   forms.backofficeError = ''
   backoffice.loading = true
   try {
-  forms.backofficeSummary = await api('/api/backoffice/summary', {
+    forms.backofficeSummary = await loadBackofficeBootstrap({
       headers: backofficeAuthHeaders()
     })
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
-    syncBackofficeCoinShopForms()
-    await Promise.all([
-      loadBackofficeCoinOrders(),
-      loadBackofficeCoinLedger(),
-      loadBackofficeActivityLogs(),
-      loadBackofficeSupportIssues()
-    ])
+    backoffice.loaded = { system: true }
     backoffice.unlocked = true
     forms.backofficePassword = ''
   } catch (error) {
@@ -1131,8 +1300,32 @@ async function openBackofficeAdminDetail(adminId) {
       headers: backofficeAuthHeaders()
     }))
     ui.showBackofficeAdminModal = true
+    forms.backofficeAdminSlipOKMonth = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit' }).slice(0, 7)
+    forms.backofficeAdminSlipOKUsage = null
+    void loadBackofficeAdminSlipOKUsage(forms.backofficeAdminSlipOKMonth, true)
   } catch (error) {
     forms.backofficeError = error.message || 'โหลดรายละเอียด admin ไม่สำเร็จ'
+  }
+}
+
+let backofficeAdminSlipOKRequest = 0
+async function loadBackofficeAdminSlipOKUsage(month = forms.backofficeAdminSlipOKMonth, includeProvider = false) {
+  const adminId = forms.backofficeAdminDetail?.user?.id
+  if (!adminId) return
+  const request = ++backofficeAdminSlipOKRequest
+  forms.backofficeAdminSlipOKLoading = true
+  try {
+    const params = new URLSearchParams({ month: String(month || '') })
+    params.set('includeProvider', includeProvider ? '1' : '0')
+    const payload = await api(`/api/backoffice/admins/${adminId}/slipok-usage?${params}`, { headers: backofficeAuthHeaders() })
+    if (request !== backofficeAdminSlipOKRequest || forms.backofficeAdminDetail?.user?.id !== adminId) return
+    const previousProvider = forms.backofficeAdminSlipOKUsage?.provider
+    forms.backofficeAdminSlipOKUsage = { ...payload, provider: payload.provider ?? previousProvider }
+    forms.backofficeAdminSlipOKMonth = payload.month || month
+  } catch (error) {
+    if (request === backofficeAdminSlipOKRequest) showToast(error.message || 'โหลดการใช้งาน Auto Slip ไม่สำเร็จ')
+  } finally {
+    if (request === backofficeAdminSlipOKRequest) forms.backofficeAdminSlipOKLoading = false
   }
 }
 
@@ -1188,7 +1381,7 @@ function applyBackofficeAdminDetail(payload) {
   const summaryUser = forms.backofficeSummary?.users?.find((item) => item.id === userId)
   if (summaryUser) {
     summaryUser.coins = Number(payload?.user?.coins || 0)
-    summaryUser.sessions = Array.isArray(payload?.sessions) ? payload.sessions.length : summaryUser.sessions
+    summaryUser.sessions = Number(payload?.sessionPagination?.total ?? (Array.isArray(payload?.sessions) ? payload.sessions.length : summaryUser.sessions))
     summaryUser.discountPercent = Number(payload?.benefits?.discountPercent || 0)
     summaryUser.subscription = payload?.benefits?.subscription || null
   }
@@ -1279,7 +1472,7 @@ async function saveBackofficeSettings() {
 	forms.backofficeError = ''
 	forms.backofficeSettingsSaving = true
 	try {
-    forms.backofficeSummary = await api('/api/backoffice/settings', {
+    const payload = await api('/api/backoffice/settings', {
       method: 'PUT',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
@@ -1287,6 +1480,7 @@ async function saveBackofficeSettings() {
         liveShareSessionCost: Number(forms.backofficeLiveShareCost)
       })
 		})
+    mergeBackofficeSummary(payload)
 		showToast('บันทึกราคา Session แล้ว', 'success')
 	} catch (error) {
 		forms.backofficeError = error.message || 'บันทึกราคา coin ไม่สำเร็จ'
@@ -1296,12 +1490,122 @@ async function saveBackofficeSettings() {
 	}
 }
 
+function mergeBackofficeSummary(payload) {
+  forms.backofficeSummary = { ...(forms.backofficeSummary || {}), ...(payload || {}) }
+}
+
+async function loadBackofficeSection(name, force = false) {
+  if (!force && backoffice.loaded[name]) return
+  if (name === 'integrations' || name === 'promotions') {
+    mergeBackofficeSummary(await api(`/api/backoffice/section?name=${name}`, { headers: backofficeAuthHeaders() }))
+    syncBackofficeCoinShopForms()
+  } else if (name === 'orders') {
+    await Promise.all([loadBackofficeCoinOrders(1), loadBackofficeCoinLedger(1)])
+  } else if (name === 'members') {
+    await loadBackofficeAdmins(1)
+  } else if (name === 'support') {
+    await loadBackofficeSupportIssues(1)
+  } else if (name === 'slipok_logs') {
+    await Promise.all([loadBackofficeSlipOKLogs(1), loadBackofficeAdminOptions()])
+  } else if (name === 'activity') {
+    await Promise.all([loadBackofficeActivityLogs(1), loadBackofficeAdminOptions()])
+  }
+  backoffice.loaded[name] = true
+}
+
+async function selectBackofficeTab(tabId) {
+  forms.backofficeTab = tabId
+  try {
+    await loadBackofficeSection(tabId)
+  } catch (error) {
+    showToast(error.message || 'โหลดข้อมูลแท็บไม่สำเร็จ')
+  }
+}
+
+async function loadBackofficeAdminDetailPage(section, page = 1) {
+  const detail = forms.backofficeAdminDetail
+  const adminId = detail?.user?.id
+  const sections = ['session', 'order', 'ledger']
+  if (!adminId || !sections.includes(section)) return
+  const params = new URLSearchParams()
+  for (const key of sections) {
+    const pagination = detail?.[`${key}Pagination`] || {}
+    params.set(`${key}Page`, String(key === section ? Math.max(1, Number(page || 1)) : Math.max(1, Number(pagination.page || 1))))
+    params.set(`${key}PageSize`, String(Math.max(5, Number(pagination.pageSize || 10))))
+  }
+  try {
+    applyBackofficeAdminDetail(await api(`/api/backoffice/admins/${adminId}?${params}`, {
+      headers: backofficeAuthHeaders()
+    }))
+  } catch (error) {
+    showToast(error.message || 'โหลดหน้ารายละเอียด admin ไม่สำเร็จ')
+  }
+}
+
+async function selectBackofficeOverviewTab(tabId) {
+  forms.backofficeOverviewTab = tabId
+  if (tabId === 'system' || tabId === 'coins') return
+  try {
+    await loadBackofficeSection(tabId)
+  } catch (error) {
+    showToast(error.message || 'โหลดข้อมูลการเชื่อมต่อไม่สำเร็จ')
+  }
+}
+
+async function loadBackofficeAdmins(page = forms.backofficeAdminsPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeAdminsPageSize)
+  })
+  if (forms.backofficeAdminsSearch.trim()) params.set('search', forms.backofficeAdminsSearch.trim())
+  const payload = await api(`/api/backoffice/admins?${params}`, { headers: backofficeAuthHeaders() })
+  mergeBackofficeSummary({ users: payload.users || [] })
+  forms.backofficeAdminsPagination = payload.pagination || { page: 1, pageSize: forms.backofficeAdminsPageSize, total: 0, totalPages: 0 }
+  forms.backofficeAdminsPage = forms.backofficeAdminsPagination.page || 1
+}
+
+let backofficeAdminOptionsRequest = 0
+async function loadBackofficeAdminOptions(search = '') {
+  const request = ++backofficeAdminOptionsRequest
+  const params = new URLSearchParams({ limit: '50' })
+  if (String(search).trim()) params.set('search', String(search).trim())
+  const payload = await api(`/api/backoffice/admin-options?${params}`, { headers: backofficeAuthHeaders() })
+  if (request !== backofficeAdminOptionsRequest) return
+  forms.backofficeAdminOptions = payload.items || []
+}
+
+async function loadBackofficeSlipOKLogs(page = forms.backofficeSlipOKLogsPage) {
+  const params = new URLSearchParams({
+    page: String(Math.max(1, Number(page || 1))),
+    pageSize: String(forms.backofficeSlipOKLogsPageSize)
+  })
+  if (forms.backofficeSlipOKLogsUserId) params.set('userId', forms.backofficeSlipOKLogsUserId)
+  if (forms.backofficeSlipOKLogsSystem) params.set('system', forms.backofficeSlipOKLogsSystem)
+  if (forms.backofficeSlipOKLogsStatus) params.set('status', forms.backofficeSlipOKLogsStatus)
+  if (forms.backofficeSlipOKLogsSearch.trim()) params.set('search', forms.backofficeSlipOKLogsSearch.trim())
+  const payload = await api(`/api/backoffice/slipok-logs?${params}`, { headers: backofficeAuthHeaders() })
+  forms.backofficeSlipOKLogs = payload.items || []
+  forms.backofficeSlipOKLogsPagination = payload.pagination || { page: 1, pageSize: forms.backofficeSlipOKLogsPageSize, total: 0, totalPages: 0 }
+  forms.backofficeSlipOKLogsPage = forms.backofficeSlipOKLogsPagination.page || 1
+}
+
+function applyBackofficeSlipOKLogFilters() {
+  forms.backofficeSlipOKLogsPage = 1
+  return loadBackofficeSlipOKLogs(1)
+}
+
 async function saveBackofficeCoinShop() {
   forms.backofficeError = ''
   forms.backofficeCoinShopStatus = ''
   forms.backofficeCoinShopSaving = true
   try {
-    forms.backofficeSummary = await api('/api/backoffice/coin-shop', {
+    // The legacy endpoint saves both groups atomically. Load the missing group only
+    // after an explicit Save so an unopened tab can never be overwritten with blanks.
+    await Promise.all([
+      loadBackofficeSection('integrations'),
+      loadBackofficeSection('promotions')
+    ])
+    await api('/api/backoffice/coin-shop', {
       method: 'PUT',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
@@ -1320,7 +1624,9 @@ async function saveBackofficeCoinShop() {
         slipOKMonthlyCap: Number(forms.backofficeSlipOKMonthlyCap)
       })
     })
-    syncBackofficeCoinShopForms()
+    backoffice.loaded.integrations = false
+    backoffice.loaded.promotions = false
+    await loadBackofficeSection(forms.backofficeOverviewTab === 'integrations' ? 'integrations' : 'promotions', true)
     forms.backofficeCoinShopStatus = 'บันทึกการตั้งค่าแล้ว'
   } catch (error) {
     forms.backofficeError = error.message || 'บันทึกโปรโมชัน coin ไม่สำเร็จ'
@@ -1398,7 +1704,7 @@ function removeBackofficeSubscriptionPackage(index) {
 async function adjustBackofficeCoins() {
   forms.backofficeError = ''
   try {
-    forms.backofficeSummary = await api('/api/backoffice/coins', {
+    const payload = await api('/api/backoffice/coins', {
       method: 'POST',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
@@ -1407,6 +1713,8 @@ async function adjustBackofficeCoins() {
         note: forms.backofficeCoinNote
       })
     })
+    const changed = forms.backofficeSummary?.users?.find((item) => item.id === payload.adminId)
+    if (changed) changed.coins = Number(payload.balance || 0)
     forms.backofficeCoinDelta = 0
     forms.backofficeCoinNote = ''
   } catch (error) {
@@ -1417,14 +1725,13 @@ async function adjustBackofficeCoins() {
 async function reviewBackofficeCoinOrder(orderId, status) {
   forms.backofficeError = ''
   try {
-    forms.backofficeSummary = await api(`/api/backoffice/coin-orders/${orderId}/${status === 'approved' ? 'approve' : 'reject'}`, {
+    await api(`/api/backoffice/coin-orders/${orderId}/${status === 'approved' ? 'approve' : 'reject'}`, {
       method: 'POST',
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({ note: status === 'rejected' ? forms.backofficeRejectNote : '' })
     })
     forms.backofficeRejectOrderId = ''
     forms.backofficeRejectNote = ''
-    syncBackofficeCoinShopForms()
     await loadBackofficeCoinOrders(forms.backofficeOrdersPage)
   } catch (error) {
     forms.backofficeError = error.message || 'อัปเดตรายการชำระเงินไม่สำเร็จ'
@@ -1449,6 +1756,11 @@ function applyAdminPayload(payload) {
   auth.memberCount = Number(payload.memberCount || 0)
   auth.bookingCount = Number(payload.bookingCount || 0)
   auth.posSaleCount = Number(payload.posSaleCount || 0)
+  if (Object.prototype.hasOwnProperty.call(payload, 'dashboardPeriod')) {
+    auth.dashboardPeriod = payload.dashboardPeriod || 'all'
+    auth.dashboardStartAt = payload.dashboardStartAt || ''
+    auth.dashboardEndAt = payload.dashboardEndAt || ''
+  }
 }
 
 function navigateAdminFeature(feature) {
@@ -1665,7 +1977,7 @@ const usedLevels = computed(() => new Set([
 ].filter(Boolean)))
 const availablePlayers = computed(() =>
   state.players
-    .filter((player) => player.active && !player.paid && !queuedPlayerIds.value.has(player.id) && !livePlayerIds.value.has(player.id))
+    .filter((player) => player.active && !player.paid && (!queuedPlayerIds.value.has(player.id) || player.libero) && (!livePlayerIds.value.has(player.id) || player.libero))
     .sort((a, b) => a.games - b.games || a.id - b.id)
 )
 
@@ -1684,6 +1996,7 @@ const couponGroups = computed(() => {
         used.add(mate.id)
         continue
       }
+      continue
     }
     groups.push({ ids: [player.id], name: player.name, level: player.level, coupon: player.coupon, games: player.games })
     used.add(player.id)
@@ -1706,6 +2019,29 @@ const dashboardCards = computed(() => [
 
 function matchPlayers(match) {
   return [...new Set([match.a1, match.a2, match.b1, match.b2].map(Number).filter((id) => id > 0))]
+}
+
+function pairingPatternForMatch(match) {
+  const players = matchPlayers(match)
+  if (players.length === 2 && Number(match.a1) > 0 && !Number(match.a2) && Number(match.b1) > 0 && !Number(match.b2)) return 'one_one'
+  if (players.length !== 4) return 'legacy_unknown'
+  const teamByPlayer = new Map([
+    [Number(match.a1), 0], [Number(match.a2), 0], [Number(match.b1), 1], [Number(match.b2), 1]
+  ])
+  let pairCount = 0
+  for (const couple of state.couples || []) {
+    if (!teamByPlayer.has(Number(couple.a)) || !teamByPlayer.has(Number(couple.b))) continue
+    if (teamByPlayer.get(Number(couple.a)) !== teamByPlayer.get(Number(couple.b))) return 'legacy_unknown'
+    pairCount += 1
+  }
+  return ['four_singles', 'pair_two_singles', 'pair_pair'][pairCount] || 'legacy_unknown'
+}
+
+function manualPairingPatternForMatch(match) {
+  const players = matchPlayers(match)
+  if (players.length === 2 && Number(match.a1) > 0 && !Number(match.a2) && Number(match.b1) > 0 && !Number(match.b2)) return 'one_one'
+  if (players.length === 4 && Number(match.a1) > 0 && Number(match.a2) > 0 && Number(match.b1) > 0 && Number(match.b2) > 0) return 'manual_four'
+  return 'legacy_unknown'
 }
 
 function normalizedHours(hours = []) {
@@ -1783,7 +2119,7 @@ function activeShuttleBrands() {
 }
 
 function defaultShuttleBrand() {
-  return activeShuttleBrands()[0] || state.settings.shuttleBrands?.[0] || { id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), active: true }
+  return activeShuttleBrands()[0] || state.settings.shuttleBrands?.[0] || { id: 'default', name: 'ลูกแบดทั่วไป', price: Number(state.settings.shuttleFee || 0), priceSatang: Math.round(Number(state.settings.shuttleFee || 0) * 100), active: true }
 }
 
 function shuttleBrandById(brandId) {
@@ -1812,9 +2148,10 @@ function matchShuttleItems(match) {
 function matchShuttleSummary(match) {
   const counts = new Map()
   for (const item of matchShuttleItems(match)) {
-    counts.set(item.brandId, (counts.get(item.brandId) || 0) + 1)
+    const name = item.productName || shuttleBrandName(item.brandId)
+    counts.set(name, (counts.get(name) || 0) + 1)
   }
-  return Array.from(counts.entries()).map(([brandId, count]) => `${shuttleBrandName(brandId)} ${count}`).join(' · ')
+  return Array.from(counts.entries()).map(([name, count]) => `${name} ${count}`).join(' · ')
 }
 
 function matchShuttleSequenceText(match) {
@@ -1830,14 +2167,15 @@ function playerShuttleCost(playerId) {
     if (isCancelledMatch(match) && match.shuttleReturned) continue
     const items = matchShuttleItems(match)
     const legacy = match.shuttlePricingMode !== 'split_per_match'
-    const priceFor = (brandId) => {
-      if (!legacy) return Number(shuttleBrandById(brandId).price || 0)
-      const snapshot = (match.shuttlePriceSnapshot || []).find((brand) => brand.id === brandId)
-      return Number(snapshot?.price ?? match.legacyShuttleFee ?? shuttleBrandById(brandId).price ?? 0)
+    const priceSatangFor = (item) => {
+      if (item?.priceSource) return Number(item.unitPriceSatang || 0)
+      if (!legacy) return Number(shuttleBrandById(item.brandId).priceSatang ?? Math.round(Number(shuttleBrandById(item.brandId).price || 0) * 100))
+      const snapshot = (match.shuttlePriceSnapshot || []).find((brand) => brand.id === item.brandId)
+      return Number(snapshot?.priceSatang ?? Math.round(Number(snapshot?.price ?? match.legacyShuttleFee ?? shuttleBrandById(item.brandId).price ?? 0) * 100))
     }
     let matchSatang = 0
     if (items.length) {
-      matchSatang = items.reduce((sum, item) => sum + priceFor(item.brandId) * 100, 0)
+      matchSatang = items.reduce((sum, item) => sum + priceSatangFor(item), 0)
     } else {
       const fallbackPrice = legacy ? Number(match.legacyShuttleFee ?? state.settings.shuttleFee ?? 0) : Number(state.settings.shuttleFee || 0)
       matchSatang = Number(match.shuttles || 0) * fallbackPrice * 100
@@ -2048,8 +2386,10 @@ function normalizeSessionDefaults(input = {}) {
     shuttleBrands: Array.isArray(input.shuttleBrands) ? input.shuttleBrands.map((brand) => ({
       id: String(brand.id || brand.name || `brand-${Date.now()}`).trim() || `brand-${Date.now()}`,
       name: String(brand.name || '').trim(),
-      price: Math.max(0, Number(brand.price || 0)),
-      active: Boolean(brand.active)
+	  price: Math.max(0, Number(brand.price || 0)),
+	  priceSatang: brand.priceSatang == null ? Math.round(Math.max(0, Number(brand.price || 0)) * 100) : Math.max(0, Number(brand.priceSatang || 0)),
+	  active: Boolean(brand.active),
+	  posProductId: String(brand.posProductId || '')
     })).filter((brand) => brand.name) : base.shuttleBrands,
     dashboardAnnouncements: Array.isArray(input.dashboardAnnouncements)
       ? input.dashboardAnnouncements.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 5)
@@ -2071,13 +2411,15 @@ function normalizeSessionDefaults(input = {}) {
 }
 
 function randomMatch() {
+  const usedThisRun = new Set()
   while (true) {
-    const { selected, level } = pickRandomMatch(randomEligibleGroups.value)
+    const candidates = randomEligibleGroups.value.filter((group) => group.ids.every((id) => !usedThisRun.has(id)))
+    const { selected, level } = pickRandomMatch(candidates)
     if (selected.length < 4) return
 
     const teams = arrangeTeamsByTeammateHistory(selected, state.couples, state.history)
 
-    state.pending.push({
+    const pendingMatch = {
       id: nextPendingId(),
       court: '-',
       level,
@@ -2086,7 +2428,10 @@ function randomMatch() {
       b1: teams[2],
       b2: teams[3],
       shuttlePricingMode: 'split_per_match'
-    })
+    }
+    pendingMatch.pairingPattern = pairingPatternForMatch(pendingMatch)
+    state.pending.push(pendingMatch)
+    for (const id of selected) usedThisRun.add(id)
   }
 }
 
@@ -2176,6 +2521,8 @@ function pickFourGroupsFrom(groups, index, selected) {
 
 function startMatch(match, court = '', brandId = defaultShuttleBrand().id) {
   if (!court) return
+  const conflicts = matchPlayers(match).filter((id) => livePlayerIds.value.has(id)).map((id) => playerName(id))
+  if (conflicts.length) throw new Error(`ยังเริ่มเกมไม่ได้: ${conflicts.join(', ')} กำลังเล่นอยู่`)
   state.queue = state.queue.filter((item) => item.id !== match.id)
   const started = { ...match, court, shuttles: 0, shuttleSequence: '', shuttleSequenceItems: [], status: 'กำลังเล่น', startedAt: currentTime() }
   if (state.settings.startMatchWithShuttle) {
@@ -2220,6 +2567,7 @@ function createManualMatch(match) {
   const slots = [match.a1, match.a2, match.b1, match.b2].map(Number)
   const ids = slots.filter((id) => id > 0)
   if (!slots[0] || !slots[2]) throw new Error('กรุณาเลือกผู้เล่น A1 และ B1')
+  if (Boolean(slots[1]) !== Boolean(slots[3])) throw new Error('จัดทีมได้เฉพาะ 1 ต่อ 1 หรือ 2 ต่อ 2 เท่านั้น')
   if (new Set(ids).size !== ids.length) {
     throw new Error('ผู้เล่นในทีมต้องไม่ซ้ำกัน')
   }
@@ -2240,7 +2588,7 @@ function createManualMatch(match) {
   }
   const level = state.settings.levels.includes(match.level) ? match.level : state.settings.levels[0]
   if (!level) throw new Error('กรุณาเลือกระดับมือที่ถูกต้อง')
-  state.pending.push({
+  const pendingMatch = {
     id: nextPendingId(),
     court: '-',
     level,
@@ -2249,7 +2597,9 @@ function createManualMatch(match) {
     b1: slots[2],
     b2: slots[3] || 0,
     shuttlePricingMode: 'split_per_match'
-  })
+  }
+  pendingMatch.pairingPattern = manualPairingPatternForMatch(pendingMatch)
+  state.pending.push(pendingMatch)
 }
 
 function closeLive(match, cancelled = false, note = '', shuttleReturned = false, scores = []) {
@@ -2284,7 +2634,10 @@ function closeLive(match, cancelled = false, note = '', shuttleReturned = false,
       player.shuttles += match.shuttles
       if (cancelled) continue
       player.games += 1
-      if (state.settings.resetPlayersAfterFinish) player.coupon = false
+      if (state.settings.resetPlayersAfterFinish) {
+        const hasFutureMatch = [...state.pending, ...state.queue].some((futureMatch) => matchPlayers(futureMatch).includes(id))
+        if (!player.libero || !hasFutureMatch) player.coupon = false
+      }
       const won = (ended.winner === 'A' && (id === match.a1 || id === match.a2)) || (ended.winner === 'B' && (id === match.b1 || id === match.b2))
       if (won) player.wins = (player.wins || 0) + 1
       else if (ended.winner === 'draw') player.draws = (player.draws || 0) + 1
@@ -2415,11 +2768,13 @@ function announcementParts(match, court = '') {
 }
 
 async function playAnnouncementChime(source = '') {
-  try {
-    const bellPath = source || (state.settings.announcementBellKey
-      ? `/api/sessions/${encodeURIComponent(state.session.id)}/announcement-bell`
-      : '/sounds/announcement-bell.mp3')
-    const bell = new Audio(bellPath)
+  const defaultBellPath = '/sounds/announcement-bell.mp3'
+  const bellPath = source || (state.settings.announcementBellKey
+    ? `/api/sessions/${encodeURIComponent(state.session.id)}/announcement-bell`
+    : defaultBellPath)
+  const customBellRequested = bellPath !== defaultBellPath
+  const playBell = async (path) => {
+    const bell = new Audio(path)
     bell.preload = 'auto'
     bell.volume = 0.85
     const playback = playAudioUntilEnded(bell)
@@ -2431,14 +2786,26 @@ async function playAnnouncementChime(source = '') {
       if (activeAnnouncementAudio === bell) activeAnnouncementAudio = null
       if (activeAnnouncementAudioStop === playback.cancel) activeAnnouncementAudioStop = null
     }
-    return
-  } catch {
-    // Fall back to a generated chime if the audio file is blocked or unavailable.
   }
 
-  const AudioContext = window.AudioContext || window.webkitAudioContext
-  if (!AudioContext) return
   try {
+    await playBell(bellPath)
+    return
+  } catch {
+    if (customBellRequested) {
+      showToast('ไม่พบเสียงกริ่งที่ตั้งไว้ ระบบใช้เสียงเริ่มต้น กรุณาอัปโหลดเสียงใหม่', 'info')
+      try {
+        await playBell(defaultBellPath)
+        return
+      } catch {
+        // Continue with the generated chime when the bundled sound is blocked too.
+      }
+    }
+  }
+
+  try {
+    const AudioContext = window.AudioContext || window.webkitAudioContext
+    if (!AudioContext) return
     const audio = new AudioContext()
     if (audio.state === 'suspended') {
       await audio.resume()
@@ -2615,6 +2982,14 @@ function speakAnnouncement(parts, thaiVoice = null) {
 
 async function announceQueuedMatch(match, court = '') {
   if (!court) return
+  try {
+    mergeSessionPatch(await api(`/api/sessions/${state.session.id}/queue/${match.id}/announce`, {
+      method: 'POST',
+      body: JSON.stringify({ court })
+    }))
+  } catch (error) {
+    showToast(error.message || 'ส่งอนิเมชันไปยังหน้าคิวไม่สำเร็จ')
+  }
   const hasDeviceSpeech = 'speechSynthesis' in window && typeof window.SpeechSynthesisUtterance === 'function'
   const runId = ++announcementRunId
   const parts = announcementParts(match, court)
@@ -2941,7 +3316,7 @@ function addShuttleBrand() {
     id = `${idBase}-${suffix}`
     suffix += 1
   }
-  state.settings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.newShuttleBrandPrice || 0)), active: true })
+  state.settings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.newShuttleBrandPrice || 0)), priceSatang: Math.round(Math.max(0, Number(forms.newShuttleBrandPrice || 0)) * 100), active: true })
   forms.newShuttleBrandName = ''
   forms.newShuttleBrandPrice = 0
   saveSettings().catch(() => {})
@@ -2957,7 +3332,7 @@ function addAdminDefaultShuttleBrand() {
     id = `${idBase}-${suffix}`
     suffix += 1
   }
-  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), active: true })
+  auth.defaultSettings.shuttleBrands.push({ id, name, price: Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)), priceSatang: Math.round(Math.max(0, Number(forms.adminDefaultNewShuttleBrandPrice || 0)) * 100), active: true, posProductId: '' })
   forms.adminDefaultNewShuttleBrandName = ''
   forms.adminDefaultNewShuttleBrandPrice = 0
 }
@@ -3039,9 +3414,7 @@ async function previewAdminAnnouncementBell() {
   const source = auth.defaultSettings?.announcementBellKey
     ? `/api/admin/announcement-bell?t=${Date.now()}`
     : '/sounds/announcement-bell.mp3'
-  const audio = new Audio(source)
-  audio.volume = 0.85
-  await audio.play()
+  await playAnnouncementChime(source)
 }
 
 async function saveAdminMatchPolicy() {
@@ -3149,18 +3522,40 @@ async function copyQrLink() {
 
 function startSharedRefresh(view) {
   const interval = view === 'queue' ? 9000 : 30000
-  if (sharedRefreshTimer && sharedRefreshInterval === interval) return
+  if (sharedRefreshTimer && sharedRefreshInterval === interval) {
+    if (view === 'queue') startSharedAnnouncementRefresh()
+    return
+  }
   stopSharedRefresh()
   sharedRefreshInterval = interval
   sharedRefreshTimer = window.setInterval(() => {
     loadSharedView({ silent: true })
   }, interval)
+  if (view === 'queue') startSharedAnnouncementRefresh()
+}
+
+function startSharedAnnouncementRefresh() {
+  if (sharedAnnouncementRefreshTimer || !state.session.id) return
+  sharedAnnouncementRefreshTimer = window.setInterval(async () => {
+    if (sharedAnnouncementRefreshing || document.hidden) return
+    sharedAnnouncementRefreshing = true
+    try {
+      const payload = await api(`/api/sessions/${state.session.id}/queue-announcement`)
+      mergeSessionPatch(payload)
+    } catch {
+      // The regular shared-view refresh remains the recovery path for transient failures.
+    } finally {
+      sharedAnnouncementRefreshing = false
+    }
+  }, 1000)
 }
 
 function stopSharedRefresh() {
-  if (!sharedRefreshTimer) return
-  window.clearInterval(sharedRefreshTimer)
+  if (sharedRefreshTimer) window.clearInterval(sharedRefreshTimer)
+  if (sharedAnnouncementRefreshTimer) window.clearInterval(sharedAnnouncementRefreshTimer)
   sharedRefreshTimer = null
+  sharedAnnouncementRefreshTimer = null
+  sharedAnnouncementRefreshing = false
   sharedRefreshInterval = 0
 }
 
@@ -3319,6 +3714,31 @@ async function resumePlayerApi(player) {
   }
 }
 
+async function withdrawPlayerApi(player, note = '') {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ note })
+    }))
+    showToast(`${player.name} ถอนตัวแล้ว และไม่นำไปคิดยอด Match`)
+  } catch (error) {
+    showToast(error.message || 'ถอนตัวไม่สำเร็จ')
+    throw error
+  }
+}
+
+async function restoreWithdrawnPlayerApi(player) {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${player.id}/restore-withdrawn`, { method: 'POST' }))
+    showToast(`${player.name} กลับเข้าสู่รายชื่อผู้เล่นแล้ว`)
+  } catch (error) {
+    showToast(error.message || 'คืนสถานะผู้เล่นไม่สำเร็จ')
+    throw error
+  }
+}
+
 async function updatePlayerLevelApi(playerId, level) {
   if (!ensureSessionActive()) return
   try {
@@ -3351,6 +3771,20 @@ async function updatePlayerRandomStatusApi(playerId, level) {
   }
 }
 
+async function updatePlayerLiberoApi(playerId, libero) {
+  if (!ensureSessionActive()) return
+  try {
+    applyServerState(await api(`/api/sessions/${state.session.id}/players/${playerId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ libero: Boolean(libero) })
+    }))
+    showToast(libero ? 'เพิ่มรายชื่อริโบโร่แล้ว' : 'นำรายชื่อริโบโร่ออกแล้ว', 'success')
+  } catch (error) {
+    showToast(error.message || 'บันทึกรายชื่อริโบโร่ไม่สำเร็จ')
+    throw error
+  }
+}
+
 async function randomMatchApi() {
   if (!ensureSessionActive()) return
   forms.randomError = ''
@@ -3372,7 +3806,11 @@ async function startMatchApi(match, court = '') {
       body: JSON.stringify({ court, brandId })
     }))
     state.tab = 'liveboard'
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'เริ่มการแข่งขันไม่สำเร็จ')
+      throw error
+    }
     startMatch(match, court, brandId)
   }
 }
@@ -3429,8 +3867,19 @@ async function adjustShuttleApi(match, delta, brandId = defaultShuttleBrand().id
       method: 'PATCH',
       body: JSON.stringify({ delta, brandId })
     }))
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'บันทึกการใช้ลูกแบดไม่สำเร็จ')
+      throw error
+    }
     adjustShuttle(match, delta, brandId)
+    return
+  }
+  try {
+    await reloadAdminTab('liveboard')
+  } catch {
+    // The shuttle was already recorded successfully. Keep the saved state and
+    // let the next live-board refresh reconcile the stock badge.
   }
 }
 
@@ -3440,7 +3889,11 @@ async function returnShuttleApi(match) {
     applyServerState(await api(`/api/sessions/${state.session.id}/live/${match.id}/shuttles/return`, {
       method: 'POST'
     }))
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'คืนลูกแบดไม่สำเร็จ')
+      throw error
+    }
     returnLatestShuttle(match)
   }
 }
@@ -3453,7 +3906,11 @@ async function closeLiveApi(match, cancelled = false, note = '', shuttleReturned
       body: JSON.stringify({ note, winner: forms.finishWinner, scores, shuttleReturned })
     }))
     forms.finishNote = ''
-  } catch {
+  } catch (error) {
+    if (error?.status) {
+      showToast(error.message || 'บันทึกผลการแข่งขันไม่สำเร็จ')
+      throw error
+    }
     closeLive(match, cancelled, note, shuttleReturned, scores)
   }
 }
@@ -3465,7 +3922,9 @@ async function updateHistoryWinnerApi(match, winner, scores) {
       method: 'PATCH',
       body: JSON.stringify({ winner, ...(scores !== undefined ? { scores } : {}) })
     }))
-  } catch {
+    await loadMatchHistory(state.historyView.page, state.historyView.search)
+  } catch (error) {
+    if (error?.status) throw error
     if (scores !== undefined) {
       const result = validateMatchScores(scores)
       if (result.error) throw new Error(result.error)
@@ -3579,6 +4038,7 @@ const pageProps = computed(() => ({
   ui,
   activePlayerCount: activePlayerCount.value,
   totalRecordedMatches: totalRecordedMatches.value,
+  pairingPatternSummary: state.dashboardSummary?.pairingPatterns || null,
   cancelledMatches: cancelledMatches.value,
   averageGames: averageGames.value,
   minGames: minGames.value,
@@ -3630,8 +4090,11 @@ const pageProps = computed(() => ({
   copyQrLink,
   togglePayment: togglePaymentApi,
   resumePlayer: resumePlayerApi,
+  withdrawPlayer: withdrawPlayerApi,
+  restoreWithdrawnPlayer: restoreWithdrawnPlayerApi,
   updatePlayerLevel: updatePlayerLevelApi,
   updatePlayerRandomStatus: updatePlayerRandomStatusApi,
+  updatePlayerLibero: updatePlayerLiberoApi,
   randomMatch: randomMatchApi,
   confirmPendingMatch: confirmPendingMatchApi,
   cancelPendingMatch: cancelPendingMatchApi,
@@ -3654,6 +4117,7 @@ const pageProps = computed(() => ({
   requestCancelMatch,
   confirmCancelMatch: confirmCancelMatchApi,
   updateHistoryWinner: updateHistoryWinnerApi,
+  loadMatchHistory,
   addCouple: addCoupleApi,
   removeCouple: removeCoupleApi,
   addCourt,
@@ -3704,6 +4168,11 @@ const pageProps = computed(() => ({
   createSession: createSessionApi,
   unlockDashboard: unlockDashboardApi,
   loadBackoffice,
+  selectBackofficeTab,
+  selectBackofficeOverviewTab,
+  loadBackofficeAdmins,
+  loadBackofficeAdminOptions,
+  loadBackofficeAdminDetailPage,
   submitSupportIssue,
   loadBackofficeSupportIssues,
   applyBackofficeSupportFilters,
@@ -3714,7 +4183,10 @@ const pageProps = computed(() => ({
   loadBackofficeActivityLogs,
   applyBackofficeActivityFilters,
   changeBackofficeActivityUser,
+  loadBackofficeSlipOKLogs,
+  applyBackofficeSlipOKLogFilters,
   openBackofficeAdminDetail,
+  loadBackofficeAdminSlipOKUsage,
   deleteBackofficeAdminSession,
   saveBackofficeAdminDiscount,
   saveBackofficeAdminFeatures,
@@ -3746,8 +4218,12 @@ const pageProps = computed(() => ({
     >
       <div
         v-if="ui.toast"
-        class="fixed inset-x-3 top-3 z-[100] mx-auto flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft sm:left-auto sm:right-4 sm:mx-0"
-        :class="ui.toast.type === 'error' ? 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100' : 'border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100'"
+        class="fixed z-[100] flex max-w-md items-start justify-between gap-3 rounded-md border p-3 shadow-soft"
+        :class="ui.toast.type === 'idle-warning'
+          ? 'bottom-[max(5rem,env(safe-area-inset-bottom))] left-3 right-3 border-red-700 bg-red-600 text-white shadow-xl sm:right-auto sm:w-[26rem]'
+          : ui.toast.type === 'error'
+            ? 'inset-x-3 top-3 mx-auto border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100 sm:left-auto sm:right-4 sm:mx-0'
+            : 'inset-x-3 top-3 mx-auto border-court-500 bg-white text-stone-900 dark:border-court-600 dark:bg-stone-900 dark:text-stone-100 sm:left-auto sm:right-4 sm:mx-0'"
         role="status"
         aria-live="polite"
       >
@@ -3765,7 +4241,8 @@ const pageProps = computed(() => ({
 		<h1 class="mt-2 text-2xl font-black">ไม่สามารถใช้งานระบบจองสนามได้</h1>
 		<p class="mt-3 font-semibold text-stone-500 dark:text-stone-400">ระบบตรวจพบรายการสลิปผิดปกติ กรุณารอจนกว่าจะครบกำหนด</p>
 		<p class="mt-6 font-mono text-5xl font-black tabular-nums">{{ bookingBlockCountdown }}</p>
-		<p class="mt-4 text-xs font-bold text-stone-400">ระบบตรวจสอบทั้งบัญชีและเครือข่ายจาก Backend การเปลี่ยนหน้าเว็บจะไม่ข้ามข้อจำกัดนี้</p>
+		<p class="mt-4 text-xs font-bold text-stone-400">ข้อจำกัดนี้ผูกกับบัญชีผู้ส่งสลิปเท่านั้น ผู้ใช้อื่นยังจองได้ตามปกติ</p>
+		<button type="button" class="mt-5 h-11 w-full rounded-lg border border-stone-300 font-black text-stone-700 dark:border-stone-700 dark:text-stone-200" @click="leaveBlockedBookingAccount">ออกจากบัญชีนี้</button>
 	  </div>
 	</section>
 	<VerifyEmailPage v-else-if="verifyEmail.isPage" v-bind="pageProps" />

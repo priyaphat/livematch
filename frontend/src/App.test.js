@@ -161,18 +161,19 @@ describe('LiveMatch app', () => {
     wrapper.unmount()
     globalThis.fetch = originalFetch
 	})
-	it('locks the whole app with a server-authoritative booking countdown', async () => {
+	it('locks only the current booking account without persisting a venue-wide block', async () => {
 		const wrapper = mount(App)
 		await flushPromises()
 		window.history.replaceState({}, '', '/booking/test-tenant')
 		window.dispatchEvent(new window.CustomEvent('livematch:booking-blocked', { detail: { code: 'booking_blacklisted', blockedUntil: new Date(Date.now() + 10 * 60 * 1000).toISOString(), remainingSeconds: 600, targets: ['account', 'ip'] } }))
 		await wrapper.vm.$nextTick()
-		expect(localStorage.getItem('livematch_booking_block:test-tenant')).toContain('account')
+		expect(localStorage.getItem('livematch_booking_block:test-tenant')).toBeNull()
 		const blockedScreen = wrapper.text()
 		expect(blockedScreen).toContain('ระงับการใช้งานชั่วคราว')
 		expect(blockedScreen).toContain('ไม่สามารถใช้งานระบบจองสนามได้')
+		expect(blockedScreen).toContain('ผูกกับบัญชีผู้ส่งสลิปเท่านั้น')
+		expect(blockedScreen).toContain('ออกจากบัญชีนี้')
 		wrapper.unmount()
-		localStorage.removeItem('livematch_booking_block:test-tenant')
 		window.history.replaceState({}, '', '/')
 	})
   it('shows a user-friendly message when admin credentials are incorrect', async () => {
@@ -512,6 +513,8 @@ describe('LiveMatch app', () => {
             activityLogs: [{ id: 1, action: 'start_match', actorType: 'admin', actorId: 'admin-1', targetType: 'match', targetId: '12', details: '{}', createdAt: '2026-06-28 20:00' }]
           },
           backofficeActivityUserId: '',
+          backofficeActivityUserSearch: '',
+          backofficeAdminOptions: [{ id: 'admin-1', email: 'admin@example.com', name: 'Admin' }],
           backofficeActivitySessionId: '',
           backofficeActivitySessionOptions: [{ id: 'session-1', label: 'Test Session' }],
           backofficeActivityPagination: { page: 2, pageSize: 20, total: 45, totalPages: 3 }
@@ -521,6 +524,7 @@ describe('LiveMatch app', () => {
         loadBackoffice: vi.fn(),
         loadBackofficeCoinOrders: vi.fn(),
         loadBackofficeActivityLogs: loadActivity,
+        loadBackofficeAdminOptions: vi.fn(),
         applyBackofficeActivityFilters: applyFilters,
         changeBackofficeActivityUser: changeUser,
         openBackofficeAdminDetail: vi.fn(),
@@ -537,16 +541,17 @@ describe('LiveMatch app', () => {
       }
     })
 
+    const userFilter = wrapper.get('form input[list="activity-admin-options"]')
     const filters = wrapper.findAll('form select')
-    await filters[0].setValue('admin-1')
-    await filters[1].setValue('session-1')
+    await userFilter.setValue('admin@example.com')
+    await filters[0].setValue('session-1')
     await wrapper.get('form').trigger('submit')
     const paginationButtons = wrapper.findAll('section button').filter((button) => ['ก่อนหน้า', 'ถัดไป'].includes(button.text().trim()))
     await paginationButtons[1].trigger('click')
 
     expect(changeUser).toHaveBeenCalledTimes(1)
     expect(applyFilters).toHaveBeenCalledTimes(1)
-    expect(filters[1].text()).toContain('Test Session')
+    expect(filters[0].text()).toContain('Test Session')
     expect(loadActivity).toHaveBeenCalledWith(3)
     expect(wrapper.text()).toContain('หน้า 2 / 3')
   })
@@ -630,6 +635,125 @@ describe('LiveMatch app', () => {
 
     expect(wrapper.find('fieldset').attributes('disabled')).toBeDefined()
     expect(wrapper.find('fieldset').find('input').exists()).toBe(true)
+  })
+
+  it('manages session libero players and exposes the long-wait alert setting', async () => {
+    const updatePlayerLibero = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(SettingsPage, {
+      props: {
+        state: {
+          session: { type: 'liveMatch' },
+          players: [
+            { id: 1, name: 'ปุ้ย', active: true, paid: false, libero: false },
+            { id: 2, name: 'นัท', active: true, paid: false, libero: true, games: 7 }
+          ],
+          settings: {
+            entryFee: 100,
+            shuttleFee: 80,
+            sessionFee: 0,
+            idleWaitAlertEnabled: true,
+            courtNames: ['1'],
+            levels: ['middle']
+          }
+        },
+        forms: { newCourtName: '', newLevelName: '' },
+        usedCourtNames: new Set(),
+        usedLevels: new Set(),
+        saveSettings: vi.fn(),
+        updatePlayerLibero
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('เวลารอเล่น')).trigger('click')
+    expect(wrapper.text()).toContain('แจ้งเตือนผู้เล่นที่รอนาน')
+
+    await wrapper.findAll('button').find((button) => button.text().includes('ริโบโร่')).trigger('click')
+    expect(wrapper.text()).toContain('รายชื่อริโบโร่ 1 คน')
+    expect(wrapper.text()).toContain('นัท')
+    expect(wrapper.text()).toContain('7 ตา')
+    const combobox = wrapper.get('[role="combobox"]')
+    await combobox.trigger('focus')
+    await combobox.setValue('ปุ้ย')
+    await wrapper.get('[role="option"]').trigger('mousedown')
+    await flushPromises()
+    expect(updatePlayerLibero).toHaveBeenCalledWith(1, true)
+  })
+
+  it('shows provider quota and selectable monthly history in Admin DB Preview', async () => {
+    const loadBackofficeAdminSlipOKUsage = vi.fn()
+    const forms = {
+      backofficeTab: 'members',
+      backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+      backofficeAdminsPagination: { page: 1, pageSize: 20, total: 0, totalPages: 0 },
+      backofficeAdminDetail: {
+        user: { id: 'admin-1', name: 'สนามทดสอบ', email: 'admin@example.test', verified: true, coins: 5, createdAt: '2026-08-01 10:00' },
+        sessions: [], coinLedger: [], orders: [], features: {}, benefits: { pricing: {}, subscriptionHistory: [] },
+        sessionPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 },
+        orderPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 },
+        ledgerPagination: { page: 1, pageSize: 10, total: 0, totalPages: 0 }
+      },
+      backofficeAdminSlipOKMonth: '2026-08',
+      backofficeAdminSlipOKLoading: false,
+      backofficeAdminSlipOKUsage: {
+        month: '2026-08', used: 12, totalUsed: 31, limitEnabled: true, limit: 50, remaining: 38,
+        provider: { available: true, used: 95, limit: 95, remaining: 0, overQuota: 4 },
+        history: [{ month: '2026-08', used: 12 }, { month: '2026-07', used: 19 }]
+      }
+    }
+    const wrapper = mount(BackofficePage, {
+      props: { forms, ui: { showBackofficeAdminModal: true }, backoffice: { unlocked: true }, loadBackofficeAdminSlipOKUsage }
+    })
+
+    const usage = wrapper.get('[data-testid="admin-slipok-usage"]')
+    expect(usage.text()).toContain('โควตา SlipOK จริง · คงเหลือ')
+    expect(usage.text()).toContain('ใช้แล้ว 95 / 95')
+    expect(usage.text()).toContain('ใช้เกินโควตา 4 ครั้ง')
+    expect(usage.text()).toContain('31')
+    await usage.get('input[type="month"]').setValue('2026-07')
+    await usage.get('input[type="month"]').trigger('change')
+    expect(loadBackofficeAdminSlipOKUsage).toHaveBeenCalledWith('2026-07', false)
+  })
+
+  it('uses the POS product combobox and locks the linked shuttle price in session settings', async () => {
+    const apiRequest = vi.fn().mockResolvedValue({
+      items: [{ id: 'product-victor', name: 'Victor No.1', sku: 'PROD-019', priceSatang: 10000, stockQuantity: 12, unit: 'ลูก', active: true, trackStock: true }]
+    })
+    const wrapper = mount(SettingsPage, {
+      props: {
+        apiRequest,
+        state: {
+          session: { type: 'liveMatch' },
+          memberTypes: [],
+          settings: {
+            entryFee: 20,
+            memberEntryFees: {},
+            shuttleFee: 100,
+            shuttleBrands: [{ id: 'default', name: 'Victor No.1', price: 100, priceSatang: 10000, posProductId: 'product-victor', active: true }],
+            sessionFee: 0,
+            courtNames: ['สนาม 1'],
+            levels: ['BG']
+          }
+        },
+        forms: { newShuttleBrandName: '', newShuttleBrandPrice: 0, newCourtName: '', newLevelName: '' },
+        addShuttleBrand: vi.fn(),
+        addCourt: vi.fn(),
+        removeCourt: vi.fn(),
+        addLevel: vi.fn(),
+        removeLevel: vi.fn(),
+        usedCourtNames: new Set(),
+        usedLevels: new Set(),
+        saveSettings: vi.fn()
+      }
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('ค่าใช้จ่าย')).trigger('click')
+    await flushPromises()
+
+    const priceLabel = wrapper.findAll('label').find((label) => label.text().includes('ราคาต่อลูก'))
+    expect(priceLabel.get('input[type="number"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.get('[role="combobox"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('ใช้ราคา POS 100 บาท')
+    expect(apiRequest).toHaveBeenCalledWith(expect.stringContaining('/api/admin/pos/products?'))
   })
 
   it('disables liveShare hour editing when the session is read-only', () => {
@@ -801,7 +925,8 @@ describe('LiveMatch app', () => {
     for (let index = 0; index < 5; index += 1) await Promise.resolve()
 
     expect(calls.some((call) => call.includes('/api/sessions/test-session/dashboard'))).toBe(true)
-    expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(1)
+    expect(calls.filter((call) => call.includes('/api/sessions/test-session/bootstrap')).length).toBe(1)
+    expect(calls.filter((call) => call.includes('/api/sessions/test-session/state')).length).toBe(0)
     expect(wrapper.text()).toContain('Test Session')
 
     wrapper.unmount()
@@ -891,6 +1016,33 @@ describe('LiveMatch app', () => {
     await flushPromises()
 
     expect(forms.couponPage).toBe(1)
+  })
+
+  it('shows live and future queue counts beside a libero in the coupon list', () => {
+    const player = { id: 1, name: 'ปุ้ย', active: true, coupon: true, libero: true, level: 'middle' }
+    const wrapper = mount(MatchSetupModal, {
+      props: {
+        state: {
+          settings: { levels: ['middle'] },
+          players: [player],
+          couples: [],
+          pending: [{ id: -1, a1: 1 }],
+          queue: [{ id: 2, a1: 1 }, { id: 3, b1: 1 }],
+          live: [{ id: 1, court: 'สนาม 2', a1: 1 }]
+        },
+        forms: { couponPage: 1, couponPageSize: 8, couponSearch: '' },
+        ui: { showCouponModal: true, showCoupleModal: false },
+        couponGroups: [{ ids: [1], name: 'ปุ้ย', level: 'middle', coupon: true, games: 2 }],
+        levelLabel: (level) => level,
+        playerName: () => 'ปุ้ย',
+        addCouple: () => {},
+        removeCouple: () => {},
+        updatePlayerRandomStatus: () => {}
+      }
+    })
+
+    expect(wrapper.text()).toContain('ริโบโร่')
+    expect(wrapper.text()).toContain('กำลังแข่ง สนาม 2 · Pending 1 · รอคิว 2')
   })
 
   it('opens couple modal with empty player inputs', async () => {
@@ -1110,6 +1262,38 @@ describe('LiveMatch app', () => {
     expect(saveSubscription).toHaveBeenCalledOnce()
   })
 
+  it('paginates each table in the backoffice admin detail independently', async () => {
+    const loadDetailPage = vi.fn()
+    const pagination = (total) => ({ page: 1, pageSize: 10, total, totalPages: Math.ceil(total / 10) })
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: {
+          backofficeTab: 'members',
+          backofficeSummary: { users: [], coinLedger: [], coinPurchaseOrders: [], activityLogs: [] },
+          backofficeAdminDetail: {
+            user: { id: 'admin-1', name: 'Admin', coins: 10 },
+            sessions: [{ id: 'session-1', name: 'Session 1' }],
+            orders: [{ id: 'order-1', priceThb: 100, coins: 100, status: 'pending' }],
+            coinLedger: [{ id: 1, reason: 'test', delta: 10, balance: 10 }],
+            sessionPagination: pagination(21), orderPagination: pagination(12), ledgerPagination: pagination(31),
+            benefits: {}, features: {}
+          },
+          backofficeBenefitStatus: ''
+        },
+        ui: { showBackofficeAdminModal: true }, backoffice: { unlocked: true },
+        loadBackofficeAdminDetailPage: loadDetailPage,
+        loadBackoffice: vi.fn(), openBackofficeAdminDetail: vi.fn(), deleteBackofficeAdminSession: vi.fn(),
+        saveBackofficeAdminDiscount: vi.fn(), saveBackofficeAdminFeatures: vi.fn(), saveBackofficeAdminSubscription: vi.fn(), cancelBackofficeAdminSubscription: vi.fn(),
+        coinOrderStatusText: () => '', coinOrderStatusClass: () => ''
+      }
+    })
+
+    await wrapper.get('select[aria-label="จำนวน Session ต่อหน้า"]').setValue('20')
+    await wrapper.get('select[aria-label="จำนวนรายการซื้อ Coin ต่อหน้า"]').setValue('20')
+    await wrapper.get('select[aria-label="จำนวน Coin ledger ต่อหน้าในรายละเอียด Admin"]').setValue('20')
+    expect(loadDetailPage.mock.calls).toEqual([['session', 1], ['order', 1], ['ledger', 1]])
+  })
+
   it('configures self-service subscription packages beside coin packages', async () => {
     const addSubscriptionPackage = vi.fn()
     const saveCoinShop = vi.fn()
@@ -1205,7 +1389,8 @@ describe('LiveMatch app', () => {
     const players = Array.from({ length: 12 }, (_, index) => ({
       id: index + 1,
       name: `player ${index + 1}`,
-      active: true
+      active: true,
+      libero: index === 0
     }))
     const wrapper = mount(MatchSetupModal, {
       props: {
@@ -1224,6 +1409,7 @@ describe('LiveMatch app', () => {
     const firstInput = wrapper.findAll('input').at(0)
     await firstInput.trigger('focus')
     expect(wrapper.get('[data-testid="couple-a-options"]').findAll('button')).toHaveLength(12)
+    expect(wrapper.get('[data-testid="couple-a-options"]').text()).toContain('ริโบโร่')
 
     await firstInput.setValue('1')
     expect(forms.coupleAId).toBe('')
@@ -1253,6 +1439,23 @@ describe('LiveMatch app', () => {
       '#1 Old coupon · 2 เกม',
       '#2 Current coupon · light · 1 เกม'
     ])
+  })
+
+  it('shows a queued libero in manual team options with every current status', () => {
+    const wrapper = mount(ManualTeamModal, {
+      props: {
+        state: {
+          settings: { levels: ['middle'], showWaitTimePairing: false },
+          pending: [{ id: -1, a1: 1 }],
+          queue: [{ id: 2, b1: 1 }],
+          live: [{ id: 1, court: 'สนาม 1', a1: 1 }]
+        },
+        players: [{ id: 1, name: 'ริโบโร่หนึ่ง', level: 'middle', coupon: true, libero: true, games: 4 }],
+        createManualMatch: () => {}
+      }
+    })
+
+    expect(wrapper.findAll('option').map((option) => option.text()).join(' ')).toContain('ริโบโร่ · กำลังแข่ง สนาม 1 · Pending 1 · รอคิว 1')
   })
 
   it('confirms shuttle add without rendering a decrement button', async () => {
@@ -1549,7 +1752,7 @@ describe('LiveMatch app', () => {
         state: {
           session: { name: 'Test Session' },
           players: [
-            { id: 1, name: 'p1', games: 2, wins: 1, draws: 1, losses: 0, shuttles: 2, paid: false, active: true }
+            { id: 1, name: 'p1', avatarUrl: '/api/member-avatar/m1?v=2', games: 2, wins: 1, draws: 1, losses: 0, shuttles: 2, paid: false, active: true }
           ]
         },
         share: { loading: false, error: '', showPayment: false, showTotal: true },
@@ -1561,6 +1764,7 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('แต้ม')
     expect(wrapper.text()).toContain('1.5')
     expect(wrapper.text()).toContain('เสมอ 1')
+    expect(wrapper.get('img[alt="รูป p1"]').attributes('src')).toBe('/api/member-avatar/m1?v=2')
   })
 
   it('hides the shared players total when disabled', () => {
@@ -1661,7 +1865,7 @@ describe('LiveMatch app', () => {
   it('renders member rename and delete controls', async () => {
     let renamed = ''
     let deleted = null
-    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, libero: true }
     const wrapper = mount(PlayersPage, {
       props: {
         state: {
@@ -1706,6 +1910,66 @@ describe('LiveMatch app', () => {
     await wrapper.get('button[aria-label="แก้ไขสมาชิก"]').trigger('click')
     await wrapper.findAll('div[role="dialog"] button').at(2).trigger('click')
     expect(deleted?.id).toBe(player.id)
+  })
+
+  it('loads backoffice data only after its tab is selected', async () => {
+    const selectBackofficeTab = vi.fn()
+    const wrapper = mount(BackofficePage, {
+      props: {
+        forms: { backofficeTab: 'overview', backofficeOverviewTab: 'system', backofficeSummary: { ttsUsage: {} } },
+        ui: {},
+        backoffice: { unlocked: true },
+        loadBackoffice: vi.fn(),
+        selectBackofficeTab,
+        selectBackofficeOverviewTab: vi.fn(),
+        coinOrderStatusText: () => '',
+        coinOrderStatusClass: () => ''
+      }
+    })
+
+    expect(selectBackofficeTab).not.toHaveBeenCalled()
+    await wrapper.findAll('button').find((button) => button.text().includes('สมาชิก admin')).trigger('click')
+    expect(selectBackofficeTab).toHaveBeenCalledWith('members')
+  })
+
+  it('falls back to legacy backoffice summary only when bootstrap is unavailable', async () => {
+    window.history.replaceState({}, '', '/backoffice')
+    const originalFetch = globalThis.fetch
+    const calls = []
+    globalThis.fetch = vi.fn((url, options = {}) => {
+      const target = String(url)
+      calls.push(target)
+      if (target.includes('/api/backoffice/bootstrap')) {
+        const authenticated = Boolean(options.headers?.Authorization)
+        return Promise.resolve({
+          ok: false,
+          status: authenticated ? 404 : 401,
+          headers: { get: () => null },
+          json: () => Promise.resolve({ error: authenticated ? 'not found' : 'invalid login' })
+        })
+      }
+      if (target.includes('/api/backoffice/summary')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          headers: { get: () => null },
+          json: () => Promise.resolve({ liveMatchSessionCost: 10, liveShareSessionCost: 5, ttsUsage: {} })
+        })
+      }
+      return Promise.resolve({ ok: false, status: 401, headers: { get: () => null }, json: () => Promise.resolve({ error: 'unauthorized' }) })
+    })
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('input[placeholder="superadmin"]').setValue('superadmin')
+    await wrapper.get('input[type="password"]').setValue('secret')
+    await wrapper.findAll('button').find((button) => button.text().includes('เข้าสู่หลังบ้าน')).trigger('click')
+    await flushPromises()
+
+    expect(calls.filter((url) => url.includes('/api/backoffice/summary'))).toHaveLength(1)
+    expect(wrapper.text()).toContain('ตั้งค่าภาพรวม')
+    wrapper.unmount()
+    globalThis.fetch = originalFetch
   })
 
   it('requires explicit yes confirmation before marking a player as paid', async () => {
@@ -1768,7 +2032,7 @@ describe('LiveMatch app', () => {
   })
 
   it('disables member delete when the player has references', async () => {
-    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true }
+    const player = { id: 1, name: 'p1', games: 0, wins: 0, draws: 0, losses: 0, shuttles: 0, paid: false, active: true, libero: true }
     const wrapper = mount(PlayersPage, {
       props: {
         state: {
@@ -1805,12 +2069,20 @@ describe('LiveMatch app', () => {
     expect(deleteButton.element.disabled).toBe(true)
     expect(wrapper.text()).toContain('ลบไม่ได้')
     expect(wrapper.text()).toContain('มีคู่จับ')
+    expect(wrapper.text()).toContain('ริโบโร่')
   })
 
   it('keeps pairing drafts separate from queue controls', () => {
     const wrapper = mount(LiveMatchPage, {
       props: {
         state: {
+          settings: { showWaitTimePairing: false },
+          players: [
+            { id: 1, name: 'p1', libero: true },
+            { id: 2, name: 'p2' },
+            { id: 3, name: 'p3' },
+            { id: 4, name: 'p4' }
+          ],
           pending: [
             { id: -1, level: 'middle', a1: 1, a2: 2, b1: 3, b2: 4 }
           ]
@@ -1829,6 +2101,7 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).not.toContain('เกมที่')
     expect(wrapper.text()).not.toContain('เริ่ม')
     expect(wrapper.find('select').exists()).toBe(false)
+    expect(wrapper.text()).toContain('ริโบโร่')
   })
 
   it('renders queue controls for confirmed games', async () => {
@@ -1888,25 +2161,27 @@ describe('LiveMatch app', () => {
     expect(wrapper.emitted('close')).toHaveLength(1)
   })
 
-  it('adds an optional second player to either manual team', async () => {
+  it('switches both manual teams to 2v2 and requires all four players', async () => {
     const createManualMatch = vi.fn().mockResolvedValue(undefined)
     const wrapper = mount(ManualTeamModal, {
       props: {
         state: { settings: { levels: ['middle'] } },
-        players: [1, 2, 3].map((id) => ({ id, name: `p${id}`, level: 'middle' })),
+        players: [1, 2, 3, 4].map((id) => ({ id, name: `p${id}`, level: 'middle' })),
         createManualMatch
       }
     })
 
-    const addA2 = wrapper.findAll('button').find((button) => button.text().includes('เพิ่ม A2'))
-    await addA2.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '2 ต่อ 2').trigger('click')
     const selects = wrapper.findAll('select')
     await selects[0].setValue('1')
     await selects[1].setValue('2')
     await selects[2].setValue('3')
+    expect(wrapper.get('button[type="submit"]').element.disabled).toBe(true)
+    await selects[3].setValue('4')
+    await selects[4].setValue('middle')
     await wrapper.get('form').trigger('submit')
 
-    expect(createManualMatch).toHaveBeenCalledWith({ a1: 1, a2: 2, b1: 3, b2: 0, level: 'middle' })
+    expect(createManualMatch).toHaveBeenCalledWith({ a1: 1, a2: 2, b1: 3, b2: 4, level: 'middle' })
   })
 
   it('auto-selects the only shuttle brand when starting a queued match', async () => {
@@ -2018,6 +2293,13 @@ describe('LiveMatch app', () => {
         },
         activePlayerCount: 4,
         totalRecordedMatches: 2,
+        pairingPatternSummary: {
+          pair_pair: 1,
+          pair_two_singles: 1,
+          four_singles: 0,
+          one_one: 0,
+          legacy_unknown: 0
+        },
         cancelledMatches: [{ id: 14, status: 'cancelled' }],
         averageGames: 1,
         minGames: 0,
@@ -2041,6 +2323,68 @@ describe('LiveMatch app', () => {
     expect(wrapper.text()).toContain('2')
     expect(wrapper.text()).toContain('ยกเลิก 1')
     expect(wrapper.get('[data-testid="export-dashboard"]').text()).toContain('Export Excel')
+    expect(wrapper.get('[data-testid="pairing-pattern-report"]').text()).toContain('การจับคู่ที่เกิดขึ้น')
+    expect(wrapper.get('[data-testid="pairing-pattern-pair_pair"]').text()).toContain('1')
+    expect(wrapper.get('[data-testid="pairing-pattern-pair_two_singles"]').text()).toContain('1')
+    expect(wrapper.get('[data-testid="pairing-pattern-four_singles"]').text()).toContain('0')
+  })
+
+  it('paginates the dashboard player performance report without changing its total', async () => {
+    const players = Array.from({ length: 23 }, (_, index) => ({
+      id: index + 1,
+      name: `Player ${String(index + 1).padStart(2, '0')}`,
+      level: 'middle',
+      games: 23 - index,
+      wins: 0,
+      draws: 0,
+      losses: 0,
+      paid: false,
+      active: true
+    }))
+    const wrapper = mount(DashboardPage, {
+      props: {
+        state: {
+          session: { name: 'Pagination Session' },
+          queue: [],
+          live: [],
+          history: [],
+          players,
+          settings: { courtNames: [], shuttleBrands: [] }
+        },
+        activePlayerCount: players.length,
+        totalRecordedMatches: 0,
+        cancelledMatches: [],
+        averageGames: 0,
+        minGames: 0,
+        maxGames: 0,
+        totalShuttles: 0,
+        paymentPercent: 0,
+        money: (value) => `${value}`,
+        totalRevenue: 0,
+        paidRevenue: 0,
+        unpaidRevenue: 0,
+        unpaidPlayers: players,
+        topPlayers: [],
+        quietPlayers: [],
+        topWinners: [],
+        playerCost: () => 0,
+        playerScore: () => 0,
+        levelLabel: (level) => level,
+        selectAdminTab: () => {}
+      }
+    })
+
+    expect(wrapper.findAll('[data-testid="dashboard-player-report-row"]')).toHaveLength(10)
+    expect(wrapper.get('[data-testid="dashboard-player-report-pagination"]').text()).toContain('แสดง 1–10 จาก 23 คน')
+    expect(wrapper.text()).toContain('หน้า 1 / 3')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'ถัดไป').trigger('click')
+    expect(wrapper.findAll('[data-testid="dashboard-player-report-row"]')).toHaveLength(10)
+    expect(wrapper.text()).toContain('หน้า 2 / 3')
+
+    await wrapper.findAll('button').find((button) => button.text() === 'ถัดไป').trigger('click')
+    expect(wrapper.findAll('[data-testid="dashboard-player-report-row"]')).toHaveLength(3)
+    expect(wrapper.get('[data-testid="dashboard-player-report-pagination"]').text()).toContain('แสดง 21–23 จาก 23 คน')
   })
 
   it('shows Excel export actions on members and history even when read-only', () => {
@@ -2111,7 +2455,7 @@ describe('LiveMatch app', () => {
     const paymentTab = wrapper.findAll('button').find((button) => button.text().includes('ประวัติการชำระเงิน'))
     await paymentTab.trigger('click')
     await flushPromises()
-    expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/payment-events?all=1')
+    expect(apiRequest).toHaveBeenCalledWith('/api/sessions/session-1/payment-events?page=1&pageSize=100')
     expect(wrapper.text()).toContain('Player A')
     expect(wrapper.text()).toContain('฿125')
   })
@@ -2153,6 +2497,41 @@ describe('LiveMatch app', () => {
     expect(wrapper.get('[data-testid="payment-history-item"]').text()).not.toContain('Bob')
   })
 
+  it('uses server pagination and search for match history', async () => {
+    vi.useFakeTimers()
+    const loadMatchHistory = vi.fn().mockResolvedValue(undefined)
+    const wrapper = mount(HistoryPage, {
+      props: {
+        state: {
+          session: { id: 'session-1', type: 'liveMatch' },
+          settings: {},
+          history: [{ id: 999, a1: 9, a2: 10, b1: 11, b2: 12 }],
+          historyView: {
+            items: [{ id: 81, a1: 1, a2: 2, b1: 3, b2: 4, court: '1', status: 'finished', scores: [], shuttles: 0 }],
+            page: 2, pageSize: 20, total: 125, totalPages: 7, search: ''
+          }
+        },
+        playerName: (id) => `p${id}`,
+        updateHistoryWinner: vi.fn(),
+        loadMatchHistory
+      }
+    })
+
+    expect(wrapper.text()).toContain('125 รายการ')
+    expect(wrapper.text()).toContain('หน้า 2 / 7')
+    expect(wrapper.text()).toContain('เกมที่')
+    expect(wrapper.text()).toContain('81')
+    expect(wrapper.text()).not.toContain('999')
+    await wrapper.findAll('[data-testid="match-history-pagination"] button')[1].trigger('click')
+    expect(loadMatchHistory).toHaveBeenCalledWith(3, '')
+
+    await wrapper.get('input[aria-label="กรองประวัติด้วยชื่อ"]').setValue('Alice')
+    await vi.advanceTimersByTimeAsync(350)
+    expect(loadMatchHistory).toHaveBeenCalledWith(1, 'Alice')
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
   it('refreshes the shared queue every 9 seconds', async () => {
     vi.useFakeTimers()
     const originalUrl = window.location.href
@@ -2174,7 +2553,12 @@ describe('LiveMatch app', () => {
         resetPlayersAfterFinish: true,
         startMatchWithShuttle: true
       },
-      players: [],
+      players: [
+        { id: 1, name: 'Player 1', avatarUrl: '/api/member-avatar/m1?v=1' },
+        { id: 2, name: 'Player 2' },
+        { id: 3, name: 'Player 3' },
+        { id: 4, name: 'Player 4' }
+      ],
       couples: [],
       pending: [],
       queue: [],
@@ -2194,15 +2578,21 @@ describe('LiveMatch app', () => {
     await Promise.resolve()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
+    const stateRequestCount = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/sessions/test-session/state')).length
+    const announcementRequestCount = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/sessions/test-session/queue-announcement')).length
+
     await vi.advanceTimersByTimeAsync(8999)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(stateRequestCount()).toBe(1)
+    expect(announcementRequestCount()).toBe(8)
     await vi.advanceTimersByTimeAsync(1)
     await Promise.resolve()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(stateRequestCount()).toBe(2)
+    expect(announcementRequestCount()).toBe(9)
 
     wrapper.unmount()
+    const requestsBeforeUnmountWait = fetchMock.mock.calls.length
     await vi.advanceTimersByTimeAsync(9000)
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(requestsBeforeUnmountWait)
 
     globalThis.fetch = originalFetch
     window.history.pushState({}, '', originalUrl)
@@ -2237,15 +2627,168 @@ describe('LiveMatch app', () => {
     vi.useRealTimers()
   })
 
+  it('plays a five-second desktop player showcase when a queued match is announced', async () => {
+    vi.useFakeTimers()
+    const queuedMatch = {
+      id: 21,
+      court: '-',
+      level: 'middle',
+      a1: 1,
+      a2: 2,
+      b1: 3,
+      b2: 4
+    }
+    const baseState = {
+      session: { name: 'Showcase Session' },
+      settings: { courtNames: ['สนาม 1'] },
+      players: [
+        { id: 1, name: 'Player 1', avatarUrl: '/api/member-avatar/m1?v=1' },
+        { id: 2, name: 'Player 2' },
+        { id: 3, name: 'Player 3' },
+        { id: 4, name: 'Player 4' }
+      ],
+      pending: [],
+      queue: [queuedMatch],
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    await wrapper.setProps({
+      state: {
+        ...baseState,
+        queueAnnouncement: { sequence: 1, matchId: 21, court: 'สนาม 1', announcedAt: '2026-10-05T02:00:00Z' }
+      }
+    })
+    await flushPromises()
+
+    const showcase = wrapper.get('[data-testid="match-start-showcase"]')
+    expect(showcase.text()).toContain('MATCH 21')
+    expect(showcase.text()).toContain('COURT 1')
+    expect(showcase.text()).toContain('PLEASE REPORT TO COURT')
+    expect(showcase.text()).toContain('Player 1')
+    expect(showcase.text()).toContain('Player 4')
+    expect(showcase.findAll('.match-showcase-player')).toHaveLength(4)
+    expect(showcase.get('.match-showcase-portrait-image').attributes('src')).toBe('/api/member-avatar/m1?v=1')
+    expect(wrapper.get('.shared-next-fight-row').text()).toContain('Player 1')
+
+    await vi.advanceTimersByTimeAsync(4999)
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    expect(wrapper.get('.shared-next-fight-row').text()).toContain('Player 1')
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('centers the two player cards for a singles match showcase', async () => {
+    vi.useFakeTimers()
+    const queuedMatch = { id: 22, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+    const baseState = {
+      session: { name: 'Singles Showcase' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: true },
+      players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
+      pending: [],
+      queue: [queuedMatch],
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    await wrapper.setProps({ state: { ...baseState, queueAnnouncement: { sequence: 1, matchId: 22, court: 'สนาม 1' } } })
+    await flushPromises()
+
+    const lineup = wrapper.get('.match-showcase-lineup')
+    expect(lineup.classes()).toContain('match-showcase-lineup--singles')
+    expect(lineup.findAll('.match-showcase-player')).toHaveLength(2)
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('does not play the showcase when a match starts without a new announcement', async () => {
+    const queuedMatch = { id: 24, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+    const baseState = {
+      session: { id: 'start-only', name: 'Start Only' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: true },
+      players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
+      pending: [],
+      queue: [queuedMatch],
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    await wrapper.setProps({ state: { ...baseState, queue: [], live: [{ ...queuedMatch, court: 'สนาม 1', startedAt: '18:30' }] } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    expect(wrapper.get('.shared-flight-row--live').text()).toContain('Player 1')
+    wrapper.unmount()
+  })
+
+  it('does not play the desktop match showcase when the session setting is disabled', async () => {
+    const queuedMatch = { id: 23, court: '-', level: 'middle', a1: 1, a2: 0, b1: 2, b2: 0 }
+    const baseState = {
+      session: { name: 'No Showcase' },
+      settings: { courtNames: ['สนาม 1'], matchStartAnimationEnabled: false },
+      players: [{ id: 1, name: 'Player 1' }, { id: 2, name: 'Player 2' }],
+      pending: [],
+      queue: [queuedMatch],
+      live: [],
+      queueAnnouncement: { sequence: 0, matchId: 0, court: '' }
+    }
+    const wrapper = mount(SharedQueuePage, {
+      props: {
+        state: baseState,
+        share: { loading: false, error: '' },
+        playerName: (id) => `Player ${id}`,
+        matchLevelLabel: () => 'กลาง'
+      }
+    })
+
+    await wrapper.setProps({ state: { ...baseState, queueAnnouncement: { sequence: 1, matchId: 23, court: 'สนาม 1' } } })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="match-start-showcase"]').exists()).toBe(false)
+    expect(wrapper.get('.shared-next-fight-row').text()).toContain('Player 1')
+    wrapper.unmount()
+  })
+
   it('fades to available players after ten seconds when enabled', async () => {
     vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-17T10:15:00+07:00'))
     const wrapper = mount(SharedQueuePage, {
       props: {
         state: {
           session: { name: 'Fade Session' },
-          settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true },
+          settings: { courtNames: ['สนาม 1'], showWaitingOnQueueShare: true, showWaitTimePairing: true },
           players: [
-            { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle' },
+            { id: 1, name: 'คนรอจับคู่', active: true, paid: false, coupon: true, games: 1, level: 'middle', waitStartedAt: '2026-06-17T03:00:00.000Z' },
             { id: 2, name: 'คนไม่มีสิทธิ์', active: true, paid: false, coupon: false, games: 0, level: 'light' },
             { id: 3, name: 'เข้าแถวรอคิวแล้ว', active: true, paid: false, coupon: true, games: 0, level: 'heavy' },
             { id: 4, name: 'ทีมสร้างเอง', active: true, paid: false, coupon: false, games: 0, level: 'middle' }
@@ -2266,6 +2809,8 @@ describe('LiveMatch app', () => {
     expect(wrapper.find('.shared-waiting-people').text()).toContain('คนรอจับคู่')
     expect(wrapper.find('.shared-waiting-people').text()).toContain('ทีมสร้างเอง')
     expect(wrapper.find('.shared-waiting-people').text()).toContain('กำลังจับคู่')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('เวลาที่รอ')
+    expect(wrapper.find('.shared-waiting-people').text()).toContain('รอ 15 นาที')
     expect(wrapper.find('.shared-waiting-people').text()).not.toContain('คนไม่มีสิทธิ์')
     expect(wrapper.find('.shared-waiting-people').text()).not.toContain('เข้าแถวรอคิวแล้ว')
     wrapper.unmount()
@@ -2319,6 +2864,10 @@ describe('LiveMatch app', () => {
     expect(board.classes()).toContain('md:flex')
     expect(wrapper.get('.shared-queue-shell').classes()).toContain('md:hidden')
     expect(board.findAll('.shared-flight-row')).toHaveLength(2)
+    expect(board.get('.shared-next-fight-row').text()).toContain('คู่ถัดไป')
+    expect(board.findAll('.shared-fighter-name')).toHaveLength(2)
+    expect(wrapper.find('.shared-next-fight-card').exists()).toBe(false)
+    expect(wrapper.find('.shared-next-bout').exists()).toBe(false)
     expect(board.text()).toContain('รอเลือกสนาม')
     expect(board.text()).not.toContain('ระดับห้ามแสดง')
     expect(board.text()).not.toContain('ลูกแบด')

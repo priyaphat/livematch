@@ -26,6 +26,10 @@ export interface Product {
   price: number;
   cost: number;
   stock: number;
+  primaryStock: number;
+  secondaryStock: number;
+  totalStock: number;
+  trackStock: boolean;
   minStockAlert: number;
   unitsPerPack?: number;
   image: string;
@@ -41,6 +45,8 @@ export interface CartItem {
   quantity: number;
   note?: string;
   discount?: number; // percentage or fixed
+  allocatedTotal?: number;
+  splitAllocation?: { count: number; position: number; paidCount: number; share: number };
 }
 
 export interface OrderItem {
@@ -61,6 +67,7 @@ export interface Order {
   subtotal: number;
   discount: number;
   discountType: 'amount' | 'percent';
+  discountRate?: number;
   vatAmount: number;
   vatRate: number;
   isVatIncluded: boolean;
@@ -96,6 +103,7 @@ export interface HeldOrder {
   sourceSaleIds?: string[];
   matchTotal?: number;
   posTotal?: number;
+  splitAllocations?: Array<{ saleId: string; count: number; position: number; paidCount: number; share: number }>;
 }
 
 export interface StockMovement {
@@ -105,7 +113,8 @@ export interface StockMovement {
   productId: string;
   productName: string;
   productSku: string;
-  type: 'in' | 'out' | 'adjust'; // รับเข้า | จ่ายออก | ปรับปรุง
+  type: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation?: 'primary' | 'secondary';
   quantity: number;
   beforeStock: number;
   afterStock: number;
@@ -120,6 +129,8 @@ export interface StockMovement {
   netTotalValue?: number;
   previousCostPerUnit?: number;
   resultingCostPerUnit?: number;
+  reversalOfMovementId?: string;
+  reversedByMovementId?: string;
 }
 
 export interface BatchStockOperationItem {
@@ -133,7 +144,10 @@ export interface BatchStockOperationItem {
 export interface StockBatchSummary {
   id?: string;
   referenceNo: string;
-  type: 'in' | 'out' | 'adjust';
+  type: 'in' | 'out' | 'adjust' | 'transfer';
+  stockLocation?: 'primary' | 'secondary';
+  sourceStockLocation?: 'primary' | 'secondary';
+  destinationStockLocation?: 'primary' | 'secondary';
   itemsCount: number;
   totalQuantity: number;
   totalCostValue: number;
@@ -148,6 +162,11 @@ export interface StockBatchSummary {
   netTotalValue?: number;
   discountType?: 'none' | 'amount' | 'percent';
   discountRate?: number;
+  status: 'active' | 'cancelled';
+  cancelledAt?: string;
+  cancelledByName?: string;
+  cancelReason?: string;
+  canCancel: boolean;
 }
 
 export interface StockSummary {
@@ -207,6 +226,10 @@ export interface StoreSettings {
   autoPrintReceipt: boolean;
   enableSoundEffects: boolean;
   hardwareKeyboardMode: boolean;
+  secondaryStockEnabled: boolean;
+  primaryStockName: string;
+  secondaryStockName: string;
+  saleStockLocation: 'primary' | 'secondary';
   cashierName: string;
   theme?: 'light' | 'dark';
 }

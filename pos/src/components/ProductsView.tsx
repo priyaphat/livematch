@@ -3,6 +3,7 @@ import { usePos } from '../context/PosContext';
 import { Product, Category, UnitItem, NoteOption } from '../types';
 import { formatCurrency } from '../utils/formatters';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
+import { POSPermissions } from '../api/posAccess';
 import {
   Package,
   Plus,
@@ -32,6 +33,30 @@ import {
 
 const MAX_PRODUCT_IMAGE_BYTES = 2 * 1024 * 1024;
 const MAX_PRODUCT_IMAGE_DIMENSION = 1280;
+const AUTO_PRODUCT_BARCODE_PREFIX = '885012345';
+
+const nextAvailableProductCodes = (products: Product[]) => {
+  const usedSKUs = new Set(products.map((product) => product.sku.trim().toLocaleLowerCase()));
+  const usedBarcodes = new Set(
+    products.map((product) => product.barcode?.trim()).filter((barcode): barcode is string => Boolean(barcode)),
+  );
+  let sequence = products.reduce((highest, product) => {
+    const matched = /^PROD-(\d+)$/i.exec(product.sku.trim());
+    if (!matched) return highest;
+    const value = Number.parseInt(matched[1], 10);
+    return Number.isSafeInteger(value) ? Math.max(highest, value) : highest;
+  }, 0) + 1;
+
+  while (true) {
+    const suffix = String(sequence).padStart(3, '0');
+    const sku = `PROD-${suffix}`;
+    const barcode = `${AUTO_PRODUCT_BARCODE_PREFIX}${suffix}`;
+    if (!usedSKUs.has(sku.toLocaleLowerCase()) && !usedBarcodes.has(barcode)) {
+      return { sku, barcode };
+    }
+    sequence += 1;
+  }
+};
 
 const normalizeNumberInput = (value: string, allowDecimal: boolean) => {
   if (value === '') return '';
@@ -95,7 +120,7 @@ const resizeProductImage = async (file: File) => {
   }
 };
 
-export const ProductsView: React.FC = () => {
+export const ProductsView: React.FC<{ permissions: POSPermissions }> = ({ permissions }) => {
   const {
     products,
     addProduct,
@@ -114,6 +139,7 @@ export const ProductsView: React.FC = () => {
     updateNoteOption,
     deleteNoteOption,
     settings,
+    showToast,
   } = usePos();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -121,6 +147,7 @@ export const ProductsView: React.FC = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [isSavingProduct, setIsSavingProduct] = useState(false);
 
   // Modals for Category, Unit, and Note management
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -157,6 +184,7 @@ export const ProductsView: React.FC = () => {
   const [priceInput, setPriceInput] = useState('80');
   const [costInput, setCostInput] = useState('30');
   const [stockInput, setStockInput] = useState('20');
+  const [secondaryStockInput, setSecondaryStockInput] = useState('0');
   const [minStockInput, setMinStockInput] = useState('10');
   const [unitsPerPackInput, setUnitsPerPackInput] = useState('0');
 
@@ -172,6 +200,10 @@ export const ProductsView: React.FC = () => {
     price: 80,
     cost: 30,
     stock: 20,
+    primaryStock: 20,
+    secondaryStock: 0,
+    totalStock: 20,
+    trackStock: true,
     minStockAlert: 10,
     unitsPerPack: 0,
     unit: units[0]?.name || 'แก้ว',
@@ -266,15 +298,19 @@ export const ProductsView: React.FC = () => {
 
   // Open add product
   const handleOpenAdd = () => {
-    const nextSeq = String(products.length + 1).padStart(3, '0');
+    const generatedCodes = nextAvailableProductCodes(products);
     setFormData({
-      sku: `PROD-${nextSeq}`,
-      barcode: `885012345${nextSeq}`,
+      sku: generatedCodes.sku,
+      barcode: generatedCodes.barcode,
       name: '',
       category: categories[0]?.id || 'coffee',
       price: 80,
       cost: 25,
       stock: 30,
+      primaryStock: 30,
+      secondaryStock: 0,
+      totalStock: 30,
+      trackStock: true,
       minStockAlert: 10,
       unitsPerPack: 0,
       unit: units[0]?.name || 'แก้ว',
@@ -288,6 +324,7 @@ export const ProductsView: React.FC = () => {
     setPriceInput('80');
     setCostInput('25');
     setStockInput('30');
+    setSecondaryStockInput('0');
     setMinStockInput('10');
     setUnitsPerPackInput('0');
     setShowInlineAddCategory(false);
@@ -307,6 +344,10 @@ export const ProductsView: React.FC = () => {
       price: p.price,
       cost: p.cost,
       stock: p.stock,
+      primaryStock: p.primaryStock,
+      secondaryStock: p.secondaryStock,
+      totalStock: p.totalStock,
+      trackStock: p.trackStock,
       minStockAlert: p.minStockAlert,
       unitsPerPack: p.unitsPerPack || 0,
       unit: p.unit,
@@ -321,28 +362,53 @@ export const ProductsView: React.FC = () => {
     setShowInlineAddNote(false);
     setPriceInput(String(p.price));
     setCostInput(String(p.cost));
-    setStockInput(String(p.stock));
+    setStockInput(String(p.primaryStock));
+    setSecondaryStockInput(String(p.secondaryStock));
     setMinStockInput(String(p.minStockAlert));
     setUnitsPerPackInput(String(p.unitsPerPack || 0));
     setIsAddProductModalOpen(true);
   };
 
-  const handleSubmitProduct = (e: React.FormEvent) => {
+  const handleSubmitProduct = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingProduct) return;
+    const normalizedSKU = formData.sku.trim();
+    if (!normalizedSKU) {
+      showToast('กรุณากรอกรหัส SKU', 'error');
+      return;
+    }
+    const duplicateSKU = products.find((product) =>
+      product.id !== editingProduct?.id && product.sku.trim().toLocaleLowerCase() === normalizedSKU.toLocaleLowerCase()
+    );
+    if (duplicateSKU) {
+      showToast(`รหัส SKU "${normalizedSKU}" ถูกใช้กับสินค้า "${duplicateSKU.name}" แล้ว`, 'error');
+      return;
+    }
     const productData: Omit<Product, 'id'> = {
       ...formData,
+      sku: normalizedSKU,
+      barcode: formData.barcode?.trim() || '',
+      name: formData.name.trim(),
       price: Number(priceInput) || 0,
       cost: Number(costInput) || 0,
-      stock: Number.parseInt(stockInput, 10) || 0,
-      minStockAlert: Number.parseInt(minStockInput, 10) || 0,
-      unitsPerPack: Number.parseInt(unitsPerPackInput, 10) || 0,
+      stock: formData.trackStock ? (settings.saleStockLocation === 'secondary' ? Number.parseInt(secondaryStockInput, 10) || 0 : Number.parseInt(stockInput, 10) || 0) : 0,
+      primaryStock: formData.trackStock ? Number.parseInt(stockInput, 10) || 0 : 0,
+      secondaryStock: formData.trackStock ? Number.parseInt(secondaryStockInput, 10) || 0 : 0,
+      totalStock: formData.trackStock ? (Number.parseInt(stockInput, 10) || 0) + (Number.parseInt(secondaryStockInput, 10) || 0) : 0,
+      minStockAlert: formData.trackStock ? Number.parseInt(minStockInput, 10) || 0 : 0,
+      unitsPerPack: formData.trackStock ? Number.parseInt(unitsPerPackInput, 10) || 0 : 0,
     };
-    if (editingProduct) {
-      updateProduct(editingProduct.id, productData);
-    } else {
-      addProduct(productData);
+    setIsSavingProduct(true);
+    try {
+      const saved = editingProduct
+        ? await updateProduct(editingProduct.id, productData)
+        : await addProduct(productData);
+      if (saved) setIsAddProductModalOpen(false);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกสินค้าไม่สำเร็จ', 'error');
+    } finally {
+      setIsSavingProduct(false);
     }
-    setIsAddProductModalOpen(false);
   };
 
   // Toggle single note option binding on product
@@ -656,7 +722,7 @@ export const ProductsView: React.FC = () => {
         </aside>
 
         {/* RIGHT MAIN AREA: Search Bar & Products Table */}
-        <section className="flex-1 flex flex-col min-h-0 p-3 sm:p-5 overflow-y-auto custom-scrollbar space-y-4">
+        <section className="flex-1 flex flex-col min-h-0 gap-4 overflow-hidden p-3 sm:p-5">
           {/* Search & Stats Bar */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
             <div className="relative flex-1 max-w-md">
@@ -686,8 +752,8 @@ export const ProductsView: React.FC = () => {
           </div>
 
           {/* Products Table Card */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden shadow-xs">
-            <div className="overflow-x-auto">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xs dark:border-slate-800 dark:bg-slate-900">
+            <div className="min-h-0 flex-1 overflow-auto custom-scrollbar">
               <table className="w-full text-left text-xs text-slate-700 dark:text-slate-300">
                 <thead className="bg-slate-50 dark:bg-slate-950 text-slate-500 dark:text-slate-400 font-bold border-b border-slate-200 dark:border-slate-800 uppercase tracking-wider text-[11px]">
                   <tr>
@@ -720,7 +786,7 @@ export const ProductsView: React.FC = () => {
                     </tr>
                   ) : (
                     paginatedProducts.map((prod) => {
-                      const isLow = prod.stock <= prod.minStockAlert;
+                      const isLow = prod.trackStock && prod.stock <= prod.minStockAlert;
                       const margin = calculateMargin(prod.price, prod.cost);
                       const catObj = categories.find((c) => c.id === prod.category);
 
@@ -773,17 +839,13 @@ export const ProductsView: React.FC = () => {
 
                           {/* Cost */}
                           <td className="p-3.5 text-right font-mono text-slate-500 dark:text-slate-400">
-                            {formatCurrency(
-                              prod.cost,
-                              settings.currencySymbol,
-                              settings.decimalPlaces
-                            )}
+                            {permissions.view_costs ? formatCurrency(prod.cost, settings.currencySymbol, settings.decimalPlaces) : '***'}
                           </td>
 
                           {/* Margin % */}
                           <td className="p-3.5 text-center">
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-black bg-yellow-500/15 text-yellow-700 dark:text-yellow-300 border border-yellow-500/30">
-                              {margin}%
+                              {permissions.view_costs ? `${margin}%` : '***'}
                             </span>
                           </td>
 
@@ -796,8 +858,10 @@ export const ProductsView: React.FC = () => {
                                   : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200'
                               }`}
                             >
-                              {isLow && <AlertTriangle className="w-3 h-3 text-red-600 dark:text-red-400" />}
-                              {prod.stock} {prod.unit}
+                              {prod.trackStock ? <>
+                                {isLow && <AlertTriangle className="w-3 h-3 text-red-600 dark:text-red-400" />}
+                                {prod.stock} {prod.unit}
+                              </> : <span className="font-sans text-slate-500">ไม่ติดตามสต็อก</span>}
                             </span>
                           </td>
 
@@ -845,7 +909,7 @@ export const ProductsView: React.FC = () => {
               </table>
             </div>
             {filteredProducts.length > 0 && (
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-5 py-4 border-t border-slate-200 dark:border-slate-800">
+              <div className="flex shrink-0 flex-col items-center justify-between gap-3 border-t border-slate-200 bg-white px-5 py-3 sm:flex-row dark:border-slate-800 dark:bg-slate-900">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
                   แสดง {firstProductIndex + 1}–
                   {Math.min(firstProductIndex + productsPerPage, filteredProducts.length)} จาก{' '}
@@ -894,6 +958,7 @@ export const ProductsView: React.FC = () => {
               </div>
               <button
                 onClick={() => setIsAddProductModalOpen(false)}
+                disabled={isSavingProduct}
                 className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white flex items-center justify-center transition-colors"
               >
                 <X className="w-4 h-4" />
@@ -1083,7 +1148,9 @@ export const ProductsView: React.FC = () => {
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                       ราคาขาย (Price) *
                     </label>
-                    <input
+                    {editingProduct && !permissions.view_costs ? (
+                      <div className="w-full rounded-xl border border-slate-300 bg-slate-100 px-3 py-2 text-sm font-black tracking-widest text-slate-500 dark:border-slate-700 dark:bg-slate-900">***</div>
+                    ) : <input
                       type="number"
                       required
                       min="0"
@@ -1096,7 +1163,7 @@ export const ProductsView: React.FC = () => {
                       }}
                       onBlur={() => setPriceInput((value) => value || '0')}
                       className="w-full bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl px-3 py-2 text-sm text-red-600 dark:text-yellow-400 font-black focus:outline-none focus:border-red-500 dark:focus:border-yellow-400"
-                    />
+                    />}
                   </div>
                   <div>
                     <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
@@ -1123,27 +1190,40 @@ export const ProductsView: React.FC = () => {
                   <span>
                     กำไรต่อชิ้น:{' '}
                     <strong className="text-red-600 dark:text-yellow-400 font-black font-mono">
-                      {formatCurrency(
+                      {permissions.view_costs || !editingProduct ? formatCurrency(
                         (Number(priceInput) || 0) - (Number(costInput) || 0),
                         settings.currencySymbol,
                         settings.decimalPlaces
-                      )}
+                      ) : '***'}
                     </strong>
                   </span>
                   <span>
                     มาร์จิ้นกำไร:{' '}
                     <strong className="text-red-600 dark:text-yellow-400 font-black font-mono">
-                      {calculateMargin(Number(priceInput) || 0, Number(costInput) || 0)}%
+                      {permissions.view_costs || !editingProduct ? `${calculateMargin(Number(priceInput) || 0, Number(costInput) || 0)}%` : '***'}
                     </strong>
                   </span>
                 </div>
               </div>
 
               {/* Stock & Alert Level */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <label className="flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 font-bold dark:border-slate-700 dark:bg-slate-950">
+                <input type="checkbox" checked={!formData.trackStock} onChange={(e) => {
+                  const trackStock = !e.target.checked;
+                  setFormData({ ...formData, trackStock, minStockAlert: trackStock ? Number.parseInt(minStockInput, 10) || 0 : 0, unitsPerPack: trackStock ? Number.parseInt(unitsPerPackInput, 10) || 0 : 0 });
+                  if (!trackStock) {
+                    setStockInput('0');
+                    setSecondaryStockInput('0');
+                    setMinStockInput('0');
+                    setUnitsPerPackInput('0');
+                  }
+                }} className="h-4 w-4 accent-red-600" />
+                <span>ไม่ต้องสต็อกของ <small className="ml-1 font-normal text-slate-500">ขายได้โดยไม่ตรวจหรือตัดจำนวน</small></span>
+              </label>
+              {formData.trackStock ? <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
-                    จำนวนสต็อกเริ่มต้น
+                    {settings.primaryStockName} เริ่มต้น
                   </label>
                   <input
                     type="number"
@@ -1159,6 +1239,10 @@ export const ProductsView: React.FC = () => {
                     className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-red-500 dark:focus:border-yellow-400 disabled:cursor-not-allowed disabled:opacity-60"
                   />
                 </div>
+                {settings.secondaryStockEnabled && <div>
+                  <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">{settings.secondaryStockName} เริ่มต้น</label>
+                  <input type="number" min="0" value={secondaryStockInput} disabled={Boolean(editingProduct)} onFocus={(e) => e.currentTarget.select()} onChange={(e) => { const value = normalizeNumberInput(e.target.value, false); if (value !== null) setSecondaryStockInput(value); }} onBlur={() => setSecondaryStockInput((value) => value || '0')} className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3 py-2 text-xs disabled:cursor-not-allowed disabled:opacity-60" />
+                </div>}
                 <div>
                   <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1">
                     เตือนเมื่อสต็อกต่ำกว่า
@@ -1196,7 +1280,7 @@ export const ProductsView: React.FC = () => {
                   />
                   <p className="mt-1 text-[10px] text-slate-500">0 = ไม่คำนวณเป็นแพ็ค</p>
                 </div>
-              </div>
+              </div> : <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500 dark:border-slate-700 dark:bg-slate-950">สินค้านี้ขายได้โดยไม่แสดงจำนวนคงเหลือ ไม่มีการเตือนสต็อกต่ำ และไม่คำนวณจำนวนแพ็ค</div>}
 
               {/* IMAGE UPLOAD SECTION (No URL field) */}
               <div className="space-y-2">
@@ -1413,15 +1497,17 @@ export const ProductsView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsAddProductModalOpen(false)}
+                  disabled={isSavingProduct}
                   className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 transition-colors"
                 >
                   ยกเลิก
                 </button>
                 <button
                   type="submit"
-                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-600 text-white text-xs font-black shadow-md shadow-red-600/30 transition-all active:scale-95"
+                  disabled={isSavingProduct}
+                  className="px-6 py-2.5 rounded-xl bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-600 text-white text-xs font-black shadow-md shadow-red-600/30 transition-all active:scale-95 disabled:cursor-wait disabled:opacity-60"
                 >
-                  {editingProduct ? 'บันทึกการแก้ไข' : 'ยืนยันเพิ่มสินค้า'}
+                  {isSavingProduct ? 'กำลังบันทึก...' : editingProduct ? 'บันทึกการแก้ไข' : 'ยืนยันเพิ่มสินค้า'}
                 </button>
               </div>
             </form>

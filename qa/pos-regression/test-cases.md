@@ -4,6 +4,11 @@
 
 | Case ID | P | Preconditions | Steps | Expected Result | Automation | Browser |
 |---|---:|---|---|---|---|---|
+| POS-QC-001 | P0 | QA Backoffice credentials | ตรวจ bootstrap/summary แล้ว Login ผ่าน UI | API ใหม่และ legacy ใช้ได้พร้อมกันและ Login สำเร็จโดยไม่มี 404/5xx | Playwright | Chromium/WebKit |
+| POS-QC-002 | P0 | Session มีประวัติ 125 เกม | เปิดหน้า 1 ไปหน้า 7 และค้นหาเกมเก่าสุด | SQL pagination เข้าถึงเกมเกิน 100 และค้นหาจาก server ได้ | Playwright | Chromium/WebKit |
+| POS-QC-003 | P1 | Admin มี Match Session | เปิดทุกเมนู Match แบบ read-only | ทุกเมนูโหลดได้และไม่มี unexpected 404/5xx | Playwright | Chromium |
+| POS-QC-004 | P0 | QA Backoffice credentials | Login แล้วเปิดทุกแท็บ Backoffice ตามลำดับ | ไม่โหลดข้อมูลแท็บก่อนคลิก และทุกแท็บเปิดโดยไม่มี 404/5xx | Playwright | Chromium |
+| POS-QC-005 | P0 | QA owner เปิด Booking/Member | เปิดทุกแท็บ Booking และหน้าสมาชิก | History/Blacklist โหลดเมื่อเปิดแท็บ และทุกหน้าเปิดโดยไม่มี 404/5xx | Playwright | Chromium |
 | POS-AUTH-001 | P1 | Owner A, POS enabled | Login ด้วยอีเมลและรหัสผ่าน | เข้า POS ได้และ session เป็น Owner A | Playwright | Chromium/WebKit |
 | POS-AUTH-002 | P1 | Staff active | Login ด้วย Staff email/number + PIN | ทั้งสอง identifier เข้าได้ด้วย actor เดิม | Go | API |
 | POS-AUTH-003 | P1 | Owner A | Login ด้วยอีเมลตัวพิมพ์ต่างกัน | Login สำเร็จ | Go | API |
@@ -16,6 +21,7 @@
 | POS-SEC-002 | P1 | Authenticated | Mutation ไม่มี/ผิด CSRF | API ปฏิเสธ | Playwright | API |
 | POS-SEC-003 | P2 | Authenticated | อ่าน auth/settings/catalog | มี `Cache-Control: no-store` และ error ไม่รั่ว SQL | Playwright | API |
 | POS-SEC-004 | P1 | Cashier restricted | เรียก endpoint ที่ไม่มีสิทธิ์ | API ปฏิเสธแม้เรียกตรง | Go | API |
+| POS-SEC-005 | P0 | Login Admin A/B คนละร้าน | สลับอ่านรายการและยิง ID ตรงของสินค้า สต็อก บิล สมาชิก รายงาน ตั้งค่า Match และจองสนาม | ไม่พบข้อมูลข้ามร้านและคำขออ่าน/แก้ไข resource ของอีกร้านตอบ 403/404 | Playwright | API |
 | POS-CAT-001 | P2 | Seed catalog | เปิดหน้าขายและสินค้า | แสดงชื่อหมวดหมู่/หน่วย ไม่แสดง ID/code | Playwright | Chromium |
 | POS-CAT-002 | P2 | Owner | Category/Unit CRUD + pagination | ข้อมูลถูก tenant และหน้า paginate ถูก | Manual | Chromium |
 | POS-CAT-003 | P2 | Owner | Product create/edit/deactivate | default image, ราคา 2 ตำแหน่ง, ไม่มี leading zero | Manual | Chromium |
@@ -27,6 +33,11 @@
 | POS-STOCK-001 | P0 | Stock seed | รับเข้าหลายรายการ ส่วนลดบาท/เปอร์เซ็นต์ | กระจายครบทุกสตางค์ ไม่มีต้นทุนติดลบ | Playwright | API |
 | POS-STOCK-002 | P0 | Stock 10@100 | รับ 10 ชิ้น กรอกมูลค่ารวม 800 บาท เลขบิล และลด 100 บาท | ระบบคำนวณต้นทุนรับเข้า 80 บาท/หน่วย, weighted average = 85 บาท และเก็บเลขบิลครบ | Playwright | API |
 | POS-STOCK-016 | P1 | เปิด modal รับเข้า/จ่ายออก/ปรับยอดและสินค้ามี barcode | Focus ช่องค้นหาแล้วยิง barcode พร้อม suffix Enter | เลือกสินค้าตรงตัวเข้าเอกสาร, ล้างช่องค้นหา และไม่ submit modal | Playwright | Chromium |
+| POS-STOCK-017 | P0 | เปิดสต็อกที่ 2 และสินค้ามีสองยอด | โอนสินค้าระหว่างคลังและกรอง movement | หัก/เพิ่มแบบ atomic ต้นทุนไม่เปลี่ยน และปิดสต็อกที่ 2 ไม่ได้ขณะมียอด | Playwright | API |
+| POS-STOCK-018 | P0 | สินค้าติ๊กไม่ติดตามสต็อก | ตรวจฟอร์ม/ตาราง/หน้าขาย แล้วขายจำนวนมาก | ไม่แสดงจำนวนคงเหลือ ซ่อนเตือนสต็อกต่ำและจำนวนในแพ็ค, API บังคับค่าทั้งสองเป็น 0, ขายสำเร็จ ไม่ตัดยอด และไม่สร้าง stock movement | Playwright | API/Chromium |
+| POS-STOCK-019 | P0 | สินค้าทดลองเริ่มสต็อกหลัก 100 สต็อกที่ 2 จำนวน 40 ต้นทุน 25 บาท ราคา 50 บาท แพ็คละ 12 | ซื้อเข้า 20, โอน 30, นำออก 5, ปรับลด 2, พักและชำระ 4, พัก/void 3, เปลี่ยนคลังขายแล้วพัก/void 2 | ยอดสุดท้ายหลัก 88 สต็อกที่ 2 จำนวน 61 รวม 149, ต้นทุนไม่เปลี่ยน, ทุก movement ต่อกันและรายงาน/ประวัติ/Excel ตรงถึงหน่วยและสตางค์ | Playwright | API/Chromium/Excel |
+| POS-STOCK-020 | P0 | ฐาน QA หรือฐานร้านแบบ read-only | รัน stock ledger audit ทุก tenant | ไม่มียอดติดลบ, balance chain ขาด, transfer ขาดคู่, sale/void/batch movement ผิด, allocation เงินไม่ตรง หรือสินค้าที่ไม่ติดตามมี movement | Go | PostgreSQL read-only |
+| POS-STOCK-021 | P0 | ผ่าน scenario ledger POS-STOCK-019 แล้ว | เปิดจัดการสินค้า ประวัติ/ใบเสร็จ รายงานสินค้าคงเหลือ และ Export Excel | ราคา 50 บาท ยอดชำระ 200 บาท สต็อกที่ 2 เท่ากับ 61, แพ็ค 5+เศษ 1 และมูลค่าทุน/ขายใน Excel ตรงทุกสตางค์ | Playwright | Chromium/Excel |
 | POS-STOCK-003 | P0 | Stock จำกัด | จ่ายออกเกินคงเหลือ | rollback ทั้งเอกสาร สต็อกไม่ติดลบ | Playwright | API |
 | POS-STOCK-004 | P1 | Product exists | ปรับยอดเพิ่ม/ลด | เก็บ qty/value ก่อน หลัง และผลต่าง | Playwright | API |
 | POS-STOCK-005 | P2 | Supplier exists | CRUD + เปิดรับเข้า + แก้ชื่อภายหลัง | เลือก supplier อัตโนมัติและเอกสารเก็บ snapshot | Manual | Chromium |
@@ -50,6 +61,7 @@
 | POS-SALE-008 | P1 | สินค้า active มี barcode และ stock โดยเครื่องอาจตั้งแป้นพิมพ์ภาษาไทย | ยิง barcode จากพื้นที่ใดก็ได้โดยไม่ focus ช่องค้นหา จำลอง key code ที่ระบุไม่ได้, text injection ไม่มี Enter และรหัสตัวอักษรใหญ่ที่เครื่องส่ง Shift คั่น | ช่องรับ scanner แบบซ่อนรับ focus อัตโนมัติ, แปลงแป้นไทย, ไม่ล้าง buffer เมื่อเจอ modifier, จบการอ่านและเพิ่มตะกร้าโดยไม่เกิน stock | Playwright | Chromium |
 | POS-SALE-009 | P0 | Browser เคยมี catalog จำลองใน localStorage | เปิดหน้าขาย | ไม่แสดงหรือใช้สินค้า/หมวดหมู่จำลอง และล้าง cache catalog เดิม | Playwright | Chromium |
 | POS-SALE-010 | P0 | API สร้าง PromptPay QR ใช้งานไม่ได้ | เลือกชำระด้วย PromptPay | ไม่สร้าง QR จากหมายเลขสำรอง แจ้งข้อผิดพลาด และปิดปุ่มยืนยัน | Playwright | Chromium |
+| POS-SALE-011 | P1 | มีสินค้าในตะกร้า | เปิดชำระ เลือก PromptPay ปิด modal แล้วล้างสินค้า | ไม่เรียก QR ด้วยยอด 0 และไม่มี 400/console error | Playwright | Chromium |
 | POS-HOLD-001 | P1 | Members exist | ค้น member ใน Hold | debounce 500 ms, เลือกสมาชิกจริง, เพิ่มสมาชิกได้ | Manual | Chromium |
 | POS-HOLD-002 | P1 | Same member | Hold หลาย sale | การ์ดเดียว แต่ source documents ครบ | Go | API |
 | POS-PAY-001 | P1 | Receivables 2+ members | เลือกหลายคน จ่าย cash/QR | settlement สำเร็จครบและยอดถูก | Manual | Chromium |
@@ -61,11 +73,16 @@
 | POS-HW-002 | P1 | W POS firmware รายงาน user agent เป็น Linux/Chromium | เปิดหน้า POS | ปุ่มคีย์บอร์ด USB ยังแสดงและสลับ inputmode ได้ | Playwright | Chromium Linux UA |
 | POS-PRINT-001 | P1 | Owner เปิดตั้งค่าเครื่องพิมพ์ | กดค้นหา/เลือกเครื่องพิมพ์ | สร้างเอกสาร 80 mm ในหน้าเดิมและเปิด Android Print Dialog | Playwright | Chromium mocked print |
 | POS-PRINT-002 | P1 | W POS Android เปิด iMin H5 Web Print service | ตรวจหาและทดสอบ InnerPrinter | เชื่อมต่อ localhost WebSocket, ตรวจสถานะและส่งข้อความไทยพร้อม feed/cut โดยไม่เปิด Android Print Dialog | Playwright | Chromium mocked iMin WebSocket |
+| POS-PRINT-003 | P1 | มีบิลขายและ Android InnerPrinter พร้อมใช้ | เปิด Preview แล้วกดพิมพ์ใบเสร็จ | ส่งข้อความใบเสร็จผ่าน native text แบบเดียวกับหน้า Settings ไม่ส่ง bitmap ที่อาจออกกระดาษเปล่า และไม่เปิด Android Print Dialog | Playwright | Chromium mocked iMin WebSocket |
+| POS-PRINT-004 | P1 | เครื่อง WPOS I24D03 เปิด native printer bridge | พิมพ์ใบเสร็จจาก POS | ใช้ native text printing และไม่ส่ง bitmap ที่อาจทำให้ได้กระดาษเปล่า | Playwright | Chromium mocked WPOS bridge |
 | POS-RCPT-001 | P1 | Paid sale | เปิด/พิมพ์ใบเสร็จ | ไม่มีสาขา; มีสินค้า VAT วิธีชำระ ผู้ขาย ยอดถูก | Manual | Chromium/printer |
 | POS-BILL-001 | P1 | มีประวัติชำระเงิน | กดดูรายละเอียดจากแท็บประวัติการขาย | modal แสดงลูกค้า วันเวลา ผู้รับชำระ ช่องทาง รายการ Match/POS ยอดรวม เงินรับ/ทอนหรือเลขอ้างอิงครบ | Playwright | Chromium |
 | POS-BILL-002 | P1 | มีประวัติอย่างน้อย 21 รายการ | ค้นหา กรอง และเปลี่ยนหน้าประวัติการขาย | API แบ่งหน้าละ 20, จำนวนรวม/ช่วงรายการถูก และตัวกรองทำงานกับข้อมูลทุกหน้า | Playwright | Chromium/API |
 | POS-BILL-003 | P1 | เลือกยอดพักอย่างน้อย 1 บิล | กดชำระเงินทันทีและตรวจ Modal | แสดงรายการ Match/POS และสินค้าในแต่ละบิลครบ; Desktop แบ่งรายละเอียดซ้าย/ชำระเงินขวา และ Mobile เรียงหนึ่งคอลัมน์ | Manual | Chromium |
 | POS-BILL-004 | P3 | มีรายการพักยอดอย่างน้อย 1 บิล | เปิดหน้าจัดการบิลบน Desktop | การ์ดรายการพักยอดใช้ grid 4 ใบต่อแถวที่ breakpoint Desktop | Playwright | Chromium |
+| POS-BILL-005 | P1 | เข้าหน้าจัดการบิล | เปิดแท็บพักบิลแล้วสลับไปแท็บประวัติ | แท็บพักบิลเรียกเฉพาะ receivables; แท็บประวัติเรียกเฉพาะ payment-history และหยุด polling ของอีกแท็บ | Playwright | Chromium/Network |
+| POS-BILL-006 | P1 | มีบิลพักยอดของสมาชิก | ดึงบิลกลับไปแก้ไขแล้วกดพักบิล | แสดงชื่อเจ้าของเดิม พักกลับชื่อเดิมทันที และไม่เปิด modal เลือกสมาชิก | Playwright | Chromium/API |
+| POS-BILL-007 | P2 | มีบิลพักยอดอย่างน้อย 2 บิล | เลือกหลายบิล | แถบคำสั่งมีเฉพาะชำระรวม ไม่มีรวมเข้าตะกร้าหรือลบหลายบิล | Playwright | Chromium |
 | POS-XMATCH-001 | P1 | Match-only linked member | เปิด receivables POS | เห็น Match charge แม้ POS = 0 | Playwright | API |
 | POS-XMATCH-002 | P1 | Multiple linked players | เปิด receivables | สมาชิกมีค่า Match ทุกคนขึ้น; guest ไม่รวม | Playwright | API |
 | POS-XMATCH-003 | P1 | Match + shuttle + POS | เปิดรายละเอียดสองระบบ | ค่าสนาม ลูกแบด session และชื่อสินค้าแสดงครบ | Vitest | Match |
@@ -92,8 +109,13 @@
 | POS-RPT-003 | P2 | มี paid/hold/void sales หลายวัน | เปิดรายงานสินค้าที่ขายช่วง day/week/month/custom และเปลี่ยนหน้า | รวมเฉพาะ paid ตามเวลารับชำระ Asia/Bangkok พร้อมจำนวนขาย จำนวนบิลและยอดขายหลังส่วนลด/VAT | Playwright | API/Chromium |
 | POS-RPT-004 | P2 | สินค้าคงเหลือ 101 ชิ้น กำหนด 12 ชิ้น/แพ็ค | เปิดรายงานสินค้าคงเหลือและใช้ทุก filter | แสดง 8 แพ็ค + เศษ 5 ชิ้น, สินค้า active/inactive, มูลค่าทุน/ขาย และ pagination ถูกต้อง | Playwright | API/Chromium |
 | POS-RPT-005 | P1 | มี LiveMatch 2 Session วันเดียวกัน พร้อมผู้เล่นหลายประเภทและลูกแบดคืน/ไม่คืน | เปิดรายงาน POS + LiveMatch | แยก 2 Session, นับผู้เล่นทุกคน, นับลูกจริงครั้งเดียว, ไม่นับลูกที่คืน และรวมยอดตาม snapshot ถูกต้อง | Playwright | API/Chromium |
-| POS-RPT-006 | P1 | Staff มี/ไม่มี reports และ report_export; Admin A/B | เรียก report APIs และส่งออกทุก tab พร้อม filter | บังคับสิทธิ์และ tenant isolation, export ทั้งผลลัพธ์ที่ตรง filter โดยไม่แสดง code เทคนิค | Go/Playwright | API/Chromium/Excel |
+| POS-RPT-006 | P1 | Staff มี/ไม่มี reports, สิทธิ์รายงานย่อยทั้ง 9 เมนู และ report_export; Admin A/B | เปิดแต่ละแท็บ เรียก report APIs พิมพ์ และส่งออกพร้อม filter | แสดงเฉพาะเมนูที่อนุญาต, API/print/export ปฏิเสธรายงานที่ไม่มีสิทธิ์, tenant isolation ถูกต้อง และไม่แสดง code เทคนิค | Go/Playwright | API/Chromium/Excel |
 | POS-RPT-007 | P2 | มีเอกสารรับเข้าที่ระบุซัพพลายเออร์และส่วนลด | ค้นหาชื่อ เลือกซัพพลายเออร์ ดูรายละเอียด และส่งออก Excel รวม/รายเอกสาร | ค่าเริ่มต้นเป็นวันนี้และซัพพลายเออร์ทั้งหมด ตัวกรองทำงาน รายการย่อย/ยอดตรงเอกสาร และคอลัมน์เงินใน Excel เป็นตัวเลข 2 ตำแหน่ง | Playwright | API/Chromium/Excel |
+| POS-RPT-008 | P1 | สินค้าคงเหลือกำหนดจำนวนต่อแพ็ก | พิมพ์รายงานสินค้าคงเหลือแบบสลิปย่อ | แสดงแพ็กเต็ม เศษ และยอดรวมหน่วย ส่วนสินค้าไม่กำหนดแพ็กแสดงจำนวนหน่วย | Playwright | Chromium |
+| POS-RPT-009 | P0 | Staff เปิดรายงานสินค้าคงเหลือแต่ถูกปิดสิทธิ์มูลค่า | เปิดตาราง ตรวจ Network และ Export Excel | ตาราง/Excel แสดง `***` และ API ไม่มี cost/price fields ทั้ง 4 ฟิลด์ | Playwright | API/Chromium/Excel |
+| POS-RPT-010 | P2 | เปิดเมนูรายงาน | ชี้เมาส์ที่วันนี้ หรือกดลูกศรบนจอสัมผัส แล้วเลือกหนึ่งวัน | แสดงวันที่ล่าสุด 7 วัน เลือกวันเดียวได้ และกดวันนี้โดยตรงเพื่อกลับมาวันนี้ | Playwright | Chromium Desktop/Touch |
+| POS-QC-006 | P1 | Admin มี Session, Coin order และ ledger มากกว่า 20 รายการ | เปิดรายละเอียด Admin แล้วเปลี่ยนหน้าของทั้ง 3 ตาราง | แต่ละตารางใช้ server pagination แยกกันและ request ส่ง page/pageSize ถูกต้อง | Playwright | Chromium/API |
+| POS-QC-007 | P0 | Production Compose ใช้ project/port/volume QA แยก | เปิดทุก service, ตรวจไม่มี Vite HMR, recreate PostgreSQL แล้วอ่าน marker เดิม | Frontend/POS/Backend/pgAdmin พร้อมใช้ และข้อมูลใน named volume ไม่หาย | Docker smoke | Nginx/PostgreSQL |
 | POS-NF-001 | P2 | Desktop/Mobile | เปิด critical pages/modals | ไม่มี overflow/modal หลุด/nav ทับ action | Playwright | Chromium Desktop/Mobile |
 | POS-NF-002 | P2 | QA local | วัด API read และ sale/settlement | read <1s, transaction <2s ไม่มี external delay | Playwright | API |
 | POS-PWA-001 | P2 | POS served | ตรวจ manifest/service worker/installability | manifest/icon/start URL ถูก | Playwright | Chromium |

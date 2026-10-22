@@ -2,7 +2,7 @@ FROM node:24-alpine
 
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+RUN npm ci && npm ls html-to-image
 COPY . .
 
 EXPOSE 5175

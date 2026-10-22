@@ -150,3 +150,37 @@ postgres://livematch:livematch@localhost:5432/livematch?sslmode=disable
 cd backend && go test ./...
 cd frontend && npm test
 ```
+# Production deployment
+
+Production uses prebuilt static Vue/POS bundles served by Nginx. It does not run
+the Vite development server or HMR WebSocket.
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build
+```
+
+Set `SUPERADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `APP_BASE_URL`, `POS_BASE_URL`,
+`APP_ALLOWED_ORIGINS`, and the production secrets in `.env` before starting.
+The regular `docker-compose.yml` remains the local development stack.
+
+The production file intentionally reuses the same named volumes and PostgreSQL
+mount path as the development compose file, so switching compose files does not
+create an empty replacement database. Before the first production switch, make
+a database backup and verify the resolved volume name:
+
+```bash
+docker compose exec -T postgres pg_dump -U livematch -d livematch -Fc > livematch-before-prod.dump
+docker compose -f docker-compose.prod.yml config --volumes
+docker volume ls | grep postgres_data
+```
+
+Deploy the backend contract first; the frontend and POS services wait until its
+versioned healthcheck passes:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --build backend
+docker compose -f docker-compose.prod.yml up -d --build frontend pos
+```
+
+Do not use `docker compose down -v` on a server that contains real data. A plain
+`docker compose down` keeps the named PostgreSQL and uploaded-file volumes.

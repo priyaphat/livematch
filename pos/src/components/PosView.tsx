@@ -79,6 +79,7 @@ export const PosView: React.FC = () => {
     discountType,
     setDiscount,
     cartTotals,
+    editingHeldOrder,
     holdCurrentCart,
     members,
     categories,
@@ -92,9 +93,12 @@ export const PosView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [mobileTab, setMobileTab] = useState<"menu" | "cart">("menu");
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
+  const [isReholdingEditedOrder, setIsReholdingEditedOrder] = useState(false);
   const [isHoldModalOpen, setIsHoldModalOpen] = useState<boolean>(false);
+  const [holdMode, setHoldMode] = useState<"single" | "split">("single");
   const [holdCustomerName, setHoldCustomerName] = useState<string>("");
-  const [holdMemberId, setHoldMemberId] = useState<string>("");
+  const [holdSingleMember, setHoldSingleMember] = useState<CustomerSuggestion | null>(null);
+	const [holdSplitMembers, setHoldSplitMembers] = useState<CustomerSuggestion[]>([]);
   const [holdMemberSuggestions, setHoldMemberSuggestions] = useState<CustomerSuggestion[]>([]);
   const [isHoldMemberLoading, setIsHoldMemberLoading] = useState(false);
   const [isCreateHoldMemberOpen, setIsCreateHoldMemberOpen] = useState(false);
@@ -107,7 +111,7 @@ export const PosView: React.FC = () => {
   const holdMemberRequestRef = useRef(0);
   const [isDiscountModalOpen, setIsDiscountModalOpen] =
     useState<boolean>(false);
-  const [tempDiscountVal, setTempDiscountVal] = useState<number>(0);
+  const [tempDiscountVal, setTempDiscountVal] = useState<string>('');
   const [tempDiscountType, setTempDiscountType] = useState<
     "amount" | "percent"
   >("amount");
@@ -343,23 +347,45 @@ export const PosView: React.FC = () => {
   };
 
   const handleOpenDiscountModal = () => {
-    setTempDiscountVal(discount);
+    setTempDiscountVal(discount > 0 ? String(discount) : '');
     setTempDiscountType(discountType);
     setIsDiscountModalOpen(true);
   };
 
   const handleApplyDiscount = () => {
-    setDiscount(tempDiscountVal, tempDiscountType);
+    const parsedDiscount = Math.max(0, Number(tempDiscountVal) || 0);
+    setDiscount(tempDiscountType === 'percent' ? Math.min(100, parsedDiscount) : parsedDiscount, tempDiscountType);
     setIsDiscountModalOpen(false);
   };
 
   const handleHoldOrderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const success = await holdCurrentCart(holdMemberId, holdCustomerName);
+	const memberIds = holdMode === "split" ? holdSplitMembers.map((member) => member.id) : [holdSingleMember?.id].filter(Boolean) as string[];
+	const memberNames = holdMode === "split" ? holdSplitMembers.map((member) => member.name) : [holdSingleMember?.name].filter(Boolean) as string[];
+	if (holdMode === "split" && memberIds.length < 2) {
+		showToast("กรุณาเลือกสมาชิกอย่างน้อย 2 คนสำหรับหารบิล", "warning");
+		return;
+	}
+    const success = await holdCurrentCart(memberIds, memberNames);
     if (success) {
       setIsHoldModalOpen(false);
       setHoldCustomerName("");
-      setHoldMemberId("");
+	  setHoldSingleMember(null);
+		setHoldSplitMembers([]);
+    }
+  };
+
+  const handleHoldButtonClick = async () => {
+    if (!editingHeldOrder) {
+      setIsHoldModalOpen(true);
+      return;
+    }
+    if (isReholdingEditedOrder) return;
+    setIsReholdingEditedOrder(true);
+    try {
+      await holdCurrentCart([], []);
+    } finally {
+      setIsReholdingEditedOrder(false);
     }
   };
 
@@ -424,8 +450,13 @@ export const PosView: React.FC = () => {
         detail: member.phone || "สมาชิกของระบบ",
       };
       setHoldMemberSuggestions((current) => [suggestion, ...current.filter((item) => item.id !== member.id)]);
-      setHoldMemberId(member.id);
-      setHoldCustomerName(member.name);
+		if (holdMode === "split") {
+			setHoldSplitMembers((current) => current.some((item) => item.id === member.id) ? current : [...current, suggestion]);
+			setHoldCustomerName("");
+		} else {
+			setHoldSingleMember(suggestion);
+			setHoldCustomerName("");
+		}
       setIsCreateHoldMemberOpen(false);
     } catch (requestError) {
       setCreateHoldMemberError(requestError instanceof Error ? requestError.message : "เพิ่มสมาชิกไม่สำเร็จ");
@@ -633,9 +664,9 @@ export const PosView: React.FC = () => {
             ) : (
               <div id="pos-product-grid" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 sm:gap-3 pb-4">
                 {filteredProducts.map((product) => {
-                  const isOutOfStock = product.stock <= 0;
+                  const isOutOfStock = product.trackStock && product.stock <= 0;
                   const isLowStock =
-                    product.stock <= product.minStockAlert && !isOutOfStock;
+                    product.trackStock && product.stock <= product.minStockAlert && !isOutOfStock;
                   const inCartItem = cart.find(
                     (it) => it.product.id === product.id,
                   );
@@ -663,7 +694,7 @@ export const PosView: React.FC = () => {
 
                         {/* Stock Badge */}
                         <div className="absolute top-2 left-2 flex flex-col gap-1">
-                          {isOutOfStock ? (
+                          {!product.trackStock ? null : isOutOfStock ? (
                             <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-600 text-white shadow-xs">
                               สินค้าหมด
                             </span>
@@ -905,14 +936,14 @@ export const PosView: React.FC = () => {
                           <input
                             type="number"
                             min="1"
-                            max={item.product.stock || 99999}
+                            max={item.product.trackStock ? (item.product.stock || 0) : 99999}
                             value={item.quantity}
                             onChange={(e) => {
                               const val = parseInt(e.target.value, 10);
                               if (!isNaN(val)) {
                                 const safeVal = Math.max(
                                   1,
-                                  Math.min(item.product.stock || 99999, val),
+                                  Math.min(item.product.trackStock ? item.product.stock : 99999, val),
                                 );
                                 updateCartQuantity(item.product.id, safeVal);
                               }
@@ -1053,12 +1084,15 @@ export const PosView: React.FC = () => {
             <div className="grid grid-cols-12 gap-2 pt-1">
               <button
                 id="pos-hold-bill-btn"
-                disabled={cart.length === 0}
-                onClick={() => setIsHoldModalOpen(true)}
-                className="col-span-4 flex items-center justify-center gap-1.5 py-2.5 sm:py-3 rounded-2xl bg-yellow-100 dark:bg-yellow-500/15 hover:bg-yellow-200 dark:hover:bg-yellow-500/25 border border-yellow-300 dark:border-yellow-500/40 text-yellow-800 dark:text-yellow-400 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+                disabled={cart.length === 0 || isReholdingEditedOrder}
+                onClick={() => void handleHoldButtonClick()}
+                title={editingHeldOrder ? `พักบิล ${editingHeldOrder.customerName}` : 'พักยอด'}
+                className="col-span-4 flex min-w-0 items-center justify-center gap-1.5 overflow-hidden py-2.5 sm:py-3 rounded-2xl bg-yellow-100 dark:bg-yellow-500/15 hover:bg-yellow-200 dark:hover:bg-yellow-500/25 border border-yellow-300 dark:border-yellow-500/40 text-yellow-800 dark:text-yellow-400 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
               >
-                <PauseCircle className="w-4 h-4" />
-                <span>พักยอด</span>
+                <PauseCircle className="h-4 w-4 shrink-0" />
+                <span className={`min-w-0 truncate ${editingHeldOrder ? 'text-[10px] sm:text-xs' : ''}`}>
+                  {isReholdingEditedOrder ? 'กำลังพักบิล…' : editingHeldOrder ? `พักบิล ${editingHeldOrder.customerName}` : 'พักยอด'}
+                </span>
               </button>
 
               <button
@@ -1108,30 +1142,53 @@ export const PosView: React.FC = () => {
             </div>
 
             <form onSubmit={handleHoldOrderSubmit} className="space-y-4">
+				<div className="grid grid-cols-2 rounded-xl border border-slate-200 bg-slate-100 p-1 text-xs dark:border-slate-700 dark:bg-slate-950">
+					<button type="button" onClick={() => { setHoldMode("single"); setHoldSplitMembers([]); setHoldCustomerName(""); }} className={`rounded-lg py-2.5 font-black transition ${holdMode === "single" ? "bg-white text-slate-950 shadow-xs dark:bg-slate-800 dark:text-white" : "text-slate-500"}`}>ไม่หาร</button>
+					<button type="button" onClick={() => { setHoldMode("split"); setHoldSingleMember(null); setHoldCustomerName(""); }} className={`rounded-lg py-2.5 font-black transition ${holdMode === "split" ? "bg-yellow-500 text-slate-950 shadow-xs" : "text-slate-500"}`}>หารเท่ากัน</button>
+				</div>
               <div>
                 <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
                   <span>ชื่อลูกค้า *</span>
                 </label>
                 <CustomerCombobox
-                  required
                   autoFocus
                   value={holdCustomerName}
                   onChange={(value) => {
                     setHoldCustomerName(value);
-                    const selected = holdMemberSuggestions.find((item) => item.id === holdMemberId);
-                    if (!selected || selected.name !== value) setHoldMemberId("");
+                    if (value) setHoldSingleMember(null);
                   }}
                   onSelect={(member) => {
-                    setHoldMemberId(member.id);
-                    setHoldCustomerName(member.name);
+					if (holdMode === "split") {
+						setHoldSplitMembers((current) => current.some((item) => item.id === member.id) ? current : [...current, member]);
+						setHoldCustomerName("");
+					} else {
+						setHoldSingleMember(member);
+						setHoldCustomerName("");
+					}
                   }}
                   onSearch={searchHoldMembers}
                   suggestions={holdMemberSuggestions}
                   isLoading={isHoldMemberLoading}
                   delayMs={500}
                   allowCustom={false}
+                  clearOnSelect
                   placeholder="พิมพ์ชื่อหรือเบอร์โทรสมาชิก..."
                 />
+				{holdMode === "single" && holdSingleMember && <div className="mt-3 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs dark:border-emerald-500/30 dark:bg-emerald-500/10"><div><p className="font-black text-slate-900 dark:text-white">{holdSingleMember.name}</p><p className="text-[10px] text-slate-500">สมาชิกที่เลือก · ไม่หารบิล</p></div><button type="button" onClick={() => setHoldSingleMember(null)} className="rounded-lg p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40" aria-label={`ลบ ${holdSingleMember.name}`}>✕</button></div>}
+				{holdMode === "split" && (
+					<div className="mt-3 space-y-2">
+						{holdSplitMembers.map((member, index) => {
+							const totalSatang = Math.round(cartTotals.total * 100);
+							const count = holdSplitMembers.length || 1;
+							const share = Math.floor(totalSatang / count) + (index < totalSatang % count ? 1 : 0);
+							return <div key={member.id} className="flex items-center justify-between gap-3 rounded-xl border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs dark:border-yellow-500/30 dark:bg-yellow-500/10">
+								<div className="min-w-0"><p className="truncate font-black text-slate-900 dark:text-white">{index + 1}. {member.name}</p><p className="text-[10px] text-slate-400">ส่วนแบ่ง {(share / 100).toFixed(2)} บาท</p></div>
+								<button type="button" onClick={() => setHoldSplitMembers((current) => current.filter((item) => item.id !== member.id))} className="rounded-lg p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40" aria-label={`ลบ ${member.name}`}>✕</button>
+							</div>;
+						})}
+						<p className="text-[11px] font-bold text-slate-500">เลือกแล้ว {holdSplitMembers.length} คน · ระบบหักสต็อกเพียงครั้งเดียว</p>
+					</div>
+				)}
                 <button
                   type="button"
                   onClick={openCreateHoldMember}
@@ -1152,7 +1209,7 @@ export const PosView: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={!holdMemberId}
+				  disabled={holdMode === "split" ? holdSplitMembers.length < 2 : !holdSingleMember}
                   className="px-5 py-2.5 rounded-xl bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 text-xs font-black shadow-md shadow-yellow-500/20 transition-all"
                 >
                   บันทึกการพักยอด
@@ -1256,11 +1313,11 @@ export const PosView: React.FC = () => {
               <input
                 type="number"
                 min="0"
+                max={tempDiscountType === "percent" ? 100 : undefined}
+                step="0.01"
                 value={tempDiscountVal}
-                onFocus={(e) => e.currentTarget.select()}
-                onChange={(e) =>
-                  setTempDiscountVal(parseFloat(e.target.value) || 0)
-                }
+                onChange={(e) => setTempDiscountVal(e.target.value)}
+                placeholder="0"
                 className="w-full text-xl font-black bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-red-600 dark:text-yellow-400 focus:outline-none focus:border-red-500 font-mono"
               />
             </div>
@@ -1316,7 +1373,7 @@ export const PosView: React.FC = () => {
                       )}
                     </span>
                     <span>/ {quantityModalItem.product.unit}</span>
-                    <span>• สต็อก: {quantityModalItem.product.stock}</span>
+                    {quantityModalItem.product.trackStock && <span>• สต็อก: {quantityModalItem.product.stock}</span>}
                   </div>
                 </div>
               </div>
@@ -1346,7 +1403,7 @@ export const PosView: React.FC = () => {
                   id="modal-qty-input"
                   type="number"
                   min="1"
-                  max={quantityModalItem.product.stock || 99999}
+                  max={quantityModalItem.product.trackStock ? quantityModalItem.product.stock : 99999}
                   value={tempQuantityStr}
                   autoFocus
                   onFocus={(e) => e.target.select()}

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
@@ -108,14 +110,33 @@ func main() {
 	mustExec(ctx, tx, `
 		insert into sessions(id,name,session_type,admin_passcode,state,admin_id,usage_started_at)
 		values
-		('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '9 hour') at time zone 'Asia/Bangkok'),
-		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '10 hour') at time zone 'Asia/Bangkok')
+		('qa-session-a','QA Cross-system Session','liveMatch','qa-pass','{}'::jsonb,'qa-admin-a',now()-interval '2 minutes'),
+		('qa-session-a-2','QA Same-day Session 2','liveMatch','qa-pass-2','{}'::jsonb,'qa-admin-a',now()-interval '1 minute'),
+		('qa-session-history','QA History 125 Games','liveMatch','qa-history','{}'::jsonb,'qa-admin-a',(date_trunc('day',now() at time zone 'Asia/Bangkok')-interval '30 day'+interval '11 hour') at time zone 'Asia/Bangkok')
+	`)
+	mustExec(ctx, tx, `
+		insert into sessions(id,name,session_type,admin_passcode,state,admin_id,usage_started_at,created_at,updated_at)
+		select 'qa-admin-detail-session-'||n, 'QA Admin Detail Session '||lpad(n::text,2,'0'), 'liveMatch',
+			'qa-detail-'||n, '{}'::jsonb, 'qa-admin-a', null, now()-n*interval '1 day', now()-n*interval '1 day'
+		from generate_series(1,24) n
+	`)
+	mustExec(ctx, tx, `
+		insert into coin_ledger(admin_id,delta,balance,reason,note,created_at)
+		select 'qa-admin-a', 1, 1000+n, 'qa_pagination', 'QA ledger '||n, now()-n*interval '1 hour'
+		from generate_series(1,24) n
+	`)
+	mustExec(ctx, tx, `
+		insert into coin_purchase_orders(id,admin_id,package_id,package_name,price_thb,coins,slip_image,status,note,created_at,updated_at)
+		select 'qa-admin-detail-order-'||n, 'qa-admin-a', 'qa-package-detail', 'QA Package', 100, 100,
+			'', 'approved', 'QA order '||n, now()-n*interval '1 hour', now()-n*interval '1 hour'
+		from generate_series(1,24) n
 	`)
 	mustExec(ctx, tx, `
 		insert into session_settings(session_id,entry_fee,club_entry_fee,member_entry_fees,shuttle_fee,shuttle_brands,court_count,court_names)
 		values
 		('qa-session-a',120,100,'{"qa-member-type-a-general":120,"qa-member-type-a-club":100}'::jsonb,50,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,2,'["สนาม 1","สนาม 2"]'::jsonb),
-		('qa-session-a-2',80,70,'{"qa-member-type-a-general":80,"qa-member-type-a-club":70}'::jsonb,55,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,1,'["สนาม 1"]'::jsonb)
+		('qa-session-a-2',80,70,'{"qa-member-type-a-general":80,"qa-member-type-a-club":70}'::jsonb,55,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,1,'["สนาม 1"]'::jsonb),
+		('qa-session-history',120,100,'{}'::jsonb,85,'[{"id":"qa-shuttle","name":"ลูกแบด QA","price":85,"active":true}]'::jsonb,2,'["สนาม 1","สนาม 2"]'::jsonb)
 	`)
 	mustExec(ctx, tx, `
 		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon,member_id,member_type_id,billing_account_id) values
@@ -129,9 +150,47 @@ func main() {
 		('qa-session-a-2',1,'สมาชิก QA คนที่สาม',1,1,false,false,'middle',true,'qa-member-a-3','qa-member-type-a-general','qa-billing-a-3')
 	`)
 	mustExec(ctx, tx, `
+		insert into players(session_id,id,name,games,shuttles,paid,active,level,coupon) values
+		('qa-session-history',1,'Alice History',125,125,false,true,'middle',true),
+		('qa-session-history',2,'History Partner',125,125,false,true,'middle',true),
+		('qa-session-history',3,'History Opponent A',125,125,false,true,'middle',true),
+		('qa-session-history',4,'History Opponent B',125,125,false,true,'middle',true)
+	`)
+	mustExec(ctx, tx, `
+		insert into booking_settings(admin_id,public_token_hash,public_token,open_time,close_time,interval_minutes,allow_overnight,use_same_price,promptpay_type,promptpay_id,promptpay_receiver_name)
+		values ('qa-admin-a',$1,'qa-booking-a','16:00','22:00',60,true,true,'mobile','0810000000','QA Receiver')
+	`, qaTokenDigest("qa-booking-a"))
+	mustExec(ctx, tx, `
+		insert into booking_courts(id,admin_id,name,price_per_interval,sort_order,active)
+		values ('qa-booking-court-a','qa-admin-a','สนามจอง QA',100,1,true)
+	`)
+	mustExec(ctx, tx, `
+		insert into bookings(id,admin_id,court_id,member_id,booked_by,booker_name,start_at,end_at,interval_minutes,unit_price_thb,total_price_thb,status,payment_status,booking_batch_id)
+		values ('qa-booking-paid-a','qa-admin-a','qa-booking-court-a','qa-member-a-1','member','สมาชิก QA Match Only',
+		(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '18 hour') at time zone 'Asia/Bangkok',
+		(date_trunc('day',now() at time zone 'Asia/Bangkok')+interval '19 hour') at time zone 'Asia/Bangkok',
+		60,100,100,'confirmed','paid','qa-booking-batch-a')
+	`)
+	mustExec(ctx, tx, `
+		insert into booking_occupancies(admin_id,court_id,booking_id,kind,occupied_range)
+		select admin_id,court_id,id,'booking',tstzrange(start_at,end_at,'[)') from bookings where id='qa-booking-paid-a'
+	`)
+	mustExec(ctx, tx, `
+		insert into booking_payments(id,admin_id,booking_id,member_id,amount_thb,status,note,reviewed_by,reviewed_at)
+		values ('qa-booking-payment-a','qa-admin-a','qa-booking-paid-a','qa-member-a-1',100,'approved','QA seed approved','qa-admin-a',now())
+	`)
+	mustExec(ctx, tx, `
 		insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,shuttle_pricing_mode,shuttle_price_snapshot,legacy_shuttle_fee) values
 		('qa-session-a',1,'history','สนาม 1','middle',1,2,3,4,2,'[{"brandId":"qa-shuttle","number":1},{"brandId":"qa-shuttle","number":2}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":50,"active":true}]'::jsonb,50),
 		('qa-session-a-2',1,'history','สนาม 1','middle',1,1,1,1,1,'[{"brandId":"qa-shuttle","number":1}]'::jsonb,'finished','split_per_match','[{"id":"qa-shuttle","name":"ลูกแบด QA","price":55,"active":true}]'::jsonb,55)
+	`)
+	mustExec(ctx, tx, `
+		insert into matches(session_id,id,phase,court,level,a1,a2,b1,b2,shuttles,shuttle_sequence_items,status,note,shuttle_pricing_mode,shuttle_price_snapshot,legacy_shuttle_fee)
+		select 'qa-session-history',n,'history',case when n%2=0 then 'สนาม 2' else 'สนาม 1' end,'middle',1,2,3,4,1,
+		       jsonb_build_array(jsonb_build_object('brandId','qa-shuttle','number',n)),'finished',
+		       case when n=1 then 'oldest-history-marker' else '' end,'legacy_per_player',
+		       '[{"id":"qa-shuttle","name":"ลูกแบด QA","price":85,"active":true}]'::jsonb,85
+		from generate_series(1,125) n
 	`)
 
 	mustExec(ctx, tx, `
@@ -154,6 +213,11 @@ func main() {
 		('qa-product-b','qa-admin-b','QA-B-001','qa-category-b','สินค้า Tenant B',99,9900,50,5000,99,5,true,'กล่อง',10,'','8850000000004','')
 	`)
 	mustExec(ctx, tx, `
+		insert into pos_stock_movements(admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location)
+		select admin_id,id,stock_quantity,stock_quantity,'restock','ยอดตั้งต้น QA','qa-seed','system','QA Seed',cost_satang,stock_quantity::bigint*cost_satang,stock_quantity::bigint*cost_satang,cost_satang,cost_satang,'primary'
+		from pos_products where id in ('qa-product-coffee-a','qa-product-cake-a','qa-product-inactive-a','qa-product-b') and stock_quantity>0
+	`)
+	mustExec(ctx, tx, `
 		insert into pos_suppliers(id,admin_id,code,name,contact_person,phone,email,address,active)
 		values ('qa-supplier-a','qa-admin-a','SUP-QA-001','ซัพพลายเออร์ QA','คุณทดสอบ','0890000001','supplier.qa@example.invalid','QA address',true)
 	`)
@@ -165,7 +229,7 @@ func main() {
 	if err = tx.Commit(); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=2")
+	fmt.Println("QA seed completed: owners=2 staff=2 members=5 products=4 sessions=27 history=127")
 }
 
 func mustHash(value string) string {
@@ -174,6 +238,11 @@ func mustHash(value string) string {
 		log.Fatal(err)
 	}
 	return string(hash)
+}
+
+func qaTokenDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
 func mustExec(ctx context.Context, tx *sql.Tx, query string, args ...any) {

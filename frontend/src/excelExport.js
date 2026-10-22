@@ -177,6 +177,29 @@ export function buildPaymentHistoryExportData(events = []) {
   }
 }
 
+const dashboardPairingPatterns = [
+  { id: 'pair_pair', name: 'คู่ พบ คู่', detail: 'ผู้เล่นมาเป็นคู่ทั้ง 2 ฝั่ง' },
+  { id: 'pair_two_singles', name: 'คู่และคนเดี่ยว', detail: '1 คู่ รวมกับผู้เล่นเดี่ยว 2 คน' },
+  { id: 'four_singles', name: 'คนเดี่ยว 4 คน', detail: 'ผู้เล่นส่งชื่อแยกกันทั้งหมด' },
+  { id: 'one_one', name: 'เกมเดี่ยว', detail: 'ผู้เล่นเดี่ยวพบกัน 2 คน' },
+  { id: 'manual_four', name: 'สร้างทีม 4 คนเอง', detail: 'ผู้ดูแลจัดผู้เล่นทั้ง 2 ทีมเอง' }
+]
+
+function dashboardPairingRows(state, serverSummary) {
+  const counts = serverSummary && typeof serverSummary === 'object'
+    ? serverSummary
+    : [...(state.live || []), ...(state.history || []).filter((match) => match.status !== 'cancelled')].reduce((result, match) => {
+        const pattern = dashboardPairingPatterns.some((item) => item.id === match.pairingPattern) ? match.pairingPattern : 'legacy_unknown'
+        result[pattern] = (result[pattern] || 0) + 1
+        return result
+      }, {})
+  const total = dashboardPairingPatterns.reduce((sum, item) => sum + numeric(counts[item.id]), 0)
+  return dashboardPairingPatterns.map((item) => {
+    const count = numeric(counts[item.id])
+    return [item.name, item.detail, count, total ? Math.round((count / total) * 100) : 0]
+  })
+}
+
 export function buildDashboardExportData({
   state,
   activePlayerCount,
@@ -201,7 +224,8 @@ export function buildDashboardExportData({
   topWinners,
   playerCost,
   playerScore,
-  levelLabel
+  levelLabel,
+  pairingPatternSummary
 }) {
   const isLiveShare = state.session?.type === 'liveShare'
   const activePlayers = (state.players || []).filter((player) => player.active !== false)
@@ -297,7 +321,8 @@ export function buildDashboardExportData({
       player.paid ? 'จ่ายแล้ว' : 'ค้างชำระ'
     ]),
     matches: matchRows,
-    courts: courtRows
+    courts: courtRows,
+    pairingPatterns: dashboardPairingRows(state, pairingPatternSummary)
   }
 }
 
@@ -452,6 +477,10 @@ export async function exportDashboardExcel(options) {
     currencyColumns: [2],
     decimalColumns: [2]
   })
+  worksheet.addRow([])
+
+  addSectionHeader(worksheet, 'รูปแบบการจับคู่ที่เกิดขึ้น', 4)
+  addTable(worksheet, ['รูปแบบ', 'รายละเอียด', 'จำนวนเกม', 'สัดส่วน (%)'], data.pairingPatterns)
   worksheet.addRow([])
 
   addSectionHeader(worksheet, 'สมาชิกค้างชำระ', 3)

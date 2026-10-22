@@ -6,7 +6,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+func TestPOSProductConflictReportsDuplicateFields(t *testing.T) {
+	tests := []struct {
+		constraint string
+		wantCode   string
+		wantText   string
+	}{
+		{"idx_pos_products_sku", "duplicate_sku", "รหัส SKU นี้ถูกใช้แล้ว กรุณาใช้รหัสอื่น"},
+		{"idx_pos_products_barcode", "duplicate_barcode", "บาร์โค้ดนี้ถูกใช้กับสินค้าอื่นแล้ว"},
+	}
+	for _, test := range tests {
+		message, code, ok := posProductConflict(&pgconn.PgError{Code: "23505", ConstraintName: test.constraint})
+		if !ok || code != test.wantCode || message != test.wantText {
+			t.Fatalf("constraint %s = %q/%q/%v, want %q/%q/true", test.constraint, message, code, ok, test.wantText, test.wantCode)
+		}
+	}
+	if _, _, ok := posProductConflict(&pgconn.PgError{Code: "23514", ConstraintName: "stock_check"}); ok {
+		t.Fatal("a non-unique database error must not be reported as duplicate product data")
+	}
+}
 
 func TestBillingLinePaymentLabelUsesProductNames(t *testing.T) {
 	label, description := billingLinePaymentLabel(billingLine{
@@ -33,6 +55,24 @@ func TestValidPOSPaymentMethod(t *testing.T) {
 	}
 }
 
+func TestEqualSplitSharesPreservesEverySatang(t *testing.T) {
+	shares := equalSplitShares(10000, 3)
+	want := []int64{3334, 3333, 3333}
+	var total int64
+	for index, share := range shares {
+		if share != want[index] {
+			t.Fatalf("share %d=%d want %d", index, share, want[index])
+		}
+		total += share
+	}
+	if total != 10000 {
+		t.Fatalf("split total=%d want 10000", total)
+	}
+	if got := equalSplitShares(100, 0); len(got) != 0 {
+		t.Fatalf("invalid count returned %#v", got)
+	}
+}
+
 func TestPromptPayPayloadSatangIncludesDecimalAmount(t *testing.T) {
 	payload, err := promptPayPayloadSatang(promptPaySettings{ID: "0812345678", Type: "mobile"}, 2033)
 	if err != nil {
@@ -46,14 +86,78 @@ func TestPromptPayPayloadSatangIncludesDecimalAmount(t *testing.T) {
 	}
 }
 
+func TestSaleTotalsAfterFinalDiscountKeepsVATIdentity(t *testing.T) {
+	tests := []struct {
+		name                        string
+		subtotal, current, discount int64
+		vatRate                     int
+		included                    bool
+		wantTotal                   int64
+	}{
+		{name: "no vat", subtotal: 10000, current: 10000, discount: 1000, wantTotal: 9000},
+		{name: "vat included", subtotal: 10700, current: 10700, discount: 1000, vatRate: 700, included: true, wantTotal: 9700},
+		{name: "vat excluded", subtotal: 10000, current: 10700, discount: 1000, vatRate: 700, wantTotal: 9700},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			discount, net, vat, total := saleTotalsAfterFinalDiscount(test.subtotal, test.current, test.discount, test.vatRate, test.included)
+			if total != test.wantTotal {
+				t.Fatalf("total=%d want %d", total, test.wantTotal)
+			}
+			if net+vat != total && !test.included {
+				t.Fatalf("exclusive identity net(%d)+vat(%d)!=total(%d)", net, vat, total)
+			}
+			if test.included && net != total {
+				t.Fatalf("included net=%d total=%d", net, total)
+			}
+			if discount < 0 || discount > test.subtotal {
+				t.Fatalf("discount=%d out of range", discount)
+			}
+		})
+	}
+}
+
 func TestDecodePOSProductRejectsNegativeStock(t *testing.T) {
-	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"name":"Water","priceThb":20,"costThb":10,"stockQuantity":-1,"lowStockThreshold":5,"active":true}`))
+	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":"W-NEG","name":"Water","priceThb":20,"costThb":10,"stockQuantity":-1,"lowStockThreshold":5,"active":true}`))
 	recorder := httptest.NewRecorder()
 	if _, ok := decodePOSProduct(recorder, req); ok {
 		t.Fatal("negative stock should be rejected")
 	}
 	if recorder.Code != 400 {
 		t.Fatalf("status=%d, want 400", recorder.Code)
+	}
+}
+
+func TestProductStockFieldsRespectSaleLocationAndTracking(t *testing.T) {
+	product := posProductRecord{StockQuantity: 7, SecondaryStockQuantity: 3, TrackStock: true, LowStockThreshold: 3}
+	applyProductStockFields(&product, "secondary")
+	if product.TotalStockQuantity != 10 || product.SaleStockQuantity != 3 || !product.LowStock {
+		t.Fatalf("unexpected stock fields: %+v", product)
+	}
+	product.TrackStock = false
+	applyProductStockFields(&product, "primary")
+	if product.LowStock {
+		t.Fatal("untracked product must not be low stock")
+	}
+}
+
+func TestNormalizePOSStockMovementFiltersCapsPageSizeAndValidatesFilters(t *testing.T) {
+	filters := normalizePOSStockMovementFilters(posStockMovementFilters{
+		Page:          0,
+		PageSize:      500,
+		Search:        "  Young แดง  ",
+		MovementType:  "unknown",
+		StockLocation: "warehouse",
+		ProductID:     " product-1 ",
+	})
+	if filters.Page != 1 || filters.PageSize != 100 {
+		t.Fatalf("pagination=%d/%d, want 1/100", filters.Page, filters.PageSize)
+	}
+	if filters.Search != "Young แดง" || filters.ProductID != "product-1" {
+		t.Fatalf("text filters were not normalized: %#v", filters)
+	}
+	if filters.MovementType != "" || filters.StockLocation != "" {
+		t.Fatalf("invalid enum filters were not cleared: %#v", filters)
 	}
 }
 
@@ -69,11 +173,23 @@ func TestDecodePOSProductNormalizesText(t *testing.T) {
 	}
 }
 
+func TestDecodePOSProductClearsStockOnlySettings(t *testing.T) {
+	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(`{"sku":"SERVICE-01","name":"Service","priceThb":100,"costThb":20,"stockQuantity":9,"secondaryStockQuantity":4,"trackStock":false,"lowStockThreshold":7,"unitsPerPack":12,"active":true}`))
+	recorder := httptest.NewRecorder()
+	product, ok := decodePOSProduct(recorder, req)
+	if !ok {
+		t.Fatalf("non-stock product should be accepted: %s", recorder.Body.String())
+	}
+	if product.StockQuantity != 0 || product.SecondaryStockQuantity != 0 || product.LowStockThreshold != 0 || product.UnitsPerPack != 0 {
+		t.Fatalf("stock-only values were not cleared: %#v", product)
+	}
+}
+
 func TestDecodePOSProductAcceptsResizedImagePayload(t *testing.T) {
 	raw := make([]byte, 70*1024)
 	copy(raw, []byte("\x89PNG\r\n\x1a\n"))
 	imageData := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
-	body := `{"name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
+	body := `{"sku":"W-IMAGE","name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(body))
 	recorder := httptest.NewRecorder()
 	product, ok := decodePOSProduct(recorder, req)
@@ -89,7 +205,7 @@ func TestDecodePOSProductRejectsImageLargerThanTwoMegabytes(t *testing.T) {
 	raw := make([]byte, 2*1024*1024+1)
 	copy(raw, []byte("\x89PNG\r\n\x1a\n"))
 	imageData := "data:image/png;base64," + base64.StdEncoding.EncodeToString(raw)
-	body := `{"name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
+	body := `{"sku":"W-LARGE","name":"Water","priceThb":20,"costThb":10,"stockQuantity":1,"lowStockThreshold":1,"active":true,"imageData":"` + imageData + `"}`
 	req := httptest.NewRequest("POST", "/api/admin/pos/products", strings.NewReader(body))
 	recorder := httptest.NewRecorder()
 	if _, ok := decodePOSProduct(recorder, req); ok {
@@ -118,6 +234,55 @@ func TestWeightedAverageCost(t *testing.T) {
 				t.Fatalf("weightedAverageCostSatang()=%d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestReversedAverageCostSatang(t *testing.T) {
+	tests := []struct {
+		name             string
+		currentQuantity  int
+		currentCost      int64
+		quantityDelta    int
+		valueDelta       int64
+		zeroQuantityCost int64
+		want             int64
+		valid            bool
+	}{
+		{name: "cancel receipt after later valuation input", currentQuantity: 20, currentCost: 10000, quantityDelta: -5, valueDelta: -60000, zeroQuantityCost: 9000, want: 9333, valid: true},
+		{name: "return stock out at original value", currentQuantity: 9, currentCost: 12222, quantityDelta: 3, valueDelta: 30000, want: 11667, valid: true},
+		{name: "zero quantity restores prior cost", currentQuantity: 5, currentCost: 12000, quantityDelta: -5, valueDelta: -60000, zeroQuantityCost: 10000, want: 10000, valid: true},
+		{name: "negative quantity rejected", currentQuantity: 2, currentCost: 10000, quantityDelta: -3, valueDelta: -10000, valid: false},
+		{name: "negative inventory value rejected", currentQuantity: 10, currentCost: 1000, quantityDelta: -1, valueDelta: -20000, valid: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := reversedAverageCostSatang(tt.currentQuantity, tt.currentCost, tt.quantityDelta, tt.valueDelta, tt.zeroQuantityCost)
+			if got != tt.want || valid != tt.valid {
+				t.Fatalf("reversedAverageCostSatang()=(%d,%v), want (%d,%v)", got, valid, tt.want, tt.valid)
+			}
+		})
+	}
+}
+
+func TestStockReceiptRegressionKeepsOriginalCostFormula(t *testing.T) {
+	// Existing product: 6 units in primary + 4 in secondary at 100.00 each.
+	// Receipt: 5 units, gross 600.00, discount 10% => net 540.00.
+	// Weighted average = (10*100.00 + 540.00) / 15 = 102.666..., rounded to 102.67.
+	grossSatang := int64(60000)
+	discount := stockDiscountSatang(grossSatang, "percent", 0, 1000)
+	if discount != 6000 {
+		t.Fatalf("discount=%d, want 6000", discount)
+	}
+	netSatang := grossSatang - discount
+	average := weightedAverageCostSatang(6+4, 10000, 5, netSatang)
+	if average != 10267 {
+		t.Fatalf("weighted average=%d, want 10267", average)
+	}
+	if stockValue := int64(15) * average; stockValue != 154005 {
+		t.Fatalf("post-receipt stock value=%d, want 154005", stockValue)
+	}
+	if unitReceiptCost := unitCostFromLineTotalSatang(grossSatang, 5); unitReceiptCost != 12000 {
+		t.Fatalf("receipt unit cost=%d, want 12000", unitReceiptCost)
 	}
 }
 

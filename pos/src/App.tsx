@@ -27,7 +27,18 @@ const ALL_POS_PERMISSIONS: POSPermissions = {
   bills: true,
   products: true,
   stock: true,
+  view_costs: true,
   reports: true,
+  report_overview: true,
+  report_top_sellers: true,
+  report_vat: true,
+  report_payments: true,
+  report_sold_products: true,
+  report_purchases: true,
+  report_inventory: true,
+  report_inventory_values: true,
+  report_transfers: true,
+  report_special: true,
   settings: true,
   discounts: true,
   void_sales: true,
@@ -38,7 +49,7 @@ const ALL_POS_PERMISSIONS: POSPermissions = {
 };
 
 const PosAppContent: React.FC = () => {
-  const { activeTab, setActiveTab } = usePos();
+  const { activeTab, setActiveTab, toast } = usePos();
   const [isStandaloneCustomerDisplay, setIsStandaloneCustomerDisplay] = useState(false);
   const [authUser, setAuthUser] = useState<AdminUser | null>(null);
   const [permissions, setPermissions] = useState<POSPermissions>(ALL_POS_PERMISSIONS);
@@ -162,7 +173,7 @@ const PosAppContent: React.FC = () => {
   if (!authUser) return <LoginView onLogin={handleLogin} />;
 
   return (
-    <div className="h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-red-600 selection:text-white overflow-hidden transition-colors">
+    <div id="pos-app-shell" className="h-screen w-full bg-slate-100 dark:bg-slate-950 text-slate-900 dark:text-slate-100 flex flex-col font-sans selection:bg-red-600 selection:text-white overflow-hidden transition-colors">
       {/* Top Navigation Bar */}
       <Navbar
         onLogout={handleLogout}
@@ -175,9 +186,9 @@ const PosAppContent: React.FC = () => {
         {activeTab === 'pos' && permissions.sales && <PosView />}
         {activeTab === 'dashboard' && permissions.reports && <DashboardView />}
         {activeTab === 'bills' && permissions.bills && <BillsView />}
-        {activeTab === 'products' && permissions.products && <ProductsView />}
-        {activeTab === 'stock' && permissions.stock && <StockView />}
-        {activeTab === 'reports' && permissions.reports && <ReportsView />}
+        {activeTab === 'products' && permissions.products && <ProductsView permissions={permissions} />}
+        {activeTab === 'stock' && permissions.stock && <StockView permissions={permissions} />}
+        {activeTab === 'reports' && permissions.reports && <ReportsView permissions={permissions} />}
         {activeTab === 'settings' && permissions.settings && <SettingsView currentUser={authUser} />}
         {activeTab === 'customer-display' && permissions.sales && <CustomerDisplayView />}
       </main>
@@ -187,6 +198,24 @@ const PosAppContent: React.FC = () => {
 
       {/* Global Modals */}
       <ReceiptModal />
+
+      {toast && (
+        <div
+          role="status"
+          aria-live="assertive"
+          className={`fixed left-1/2 top-4 z-[200] w-[min(92vw,28rem)] -translate-x-1/2 rounded-xl border px-4 py-3 text-sm font-bold shadow-2xl ${
+            toast.type === 'error'
+              ? 'border-red-300 bg-red-600 text-white'
+              : toast.type === 'warning'
+                ? 'border-amber-300 bg-amber-400 text-slate-950'
+                : toast.type === 'success'
+                  ? 'border-emerald-300 bg-emerald-600 text-white'
+                  : 'border-sky-300 bg-sky-600 text-white'
+          }`}
+        >
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 };

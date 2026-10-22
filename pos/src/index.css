@@ -3,6 +3,10 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 @layer base {
+  :root {
+    --pos-ui-size: 1;
+  }
+
   * {
     font-family: 'Prompt', 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
   }
@@ -40,9 +44,9 @@ input[type='number']::-webkit-inner-spin-button {
 
 /* POS readability: promote every on-screen type utility by one Tailwind size step. */
 @media screen {
-  .text-\[9px\] { font-size: 10px; }
-  .text-\[10px\] { font-size: 11px; }
-  .text-\[11px\] { font-size: 12px; }
+  .text-\[9px\] { font-size: calc(10px * var(--pos-ui-size)); }
+  .text-\[10px\] { font-size: calc(11px * var(--pos-ui-size)); }
+  .text-\[11px\] { font-size: calc(12px * var(--pos-ui-size)); }
   .text-xs { font-size: 0.875rem; line-height: 1.25rem; }
   .text-sm { font-size: 1rem; line-height: 1.5rem; }
   .text-base { font-size: 1.125rem; line-height: 1.75rem; }
@@ -55,7 +59,7 @@ input[type='number']::-webkit-inner-spin-button {
 }
 
 @media screen and (min-width: 40rem) {
-  .sm\:text-\[10px\] { font-size: 11px; }
+  .sm\:text-\[10px\] { font-size: calc(11px * var(--pos-ui-size)); }
   .sm\:text-xs { font-size: 0.875rem; line-height: 1.25rem; }
   .sm\:text-sm { font-size: 1rem; line-height: 1.5rem; }
   .sm\:text-base { font-size: 1.125rem; line-height: 1.75rem; }
@@ -125,6 +129,15 @@ input[type='number']::-webkit-inner-spin-button {
 
 /* Thermal receipt printing styling */
 @media print {
+  html {
+    font-size: 16px !important;
+  }
+
+  #pos-app-shell {
+    zoom: 1 !important;
+    width: 100% !important;
+    height: auto !important;
+  }
   html, body, #root, #receipt-modal-backdrop, #receipt-modal-container {
     height: auto !important;
     min-height: 100% !important;
@@ -141,9 +154,26 @@ input[type='number']::-webkit-inner-spin-button {
   }
 
   #printable-receipt,
-  #printable-receipt * {
+  #printable-receipt *,
+  #printable-report-slip,
+  #printable-report-slip * {
     visibility: visible;
   }
+
+  #printable-report-slip {
+    display: block !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    margin: 0 !important;
+    padding: 3mm !important;
+    background: #fff !important;
+    color: #000 !important;
+    white-space: pre-wrap !important;
+    font: 10px/1.45 monospace !important;
+  }
+  #printable-report-slip.print-58mm { width: 58mm !important; }
+  #printable-report-slip.print-80mm { width: 80mm !important; }
 
   #printable-receipt {
     position: absolute !important;

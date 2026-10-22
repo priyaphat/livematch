@@ -14,8 +14,55 @@ export interface PresentationRequestLike {
 
 type PresentationRequestConstructor = new (url: string | string[]) => PresentationRequestLike;
 
+export interface ManagedScreenLike {
+  availLeft: number;
+  availTop: number;
+  availWidth: number;
+  availHeight: number;
+  isPrimary?: boolean;
+  label?: string;
+}
+
+export interface ScreenDetailsLike {
+  screens: ManagedScreenLike[];
+  currentScreen?: ManagedScreenLike;
+}
+
 export function getPresentationRequestConstructor(): PresentationRequestConstructor | null {
   return ((window as unknown as { PresentationRequest?: PresentationRequestConstructor }).PresentationRequest) || null;
+}
+
+export function getScreenDetailsFunction(): (() => Promise<ScreenDetailsLike>) | null {
+  const candidate = (window as unknown as { getScreenDetails?: () => Promise<ScreenDetailsLike> }).getScreenDetails;
+  return typeof candidate === 'function' ? candidate.bind(window) : null;
+}
+
+export function findSecondaryScreen(details: ScreenDetailsLike): ManagedScreenLike | null {
+  if (!Array.isArray(details.screens) || details.screens.length < 2) return null;
+  const current = details.currentScreen;
+  const isCurrent = (screen: ManagedScreenLike) => screen === current || Boolean(current
+    && screen.availLeft === current.availLeft
+    && screen.availTop === current.availTop
+    && screen.availWidth === current.availWidth
+    && screen.availHeight === current.availHeight);
+  return details.screens.find((screen) => !isCurrent(screen) && !screen.isPrimary)
+    || details.screens.find((screen) => !isCurrent(screen))
+    || null;
+}
+
+export function customerDisplayWindowFeatures(screen?: ManagedScreenLike | null): string {
+  const parts = ['popup=yes', 'menubar=no', 'toolbar=no', 'location=no', 'status=no', 'resizable=yes'];
+  if (screen) {
+    parts.push(
+      `left=${Math.round(screen.availLeft)}`,
+      `top=${Math.round(screen.availTop)}`,
+      `width=${Math.max(320, Math.round(screen.availWidth))}`,
+      `height=${Math.max(240, Math.round(screen.availHeight))}`,
+    );
+  } else {
+    parts.push('width=1024', 'height=768');
+  }
+  return parts.join(',');
 }
 
 export function isAndroidDevice(): boolean {

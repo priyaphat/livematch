@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { CheckCircle2, CircleDollarSign, Search, Shield, UsersRound, XCircle } from '@lucide/vue'
+import { CheckCircle2, CircleDollarSign, Search, Shield, UserRound, UsersRound, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'state',
@@ -191,6 +191,10 @@ function rankStyle(index) {
                   class="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-court-500/10 text-xs font-black text-court-700 dark:bg-court-500/20 dark:text-court-300"
                 >
                   {{ player.id }}
+                </span>
+                <span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700 ring-2 ring-white dark:ring-stone-900">
+                  <img v-if="player.avatarUrl" :src="player.avatarUrl" :alt="`รูป ${player.name}`" class="h-full w-full object-cover" loading="lazy" />
+                  <UserRound v-else class="h-5 w-5" />
                 </span>
                 <span class="min-w-0">
                   <span class="block truncate text-base font-black">{{ player.name }}</span>

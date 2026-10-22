@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import type { POSPermissions } from '../api/posAccess';
 import {
   Product,
   CartItem,
@@ -34,16 +35,15 @@ import {
   updatePOSProduct,
 } from '../api/posCatalog';
 import {
+  cancelPOSStockBatch,
   createPOSSupplier,
   createPOSStockBatch,
   deletePOSSupplier,
   getPOSStockSummary,
   listPOSStockBatches,
-  listPOSStockMovements,
   listPOSSuppliers,
   POSStockBatchInput,
   POSStockBatchRecord,
-  POSStockMovementRecord,
   POSSupplierRecord,
   updatePOSSupplier,
 } from '../api/posStock';
@@ -56,19 +56,27 @@ import {
   listPOSReceivables,
   listPOSSales,
   POSMember,
+	POSBillingSummary,
   POSSale,
+  POSSettingsRecord,
   savePOSSettings,
   settlePOSAccount,
   voidPOSSale,
 } from '../api/posSales';
 import {
   CustomerDisplayConnectionStatus,
+  customerDisplayWindowFeatures,
   enableHardwareKeyboardMode,
+  findSecondaryScreen,
   getPresentationRequestConstructor,
+  getScreenDetailsFunction,
+  isAndroidDevice,
+  ManagedScreenLike,
   PresentationConnectionLike,
 } from '../utils/browserHardware';
 
 interface PosContextType {
+  permissions: POSPermissions;
   activeTab: 'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display';
   setActiveTab: (tab: 'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display') => void;
   
@@ -79,7 +87,7 @@ interface PosContextType {
 
   // Settings
   settings: StoreSettings;
-  updateSettings: (newSettings: Partial<StoreSettings>) => Promise<boolean>;
+  updateSettings: (newSettings: Partial<StoreSettings>, successMessage?: string, remoteScope?: 'all' | 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'local') => Promise<boolean>;
   setHardwareKeyboardMode: (enabled: boolean) => void;
   members: POSMember[];
 
@@ -102,8 +110,8 @@ interface PosContextType {
 
   // Products
   products: Product[];
-  addProduct: (product: Omit<Product, 'id'>) => void;
-  updateProduct: (id: string, updated: Partial<Product>) => void;
+  addProduct: (product: Omit<Product, 'id'>) => Promise<boolean>;
+  updateProduct: (id: string, updated: Partial<Product>) => Promise<boolean>;
   deleteProduct: (id: string) => void;
 
   // Cart
@@ -135,17 +143,24 @@ interface PosContextType {
 
   // Held Orders
   heldOrders: HeldOrder[];
-  holdCurrentCart: (memberId: string, customerName: string) => Promise<boolean>;
+  editingHeldOrder: {
+    saleIds: string[];
+    billingAccountId?: string;
+    customerName: string;
+    heldNumber: string;
+  } | null;
+  refreshHeldOrders: () => Promise<void>;
+  holdCurrentCart: (memberIds: string[], customerNames: string[]) => Promise<boolean>;
   resumeHeldOrder: (heldId: string) => void;
   deleteHeldOrder: (heldId: string) => void;
-  batchDeleteHeldOrders: (heldIds: string[]) => void;
-  mergeHeldOrdersIntoCart: (heldIds: string[]) => void;
   processBatchHeldPayment: (params: {
     heldIds: string[];
     paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
+    discountType?: 'amount' | 'percent';
+    discountValue?: number;
   }) => Promise<Order | null>;
 
   // Orders
@@ -167,7 +182,10 @@ interface PosContextType {
   stockOut: (productId: string, quantity: number, reason: string) => void;
   adjustStock: (productId: string, newStock: number, reason: string) => void;
   batchStockOperation: (params: {
-    type: 'in' | 'out' | 'adjust';
+    type: 'in' | 'out' | 'adjust' | 'transfer';
+    stockLocation?: 'primary' | 'secondary';
+    sourceStockLocation?: 'primary' | 'secondary';
+    destinationStockLocation?: 'primary' | 'secondary';
     items: Array<{
       productId: string;
       quantity: number; // for adjust: target stock count, for in/out: quantity delta
@@ -184,6 +202,7 @@ interface PosContextType {
     discountAmountSatang?: number;
     discountRateBps?: number;
   }) => Promise<boolean>;
+  cancelStockBatch: (batchId: string, reason: string) => Promise<boolean>;
 
   // Suppliers
   suppliers: Supplier[];
@@ -194,6 +213,8 @@ interface PosContextType {
   // Receipt Modal State
   selectedOrderForReceipt: Order | null;
   setSelectedOrderForReceipt: (order: Order | null) => void;
+  receiptBatch: Order[];
+  setReceiptBatch: (orders: Order[]) => void;
 
   // Audio & Toast Helpers
   playBeep: (type?: 'beep' | 'success' | 'alert' | 'info') => void;
@@ -251,6 +272,7 @@ const isPOSEditing = () => {
 
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display'>('pos');
+  const [permissions, setPermissions] = useState<POSPermissions>(() => ({ discounts: true } as POSPermissions));
   
   // Local storage synced states with fallback
   const [settings, setSettings] = useState<StoreSettings>(() => {
@@ -312,7 +334,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [heldOrders, setHeldOrders] = useState<HeldOrder[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [members, setMembers] = useState<POSMember[]>([]);
-  const [isBillingPollingActive, setIsBillingPollingActive] = useState(false);
 
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
   const [stockBatches, setStockBatches] = useState<StockBatchSummary[]>([]);
@@ -329,9 +350,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
 
   const [selectedOrderForReceipt, setSelectedOrderForReceipt] = useState<Order | null>(null);
+  const [receiptBatch, setReceiptBatch] = useState<Order[]>([]);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' | 'error' | 'warning' } | null>(null);
   const checkoutRequestIDRef = useRef('');
   const holdRequestIDRef = useRef('');
+  const [editingHeldOrder, setEditingHeldOrder] = useState<{
+    saleIds: string[];
+    billingAccountId?: string;
+    customerName: string;
+    heldNumber: string;
+  } | null>(null);
   const currentPOSActorNameRef = useRef('Admin');
 
   // Sync to local storage
@@ -450,10 +478,16 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     sku: item.sku,
     barcode: item.barcode || '',
     name: item.name,
-    category: catalog.find((category) => category.name.toLowerCase() === item.category.toLowerCase())?.id || item.category,
+    category: catalog.find((category) => category.id === item.category)?.id
+      || catalog.find((category) => category.name.toLowerCase() === item.category.toLowerCase())?.id
+      || item.category,
     price: item.priceSatang / 100,
-    cost: item.costSatang / 100,
-    stock: item.stockQuantity,
+    cost: (item.costSatang ?? 0) / 100,
+    stock: item.saleStockQuantity,
+    primaryStock: item.stockQuantity,
+    secondaryStock: item.secondaryStockQuantity,
+    totalStock: item.totalStockQuantity,
+    trackStock: item.trackStock,
     minStockAlert: item.lowStockThreshold,
     unitsPerPack: item.unitsPerPack || 0,
     image: item.imageData || DEFAULT_PRODUCT_IMAGE,
@@ -473,7 +507,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     priceSatang: Math.round(item.price * 100),
     costThb: Math.round(item.cost),
     costSatang: Math.round(item.cost * 100),
-    stockQuantity: item.stock,
+    stockQuantity: item.primaryStock ?? item.stock,
+    secondaryStockQuantity: item.secondaryStock ?? 0,
+    totalStockQuantity: item.totalStock ?? item.stock,
+    saleStockQuantity: item.stock,
+    trackStock: item.trackStock !== false,
     lowStockThreshold: item.minStockAlert,
     unitsPerPack: item.unitsPerPack || 0,
     active: item.status === 'active',
@@ -491,8 +529,12 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       name: item.productName,
       category: '',
       price: item.unitPriceSatang / 100,
-      cost: item.unitCostSatang / 100,
+      cost: (item.unitCostSatang ?? 0) / 100,
       stock: 0,
+      primaryStock: 0,
+      secondaryStock: 0,
+      totalStock: 0,
+      trackStock: item.stockTracked !== false,
       minStockAlert: 0,
       image: DEFAULT_PRODUCT_IMAGE,
       unit: 'ชิ้น',
@@ -517,10 +559,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const saleToOrder = (sale: POSSale): Order => ({
     id: sale.id,
     orderNumber: sale.id,
-    items: sale.items.map((item) => ({ productId: item.productId, name: item.productName, sku: item.sku, price: item.unitPriceSatang / 100, cost: item.unitCostSatang / 100, quantity: item.quantity, total: item.lineTotalSatang / 100, note: item.note })),
+    items: sale.items.map((item) => ({ productId: item.productId, name: item.productName, sku: item.sku, price: item.unitPriceSatang / 100, cost: (item.unitCostSatang ?? 0) / 100, quantity: item.quantity, total: item.lineTotalSatang / 100, note: item.note })),
     subtotal: sale.subtotalSatang / 100,
     discount: sale.discountSatang / 100,
     discountType: sale.discountType,
+    discountRate: sale.discountRateBps / 100,
     vatAmount: sale.vatSatang / 100,
     vatRate: sale.vatRateBps / 100,
     isVatIncluded: sale.pricesIncludeTax,
@@ -536,45 +579,86 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     paymentId: sale.paymentId,
   });
 
-  const refreshPOSSales = async (options: { includeMembers?: boolean; includeSettings?: boolean; skipIfEditing?: boolean } = {}) => {
+  const refreshPOSSales = async (options: { includeMembers?: boolean; includeSettings?: boolean; includeReceivables?: boolean; includePayments?: boolean; skipIfEditing?: boolean } = {}) => {
     const includeMembers = options.includeMembers !== false;
     const includeSettings = options.includeSettings !== false;
-    const [apiMembers, apiSales, apiSettings, apiReceivables, apiPayments] = await Promise.all([
+    const includeReceivables = options.includeReceivables !== false;
+    const includePayments = options.includePayments === true;
+    const [apiMembers, apiSettings, apiReceivables, apiPayments] = await Promise.all([
       includeMembers ? listPOSMembers() : Promise.resolve(null),
-      listPOSSales(),
       includeSettings ? getPOSSettings() : Promise.resolve(null),
-      listPOSReceivables(),
-      listPOSPaymentHistory(),
+      includeReceivables ? listPOSReceivables() : Promise.resolve(null),
+      includePayments ? listPOSPaymentHistory() : Promise.resolve(null),
     ]);
     if (options.skipIfEditing && isPOSEditing()) return;
     if (apiMembers) setMembers(apiMembers);
-    const openSales = apiSales.filter((sale) => sale.status === 'open');
-    setHeldOrders(apiReceivables.map((receivable) => {
-      const accountSales = openSales.filter((sale) => sale.billingAccountId === receivable.billingAccountId);
-      const posItems = accountSales.flatMap((sale) => sale.items.map((item) => ({ product: saleItemProduct(item), quantity: item.quantity, note: item.note })));
-      const matchItems = receivable.lines.filter((line) => line.sourceType === 'match').map((line) => ({
-        product: { id: `billing-match-${line.sourceId}`, sku: '', name: line.label, category: '', price: line.amountSatang / 100, cost: 0, stock: 0, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const },
-        quantity: 1,
-      }));
+    if (apiReceivables) setHeldOrders(apiReceivables.map((receivable) => {
+	  const posLines = receivable.lines.filter((line) => line.sourceType === 'pos');
+	  const sourceSaleIds: string[] = [...new Set<string>(posLines.map((line) => {
+		const snapshotSaleId = String(line.snapshot?.saleId || '').trim();
+		if (snapshotSaleId) return snapshotSaleId;
+		return line.sourceId.startsWith('split:') ? '' : line.sourceId;
+	  }).filter(Boolean))];
+	  const splitAllocations = posLines.filter((line) => line.snapshot?.splitMode === 'equal').map((line) => ({ saleId: String(line.snapshot?.saleId || line.sourceId), count: Number(line.snapshot?.splitCount || 1), position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 }));
+	  const posDiscount = posLines.reduce((sum, line) => sum + Number(line.snapshot?.discountSatang || 0), 0) / 100;
+	  const posItems = posLines.flatMap((line) => {
+		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+		const splitCount = Number(line.snapshot?.splitCount || 0);
+		if (entries.length === 0) {
+		  return [{
+			product: { id: `billing-pos-${line.sourceId}`, sku: '', name: line.label || 'สินค้า POS', category: 'POS', price: line.amountSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const },
+			quantity: 1,
+			allocatedTotal: line.amountSatang / 100,
+		  }];
+		}
+		const sourceAmounts = entries.map((entry: any) => Number(entry.amountSatang ?? entry.lineTotalSatang ?? 0));
+		const sourceTotal = sourceAmounts.reduce((sum, amount) => sum + amount, 0);
+		const allocated = sourceAmounts.map((amount) => sourceTotal > 0 ? Math.floor(amount * line.amountSatang / sourceTotal) : 0);
+		if (allocated.length > 0) allocated[0] += line.amountSatang - allocated.reduce((sum, amount) => sum + amount, 0);
+		return entries.map((entry: any, index: number) => {
+		  const quantity = Math.max(1, Number(entry.quantity || 1));
+		  const allocatedTotal = allocated[index] / 100;
+		  const realProductID = String(entry.productId || '').trim();
+		  const catalogProduct = products.find((product) => product.id === realProductID);
+		  return {
+			product: catalogProduct || { id: realProductID || `billing-pos-${line.sourceId}-${index}`, sku: String(entry.sku || ''), name: String(entry.name || entry.productName || entry.label || line.label || 'สินค้า POS'), category: 'POS', price: Number(entry.unitPriceSatang || (allocatedTotal * 100 / quantity)) / 100, cost: Number(entry.unitCostSatang || 0) / 100, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: Boolean(realProductID), minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: String(entry.unit || 'ชิ้น'), status: realProductID ? 'active' as const : 'inactive' as const },
+			quantity,
+			note: entry.note ? String(entry.note) : undefined,
+			allocatedTotal,
+			...(line.snapshot?.splitMode === 'equal' && splitCount > 1 ? { splitAllocation: { count: splitCount, position: Number(line.snapshot?.splitPosition || 1), paidCount: Number(line.snapshot?.splitPaidCount || 0), share: line.amountSatang / 100 } } : {}),
+		  };
+		});
+	  });
+	  const matchItems = receivable.lines.filter((line) => line.sourceType === 'match').flatMap((line) => {
+		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+		const chargeItems = entries.length === 0 ? [{ product: { id: `billing-match-${line.sourceId}`, sku: '', name: line.label, category: '', price: line.amountSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const }, quantity: 1 }] : entries.map((entry: any, index: number) => {
+		  const quantity = Math.max(1, Number(entry.quantity || 1));
+		  const amountSatang = Number(entry.amountSatang ?? (Number(entry.amountThb || 0) * 100));
+		  const unitPriceSatang = Number(entry.unitAmountSatang ?? (quantity > 0 ? amountSatang / quantity : amountSatang));
+		  return { product: { id: `billing-match-${line.sourceId}-${index}`, sku: '', name: String(entry.label || line.label), category: 'Match', price: unitPriceSatang / 100, cost: 0, stock: 0, primaryStock: 0, secondaryStock: 0, totalStock: 0, trackStock: false, minStockAlert: 0, image: DEFAULT_PRODUCT_IMAGE, unit: 'รายการ', status: 'inactive' as const }, quantity, note: entry.description || (Array.isArray(entry.details) ? entry.details.map((detail: any) => `${detail.label} ${detail.quantity}`).join(' · ') : undefined) };
+		});
+		return chargeItems;
+	  });
       return {
         id: receivable.billingAccountId,
         heldNumber: `รวม ${receivable.lineCount} รายการ`,
         customerName: receivable.displayName,
         memberId: receivable.memberId,
         billingAccountId: receivable.billingAccountId,
-        sourceSaleIds: accountSales.map((sale) => sale.id),
+		sourceSaleIds,
         items: [...matchItems, ...posItems],
         subtotal: receivable.totalSatang / 100,
-        discount: 0,
+        discount: posDiscount,
         discountType: 'amount' as const,
-        note: `Match ${(receivable.matchTotalSatang / 100).toFixed(2)} · POS ${(receivable.posTotalSatang / 100).toFixed(2)}`,
+        note: undefined,
         createdAt: receivable.calculatedAt,
         total: receivable.totalSatang / 100,
         matchTotal: receivable.matchTotalSatang / 100,
         posTotal: receivable.posTotalSatang / 100,
+		splitAllocations,
       } satisfies HeldOrder;
     }));
-    setOrders(apiPayments.map((payment) => {
+    if (apiPayments) setOrders(apiPayments.map((payment) => {
       const items: OrderItem[] = [];
       payment.lines.forEach((line) => {
         const snapshot = line.snapshot || {};
@@ -607,6 +691,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       customerDisplayCardText: apiSettings.customerDisplayCardText || INITIAL_SETTINGS.customerDisplayCardText,
       customerDisplayCtaText: apiSettings.customerDisplayCtaText || INITIAL_SETTINGS.customerDisplayCtaText,
       defaultLowStock: apiSettings.defaultLowStock,
+      secondaryStockEnabled: apiSettings.secondaryStockEnabled,
+      primaryStockName: apiSettings.primaryStockName || 'สต็อกหลัก',
+      secondaryStockName: apiSettings.secondaryStockName || 'สต็อกที่ 2',
+      saleStockLocation: apiSettings.saleStockLocation || 'primary',
       storeName: apiSettings.receiptHeader || current.storeName,
       taxId: apiSettings.storeTaxId || '',
       phone: apiSettings.storePhone || '',
@@ -654,30 +742,6 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     productsCount: item.productsCount || 0,
   });
 
-  const movementFromAPI = (item: POSStockMovementRecord): StockMovement => ({
-    id: String(item.id),
-    referenceNo: item.referenceNo || item.batchId || `MOV-${item.id}`,
-    batchId: item.batchId,
-    productId: item.productId,
-    productName: item.productName,
-    productSku: item.productSku,
-    type: item.type,
-    quantity: item.quantity,
-    beforeStock: item.beforeStock,
-    afterStock: item.afterStock,
-    reason: item.reason || 'ทำรายการสต็อก',
-    supplierName: item.supplierName,
-    costPerUnit: item.unitCostSatang / 100,
-    performedBy: item.actorName || 'Admin',
-    createdAt: item.createdAt,
-    note: item.note,
-    grossTotalValue: item.grossTotalSatang / 100,
-    allocatedDiscountValue: item.allocatedDiscountSatang / 100,
-    netTotalValue: item.netTotalSatang / 100,
-    previousCostPerUnit: item.previousCostSatang / 100,
-    resultingCostPerUnit: item.resultingCostSatang / 100,
-  });
-
   const batchFromAPI = (item: POSStockBatchRecord): StockBatchSummary => {
     const movements = item.items.map((line) => {
       const product = products.find((candidate) => candidate.id === line.productId);
@@ -689,31 +753,35 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         productName: line.productName,
         productSku: line.productSku || product?.sku || '',
         type: item.mode,
+        stockLocation: item.stockLocation,
         quantity: line.delta,
         beforeStock: line.balance - line.delta,
         afterStock: line.balance,
         reason: item.note || 'ทำรายการสต็อก',
         supplierName: item.supplierName,
-        costPerUnit: line.unitCostSatang / 100,
+        costPerUnit: (line.unitCostSatang ?? 0) / 100,
         performedBy: item.actorName || 'Admin',
         createdAt: item.createdAt,
-        grossTotalValue: line.grossTotalSatang / 100,
-        allocatedDiscountValue: line.allocatedDiscountSatang / 100,
-        netTotalValue: line.netTotalSatang / 100,
-        previousCostPerUnit: line.previousCostSatang / 100,
-        resultingCostPerUnit: line.resultingCostSatang / 100,
+        grossTotalValue: (line.grossTotalSatang ?? 0) / 100,
+        allocatedDiscountValue: (line.allocatedDiscountSatang ?? 0) / 100,
+        netTotalValue: (line.netTotalSatang ?? 0) / 100,
+        previousCostPerUnit: (line.previousCostSatang ?? 0) / 100,
+        resultingCostPerUnit: (line.resultingCostSatang ?? 0) / 100,
       } satisfies StockMovement;
     });
     return {
       id: item.id,
       referenceNo: item.name || item.id,
       type: item.mode,
+      stockLocation: item.stockLocation,
+      sourceStockLocation: item.sourceStockLocation,
+      destinationStockLocation: item.destinationStockLocation,
       itemsCount: movements.length,
       totalQuantity: movements.reduce((sum, movement) => sum + Math.abs(movement.quantity), 0),
-      totalCostValue: item.totalCostSatang / 100,
-      grossTotalValue: item.grossTotalSatang / 100,
-      discountValue: item.discountSatang / 100,
-      netTotalValue: item.netTotalSatang / 100,
+      totalCostValue: (item.totalCostSatang ?? 0) / 100,
+      grossTotalValue: (item.grossTotalSatang ?? 0) / 100,
+      discountValue: (item.discountSatang ?? 0) / 100,
+      netTotalValue: (item.netTotalSatang ?? 0) / 100,
       discountType: item.discountType,
       discountRate: item.discountRateBps / 100,
       reason: item.note || 'ทำรายการสต็อก',
@@ -721,29 +789,32 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       externalReferenceNo: item.externalReferenceNo,
       performedBy: item.actorName || 'Admin',
       createdAt: item.createdAt,
+      status: item.status || 'active',
+      cancelledAt: item.cancelledAt,
+      cancelledByName: item.cancelledByName,
+      cancelReason: item.cancelReason,
+      canCancel: item.canCancel,
       items: movements,
     };
   };
 
   const refreshPOSStock = async () => {
     try {
-      const [summary, apiMovements, apiBatches, apiSuppliers] = await Promise.all([
-        getPOSStockSummary(),
-        listPOSStockMovements(),
+      const [summary, apiBatches, apiSuppliers] = await Promise.all([
+        getPOSStockSummary(settings.saleStockLocation),
         listPOSStockBatches(),
         listPOSSuppliers(),
       ]);
       setStockSummary({
         productCount: summary.productCount,
         totalUnits: summary.totalUnits,
-        inventoryCostValue: summary.inventoryCostSatang / 100,
+        inventoryCostValue: (summary.inventoryCostSatang ?? 0) / 100,
         inventoryRetailValue: summary.inventoryRetailSatang / 100,
         lowStockCount: summary.lowStockCount,
         outOfStockCount: summary.outOfStockCount,
         batchCount: summary.batchCount,
         movementCount: summary.movementCount,
       });
-      setStockMovements(apiMovements.map(movementFromAPI));
       setStockBatches(apiBatches.map(batchFromAPI));
       setSuppliers(apiSuppliers.map(supplierFromAPI));
     } catch (requestError) {
@@ -757,71 +828,104 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const refresh = (event: Event) => {
       const detail = (event as CustomEvent<{ permissions?: Record<string, boolean>; user?: { name?: string } }>).detail;
       const permissions = detail?.permissions;
+      if (permissions) setPermissions(permissions as POSPermissions);
       currentPOSActorNameRef.current = detail?.user?.name || 'Admin';
       const tasks: Array<Promise<void>> = [];
       if (!permissions || permissions.sales || permissions.products || permissions.stock) tasks.push(refreshPOSCatalog());
       if (!permissions || permissions.stock) tasks.push(refreshPOSStock());
-      if (!permissions || permissions.sales || permissions.bills || permissions.settings) tasks.push(refreshPOSSales());
-	  setIsBillingPollingActive(true);
+      if (!permissions || permissions.sales || permissions.bills || permissions.settings) {
+        tasks.push(refreshPOSSales({ includeReceivables: false, includePayments: false }));
+      }
       void Promise.all(tasks);
     };
-	const stop = () => setIsBillingPollingActive(false);
     window.addEventListener('livematch:pos-authenticated', refresh);
-	window.addEventListener('livematch:pos-logged-out', stop);
-	window.addEventListener('livematch:pos-unauthorized', stop);
 	return () => {
 	  window.removeEventListener('livematch:pos-authenticated', refresh);
-	  window.removeEventListener('livematch:pos-logged-out', stop);
-	  window.removeEventListener('livematch:pos-unauthorized', stop);
 	};
   }, []);
 
   useEffect(() => {
-	if (!isBillingPollingActive) return;
-	const refreshVisible = () => {
-	  if (document.visibilityState === 'visible' && !isPOSEditing()) {
-		void refreshPOSSales({ includeMembers: false, includeSettings: false, skipIfEditing: true }).catch(() => undefined);
-	  }
-	};
-	const timer = window.setInterval(refreshVisible, 10_000);
-	document.addEventListener('visibilitychange', refreshVisible);
-	window.addEventListener('focus', refreshVisible);
-	return () => {
-	  window.clearInterval(timer);
-	  document.removeEventListener('visibilitychange', refreshVisible);
-	  window.removeEventListener('focus', refreshVisible);
-	};
-  }, [isBillingPollingActive]);
+	if (activeTab !== 'dashboard') return;
+	void refreshPOSSales({
+	  includeMembers: false,
+	  includeSettings: false,
+	  includeReceivables: false,
+	  includePayments: true,
+	  skipIfEditing: true,
+	}).catch(() => undefined);
+  }, [activeTab]);
 
-  const updateSettings = async (newSettings: Partial<StoreSettings>): Promise<boolean> => {
+  const updateSettings = async (newSettings: Partial<StoreSettings>, successMessage = 'บันทึกการตั้งค่าเรียบร้อยแล้ว', remoteScope: 'all' | 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'local' = 'all'): Promise<boolean> => {
     setSettings((prev) => ({ ...prev, ...newSettings }));
     if (newSettings.theme) {
       setThemeState(newSettings.theme);
     }
+    if (remoteScope === 'local') {
+      showToast(successMessage, 'success');
+      return true;
+    }
     try {
       const merged = { ...settings, ...newSettings };
-      await savePOSSettings({
-        promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
-        receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
-        theme: merged.theme || 'light', language: 'th', taxRatePercent: merged.vatEnabled ? merged.vatRate : 0,
-        pricesIncludeTax: merged.vatType === 'included', inheritBookingPromptPay: merged.inheritBookingPromptPay !== false,
-        paymentQrImage: merged.paymentQrImage || '',
-        storeTaxId: merged.taxId, storePhone: merged.phone, storeEmail: merged.email, storeAddress: merged.address,
-        navbarTitle: merged.navbarTitle, navbarIconData: merged.navbarIconData || '',
-        customerDisplayTitle: merged.customerDisplayTitle, customerDisplayHighlight: merged.customerDisplayHighlight,
-        customerDisplaySubtitle: merged.customerDisplaySubtitle, customerDisplayCardText: merged.customerDisplayCardText,
-        customerDisplayCtaText: merged.customerDisplayCtaText,
-      });
+      let remoteSettings: Partial<POSSettingsRecord>;
+      switch (remoteScope) {
+        case 'store':
+          remoteSettings = {
+            promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
+            receiptHeader: merged.storeName, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
+            inheritBookingPromptPay: merged.inheritBookingPromptPay !== false, paymentQrImage: merged.paymentQrImage || '',
+            storeTaxId: merged.taxId, storePhone: merged.phone, storeEmail: merged.email, storeAddress: merged.address,
+            navbarTitle: merged.navbarTitle, navbarIconData: merged.navbarIconData || '',
+          };
+          break;
+        case 'stock':
+          remoteSettings = {
+            secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
+            secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
+          };
+          break;
+        case 'customer-display':
+          remoteSettings = {
+            customerDisplayTitle: merged.customerDisplayTitle, customerDisplayHighlight: merged.customerDisplayHighlight,
+            customerDisplaySubtitle: merged.customerDisplaySubtitle, customerDisplayCardText: merged.customerDisplayCardText,
+            customerDisplayCtaText: merged.customerDisplayCtaText,
+          };
+          break;
+        case 'printer':
+          remoteSettings = { receiptFooter: merged.receiptFooterMessage };
+          break;
+        case 'tax':
+          remoteSettings = { taxRatePercent: merged.vatEnabled ? merged.vatRate : 0, pricesIncludeTax: merged.vatType === 'included' };
+          break;
+        default:
+          remoteSettings = {
+            promptPayType: merged.promptPayType || 'mobile', promptPayId: merged.promptPayId, promptPayReceiverName: merged.promptPayReceiverName || '',
+            receiptHeader: merged.storeName, receiptFooter: merged.receiptFooterMessage, logoData: merged.logoData || '', defaultLowStock: merged.defaultLowStock,
+            theme: merged.theme || 'light', language: 'th', taxRatePercent: merged.vatEnabled ? merged.vatRate : 0,
+            pricesIncludeTax: merged.vatType === 'included', inheritBookingPromptPay: merged.inheritBookingPromptPay !== false,
+            paymentQrImage: merged.paymentQrImage || '', storeTaxId: merged.taxId, storePhone: merged.phone,
+            storeEmail: merged.email, storeAddress: merged.address, navbarTitle: merged.navbarTitle,
+            navbarIconData: merged.navbarIconData || '', customerDisplayTitle: merged.customerDisplayTitle,
+            customerDisplayHighlight: merged.customerDisplayHighlight, customerDisplaySubtitle: merged.customerDisplaySubtitle,
+            customerDisplayCardText: merged.customerDisplayCardText, customerDisplayCtaText: merged.customerDisplayCtaText,
+            secondaryStockEnabled: merged.secondaryStockEnabled, primaryStockName: merged.primaryStockName,
+            secondaryStockName: merged.secondaryStockName, saleStockLocation: merged.saleStockLocation,
+          };
+      }
+      await savePOSSettings(remoteSettings);
       const persisted = await getPOSSettings();
       setSettings((current) => ({
         ...current,
+        secondaryStockEnabled: persisted.secondaryStockEnabled,
+        primaryStockName: persisted.primaryStockName,
+        secondaryStockName: persisted.secondaryStockName,
+        saleStockLocation: persisted.saleStockLocation,
         effectivePromptPayType: persisted.effectivePromptPayType,
         effectivePromptPayReceiverName: persisted.effectivePromptPayReceiverName,
         effectivePromptPayIdMasked: persisted.effectivePromptPayIdMasked,
         effectivePromptPaySource: persisted.effectivePromptPaySource,
         effectivePromptPayAvailable: persisted.effectivePromptPayAvailable,
       }));
-      showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
+      showToast(successMessage, 'success');
       return true;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'บันทึกการตั้งค่าไม่สำเร็จ', 'error');
@@ -1003,31 +1107,84 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const latestCustomerDisplayStateRef = useRef<any>(null);
   latestCustomerDisplayStateRef.current = { cart, cartTotals, discount, discountType, settings };
 
-  const openCustomerDisplayPopup = () => {
+  const openCustomerDisplayPopup = (targetScreen?: ManagedScreenLike | null) => {
     const url = `${window.location.origin}${window.location.pathname}?display=customer`;
     const popup = window.open(
       url,
       'siampure_pos_customer_window',
-      'width=1024,height=768,menubar=no,toolbar=no,location=no,status=no,resizable=yes'
+      customerDisplayWindowFeatures(targetScreen)
     );
     if (popup) {
       try {
         (popup as any).__SIAMPURE_INITIAL_STATE__ = latestCustomerDisplayStateRef.current;
-        customerWindowsRef.current.push(popup);
+        if (!customerWindowsRef.current.includes(popup)) customerWindowsRef.current.push(popup);
+        if (targetScreen) {
+          popup.moveTo(targetScreen.availLeft, targetScreen.availTop);
+          popup.resizeTo(targetScreen.availWidth, targetScreen.availHeight);
+        }
+        popup.focus();
       } catch {
         // The storage/BroadcastChannel transports will still synchronize the window.
       }
+      setCustomerDisplayStatus('connected');
+      return true;
     } else {
-      setActiveTab('customer-display');
+      setCustomerDisplayStatus('unsupported');
+      showToast('เบราว์เซอร์บล็อกหน้าต่างจอลูกค้า กรุณาอนุญาต Pop-up สำหรับเว็บไซต์นี้', 'error');
+      return false;
     }
   };
+
+  const refreshHeldOrders = () => refreshPOSSales({
+    includeMembers: false,
+    includeSettings: false,
+    includeReceivables: true,
+    includePayments: false,
+    skipIfEditing: true,
+  });
 
   // Function to open standalone Customer Display Window
   const openCustomerDisplayWindow = async () => {
     const url = `${window.location.origin}${window.location.pathname}?display=customer`;
+    const isAndroid = isAndroidDevice();
+    if (!isAndroid) {
+      const getScreenDetails = getScreenDetailsFunction();
+      if (getScreenDetails) {
+        setCustomerDisplayStatus('connecting');
+        try {
+          const details = await getScreenDetails();
+          const secondaryScreen = findSecondaryScreen(details);
+          if (secondaryScreen) {
+            if (openCustomerDisplayPopup(secondaryScreen)) {
+              showToast(`เปิดจอลูกค้าบนจอที่สอง${secondaryScreen.label ? ` (${secondaryScreen.label})` : ''} แล้ว`, 'success');
+            }
+            return;
+          }
+          setCustomerDisplayStatus('unsupported');
+          showToast('เครื่องตรวจพบเพียง 1 จอหรือกำลังใช้โหมด Duplicate กรุณาตั้งค่าจอเป็น Extend แล้วกดใหม่', 'error');
+          return;
+        } catch (error) {
+          const errorName = error instanceof DOMException ? error.name : '';
+          if (errorName === 'NotAllowedError') {
+            setCustomerDisplayStatus('unsupported');
+            showToast('กรุณาอนุญาตสิทธิ์ Window management เพื่อให้ POS ย้ายหน้าจอลูกค้าไปจอที่สอง', 'warning');
+            return;
+          }
+          // Older desktop Chromium builds can still use Presentation or popup fallback.
+        }
+      } else if ('isExtended' in window.screen && !(window.screen as Screen & { isExtended?: boolean }).isExtended) {
+        setCustomerDisplayStatus('unsupported');
+        showToast('ระบบปฏิบัติการกำลังรายงานจอเดียว (Duplicate) กรุณาเปลี่ยนเป็น Extend ก่อน', 'error');
+        return;
+      }
+    }
     const PresentationRequestConstructor = getPresentationRequestConstructor();
     if (!PresentationRequestConstructor) {
       setCustomerDisplayStatus('unsupported');
+      if (isAndroid) {
+        showToast('Chrome บนเครื่อง POS ไม่ได้เชื่อมต่อจอหน้าของเครื่อง กรุณาเปิด POS ผ่านแอป iMin Customer Display ที่รองรับจอคู่', 'error');
+        return;
+      }
       showToast('เบราว์เซอร์นี้ไม่รองรับ Presentation API กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
       openCustomerDisplayPopup();
       return;
@@ -1047,6 +1204,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const availability = await request.getAvailability();
           if (!availability.value) {
             setCustomerDisplayStatus('unsupported');
+            if (isAndroid) {
+              showToast('ไม่พบจอหน้าของเครื่อง iMin ใน Chrome กรุณาใช้แอป POS ที่เชื่อม Android secondary display', 'error');
+              return;
+            }
             showToast('ไม่พบจอที่ Presentation API มองเห็น กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
             openCustomerDisplayPopup();
             return;
@@ -1085,6 +1246,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return;
       }
       setCustomerDisplayStatus('unsupported');
+      if (isAndroid) {
+        showToast('เปิดจอหน้า iMin ไม่สำเร็จ ต้องเชื่อมผ่าน Android Presentation ภายในแอป POS', 'error');
+        return;
+      }
       showToast('ไม่พบจอที่ Presentation API ใช้งานได้ กำลังเปิดหน้าต่างจอลูกค้าแทน', 'warning');
       openCustomerDisplayPopup();
     }
@@ -1223,36 +1388,35 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Products CRUD
-  const addProduct = (productData: Omit<Product, 'id'>) => {
-    const newProduct: Product = {
-      ...productData,
-      image: productData.image || DEFAULT_PRODUCT_IMAGE,
-      id: 'prod-' + Date.now(),
-    };
-    setProducts((prev) => [newProduct, ...prev]);
-    showToast(`เพิ่มสินค้า "${newProduct.name}" สำเร็จ`, 'success');
-    playBeep('success');
-    void createPOSProduct(productPayload(productData))
-      .then(refreshPOSCatalog)
-      .catch((requestError) => {
-        showToast(requestError instanceof Error ? requestError.message : 'เพิ่มสินค้าไม่สำเร็จ', 'error');
-        void refreshPOSCatalog();
-      });
+  const addProduct = async (productData: Omit<Product, 'id'>) => {
+    try {
+      await createPOSProduct(productPayload(productData));
+      await refreshPOSCatalog();
+      showToast(`เพิ่มสินค้า "${productData.name}" สำเร็จ`, 'success');
+      playBeep('success');
+      return true;
+    } catch (requestError) {
+      showToast(requestError instanceof Error ? requestError.message : 'เพิ่มสินค้าไม่สำเร็จ', 'error');
+      await refreshPOSCatalog();
+      return false;
+    }
   };
 
-  const updateProduct = (id: string, updated: Partial<Product>) => {
-    setProducts((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...updated } : p))
-    );
-    showToast('อัปเดตข้อมูลสินค้าสำเร็จ', 'success');
+  const updateProduct = async (id: string, updated: Partial<Product>) => {
     const current = products.find((product) => product.id === id);
-    if (current) {
-      void updatePOSProduct(id, productPayload({ ...current, ...updated }))
-        .then(refreshPOSCatalog)
-        .catch((requestError) => {
-          showToast(requestError instanceof Error ? requestError.message : 'อัปเดตสินค้าไม่สำเร็จ', 'error');
-          void refreshPOSCatalog();
-        });
+    if (!current) {
+      showToast('ไม่พบสินค้าที่ต้องการแก้ไข กรุณารีเฟรชแล้วลองใหม่', 'error');
+      return false;
+    }
+    try {
+      await updatePOSProduct(id, productPayload({ ...current, ...updated }));
+      await refreshPOSCatalog();
+      showToast('อัปเดตข้อมูลสินค้าสำเร็จ', 'success');
+      return true;
+    } catch (requestError) {
+      showToast(requestError instanceof Error ? requestError.message : 'อัปเดตสินค้าไม่สำเร็จ', 'error');
+      await refreshPOSCatalog();
+      return false;
     }
   };
 
@@ -1267,9 +1431,19 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  const withSaleStockDelta = (product: Product, delta: number): Product => {
+    if (!product.trackStock) return product;
+    if (settings.saleStockLocation === 'secondary') {
+      const secondaryStock = Math.max(0, product.secondaryStock + delta);
+      return { ...product, secondaryStock, totalStock: product.primaryStock + secondaryStock, stock: secondaryStock };
+    }
+    const primaryStock = Math.max(0, product.primaryStock + delta);
+    return { ...product, primaryStock, totalStock: primaryStock + product.secondaryStock, stock: primaryStock };
+  };
+
   // Cart operations
   const addToCart = (product: Product, quantity = 1, note = '') => {
-    if (product.stock <= 0) {
+    if (product.trackStock && product.stock <= 0) {
       showToast(`สินค้า "${product.name}" หมดสต็อกแล้ว!`, 'error');
       playBeep('alert');
       return;
@@ -1282,7 +1456,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       if (existingIndex > -1) {
         const newQty = prevCart[existingIndex].quantity + quantity;
-        if (newQty > product.stock) {
+        if (product.trackStock && newQty > product.stock) {
           showToast(`สินค้าในสต็อกมีเพียง ${product.stock} ${product.unit}`, 'warning');
           return prevCart;
         }
@@ -1305,7 +1479,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCart((prevCart) =>
       prevCart.map((item) => {
         if (item.product.id === productId) {
-          if (quantity > item.product.stock) {
+          if (item.product.trackStock && quantity > item.product.stock) {
             showToast(`สต็อกไม่เพียงพอ (คงเหลือ ${item.product.stock})`, 'warning');
             return item;
           }
@@ -1331,8 +1505,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const clearCart = () => {
+    const shouldRestoreHeldList = editingHeldOrder !== null;
     setCart([]);
     setDiscountState(0);
+    setEditingHeldOrder(null);
+    holdRequestIDRef.current = '';
+    if (shouldRestoreHeldList) {
+      void refreshPOSSales({ includeMembers: false, includeSettings: false, includePayments: false });
+    }
   };
 
   const setDiscount = (amount: number, type: 'amount' | 'percent' = 'amount') => {
@@ -1354,29 +1534,34 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [cart, cartTotals, discount, discountType]);
 
   // Held Orders (พักยอดบิล)
-  const holdCurrentCart = async (memberId: string, customerName: string): Promise<boolean> => {
+  const holdCurrentCart = async (memberIds: string[], customerNames: string[]): Promise<boolean> => {
     if (cart.length === 0) {
       showToast('ไม่มีสินค้าในตะกร้าสำหรับพักยอด', 'warning');
       return false;
     }
-    if (!memberId) {
+    const editedOrder = editingHeldOrder;
+    if (!editedOrder && memberIds.length === 0) {
       showToast('กรุณาเลือกสมาชิกจากระบบ', 'warning');
       return false;
     }
+	const isSplit = !editedOrder && memberIds.length > 1;
     try {
       const requestId = holdRequestIDRef.current || crypto.randomUUID(); holdRequestIDRef.current = requestId;
       const result = await createPOSSale({
-        requestId, action: 'hold', buyerType: 'member', buyerId: memberId,
+        requestId, action: 'hold', buyerType: editedOrder ? 'anonymous' : 'member', buyerId: editedOrder ? undefined : isSplit ? undefined : memberIds[0],
+		buyerIds: isSplit ? memberIds : undefined, splitMode: isSplit ? 'equal' : 'none',
         discountType, discountAmountSatang: discountType === 'amount' ? Math.round(discount * 100) : 0,
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
+        replaceSaleIds: editedOrder?.saleIds || [],
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, note: item.note })),
       });
       clearCart();
       holdRequestIDRef.current = '';
       await Promise.all([refreshPOSCatalog(), refreshPOSSales(), refreshPOSStock()]);
       playBeep('success');
-      showToast(`พักยอดของ ${customerName} เรียบร้อยแล้ว (${result.saleId})`, 'success');
+      const heldFor = editedOrder?.customerName || customerNames[0];
+      showToast(`${isSplit ? `พักยอดแบบหาร ${memberIds.length} คน` : `พักบิลของ ${heldFor}`} เรียบร้อยแล้ว (${result.saleId})`, 'success');
       return true;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'พักยอดไม่สำเร็จ', 'error');
@@ -1387,15 +1572,27 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const resumeHeldOrder = (heldId: string) => {
     const found = heldOrders.find((h) => h.id === heldId);
     if (!found) return;
+	if (found.splitAllocations?.some((split) => split.paidCount > 0)) {
+	  showToast('ดึงบิลหารกลับไม่ได้ เพราะมีสมาชิกบางคนชำระแล้ว กรุณาคืนเงินให้ครบก่อนแก้ไขทั้งชุด', 'error');
+	  return;
+	}
     if (cart.length > 0 && !window.confirm('มีสินค้าอยู่ในตะกร้า ต้องการแทนที่ด้วยรายการพักยอดนี้หรือไม่?')) return;
     void (async () => {
       try {
-		const saleIds = found.sourceSaleIds || [];
+	const saleIds = found.sourceSaleIds || [];
 		if (saleIds.length === 0) { showToast('ยอด Match เรียกกลับไปแก้ไขในหน้าขายไม่ได้', 'warning'); return; }
-		await Promise.all(saleIds.map((id) => voidPOSSale(id, 'เรียกบิลกลับเข้าตะกร้า')));
-		setCart(found.items.filter((item) => !item.product.id.startsWith('billing-match-'))); setDiscountState(found.discount); setDiscountTypeState(found.discountType); setActiveTab('pos');
-        await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
-        showToast(`ดึงรายการพักยอด ${found.heldNumber} กลับมาขายแล้ว`, 'success');
+		if (saleIds.length !== 1 || found.splitAllocations?.length) { showToast('ดึงกลับมาแก้ไขได้ครั้งละ 1 บิลที่ไม่ได้หารเท่านั้น', 'warning'); return; }
+		const editableItems = found.items.filter((item) => !item.product.id.startsWith('billing-match-') && !item.product.id.startsWith('billing-pos-'));
+		if (editableItems.length === 0) { showToast('ไม่พบรหัสสินค้าจริงในบิลนี้ กรุณารีเฟรชข้อมูลก่อน', 'error'); return; }
+		setEditingHeldOrder({
+		  saleIds,
+		  billingAccountId: found.billingAccountId,
+		  customerName: found.customerName || 'ไม่ระบุชื่อ',
+		  heldNumber: found.heldNumber,
+		});
+		setCart(editableItems); setDiscountState(found.discount); setDiscountTypeState(found.discountType); setActiveTab('pos');
+		setHeldOrders((current) => current.filter((item) => item.id !== found.id));
+		showToast(`เปิดบิล ${found.heldNumber} เพื่อแก้ไขแล้ว สต็อกยังคงถูกจองไว้จนกว่าจะบันทึก`, 'success');
       } catch (requestError) { showToast(requestError instanceof Error ? requestError.message : 'เรียกบิลไม่สำเร็จ', 'error'); }
     })();
   };
@@ -1410,43 +1607,22 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch((requestError) => showToast(requestError instanceof Error ? requestError.message : 'ลบรายการพักยอดไม่สำเร็จ', 'error'));
   };
 
-  const batchDeleteHeldOrders = (heldIds: string[]) => {
-    if (heldIds.length === 0) return;
-	const saleIds = heldOrders.filter((item) => heldIds.includes(item.id)).flatMap((item) => item.sourceSaleIds || []);
-	if (saleIds.length === 0) { showToast('รายการที่เลือกมีเฉพาะยอด Match', 'warning'); return; }
-	void Promise.all(saleIds.map((id) => voidPOSSale(id, 'ยกเลิกรายการพักยอดหลายรายการ'))).then(async () => {
-      await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
-      showToast(`ลบรายการพักยอดจำนวน ${heldIds.length} รายการและคืนสต็อกแล้ว`, 'info');
-    }).catch((requestError) => showToast(requestError instanceof Error ? requestError.message : 'ลบรายการพักยอดไม่สำเร็จ', 'error'));
-  };
-
-  const mergeHeldOrdersIntoCart = (heldIds: string[]) => {
-    const targets = heldOrders.filter((h) => heldIds.includes(h.id));
-    if (targets.length === 0) return;
-    void (async () => {
-      try {
-		const saleIds = targets.flatMap((item) => item.sourceSaleIds || []);
-		if (saleIds.length === 0) { showToast('รายการที่เลือกมีเฉพาะยอด Match', 'warning'); return; }
-		await Promise.all(saleIds.map((id) => voidPOSSale(id, 'รวมกลับเข้าตะกร้า')));
-		setCart(targets.flatMap((item) => item.items).filter((item) => !item.product.id.startsWith('billing-match-'))); setDiscountState(0); setDiscountTypeState('amount'); setActiveTab('pos');
-        await Promise.all([refreshPOSCatalog(), refreshPOSStock(), refreshPOSSales()]);
-        showToast(`รวม ${targets.length} รายการพักยอดเข้าสู่ตะกร้าเรียบร้อยแล้ว`, 'success');
-      } catch (requestError) { showToast(requestError instanceof Error ? requestError.message : 'รวมรายการพักยอดไม่สำเร็จ', 'error'); }
-    })();
-  };
-
   const processBatchHeldPayment = async ({
     heldIds,
     paymentMethod,
     cashReceived,
     referenceNumber,
     customerNote,
+    discountType: settlementDiscountType = 'amount',
+    discountValue = 0,
   }: {
     heldIds: string[];
     paymentMethod: 'cash' | 'promptpay';
     cashReceived?: number;
     referenceNumber?: string;
     customerNote?: string;
+    discountType?: 'amount' | 'percent';
+    discountValue?: number;
   }): Promise<Order | null> => {
     const targets = heldOrders.filter((h) => heldIds.includes(h.id));
     if (targets.length === 0) {
@@ -1461,32 +1637,72 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     try {
       const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
-      const totalSatang = summaries.reduce((sum, summary) => sum + summary.totalSatang, 0);
+      const grossTotalSatang = summaries.reduce((sum, summary) => sum + summary.totalSatang, 0);
+      const posTotalSatang = summaries.reduce((sum, summary) => sum + summary.posTotalSatang, 0);
+      const discountSatang = settlementDiscountType === 'percent'
+        ? Math.round(posTotalSatang * Math.min(100, Math.max(0, discountValue)) / 100)
+        : Math.min(posTotalSatang, Math.round(Math.max(0, discountValue) * 100));
+      const totalSatang = grossTotalSatang - discountSatang;
       const receivedSatang = Math.round((cashReceived || 0) * 100);
       if (paymentMethod === 'cash' && receivedSatang < totalSatang) {
         showToast('ยอดเงินสดไม่เพียงพอสำหรับยอดรวม Match และ POS', 'warning');
         return null;
       }
       let allocatedCashSatang = 0;
+	  let allocatedDiscountSatang = 0;
+	  const settledSummaries: POSBillingSummary[] = [];
       for (let index = 0; index < summaries.length; index += 1) {
         const summary = summaries[index];
         const isLast = index === summaries.length - 1;
+        const accountDiscountSatang = isLast
+          ? discountSatang - allocatedDiscountSatang
+          : Math.floor(discountSatang * summary.posTotalSatang / Math.max(1, posTotalSatang));
+        const accountTotalSatang = summary.totalSatang - accountDiscountSatang;
         const accountCashSatang = paymentMethod === 'cash'
-          ? (isLast ? receivedSatang - allocatedCashSatang : summary.totalSatang)
+          ? (isLast ? receivedSatang - allocatedCashSatang : accountTotalSatang)
           : 0;
-        await settlePOSAccount({
+		const settlement = await settlePOSAccount({
           billingAccountId: summary.billingAccountId,
           method: paymentMethod === 'promptpay' ? 'promptpay' : 'cash',
-          expectedTotalSatang: summary.totalSatang,
+          expectedTotalSatang: accountTotalSatang,
           cashReceivedSatang: accountCashSatang,
           referenceNumber,
+          discountType: 'amount',
+          discountAmountSatang: accountDiscountSatang,
         });
+		settledSummaries.push(settlement.summary);
         allocatedCashSatang += accountCashSatang;
+        allocatedDiscountSatang += accountDiscountSatang;
       }
       await refreshPOSSales();
       const customerNames = summaries.map((summary) => summary.displayName).join(', ');
       showToast(`รับชำระยอดรวม ${summaries.length} สมาชิกเรียบร้อยแล้ว`, 'success');
-      return { id: `payment-${Date.now()}`, orderNumber: `PAY-${Date.now()}`, items: [], subtotal: totalSatang / 100, discount: 0, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: totalSatang / 100, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived, change: Math.max(0, (cashReceived || 0) - totalSatang / 100), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || `ชำระยอดรวม Match + POS · ${customerNames}`, referenceNumber };
+	  const itemsForSummary = (summary: POSBillingSummary): OrderItem[] => (summary.lines || []).flatMap((line) => {
+		const entries = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+		if (entries.length === 0) return [{ productId: line.sourceId, name: line.label, sku: '', price: line.amountSatang / 100, cost: 0, quantity: 1, total: line.amountSatang / 100 }];
+		const sourceAmounts = entries.map((entry: any) => Number(entry.amountSatang ?? entry.lineTotalSatang ?? 0));
+		const sourceTotal = sourceAmounts.reduce((sum, amount) => sum + amount, 0);
+		const allocated = sourceAmounts.map((amount) => sourceTotal > 0 ? Math.floor(amount * line.amountSatang / sourceTotal) : 0);
+		if (allocated.length > 0) allocated[0] += line.amountSatang - allocated.reduce((sum, amount) => sum + amount, 0);
+		const chargeItems = entries.map((entry: any, index: number) => {
+		  const quantity = Number(entry.quantity || 1);
+		  return { productId: String(entry.productId || `${line.sourceId}-${index}`), name: String(entry.name || entry.productName || entry.label || line.label), sku: String(entry.sku || ''), price: allocated[index] / 100 / quantity, cost: Number(entry.unitCostSatang || 0) / 100, quantity, total: allocated[index] / 100, note: entry.note };
+		});
+		return chargeItems;
+	  });
+	  let receiptCashAllocated = 0;
+	  const receipts = settledSummaries.map((summary, index): Order => {
+		const accountTotal = summary.totalSatang / 100;
+		const accountSubtotal = summaries[index].totalSatang / 100;
+		const accountDiscount = Math.max(0, accountSubtotal - accountTotal);
+		const isLast = index === settledSummaries.length - 1;
+		const accountCash = paymentMethod === 'cash' ? (isLast ? (cashReceived || accountTotal) - receiptCashAllocated : accountTotal) : undefined;
+		receiptCashAllocated += accountCash || 0;
+		return { id: summary.paymentId || `payment-${Date.now()}-${index}`, orderNumber: summary.paymentId || `PAY-${Date.now()}-${index + 1}`, items: itemsForSummary(summary), subtotal: accountSubtotal, discount: accountDiscount, discountType: 'amount', vatAmount: 0, vatRate: 0, isVatIncluded: true, total: accountTotal, paymentMethod: paymentMethod === 'promptpay' ? 'promptpay' : 'cash', cashReceived: accountCash, change: Math.max(0, (accountCash || 0) - accountTotal), status: 'completed', createdAt: new Date().toISOString(), cashierName: currentPOSActorNameRef.current, customerNote: customerNote || summary.displayName, referenceNumber, matchTotal: summary.matchTotalSatang / 100, posTotal: summary.posTotalSatang / 100, billingLines: summary.lines };
+	  });
+	  setReceiptBatch(receipts);
+	  setSelectedOrderForReceipt(receipts[0] || null);
+	  return receipts[0] || null;
     } catch (requestError) {
       showToast(requestError instanceof Error ? requestError.message : 'รับชำระยอดรวมไม่สำเร็จ', 'error');
       return null;
@@ -1580,8 +1796,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           .filter((it) => it.productId === prod.id)
           .reduce((sum, it) => sum + it.quantity, 0);
         if (itemQuantitySum > 0) {
-          const newStock = Math.max(0, prod.stock - itemQuantitySum);
-          return { ...prod, stock: newStock };
+          return withSaleStockDelta(prod, -itemQuantitySum);
         }
         return prod;
       })
@@ -1637,6 +1852,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         discountRateBps: discountType === 'percent' ? Math.round(discount * 100) : 0,
         expectedTotalSatang: Math.round(cartTotals.total * 100),
         cashReceivedSatang: Math.round((cashReceived || 0) * 100), referenceNumber,
+        replaceSaleIds: editingHeldOrder?.saleIds || [],
         items: cart.map((item) => ({ productId: item.product.id, quantity: item.quantity, note: item.note })),
       });
       const apiSales = await listPOSSales();
@@ -1685,6 +1901,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       subtotal: cartTotals.subtotal,
       discount: cartTotals.discountAmount,
       discountType,
+      discountRate: discountType === 'percent' ? discount : undefined,
       vatRate: settings.vatEnabled ? settings.vatRate : 0,
       vatAmount: cartTotals.vatAmount,
       isVatIncluded: settings.vatEnabled && settings.vatType === 'included',
@@ -1704,8 +1921,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prevProducts.map((prod) => {
         const cartMatch = cart.find((item) => item.product.id === prod.id);
         if (cartMatch) {
-          const newStock = Math.max(0, prod.stock - cartMatch.quantity);
-          return { ...prod, stock: newStock };
+          return withSaleStockDelta(prod, -cartMatch.quantity);
         }
         return prod;
       })
@@ -1750,7 +1966,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prevProducts.map((prod) => {
         const itemMatch = targetOrder.items.find((item) => item.productId === prod.id);
         if (itemMatch) {
-          return { ...prod, stock: prod.stock + itemMatch.quantity };
+          return withSaleStockDelta(prod, itemMatch.quantity);
         }
         return prod;
       })
@@ -1806,8 +2022,14 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     discountType = 'amount',
     discountAmountSatang = 0,
     discountRateBps = 0,
+    stockLocation,
+    sourceStockLocation,
+    destinationStockLocation,
   }: {
-    type: 'in' | 'out' | 'adjust';
+    type: 'in' | 'out' | 'adjust' | 'transfer';
+    stockLocation?: 'primary' | 'secondary';
+    sourceStockLocation?: 'primary' | 'secondary';
+    destinationStockLocation?: 'primary' | 'secondary';
     items: Array<{
       productId: string;
       quantity: number;
@@ -1832,6 +2054,9 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const input: POSStockBatchInput = {
       name: docRef,
       mode: type,
+      stockLocation: stockLocation || settings.saleStockLocation,
+      sourceStockLocation,
+      destinationStockLocation,
       note: reason,
       supplierId: type === 'in' ? (supplierId || suppliers.find((supplier) => supplier.name === supplierName)?.id) : undefined,
       externalReferenceNo: type === 'in' ? externalReferenceNo : undefined,
@@ -1849,7 +2074,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return createPOSStockBatch(input)
       .then(async () => {
         await Promise.all([refreshPOSCatalog(), refreshPOSStock()]);
-        const typeLabel = type === 'in' ? 'รับเข้า' : type === 'out' ? 'เบิกจ่ายออก' : 'ปรับยอด';
+        const typeLabel = type === 'in' ? 'รับเข้า' : type === 'out' ? 'เบิกจ่ายออก' : type === 'transfer' ? 'โอนย้าย' : 'ปรับยอด';
         playBeep('success');
         showToast(`บันทึกเอกสาร ${docRef} (${typeLabel} ${items.length} รายการ) สำเร็จ`, 'success');
         return true;
@@ -1858,6 +2083,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         showToast(requestError instanceof Error ? requestError.message : 'บันทึกเอกสารสต็อกไม่สำเร็จ', 'error');
         return false;
       });
+  };
+
+  const cancelStockBatch = async (batchId: string, reason: string): Promise<boolean> => {
+    try {
+      await cancelPOSStockBatch(batchId, reason);
+      await Promise.all([refreshPOSCatalog(), refreshPOSStock()]);
+      playBeep('success');
+      showToast('ยกเลิกเอกสารสต็อกและคืนยอดเรียบร้อยแล้ว', 'success');
+      return true;
+    } catch (requestError) {
+      let message = requestError instanceof Error ? requestError.message : 'ยกเลิกเอกสารสต็อกไม่สำเร็จ';
+      if (requestError instanceof POSApiError && requestError.code === 'STOCK_BATCH_CANCEL_INSUFFICIENT_STOCK') {
+        const productName = typeof requestError.details?.productName === 'string' ? requestError.details.productName : '';
+        const available = typeof requestError.details?.available === 'number' ? requestError.details.available : undefined;
+        const required = typeof requestError.details?.required === 'number' ? requestError.details.required : undefined;
+        message = `${message}${productName ? `: ${productName}` : ''}${available !== undefined && required !== undefined ? ` (คงเหลือ ${available}, ต้องใช้ ${required})` : ''}`;
+      }
+      showToast(message, 'error');
+      return false;
+    }
   };
 
   // Suppliers CRUD
@@ -1908,6 +2153,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   return (
     <PosContext.Provider
       value={{
+        permissions,
         activeTab,
         setActiveTab,
         theme,
@@ -1947,11 +2193,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDiscount,
         cartTotals,
         heldOrders,
+        editingHeldOrder,
+        refreshHeldOrders,
         holdCurrentCart,
         resumeHeldOrder,
         deleteHeldOrder,
-        batchDeleteHeldOrders,
-        mergeHeldOrdersIntoCart,
         processBatchHeldPayment,
         orders,
         processPayment,
@@ -1964,12 +2210,15 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         stockOut,
         adjustStock,
         batchStockOperation,
+        cancelStockBatch,
         suppliers,
         addSupplier,
         updateSupplier,
         deleteSupplier,
         selectedOrderForReceipt,
         setSelectedOrderForReceipt,
+        receiptBatch,
+        setReceiptBatch,
         playBeep,
         toast,
         showToast,

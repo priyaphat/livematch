@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,6 +51,13 @@ func TestPOSPermissionsEnforceRole(t *testing.T) {
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", response.Code)
 	}
+	response = httptest.NewRecorder()
+	if authorizePOSPath(response, cashier, http.MethodPost, "stock/batches/batch-1/cancel") {
+		t.Fatal("cashier stock cancellation should be denied")
+	}
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected cancellation 403, got %d", response.Code)
+	}
 	for _, path := range []string{"dashboard", "reports"} {
 		response = httptest.NewRecorder()
 		if authorizePOSPath(response, cashier, http.MethodGet, path) {
@@ -69,7 +77,7 @@ func TestPOSPermissionsEnforceRole(t *testing.T) {
 		t.Fatal("owner should be allowed to update permissions")
 	}
 	manager = adminUser{POSRole: "manager", POSPermissions: defaultPOSPermissions("manager")}
-	for _, request := range []struct{ method, path string }{{http.MethodPost, "stock/batch"}, {http.MethodPatch, "products/product-1"}, {http.MethodPost, "reports/export-authorize"}, {http.MethodPost, "sales/sale-1/void"}} {
+	for _, request := range []struct{ method, path string }{{http.MethodPost, "stock/batch"}, {http.MethodPost, "stock/batches/batch-1/cancel"}, {http.MethodPatch, "products/product-1"}, {http.MethodPost, "reports/export-authorize"}, {http.MethodPost, "sales/sale-1/void"}} {
 		if !authorizePOSPath(httptest.NewRecorder(), manager, request.method, request.path) {
 			t.Fatalf("manager default permissions should allow %s %s", request.method, request.path)
 		}
@@ -82,6 +90,47 @@ func TestPOSAccessHandlerRequiresOwnerBeforeDatabase(t *testing.T) {
 	(&app{}).writePOSAccessSettings(response, request, adminUser{POSRole: "manager"})
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 before any database access, got %d", response.Code)
+	}
+}
+
+func TestPOSSupplierDeleteOnlyWhenUnused(t *testing.T) {
+	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL supplier integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := &app{db: db}
+	adminID := "supplier-delete-test-" + randHex(6)
+	if _, err = db.Exec(`insert into admin_users(id,email,name,password_hash,verified_at) values($1,$2,'Supplier Delete Test','test',now())`, adminID, adminID+"@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from activity_logs where actor_id=$1 or details like '%'||$1||'%'`, adminID)
+		_, _ = db.Exec(`delete from admin_users where id=$1`, adminID)
+	}()
+	owner := adminUser{ID: adminID, POSRole: "owner", POSActorID: adminID, POSActorType: "admin", POSActorName: "Supplier Delete Test"}
+
+	unusedID, usedID := "supplier-"+randHex(6), "supplier-"+randHex(6)
+	if _, err = db.Exec(`insert into pos_suppliers(id,admin_id,code,name,phone) values($1,$3,'SUP-U','Unused','0'),($2,$3,'SUP-X','Used','0')`, unusedID, usedID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into pos_stock_batches(id,admin_id,name,mode,supplier_id,supplier_name) values($1,$2,'Used supplier batch','in',$3,'Used')`, "batch-"+randHex(6), adminID, usedID); err != nil {
+		t.Fatal(err)
+	}
+
+	unusedResponse := httptest.NewRecorder()
+	a.deletePOSSupplier(unusedResponse, httptest.NewRequest(http.MethodDelete, "/api/admin/pos/suppliers/"+unusedID, nil), owner, unusedID)
+	if unusedResponse.Code != http.StatusOK {
+		t.Fatalf("unused supplier delete status=%d body=%s", unusedResponse.Code, unusedResponse.Body.String())
+	}
+	usedResponse := httptest.NewRecorder()
+	a.deletePOSSupplier(usedResponse, httptest.NewRequest(http.MethodDelete, "/api/admin/pos/suppliers/"+usedID, nil), owner, usedID)
+	if usedResponse.Code != http.StatusConflict || !strings.Contains(usedResponse.Body.String(), "SUPPLIER_IN_USE") {
+		t.Fatalf("used supplier delete status=%d body=%s", usedResponse.Code, usedResponse.Body.String())
 	}
 }
 
@@ -104,6 +153,98 @@ func TestNormalizePOSPermissionsDropsUnknownKeys(t *testing.T) {
 	normalized := normalizePOSPermissions(map[string]bool{"sales": true, "unknown": true})
 	if !normalized["sales"] || normalized["unknown"] || len(normalized) != len(posPermissionKeys) {
 		t.Fatalf("unexpected normalized permissions: %#v", normalized)
+	}
+}
+
+func TestPOSReportAccessIncludesPrintAndExport(t *testing.T) {
+	permissions := normalizePOSPermissions(map[string]bool{
+		"reports":         true,
+		"report_overview": true,
+		"report_export":   false, // legacy saved value must no longer block report actions
+	})
+	if !permissions["report_export"] {
+		t.Fatal("report access must include print and export")
+	}
+	cashier := adminUser{POSRole: "cashier", POSPermissions: permissions}
+	if !authorizePOSPath(httptest.NewRecorder(), cashier, http.MethodPost, "reports/export-authorize") {
+		t.Fatal("cashier with report access should be allowed to print or export")
+	}
+	if !requirePOSReportPermission(httptest.NewRecorder(), cashier, "overview") {
+		t.Fatal("cashier with the overview report enabled should pass report authorization")
+	}
+}
+
+func TestNormalizePOSPermissionsPreservesLegacyCostVisibility(t *testing.T) {
+	legacyManager := normalizePOSPermissions(map[string]bool{"products": true, "stock": true, "reports": true})
+	if !legacyManager["view_costs"] {
+		t.Fatal("legacy role with stock access must keep cost visibility until owner changes it")
+	}
+	explicitlyHidden := normalizePOSPermissions(map[string]bool{"stock": true, "view_costs": false})
+	if explicitlyHidden["view_costs"] {
+		t.Fatal("explicitly hidden cost permission must remain hidden")
+	}
+	if defaultPOSPermissions("cashier")["view_costs"] {
+		t.Fatal("new cashier default must not expose cost data")
+	}
+}
+
+func TestRedactPOSCostFieldsRemovesNetworkCostData(t *testing.T) {
+	payload := map[string]any{
+		"costSatang": int64(1000), "grossProfitSatang": int64(500), "salesSatang": int64(1500),
+		"items": []any{map[string]any{"unitCostSatang": int64(1000), "priceSatang": int64(1500)}},
+	}
+	redactPOSCostFields(payload, false)
+	encoded, _ := json.Marshal(payload)
+	body := string(encoded)
+	for _, forbidden := range []string{"costSatang", "grossProfitSatang", "unitCostSatang"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("redacted payload still exposes %s: %s", forbidden, body)
+		}
+	}
+	for _, allowed := range []string{"salesSatang", "priceSatang"} {
+		if !strings.Contains(body, allowed) {
+			t.Fatalf("redaction removed allowed field %s: %s", allowed, body)
+		}
+	}
+
+	procurement := map[string]any{"grossTotalSatang": int64(2000), "discountSatang": int64(100), "netTotalSatang": int64(1900), "quantity": 2}
+	redactPOSCostFields(procurement, true)
+	encoded, _ = json.Marshal(procurement)
+	if string(encoded) != `{"quantity":2}` {
+		t.Fatalf("procurement totals can reveal costs: %s", encoded)
+	}
+}
+
+func TestNormalizePOSPermissionsMigratesAndEnforcesReportChildren(t *testing.T) {
+	legacy := normalizePOSPermissions(map[string]bool{"reports": true})
+	for _, permission := range posReportPermissionKeys {
+		if !legacy[permission] {
+			t.Fatalf("legacy reports permission should enable %s", permission)
+		}
+	}
+
+	disabled := normalizePOSPermissions(map[string]bool{"reports": false, "report_inventory": true})
+	if disabled["report_inventory"] {
+		t.Fatal("report child must be disabled when the reports menu is disabled")
+	}
+	hiddenValues := normalizePOSPermissions(map[string]bool{"reports": true, "report_inventory": true, "report_inventory_values": false})
+	if hiddenValues["report_inventory_values"] {
+		t.Fatal("explicitly hidden inventory values must remain hidden")
+	}
+}
+
+func TestRequirePOSReportPermission(t *testing.T) {
+	user := adminUser{POSRole: "manager", POSPermissions: map[string]bool{"reports": true, "report_inventory": true}}
+	if !requirePOSReportPermission(httptest.NewRecorder(), user, "inventory") {
+		t.Fatal("inventory report permission should allow inventory")
+	}
+	response := httptest.NewRecorder()
+	if requirePOSReportPermission(response, user, "purchases") || response.Code != http.StatusForbidden {
+		t.Fatalf("purchases report should be denied, got %d", response.Code)
+	}
+	response = httptest.NewRecorder()
+	if requirePOSReportPermission(response, user, "unknown") || response.Code != http.StatusBadRequest {
+		t.Fatalf("unknown report type should be rejected, got %d", response.Code)
 	}
 }
 
@@ -290,6 +431,84 @@ func TestPOSSaleIntegration(t *testing.T) {
 	}
 	owner := adminUser{ID: adminID, Name: "POS Sale Test", POSRole: "owner", POSActorID: adminID, POSActorName: "POS Sale Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
 
+	// A validation problem in the store tab must not block an unrelated tab.
+	// Partial saves merge with the current settings and validate only the fields
+	// owned by the submitted tab.
+	if _, err = db.Exec(`update pos_settings set store_email='not-an-email' where admin_id=$1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	taxSettingsRecorder := httptest.NewRecorder()
+	a.savePOSSettings(taxSettingsRecorder, httptest.NewRequest(http.MethodPut, "/api/admin/pos/settings", strings.NewReader(`{"taxRatePercent":10,"pricesIncludeTax":true}`)), owner)
+	if taxSettingsRecorder.Code != http.StatusOK {
+		t.Fatalf("tax-only settings save was blocked by store validation: status=%d body=%s", taxSettingsRecorder.Code, taxSettingsRecorder.Body.String())
+	}
+	var savedTaxRate float64
+	var savedStoreEmail string
+	if err = db.QueryRow(`select tax_rate_percent,store_email from pos_settings where admin_id=$1`, adminID).Scan(&savedTaxRate, &savedStoreEmail); err != nil {
+		t.Fatal(err)
+	}
+	if savedTaxRate != 10 || savedStoreEmail != "not-an-email" {
+		t.Fatalf("partial settings save changed unrelated fields: tax=%v email=%q", savedTaxRate, savedStoreEmail)
+	}
+	invalidStoreRecorder := httptest.NewRecorder()
+	a.savePOSSettings(invalidStoreRecorder, httptest.NewRequest(http.MethodPut, "/api/admin/pos/settings", strings.NewReader(`{"storeEmail":"still-not-an-email"}`)), owner)
+	if invalidStoreRecorder.Code != http.StatusBadRequest {
+		t.Fatalf("store settings validation was skipped: status=%d body=%s", invalidStoreRecorder.Code, invalidStoreRecorder.Body.String())
+	}
+	if _, err = db.Exec(`update pos_settings set store_email='',tax_rate_percent=7,prices_include_tax=false where admin_id=$1`, adminID); err != nil {
+		t.Fatal(err)
+	}
+
+	duplicateProductBody, _ := json.Marshal(map[string]any{
+		"sku": " sale-1 ", "name": "Duplicate SKU", "priceSatang": 1000, "costSatang": 500,
+		"stockQuantity": 1, "trackStock": true, "lowStockThreshold": 1, "active": true,
+	})
+	duplicateProductRecorder := httptest.NewRecorder()
+	a.createPOSProduct(duplicateProductRecorder, httptest.NewRequest(http.MethodPost, "/api/admin/pos/products", bytes.NewReader(duplicateProductBody)), owner)
+	if duplicateProductRecorder.Code != http.StatusConflict || !strings.Contains(duplicateProductRecorder.Body.String(), `"code":"duplicate_sku"`) || !strings.Contains(duplicateProductRecorder.Body.String(), "รหัส SKU นี้ถูกใช้แล้ว") {
+		t.Fatalf("duplicate SKU response status=%d body=%s", duplicateProductRecorder.Code, duplicateProductRecorder.Body.String())
+	}
+
+	// Match shuttle usage and returns share the POS stock ledger. Saving the
+	// same state twice must be idempotent.
+	stockSessionID := "match-stock-" + randHex(8)
+	if _, err = db.Exec(`insert into sessions(id,name,admin_id,admin_passcode,state) values($1,'Match stock',$2,'','{}'::jsonb)`, stockSessionID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	stockState := defaultState(stockSessionID, "Match stock", "")
+	stockState.Settings.ShuttleBrands = []ShuttleBrand{{ID: "linked", Name: "Linked shuttle", Price: 85, Active: true, POSProductID: productID}}
+	stockState.Live = []Match{{ID: 1, Court: "สนาม 1", Status: "playing", Shuttles: 1, ShuttleSeq: "1", ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "linked", Number: 1}}}}
+	if err = a.saveState(t.Context(), stockState); err != nil {
+		t.Fatal(err)
+	}
+	var stock int
+	if err = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock); err != nil || stock != 9 {
+		t.Fatalf("match stock after first use=%d err=%v", stock, err)
+	}
+	if err = a.saveState(t.Context(), stockState); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 9 {
+		t.Fatalf("duplicate match state deducted stock again: %d", stock)
+	}
+	returnedMatch := stockState.Live[0]
+	returnedMatch.Status = "cancelled"
+	returnedMatch.ShuttleReturned = true
+	stockState.Live = nil
+	stockState.History = []Match{returnedMatch}
+	if err = a.saveState(t.Context(), stockState); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 10 {
+		t.Fatalf("cancelled match did not restore stock: %d", stock)
+	}
+	var matchMovementCount int
+	if err = db.QueryRow(`select count(*) from pos_stock_movements where admin_id=$1 and product_id=$2 and reason in ('match_use','match_return')`, adminID, productID).Scan(&matchMovementCount); err != nil || matchMovementCount != 2 {
+		t.Fatalf("match stock ledger rows=%d err=%v", matchMovementCount, err)
+	}
+
 	// A registered member with Match charges must appear in POS receivables even
 	// when the member has never held or purchased a POS product.
 	matchSessionID := "match-receivable-" + randHex(8)
@@ -359,7 +578,6 @@ func TestPOSSaleIntegration(t *testing.T) {
 	if first.Code != http.StatusCreated {
 		t.Fatalf("first hold status=%d body=%s", first.Code, first.Body.String())
 	}
-	var stock int
 	if err = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock); err != nil || stock != 8 {
 		t.Fatalf("stock after hold=%d err=%v", stock, err)
 	}
@@ -451,12 +669,266 @@ func TestPOSSaleIntegration(t *testing.T) {
 		t.Fatalf("payment method filter total=%d items=%#v err=%v", filteredTotal, filteredHistory, err)
 	}
 
+	// One physical sale can be split equally across several member ledgers while
+	// stock is deducted exactly once.
+	splitMemberIDs := []string{memberID}
+	for index := 0; index < 2; index++ {
+		id := "split-member-" + randHex(8)
+		if _, err = db.Exec(`insert into members(id,admin_id,name,phone,active,profile_token_hash,profile_token) values($1,$2,$3,$4,true,$5,$6)`, id, adminID, fmt.Sprintf("Split Member %d", index+2), "09"+randHex(4), tokenDigest(id), id); err != nil {
+			t.Fatal(err)
+		}
+		splitMemberIDs = append(splitMemberIDs, id)
+	}
+	splitResponse := requestSale(map[string]any{"requestId": "split-request-" + randHex(8), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": splitMemberIDs, "discountType": "amount", "expectedTotalSatang": 1070, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if splitResponse.Code != http.StatusCreated {
+		t.Fatalf("split hold status=%d body=%s", splitResponse.Code, splitResponse.Body.String())
+	}
+	var splitPayload struct {
+		SaleID string `json:"saleId"`
+	}
+	if err = json.NewDecoder(splitResponse.Body).Decode(&splitPayload); err != nil {
+		t.Fatal(err)
+	}
+	var splitSum int64
+	var splitRows int
+	if err = db.QueryRow(`select count(*),coalesce(sum(share_satang),0) from pos_sale_splits where sale_id=$1`, splitPayload.SaleID).Scan(&splitRows, &splitSum); err != nil || splitRows != 3 || splitSum != 1070 {
+		t.Fatalf("split rows=%d sum=%d err=%v", splitRows, splitSum, err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 6 {
+		t.Fatalf("split sale deducted stock more than once: %d", stock)
+	}
+	accountRows, err := db.Query(`select billing_account_id,share_satang from pos_sale_splits where sale_id=$1 order by position`, splitPayload.SaleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type splitAccount struct {
+		id    string
+		share int64
+	}
+	splitAccounts := []splitAccount{}
+	for accountRows.Next() {
+		var item splitAccount
+		_ = accountRows.Scan(&item.id, &item.share)
+		splitAccounts = append(splitAccounts, item)
+	}
+	accountRows.Close()
+	for _, item := range splitAccounts {
+		if _, err = a.settleBillingAccount(t.Context(), owner, item.id, "cash", item.share, item.share, "", true, "pos"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var splitStatus string
+	if err = db.QueryRow(`select status from pos_sales where id=$1`, splitPayload.SaleID).Scan(&splitStatus); err != nil || splitStatus != "paid" {
+		t.Fatalf("split parent status=%q err=%v", splitStatus, err)
+	}
+	var firstSplitID string
+	var firstSplitShare int64
+	if err = db.QueryRow(`select sp.id,sp.share_satang from pos_sale_splits sp join billing_accounts ba on ba.id=sp.billing_account_id where sp.sale_id=$1 and ba.member_id=$2`, splitPayload.SaleID, splitMemberIDs[0]).Scan(&firstSplitID, &firstSplitShare); err != nil {
+		t.Fatal(err)
+	}
+	memberItems := a.memberPaymentDetailItems(t.Context(), adminID, splitMemberIDs[0], "pos_split", firstSplitID)
+	var memberItemTotal int64
+	for _, detail := range memberItems {
+		memberItemTotal += detail["amountSatang"].(int64)
+	}
+	if len(memberItems) == 0 || memberItemTotal != firstSplitShare {
+		t.Fatalf("member split detail total=%d share=%d items=%#v", memberItemTotal, firstSplitShare, memberItems)
+	}
+	if leaked := a.memberPaymentDetailItems(t.Context(), adminID, splitMemberIDs[1], "pos_split", firstSplitID); len(leaked) != 0 {
+		t.Fatalf("split payment detail leaked to another member: %#v", leaked)
+	}
+
+	voidSale := func(saleID string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/pos/sales/"+saleID+"/void", bytes.NewReader([]byte(`{"note":"integration test"}`)))
+		recorder := httptest.NewRecorder()
+		a.voidPOSSale(recorder, req, owner, saleID)
+		return recorder
+	}
+	voidableSplit := requestSale(map[string]any{"requestId": "split-void-" + randHex(8), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": splitMemberIDs, "expectedTotalSatang": 1070, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if voidableSplit.Code != http.StatusCreated {
+		t.Fatalf("voidable split status=%d body=%s", voidableSplit.Code, voidableSplit.Body.String())
+	}
+	var voidablePayload struct {
+		SaleID string `json:"saleId"`
+	}
+	_ = json.NewDecoder(voidableSplit.Body).Decode(&voidablePayload)
+	if recorder := voidSale(voidablePayload.SaleID); recorder.Code != http.StatusOK {
+		t.Fatalf("void split status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 6 {
+		t.Fatalf("void split did not restore stock exactly once: %d", stock)
+	}
+
+	partiallyPaid := requestSale(map[string]any{"requestId": "split-partial-" + randHex(8), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": splitMemberIDs, "expectedTotalSatang": 1070, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if partiallyPaid.Code != http.StatusCreated {
+		t.Fatalf("partial split status=%d body=%s", partiallyPaid.Code, partiallyPaid.Body.String())
+	}
+	var partialPayload struct {
+		SaleID string `json:"saleId"`
+	}
+	_ = json.NewDecoder(partiallyPaid.Body).Decode(&partialPayload)
+	var partialAccount string
+	var partialShare int64
+	if err = db.QueryRow(`select billing_account_id,share_satang from pos_sale_splits where sale_id=$1 order by position limit 1`, partialPayload.SaleID).Scan(&partialAccount, &partialShare); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = a.settleBillingAccount(t.Context(), owner, partialAccount, "cash", partialShare, partialShare, "", true, "pos"); err != nil {
+		t.Fatal(err)
+	}
+	if recorder := voidSale(partialPayload.SaleID); recorder.Code != http.StatusConflict {
+		t.Fatalf("partially paid split void status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 5 {
+		t.Fatalf("blocked split void changed stock: %d", stock)
+	}
+
 	insufficient := requestSale(map[string]any{"requestId": "sale-request-" + randHex(8), "action": "pay", "buyerType": "anonymous", "method": "cash", "discountType": "amount", "expectedTotalSatang": 10700, "cashReceivedSatang": 10700, "items": []map[string]any{{"productId": productID, "quantity": 10}}})
 	if insufficient.Code != http.StatusConflict {
 		t.Fatalf("insufficient status=%d body=%s", insufficient.Code, insufficient.Body.String())
 	}
 	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
-	if stock != 7 {
+	if stock != 5 {
 		t.Fatalf("failed sale changed stock: %d", stock)
+	}
+}
+
+func TestPOSEditHeldSaleStockDiscountAndProfitIntegration(t *testing.T) {
+	dsn := os.Getenv("LIVEMATCH_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL POS integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	a := &app{db: db}
+	adminID := "pos-edit-test-" + randHex(8)
+	productID := "product-" + randHex(8)
+	memberID := "member-" + randHex(8)
+	if _, err = db.Exec(`insert into admin_users(id,email,name,password_hash,verified_at) values($1,$2,'POS Edit Test','unused',now())`, adminID, adminID+"@example.invalid"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from activity_logs where actor_id=$1 or details like '%'||$1||'%'`, adminID)
+		_, _ = db.Exec(`delete from admin_users where id=$1`, adminID)
+	}()
+	if _, err = db.Exec(`insert into admin_features(admin_id,pos_enabled) values($1,true)`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into pos_settings(admin_id,tax_rate_percent,prices_include_tax) values($1,0,true)`, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into pos_products(id,admin_id,sku,name,price_thb,price_satang,cost_thb,cost_satang,stock_quantity,active) values($1,$2,'EDIT-1','Edit Product',100,10000,40,4000,5,true)`, productID, adminID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into members(id,admin_id,name,phone,active,profile_token_hash,profile_token) values($1,$2,'Edit Member',$3,true,$4,$5)`, memberID, adminID, "08"+randHex(4), tokenDigest(memberID), memberID); err != nil {
+		t.Fatal(err)
+	}
+	owner := adminUser{ID: adminID, Name: "POS Edit Test", POSRole: "owner", POSActorID: adminID, POSActorName: "POS Edit Test", POSActorType: "admin", POSPermissions: allPOSPermissions()}
+	requestSale := func(body map[string]any) (int, map[string]any) {
+		raw, _ := json.Marshal(body)
+		recorder := httptest.NewRecorder()
+		a.createPOSSale(recorder, httptest.NewRequest(http.MethodPost, "/api/admin/pos/sales", bytes.NewReader(raw)), owner)
+		payload := map[string]any{}
+		_ = json.NewDecoder(recorder.Body).Decode(&payload)
+		return recorder.Code, payload
+	}
+	status, held := requestSale(map[string]any{"requestId": "hold-" + randHex(4), "action": "hold", "buyerType": "member", "buyerId": memberID, "expectedTotalSatang": 20000, "items": []map[string]any{{"productId": productID, "quantity": 2}}})
+	if status != http.StatusCreated {
+		t.Fatalf("hold status=%d payload=%#v", status, held)
+	}
+	heldID := held["saleId"].(string)
+	var originalAccountID string
+	if err = db.QueryRow(`select billing_account_id from pos_sales where id=$1`, heldID).Scan(&originalAccountID); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot := string(a.posSaleBillingSnapshot(t.Context(), adminID, heldID)); !strings.Contains(snapshot, `"productId":"`+productID+`"`) || !strings.Contains(snapshot, `"unitCostSatang":4000`) {
+		t.Fatalf("editable billing snapshot lost product identity or cost: %s", snapshot)
+	}
+	var stock int
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 3 {
+		t.Fatalf("stock after hold=%d want 3", stock)
+	}
+
+	// Opening the editor performs no server mutation. Saving one remaining item
+	// replaces the open sale and returns exactly one unit, not both units.
+	status, revised := requestSale(map[string]any{"requestId": "revise-" + randHex(4), "replaceSaleIds": []string{heldID}, "action": "hold", "buyerType": "anonymous", "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if status != http.StatusCreated {
+		t.Fatalf("revise status=%d payload=%#v", status, revised)
+	}
+	revisedID := revised["saleId"].(string)
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 4 {
+		t.Fatalf("stock after revised quantity=%d want 4", stock)
+	}
+	var oldStatus string
+	_ = db.QueryRow(`select status from pos_sales where id=$1`, heldID).Scan(&oldStatus)
+	if oldStatus != "void" {
+		t.Fatalf("replaced sale status=%q", oldStatus)
+	}
+	status, stale := requestSale(map[string]any{"requestId": "stale-revise-" + randHex(4), "replaceSaleIds": []string{heldID}, "action": "hold", "buyerType": "anonymous", "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if status != http.StatusConflict {
+		t.Fatalf("stale revision status=%d payload=%#v want 409", status, stale)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 4 {
+		t.Fatalf("stale revision changed stock: %d", stock)
+	}
+
+	var accountID string
+	_ = db.QueryRow(`select billing_account_id from pos_sales where id=$1`, revisedID).Scan(&accountID)
+	if accountID != originalAccountID {
+		t.Fatalf("revised sale account=%q want original account %q", accountID, originalAccountID)
+	}
+	paid, err := a.settleBillingAccountWithDiscount(t.Context(), owner, accountID, "cash", 9000, 9000, "", true, "pos", "amount", 1000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if paid.TotalSatang != 9000 || paid.POSTotalSatang != 9000 {
+		t.Fatalf("discounted payment=%#v", paid)
+	}
+	var total, discount, cost int64
+	if err = db.QueryRow(`select total_satang,discount_satang,cost_satang from pos_sales where id=$1`, revisedID).Scan(&total, &discount, &cost); err != nil {
+		t.Fatal(err)
+	}
+	if total != 9000 || discount != 1000 || cost != 4000 || total-cost != 5000 {
+		t.Fatalf("sale total=%d discount=%d cost=%d profit=%d", total, discount, cost, total-cost)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 4 {
+		t.Fatalf("payment deducted stock twice: %d", stock)
+	}
+
+	secondMemberID := "member-" + randHex(8)
+	if _, err = db.Exec(`insert into members(id,admin_id,name,phone,active,profile_token_hash,profile_token) values($1,$2,'Split Discount Member',$3,true,$4,$5)`, secondMemberID, adminID, "09"+randHex(4), tokenDigest(secondMemberID), secondMemberID); err != nil {
+		t.Fatal(err)
+	}
+	status, split := requestSale(map[string]any{"requestId": "split-discount-" + randHex(4), "action": "hold", "buyerType": "member", "splitMode": "equal", "buyerIds": []string{memberID, secondMemberID}, "expectedTotalSatang": 10000, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if status != http.StatusCreated {
+		t.Fatalf("split discount hold status=%d payload=%#v", status, split)
+	}
+	splitSaleID := split["saleId"].(string)
+	var splitAccountID string
+	if err = db.QueryRow(`select billing_account_id from pos_sale_splits where sale_id=$1 order by position limit 1`, splitSaleID).Scan(&splitAccountID); err != nil {
+		t.Fatal(err)
+	}
+	splitPaid, err := a.settleBillingAccountWithDiscount(t.Context(), owner, splitAccountID, "cash", 4000, 4000, "", true, "pos", "amount", 1000, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if splitPaid.TotalSatang != 4000 {
+		t.Fatalf("discounted split payment=%d want 4000", splitPaid.TotalSatang)
+	}
+	var splitParentTotal, splitShares int64
+	if err = db.QueryRow(`select s.total_satang,(select sum(share_satang) from pos_sale_splits where sale_id=s.id) from pos_sales s where s.id=$1`, splitSaleID).Scan(&splitParentTotal, &splitShares); err != nil {
+		t.Fatal(err)
+	}
+	if splitParentTotal != 9000 || splitShares != 9000 {
+		t.Fatalf("discounted split parent=%d shares=%d want 9000", splitParentTotal, splitShares)
 	}
 }

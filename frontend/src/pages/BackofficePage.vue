@@ -7,16 +7,24 @@ const props = defineProps([
   'ui',
   'backoffice',
   'loadBackoffice',
+  'selectBackofficeTab',
+  'selectBackofficeOverviewTab',
+  'loadBackofficeAdmins',
+  'loadBackofficeAdminOptions',
   'loadBackofficeCoinOrders',
   'loadBackofficeCoinLedger',
   'loadBackofficeActivityLogs',
   'applyBackofficeActivityFilters',
   'changeBackofficeActivityUser',
+  'loadBackofficeSlipOKLogs',
+  'applyBackofficeSlipOKLogFilters',
   'loadBackofficeSupportIssues',
   'applyBackofficeSupportFilters',
   'openBackofficeSupportIssue',
   'saveBackofficeSupportIssue',
   'openBackofficeAdminDetail',
+  'loadBackofficeAdminSlipOKUsage',
+  'loadBackofficeAdminDetailPage',
   'deleteBackofficeAdminSession',
   'saveBackofficeAdminDiscount',
   'saveBackofficeAdminFeatures',
@@ -46,6 +54,8 @@ const logs = computed(() => summary.value.activityLogs || [])
 const ordersPagination = computed(() => props.forms.backofficeOrdersPagination || { page: 1, total: 0, totalPages: 0 })
 const ledgerPagination = computed(() => props.forms.backofficeLedgerPagination || { page: 1, total: 0, totalPages: 0 })
 const activityPagination = computed(() => props.forms.backofficeActivityPagination || { page: 1, total: 0, totalPages: 0 })
+const slipOKLogs = computed(() => props.forms.backofficeSlipOKLogs || [])
+const slipOKLogsPagination = computed(() => props.forms.backofficeSlipOKLogsPagination || { page: 1, total: 0, totalPages: 0 })
 const supportIssues = computed(() => props.forms.backofficeSupportIssues || [])
 const supportPagination = computed(() => props.forms.backofficeSupportPagination || { page: 1, total: 0, totalPages: 0 })
 const supportIssueDetail = computed(() => props.forms.backofficeSupportIssueDetail || null)
@@ -54,6 +64,11 @@ const adminDetailUser = computed(() => adminDetail.value.user || {})
 const adminDetailSessions = computed(() => adminDetail.value.sessions || [])
 const adminDetailLedger = computed(() => adminDetail.value.coinLedger || [])
 const adminDetailOrders = computed(() => adminDetail.value.orders || [])
+const adminDetailSessionPagination = computed(() => adminDetail.value.sessionPagination || { page: 1, pageSize: 10, total: adminDetailSessions.value.length, totalPages: adminDetailSessions.value.length ? 1 : 0 })
+const adminDetailOrderPagination = computed(() => adminDetail.value.orderPagination || { page: 1, pageSize: 10, total: adminDetailOrders.value.length, totalPages: adminDetailOrders.value.length ? 1 : 0 })
+const adminDetailLedgerPagination = computed(() => adminDetail.value.ledgerPagination || { page: 1, pageSize: 10, total: adminDetailLedger.value.length, totalPages: adminDetailLedger.value.length ? 1 : 0 })
+const adminSlipOKUsage = computed(() => props.forms.backofficeAdminSlipOKUsage || {})
+const adminSlipOKProvider = computed(() => adminSlipOKUsage.value.provider || {})
 const adminBenefits = computed(() => adminDetail.value.benefits || { discountPercent: 0, pricing: {}, subscription: null, subscriptionHistory: [] })
 const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false, posEnabled: false }))
 const adminSubscription = computed(() => adminBenefits.value.subscription || null)
@@ -62,6 +77,11 @@ const sessionDeleteTarget = ref(null)
 const sessionDeleteRefund = ref(false)
 const sessionDeleteSaving = ref(false)
 const sessionDeleteError = ref('')
+
+function formatSlipOKMonth(value) {
+  if (!/^\d{4}-\d{2}$/.test(String(value || ''))) return value || '-'
+  return new Intl.DateTimeFormat('th-TH', { month: 'long', year: 'numeric', timeZone: 'Asia/Bangkok' }).format(new Date(`${value}-01T00:00:00+07:00`))
+}
 
 function openSessionDelete(session, refund) {
   if (!session?.deletable || (refund && !session?.refundAvailable)) return
@@ -109,6 +129,7 @@ const tabs = [
   { id: 'orders', label: 'รายการชำระเงิน', icon: ReceiptText },
   { id: 'members', label: 'สมาชิก admin', icon: Users },
   { id: 'support', label: 'แจ้งปัญหา', icon: MessageCircleWarning },
+  { id: 'slipok_logs', label: 'OKSlip log', icon: Search },
   { id: 'activity', label: 'Activity log', icon: Activity }
 ]
 const overviewTabs = [
@@ -119,7 +140,29 @@ const overviewTabs = [
 const overviewTab = computed(() => props.forms.backofficeOverviewTab || 'system')
 
 function selectOverviewTab(tabId) {
+  if (props.selectBackofficeOverviewTab) return props.selectBackofficeOverviewTab(tabId)
   props.forms.backofficeOverviewTab = tabId
+}
+
+function selectMainTab(tabId) {
+  if (props.selectBackofficeTab) return props.selectBackofficeTab(tabId)
+  props.forms.backofficeTab = tabId
+}
+
+function selectAdminFilter(kind, value) {
+  const normalized = String(value || '').trim().toLowerCase()
+  const selected = (props.forms.backofficeAdminOptions || []).find((item) =>
+    [item.id, item.email, item.name].some((candidate) => String(candidate || '').trim().toLowerCase() === normalized)
+  )
+  if (kind === 'slipok') {
+    props.forms.backofficeSlipOKLogsUserId = selected?.id || ''
+    if (selected) props.forms.backofficeSlipOKLogsUserSearch = selected.email
+    props.applyBackofficeSlipOKLogFilters?.()
+  } else {
+    props.forms.backofficeActivityUserId = selected?.id || ''
+    if (selected) props.forms.backofficeActivityUserSearch = selected.email
+    props.changeBackofficeActivityUser?.()
+  }
 }
 
 function supportStatusText(status) {
@@ -185,6 +228,25 @@ function activityDetails(details) {
     return Object.entries(parsed).map(([key, value]) => `${key}: ${value}`).join(' · ')
   } catch {
     return details
+  }
+}
+
+function slipOKStatusText(status) {
+  return { passed: 'ผ่าน', failed: 'ไม่ผ่าน', manual_review: 'ตรวจ Manual', disabled: 'ปิดใช้งาน', config_not_ready: 'ตั้งค่าไม่ครบ', quota_error: 'ตรวจโควตาไม่ได้', cap_reached: 'โควตาเต็ม' }[status] || status || '-'
+}
+
+function slipOKStatusClass(status) {
+  if (status === 'passed') return 'bg-court-500/10 text-court-700 dark:text-court-300'
+  if (status === 'failed') return 'bg-red-100 text-red-700 dark:bg-red-950/40 dark:text-red-300'
+  return 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300'
+}
+
+function prettyPayload(value) {
+  if (!value) return '-'
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2)
+  } catch {
+    return value
   }
 }
 
@@ -256,7 +318,7 @@ function closeSlipPreview() {
             :key="tab.id"
             class="inline-flex h-11 shrink-0 items-center gap-2 rounded-md px-3 text-sm font-black transition"
             :class="forms.backofficeTab === tab.id ? 'bg-stone-900 text-white dark:bg-white dark:text-stone-900' : 'text-stone-600 hover:bg-paper-100 dark:text-stone-300 dark:hover:bg-stone-800'"
-            @click="forms.backofficeTab = tab.id"
+            @click="selectMainTab(tab.id)"
           >
             <component :is="tab.icon" class="h-4 w-4" />
             {{ tab.label }}
@@ -762,8 +824,12 @@ function closeSlipPreview() {
               <Users class="h-5 w-5 text-court-600" />
               <h2 class="text-lg font-black">สมาชิก admin</h2>
             </div>
-            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ users.length }} คน</span>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ forms.backofficeAdminsPagination?.total ?? users.length }} คน</span>
           </div>
+          <form class="mt-3 flex gap-2" @submit.prevent="loadBackofficeAdmins(1)">
+            <input v-model="forms.backofficeAdminsSearch" class="h-10 min-w-0 flex-1 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" placeholder="ค้นหาชื่อ อีเมล หรือ Admin No." />
+            <button class="inline-flex h-10 items-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white"><Search class="h-4 w-4" />ค้นหา</button>
+          </form>
           <div class="mt-3 divide-y divide-stone-200 overflow-hidden rounded-md border border-stone-200 dark:divide-stone-800 dark:border-stone-800">
             <div v-for="user in users" :key="user.id" class="grid gap-2 p-3 sm:grid-cols-[1fr_auto] sm:items-center">
               <div class="min-w-0">
@@ -773,6 +839,9 @@ function closeSlipPreview() {
                   <span v-if="Number(user.discountPercent || 0) > 0" class="rounded bg-coral-100 px-2 py-1 text-[11px] font-black text-coral-500">ลด {{ user.discountPercent }}%</span>
                   <span v-if="user.subscription" class="rounded px-2 py-1 text-[11px] font-black" :class="subscriptionStatusClass(user.subscription.status)">
                     {{ subscriptionStatusText(user.subscription.status) }} · เหลือ {{ user.subscription.remaining }}/{{ user.subscription.totalSessions }}
+                  </span>
+                  <span class="rounded bg-sky-100 px-2 py-1 text-[11px] font-black text-sky-700 dark:bg-sky-950/40 dark:text-sky-300">
+                    Auto Slip {{ Number(user.slipOKUsage?.used || 0).toLocaleString('th-TH') }}{{ user.slipOKUsage?.limitEnabled ? ` / ${Number(user.slipOKUsage?.limit || 0).toLocaleString('th-TH')}` : ' · ไม่จำกัดในระบบ' }}
                   </span>
                 </div>
               </div>
@@ -785,6 +854,16 @@ function closeSlipPreview() {
               </div>
             </div>
             <p v-if="!users.length" class="p-4 text-sm font-semibold text-stone-500">ยังไม่มี admin user</p>
+          </div>
+          <div v-if="forms.backofficeAdminsPagination?.total > 0" class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 pt-3 text-sm dark:border-stone-800">
+            <select v-model.number="forms.backofficeAdminsPageSize" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-3 font-black dark:border-stone-700 dark:bg-stone-800" @change="loadBackofficeAdmins(1)">
+              <option :value="20">20 / หน้า</option><option :value="50">50 / หน้า</option><option :value="100">100 / หน้า</option>
+            </select>
+            <div class="flex items-center gap-2">
+              <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="forms.backofficeAdminsPagination.page <= 1" @click="loadBackofficeAdmins(forms.backofficeAdminsPagination.page - 1)">ก่อนหน้า</button>
+              <span class="font-black">หน้า {{ forms.backofficeAdminsPagination.page }} / {{ Math.max(1, forms.backofficeAdminsPagination.totalPages) }}</span>
+              <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="forms.backofficeAdminsPagination.page >= forms.backofficeAdminsPagination.totalPages" @click="loadBackofficeAdmins(forms.backofficeAdminsPagination.page + 1)">ถัดไป</button>
+            </div>
           </div>
         </section>
 
@@ -840,6 +919,84 @@ function closeSlipPreview() {
           </div>
         </section>
 
+        <section v-if="forms.backofficeTab === 'slipok_logs'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h2 class="text-lg font-black">OKSlip request / response log</h2>
+              <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">แสดงทั้งเหตุผลก่อนส่ง, การตรวจ quota และผลตอบกลับจาก OKSlip โดยไม่เก็บไฟล์รูปสลิป เก็บเฉพาะขนาดกับ SHA-256 สำหรับใช้อ้างอิงหลักฐาน</p>
+            </div>
+            <span class="rounded-md bg-paper-100 px-3 py-1 text-xs font-black text-stone-600 dark:bg-stone-800 dark:text-stone-300">{{ slipOKLogsPagination.total }} รายการ</span>
+          </div>
+
+          <form class="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-[minmax(12rem,1.5fr)_10rem_10rem_minmax(12rem,1fr)_auto]" @submit.prevent="applyBackofficeSlipOKLogFilters">
+            <div>
+              <input v-model="forms.backofficeSlipOKLogsUserSearch" list="slipok-admin-options" class="h-10 w-full rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" placeholder="ค้นหา User ทั้งหมด" @input="loadBackofficeAdminOptions($event.target.value)" @change="selectAdminFilter('slipok', $event.target.value)" />
+              <datalist id="slipok-admin-options"><option v-for="user in forms.backofficeAdminOptions" :key="user.id" :value="user.email">{{ user.name }}</option></datalist>
+            </div>
+            <select v-model="forms.backofficeSlipOKLogsSystem" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" @change="applyBackofficeSlipOKLogFilters">
+              <option value="">ทุกระบบ</option>
+              <option value="booking">ระบบจอง</option>
+              <option value="coin_shop">ซื้อ Coin/แพ็กเกจ</option>
+            </select>
+            <select v-model="forms.backofficeSlipOKLogsStatus" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" @change="applyBackofficeSlipOKLogFilters">
+              <option value="">ทุกผลตรวจ</option>
+              <option value="passed">ผ่าน</option>
+              <option value="failed">ไม่ผ่าน</option>
+              <option value="manual_review">Manual/Error</option>
+              <option value="disabled">ปิดใช้งาน</option>
+              <option value="config_not_ready">ตั้งค่าไม่ครบ</option>
+              <option value="quota_error">ตรวจโควตาไม่ได้</option>
+              <option value="cap_reached">โควตาเต็ม</option>
+            </select>
+            <input v-model="forms.backofficeSlipOKLogsSearch" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-800" placeholder="ค้นหา code, transRef, error หรือเลขอ้างอิง" />
+            <button class="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-court-500 px-4 text-sm font-black text-white"><Search class="h-4 w-4" />กรอง</button>
+          </form>
+
+          <div class="mt-4 grid gap-3">
+            <article v-for="item in slipOKLogs" :key="item.id" class="rounded-lg border border-stone-200 bg-paper-50 p-3 dark:border-stone-700 dark:bg-stone-800">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <p class="break-all font-black">{{ item.adminEmail || item.adminId || 'ไม่ระบุ User' }}</p>
+                    <span class="rounded-md px-2 py-1 text-xs font-black" :class="slipOKStatusClass(item.resultStatus)">{{ slipOKStatusText(item.resultStatus) }}</span>
+                    <span class="rounded-md bg-white px-2 py-1 text-xs font-black dark:bg-stone-900">{{ item.sourceSystem === 'booking' ? 'ระบบจอง' : 'ซื้อ Coin/แพ็กเกจ' }}</span>
+                  </div>
+                  <p class="mt-1 break-all text-xs font-semibold text-stone-500 dark:text-stone-400">Ref: {{ item.referenceId || '-' }} · TransRef: {{ item.transRef || '-' }}</p>
+                </div>
+                <p class="text-xs font-black text-stone-500">{{ item.createdAt }}</p>
+              </div>
+              <div class="mt-3 grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+                <div class="rounded-md bg-white p-2 dark:bg-stone-900"><span class="block text-stone-400">HTTP</span><strong>{{ item.httpStatus || 'ไม่มี response' }}</strong></div>
+                <div class="rounded-md bg-white p-2 dark:bg-stone-900"><span class="block text-stone-400">OKSlip code</span><strong>{{ item.providerCode || 0 }}</strong></div>
+                <div class="rounded-md bg-white p-2 dark:bg-stone-900"><span class="block text-stone-400">ยอดที่ส่ง</span><strong>฿{{ Number(item.expectedAmountThb || 0).toLocaleString('th-TH') }}</strong></div>
+                <div class="rounded-md bg-white p-2 dark:bg-stone-900"><span class="block text-stone-400">ยอดที่พบ</span><strong>{{ item.detectedAmountThb == null ? '-' : `฿${Number(item.detectedAmountThb).toLocaleString('th-TH')}` }}</strong></div>
+                <div class="rounded-md bg-white p-2 dark:bg-stone-900"><span class="block text-stone-400">ผู้รับ</span><strong class="break-all">{{ item.detectedReceiver || '-' }}</strong></div>
+                <div class="rounded-md bg-white p-2 dark:bg-stone-900"><span class="block text-stone-400">เวลา API</span><strong>{{ Number(item.durationMs || 0).toLocaleString('th-TH') }} ms</strong></div>
+              </div>
+              <p class="mt-2 rounded-md px-3 py-2 text-xs font-bold" :class="item.resultStatus === 'passed' ? 'bg-court-500/10 text-court-700 dark:text-court-300' : 'bg-amber-100 text-amber-900 dark:bg-amber-950/40 dark:text-amber-200'">{{ item.resultNote || 'ไม่มีข้อความตอบกลับ' }}</p>
+              <details class="mt-2 rounded-md border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">
+                <summary class="cursor-pointer px-3 py-2 text-xs font-black">ดูข้อมูลที่ส่งและ response ฉบับเต็ม</summary>
+                <div class="grid gap-2 border-t border-stone-200 p-3 dark:border-stone-700 lg:grid-cols-2">
+                  <div class="min-w-0"><p class="mb-1 text-xs font-black">Request · {{ item.requestMethod }} {{ item.requestUrl }}</p><pre class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-stone-950 p-3 text-[11px] text-stone-100">{{ prettyPayload(item.requestPayload) }}</pre></div>
+                  <div class="min-w-0"><p class="mb-1 text-xs font-black">Response · HTTP {{ item.httpStatus || 0 }} / code {{ item.providerCode || 0 }}</p><pre class="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-stone-950 p-3 text-[11px] text-stone-100">{{ prettyPayload(item.responsePayload) }}</pre></div>
+                </div>
+              </details>
+            </article>
+            <p v-if="!slipOKLogs.length" class="rounded-md bg-paper-100 p-5 text-center text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มี OKSlip log ตามตัวกรองนี้</p>
+          </div>
+
+          <div class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 pt-3 text-sm dark:border-stone-800">
+            <select v-model.number="forms.backofficeSlipOKLogsPageSize" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-3 font-black dark:border-stone-700 dark:bg-stone-800" aria-label="จำนวน OKSlip log ต่อหน้า" @change="loadBackofficeSlipOKLogs(1)">
+              <option :value="10">10 / หน้า</option><option :value="20">20 / หน้า</option><option :value="50">50 / หน้า</option>
+            </select>
+            <div class="flex items-center gap-2">
+              <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="slipOKLogsPagination.page <= 1" @click="loadBackofficeSlipOKLogs(slipOKLogsPagination.page - 1)">ก่อนหน้า</button>
+              <span class="font-black">หน้า {{ slipOKLogsPagination.totalPages ? slipOKLogsPagination.page : 0 }} / {{ slipOKLogsPagination.totalPages }}</span>
+              <button class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="slipOKLogsPagination.page >= slipOKLogsPagination.totalPages" @click="loadBackofficeSlipOKLogs(slipOKLogsPagination.page + 1)">ถัดไป</button>
+            </div>
+          </div>
+        </section>
+
         <section v-if="forms.backofficeTab === 'activity'" class="rounded-lg border border-stone-200 bg-white p-4 shadow-soft dark:border-stone-700 dark:bg-stone-900">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <h2 class="text-lg font-black">Activity log</h2>
@@ -851,14 +1008,8 @@ function closeSlipPreview() {
           <form class="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]" @submit.prevent="applyBackofficeActivityFilters">
             <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
               User
-              <select
-                v-model="forms.backofficeActivityUserId"
-                class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100"
-                @change="changeBackofficeActivityUser"
-              >
-                <option value="">User ทั้งหมด</option>
-                <option v-for="user in users" :key="user.id" :value="user.id">{{ user.email }}</option>
-              </select>
+              <input v-model="forms.backofficeActivityUserSearch" list="activity-admin-options" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 text-sm font-bold text-stone-900 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-100" placeholder="ค้นหา User ทั้งหมด" @input="loadBackofficeAdminOptions($event.target.value)" @change="selectAdminFilter('activity', $event.target.value)" />
+              <datalist id="activity-admin-options"><option v-for="user in forms.backofficeAdminOptions" :key="user.id" :value="user.email">{{ user.name }}</option></datalist>
             </label>
             <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-400">
               Session
@@ -961,17 +1112,69 @@ function closeSlipPreview() {
             </article>
             <article class="rounded-lg border border-stone-200 p-3 dark:border-stone-700">
               <p class="text-xs font-bold text-stone-500 dark:text-stone-400">Session</p>
-              <p class="mt-2 text-2xl font-black tabular-nums">{{ adminDetailSessions.length }}</p>
+              <p class="mt-2 text-2xl font-black tabular-nums">{{ adminDetailSessionPagination.total }}</p>
             </article>
             <article class="rounded-lg border border-stone-200 p-3 dark:border-stone-700">
               <p class="text-xs font-bold text-stone-500 dark:text-stone-400">รายการซื้อ coin</p>
-              <p class="mt-2 text-2xl font-black tabular-nums">{{ adminDetailOrders.length }}</p>
+              <p class="mt-2 text-2xl font-black tabular-nums">{{ adminDetailOrderPagination.total }}</p>
             </article>
             <article class="rounded-lg border border-stone-200 p-3 dark:border-stone-700">
               <p class="text-xs font-bold text-stone-500 dark:text-stone-400">สมัครเมื่อ</p>
               <p class="mt-2 text-sm font-black">{{ adminDetailUser.createdAt || '-' }}</p>
             </article>
           </div>
+
+          <section class="rounded-lg border border-sky-200 bg-sky-50/70 p-4 dark:border-sky-900/70 dark:bg-sky-950/20" data-testid="admin-slipok-usage">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 class="font-black text-sky-950 dark:text-sky-100">การใช้งาน Auto Slip ของระบบจอง</h3>
+                <p class="mt-1 text-xs font-semibold text-sky-800/70 dark:text-sky-200/70">ข้อมูลโควตาจริงแสดงเฉพาะ Backoffice และยอดย้อนหลังอ้างอิงเวลา Asia/Bangkok</p>
+              </div>
+              <div class="flex flex-wrap items-end gap-2">
+                <label class="grid gap-1 text-xs font-black text-stone-500 dark:text-stone-300">
+                  เลือกเดือน
+                  <input v-model="forms.backofficeAdminSlipOKMonth" type="month" class="h-10 rounded-md border border-sky-200 bg-white px-3 text-sm font-black text-stone-900 dark:border-sky-900 dark:bg-stone-900 dark:text-white" @change="loadBackofficeAdminSlipOKUsage(forms.backofficeAdminSlipOKMonth, false)" />
+                </label>
+                <button type="button" class="inline-flex h-10 items-center gap-2 rounded-md border border-sky-300 bg-white px-3 text-xs font-black text-sky-800 disabled:opacity-50 dark:border-sky-800 dark:bg-stone-900 dark:text-sky-200" :disabled="forms.backofficeAdminSlipOKLoading" @click="loadBackofficeAdminSlipOKUsage(forms.backofficeAdminSlipOKMonth, true)">
+                  <RefreshCw class="h-4 w-4" :class="forms.backofficeAdminSlipOKLoading ? 'animate-spin' : ''" />รีเฟรชโควตาจริง
+                </button>
+              </div>
+            </div>
+
+            <div v-if="forms.backofficeAdminSlipOKLoading && !forms.backofficeAdminSlipOKUsage" class="mt-3 rounded-md bg-white p-4 text-sm font-bold text-stone-500 dark:bg-stone-900">กำลังโหลดข้อมูล Auto Slip…</div>
+            <div v-else class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">ใช้ใน {{ formatSlipOKMonth(adminSlipOKUsage.month || forms.backofficeAdminSlipOKMonth) }}</p>
+                <p class="mt-2 text-2xl font-black tabular-nums">{{ Number(adminSlipOKUsage.used || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">ครั้ง</small></p>
+                <p class="mt-1 text-xs font-semibold text-stone-500"><template v-if="adminSlipOKUsage.limitEnabled">เทียบเพดานปัจจุบัน: คงเหลือ {{ Number(adminSlipOKUsage.remaining || 0).toLocaleString('th-TH') }} / {{ Number(adminSlipOKUsage.limit || 0).toLocaleString('th-TH') }}</template><template v-else>ไม่จำกัดภายใน LiveMatch</template></p>
+              </article>
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">ใช้สะสมที่มีประวัติ</p>
+                <p class="mt-2 text-2xl font-black tabular-nums">{{ Number(adminSlipOKUsage.totalUsed || 0).toLocaleString('th-TH') }} <small class="text-xs text-stone-500">ครั้ง</small></p>
+                <p class="mt-1 text-xs font-semibold text-stone-500">{{ Number(adminSlipOKUsage.history?.length || 0).toLocaleString('th-TH') }} เดือน</p>
+              </article>
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">โควตา SlipOK จริง · คงเหลือ</p>
+                <p class="mt-2 text-2xl font-black tabular-nums" :class="adminSlipOKProvider.available && Number(adminSlipOKProvider.remaining || 0) <= 0 ? 'text-red-600' : 'text-sky-700 dark:text-sky-300'">{{ adminSlipOKProvider.available ? Number(adminSlipOKProvider.remaining || 0).toLocaleString('th-TH') : '-' }} <small class="text-xs text-stone-500">ครั้ง</small></p>
+                <p class="mt-1 text-xs font-semibold text-stone-500">ใช้แล้ว {{ adminSlipOKProvider.available ? Number(adminSlipOKProvider.used || 0).toLocaleString('th-TH') : '-' }} / {{ adminSlipOKProvider.available ? Number(adminSlipOKProvider.limit || 0).toLocaleString('th-TH') : '-' }}</p>
+              </article>
+              <article class="rounded-md bg-white p-3 dark:bg-stone-900">
+                <p class="text-xs font-bold text-stone-500">สถานะการเชื่อมต่อ</p>
+                <p class="mt-2 font-black" :class="adminSlipOKProvider.available ? 'text-court-700 dark:text-court-300' : 'text-amber-700 dark:text-amber-300'">{{ adminSlipOKProvider.available ? 'เชื่อมต่อ SlipOK แล้ว' : adminSlipOKUsage.configured ? 'ตรวจโควตาไม่สำเร็จ' : 'ยังตั้งค่าไม่ครบ' }}</p>
+                <p v-if="adminSlipOKProvider.overQuota" class="mt-1 text-xs font-black text-red-600">ใช้เกินโควตา {{ Number(adminSlipOKProvider.overQuota).toLocaleString('th-TH') }} ครั้ง</p>
+                <p v-else-if="adminSlipOKProvider.error" class="mt-1 line-clamp-2 text-xs font-semibold text-amber-700 dark:text-amber-300">{{ adminSlipOKProvider.error }}</p>
+              </article>
+            </div>
+
+            <details v-if="adminSlipOKUsage.history?.length" class="mt-3 rounded-md border border-sky-200 bg-white dark:border-sky-900 dark:bg-stone-900">
+              <summary class="cursor-pointer px-3 py-2 text-sm font-black">ดูยอดใช้ย้อนหลังทุกเดือน</summary>
+              <div class="grid gap-2 border-t border-sky-100 p-3 dark:border-sky-900 sm:grid-cols-2 lg:grid-cols-3">
+                <button v-for="item in adminSlipOKUsage.history" :key="item.month" type="button" class="flex items-center justify-between rounded-md bg-paper-100 px-3 py-2 text-left text-sm font-bold dark:bg-stone-800" @click="forms.backofficeAdminSlipOKMonth = item.month; loadBackofficeAdminSlipOKUsage(item.month, false)">
+                  <span>{{ formatSlipOKMonth(item.month) }}</span><strong>{{ Number(item.used || 0).toLocaleString('th-TH') }} ครั้ง</strong>
+                </button>
+              </div>
+            </details>
+          </section>
 
           <section class="rounded-lg border border-court-200 bg-court-500/5 p-4 dark:border-court-900/60">
             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -1081,7 +1284,7 @@ function closeSlipPreview() {
           <section class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
             <div class="flex items-center justify-between gap-3">
               <h3 class="font-black">Session ของ admin นี้</h3>
-              <span class="rounded-md bg-paper-100 px-2 py-1 text-xs font-black text-stone-500 dark:bg-stone-800 dark:text-stone-300">{{ adminDetailSessions.length }} รายการ</span>
+              <span class="rounded-md bg-paper-100 px-2 py-1 text-xs font-black text-stone-500 dark:bg-stone-800 dark:text-stone-300">{{ adminDetailSessionPagination.total }} รายการ</span>
             </div>
             <div class="mt-3 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
               <div v-for="session in adminDetailSessions" :key="session.id" class="grid gap-2 border-t border-stone-200 p-3 first:border-t-0 dark:border-stone-800 md:grid-cols-[minmax(0,1fr)_0.55fr_0.55fr_0.55fr_auto] md:items-center">
@@ -1108,11 +1311,21 @@ function closeSlipPreview() {
               </div>
               <p v-if="!adminDetailSessions.length" class="p-4 text-sm font-semibold text-stone-500">ยังไม่มี session</p>
             </div>
+            <div v-if="adminDetailSessionPagination.total > 0" class="mt-3 grid gap-2 text-sm sm:grid-cols-[auto_1fr_auto] sm:items-center">
+              <select v-model.number="adminDetailSessionPagination.pageSize" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-3 font-black dark:border-stone-700 dark:bg-stone-800" aria-label="จำนวน Session ต่อหน้า" @change="loadBackofficeAdminDetailPage('session', 1)">
+                <option :value="5">5 / หน้า</option><option :value="10">10 / หน้า</option><option :value="20">20 / หน้า</option><option :value="50">50 / หน้า</option>
+              </select>
+              <span class="text-center font-black">หน้า {{ adminDetailSessionPagination.page }} / {{ Math.max(1, adminDetailSessionPagination.totalPages) }}</span>
+              <div class="grid grid-cols-2 gap-2">
+                <button type="button" class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="adminDetailSessionPagination.page <= 1" @click="loadBackofficeAdminDetailPage('session', adminDetailSessionPagination.page - 1)">ก่อนหน้า</button>
+                <button type="button" class="h-9 rounded-md border border-stone-200 px-3 font-black disabled:opacity-40 dark:border-stone-700" :disabled="adminDetailSessionPagination.page >= adminDetailSessionPagination.totalPages" @click="loadBackofficeAdminDetailPage('session', adminDetailSessionPagination.page + 1)">ถัดไป</button>
+              </div>
+            </div>
           </section>
 
           <div class="grid gap-4 lg:grid-cols-2">
             <section class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
-              <h3 class="font-black">รายการซื้อ coin</h3>
+              <div class="flex items-center justify-between gap-2"><h3 class="font-black">รายการซื้อ coin</h3><span class="text-xs font-black text-stone-500">{{ adminDetailOrderPagination.total }} รายการ</span></div>
               <div class="mt-3 grid gap-2">
                 <div v-for="order in adminDetailOrders" :key="order.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
                   <div class="flex items-center justify-between gap-3">
@@ -1123,10 +1336,14 @@ function closeSlipPreview() {
                 </div>
                 <p v-if="!adminDetailOrders.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มีรายการซื้อ coin</p>
               </div>
+              <div v-if="adminDetailOrderPagination.total > 0" class="mt-3 grid gap-2 text-sm">
+                <div class="flex items-center justify-between gap-2"><select v-model.number="adminDetailOrderPagination.pageSize" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-2 font-black dark:border-stone-700 dark:bg-stone-800" aria-label="จำนวนรายการซื้อ Coin ต่อหน้า" @change="loadBackofficeAdminDetailPage('order', 1)"><option :value="5">5 / หน้า</option><option :value="10">10 / หน้า</option><option :value="20">20 / หน้า</option><option :value="50">50 / หน้า</option></select><span class="font-black">หน้า {{ adminDetailOrderPagination.page }} / {{ Math.max(1, adminDetailOrderPagination.totalPages) }}</span></div>
+                <div class="grid grid-cols-2 gap-2"><button type="button" class="h-9 rounded-md border border-stone-200 font-black disabled:opacity-40 dark:border-stone-700" :disabled="adminDetailOrderPagination.page <= 1" @click="loadBackofficeAdminDetailPage('order', adminDetailOrderPagination.page - 1)">ก่อนหน้า</button><button type="button" class="h-9 rounded-md border border-stone-200 font-black disabled:opacity-40 dark:border-stone-700" :disabled="adminDetailOrderPagination.page >= adminDetailOrderPagination.totalPages" @click="loadBackofficeAdminDetailPage('order', adminDetailOrderPagination.page + 1)">ถัดไป</button></div>
+              </div>
             </section>
 
             <section class="rounded-lg border border-stone-200 p-4 dark:border-stone-700">
-              <h3 class="font-black">Coin ledger</h3>
+              <div class="flex items-center justify-between gap-2"><h3 class="font-black">Coin ledger</h3><span class="text-xs font-black text-stone-500">{{ adminDetailLedgerPagination.total }} รายการ</span></div>
               <div class="mt-3 grid gap-2">
                 <div v-for="item in adminDetailLedger" :key="item.id" class="rounded-md bg-paper-100 p-3 dark:bg-stone-800">
                   <div class="flex items-center justify-between gap-3">
@@ -1136,6 +1353,10 @@ function closeSlipPreview() {
                   <p class="mt-1 text-xs font-semibold text-stone-500">{{ item.createdAt }} · คงเหลือ {{ item.balance }}</p>
                 </div>
                 <p v-if="!adminDetailLedger.length" class="rounded-md bg-paper-100 p-4 text-sm font-semibold text-stone-500 dark:bg-stone-800">ยังไม่มี coin ledger</p>
+              </div>
+              <div v-if="adminDetailLedgerPagination.total > 0" class="mt-3 grid gap-2 text-sm">
+                <div class="flex items-center justify-between gap-2"><select v-model.number="adminDetailLedgerPagination.pageSize" class="h-9 rounded-md border border-stone-200 bg-paper-50 px-2 font-black dark:border-stone-700 dark:bg-stone-800" aria-label="จำนวน Coin ledger ต่อหน้าในรายละเอียด Admin" @change="loadBackofficeAdminDetailPage('ledger', 1)"><option :value="5">5 / หน้า</option><option :value="10">10 / หน้า</option><option :value="20">20 / หน้า</option><option :value="50">50 / หน้า</option></select><span class="font-black">หน้า {{ adminDetailLedgerPagination.page }} / {{ Math.max(1, adminDetailLedgerPagination.totalPages) }}</span></div>
+                <div class="grid grid-cols-2 gap-2"><button type="button" class="h-9 rounded-md border border-stone-200 font-black disabled:opacity-40 dark:border-stone-700" :disabled="adminDetailLedgerPagination.page <= 1" @click="loadBackofficeAdminDetailPage('ledger', adminDetailLedgerPagination.page - 1)">ก่อนหน้า</button><button type="button" class="h-9 rounded-md border border-stone-200 font-black disabled:opacity-40 dark:border-stone-700" :disabled="adminDetailLedgerPagination.page >= adminDetailLedgerPagination.totalPages" @click="loadBackofficeAdminDetailPage('ledger', adminDetailLedgerPagination.page + 1)">ถัดไป</button></div>
               </div>
             </section>
           </div>

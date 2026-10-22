@@ -8,7 +8,9 @@ import {
   forceLogoutPOSStaff,
   getPOSActivity,
   getPOSAccessSettings,
+  POSPermissionKey,
   POSPermissions,
+  POS_REPORT_PERMISSION_KEYS,
   POSRole,
   POSStaffMember,
   resetPOSStaffPIN,
@@ -44,7 +46,7 @@ import {
   MonitorSmartphone,
 } from 'lucide-react';
 
-type SettingsTab = 'store' | 'customer-display' | 'printer' | 'tax' | 'permissions' | 'members' | 'activity';
+type SettingsTab = 'store' | 'stock' | 'customer-display' | 'printer' | 'tax' | 'permissions' | 'members' | 'activity';
 type MemberRole = POSRole;
 
 const PERMISSION_LABELS = [
@@ -52,20 +54,31 @@ const PERMISSION_LABELS = [
   ['bills', 'บิลและประวัติ'],
   ['products', 'จัดการสินค้า'],
   ['stock', 'จัดการสต็อก'],
-  ['reports', 'ดูรายงาน'],
+  ['reports', 'รายงาน (ดู / พิมพ์ / Export)'],
   ['settings', 'ตั้งค่าระบบ'],
   ['discounts', 'ให้ส่วนลด'],
   ['void_sales', 'ยกเลิก / คืนบิล'],
   ['stock_adjust', 'ปรับยอดสต็อก'],
   ['product_pricing', 'แก้ไขราคาสินค้า'],
-  ['report_export', 'ส่งออกรายงาน'],
   ['member_create', 'เพิ่มสมาชิกหลัก'],
 ] as const;
 
+const REPORT_PERMISSION_LABELS = [
+  ['report_overview', 'สรุปภาพรวมรายได้'],
+  ['report_top_sellers', 'อันดับสินค้าขายดี'],
+  ['report_vat', 'รายงานภาษีขาย (VAT)'],
+  ['report_payments', 'สัดส่วนช่องทางชำระเงิน'],
+  ['report_sold_products', 'สินค้าที่ขาย'],
+  ['report_purchases', 'ซื้อจากซัพพลายเออร์'],
+  ['report_inventory', 'สินค้าคงเหลือ'],
+  ['report_transfers', 'โอนย้ายสต็อก'],
+  ['report_special', 'POS + LiveMatch'],
+] as const;
+
 const DEFAULT_PERMISSIONS: Record<MemberRole, POSPermissions> = {
-  owner: { sales: true, bills: true, products: true, stock: true, reports: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  manager: { sales: true, bills: true, products: true, stock: true, reports: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
-  cashier: { sales: true, bills: true, products: false, stock: false, reports: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
+  owner: { sales: true, bills: true, products: true, stock: true, view_costs: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: true, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  manager: { sales: true, bills: true, products: true, stock: true, view_costs: true, reports: true, report_overview: true, report_top_sellers: true, report_vat: true, report_payments: true, report_sold_products: true, report_purchases: true, report_inventory: true, report_inventory_values: true, report_transfers: true, report_special: true, settings: false, discounts: true, void_sales: true, stock_adjust: true, product_pricing: true, report_export: true, member_create: true },
+  cashier: { sales: true, bills: true, products: false, stock: false, view_costs: false, reports: false, report_overview: false, report_top_sellers: false, report_vat: false, report_payments: false, report_sold_products: false, report_purchases: false, report_inventory: false, report_inventory_values: false, report_transfers: false, report_special: false, settings: false, discounts: false, void_sales: false, stock_adjust: false, product_pricing: false, report_export: false, member_create: true },
 };
 
 const STAFF_ROLE_OPTIONS: Array<{ value: Exclude<MemberRole, 'owner'>; label: string }> = [
@@ -108,12 +121,44 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   const [activity, setActivity] = useState<POSActivityItem[]>([]);
   const [testQR, setTestQR] = useState('');
   const [isFormDirty, setIsFormDirty] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [printerDocumentMode, setPrinterDocumentMode] = useState<'discover' | 'test' | null>(null);
   const [iminPrinterState, setIminPrinterState] = useState<'idle' | 'checking' | 'connected' | 'unavailable' | 'error'>('idle');
   const [iminPrinterMessage, setIminPrinterMessage] = useState('ยังไม่ได้ตรวจสอบ InnerPrinter');
   const isOwner = currentUser.role === 'owner';
   const isAndroid = /Android/i.test(navigator.userAgent);
   const browserLabel = /EdgA\//i.test(navigator.userAgent) ? 'Microsoft Edge Android' : /Chrome\//i.test(navigator.userAgent) ? 'Chrome / Chromium' : navigator.userAgent.split(' ').slice(-1)[0] || 'ไม่ทราบ';
+
+  const settingsPayloadForTab = (tab: Exclude<SettingsTab, 'permissions' | 'members' | 'activity'>): Partial<StoreSettings> => {
+    switch (tab) {
+      case 'store':
+        return {
+          storeName: formData.storeName, navbarTitle: formData.navbarTitle, navbarIconData: formData.navbarIconData,
+          inheritBookingPromptPay: formData.inheritBookingPromptPay, promptPayType: formData.promptPayType,
+          promptPayId: formData.promptPayId, promptPayReceiverName: formData.promptPayReceiverName,
+          paymentQrImage: formData.paymentQrImage, email: formData.email, taxId: formData.taxId,
+          phone: formData.phone, defaultLowStock: formData.defaultLowStock, address: formData.address, logoData: formData.logoData,
+        };
+      case 'stock':
+        return {
+          secondaryStockEnabled: formData.secondaryStockEnabled, primaryStockName: formData.primaryStockName,
+          secondaryStockName: formData.secondaryStockName, saleStockLocation: formData.saleStockLocation,
+        };
+      case 'customer-display':
+        return {
+          customerDisplayTitle: formData.customerDisplayTitle, customerDisplayHighlight: formData.customerDisplayHighlight,
+          customerDisplaySubtitle: formData.customerDisplaySubtitle, customerDisplayCardText: formData.customerDisplayCardText,
+          customerDisplayCtaText: formData.customerDisplayCtaText,
+        };
+      case 'printer':
+        return {
+          printerType: formData.printerType, autoPrintReceipt: formData.autoPrintReceipt,
+          receiptFooterMessage: formData.receiptFooterMessage,
+        };
+      case 'tax':
+        return { vatEnabled: formData.vatEnabled, vatRate: formData.vatRate, vatType: formData.vatType };
+    }
+  };
 
   const applyAccessSettings = (payload: Awaited<ReturnType<typeof getPOSAccessSettings>>) => {
     setMembers(payload.items);
@@ -139,7 +184,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
   }, [activeTab, isOwner]);
 
   const testPromptPay = async () => {
-    if (!(await updateSettings(formData))) return;
+    if (!(await updateSettings(settingsPayloadForTab('store'), 'บันทึกข้อมูลร้านแล้ว', 'store'))) return;
     try {
       const result = await getPOSPaymentQR(10000);
       if (result.promptPayPayload) setTestQR(await QRCode.toDataURL(result.promptPayPayload, { width: 240, margin: 1 }));
@@ -222,18 +267,26 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!(await updateSettings(formData))) return;
-    if (isOwner) {
-      try {
+    if (isSavingSettings) return;
+    setIsSavingSettings(true);
+    try {
+      if (activeTab === 'permissions') {
+        if (!isOwner) throw new Error('เฉพาะเจ้าของระบบเท่านั้นที่บันทึกสิทธิ์ได้');
         applyAccessSettings(await savePOSRolePermissions({ manager: permissions.manager, cashier: permissions.cashier }));
-      } catch (error) {
-        showToast(error instanceof Error ? error.message : 'บันทึกสิทธิ์ไม่สำเร็จ', 'error');
-        return;
+        showToast('บันทึกสิทธิ์การใช้งานเรียบร้อยแล้ว', 'success');
+      } else if (activeTab !== 'members' && activeTab !== 'activity') {
+        const labels: Record<typeof activeTab, string> = {
+          store: 'ข้อมูลร้าน', stock: 'การตั้งค่าสต็อก', 'customer-display': 'จอลูกค้า', printer: 'เครื่องพิมพ์', tax: 'ภาษี',
+        };
+        if (!(await updateSettings(settingsPayloadForTab(activeTab), `บันทึก${labels[activeTab]}เรียบร้อยแล้ว`, activeTab))) return;
       }
+      setIsFormDirty(false);
+      playBeep('success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกสิทธิ์ไม่สำเร็จ', 'error');
+    } finally {
+      setIsSavingSettings(false);
     }
-    setIsFormDirty(false);
-    playBeep('success');
-    showToast('บันทึกการตั้งค่าเรียบร้อยแล้ว', 'success');
   };
 
   const addMember = async () => {
@@ -302,11 +355,23 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
     }
   };
 
-  const togglePermission = (role: Exclude<MemberRole, 'owner'>, permission: string) => {
-    setPermissions((current) => ({
-      ...current,
-      [role]: { ...current[role], [permission]: !current[role][permission] },
-    }));
+  const togglePermission = (role: Exclude<MemberRole, 'owner'>, permission: POSPermissionKey) => {
+    setPermissions((current) => {
+      const enabled = !current[role][permission];
+      const next = { ...current[role], [permission]: enabled };
+      if (permission === 'stock' && !enabled) next.view_costs = false;
+      if (permission === 'reports') {
+        POS_REPORT_PERMISSION_KEYS.forEach((key) => { next[key] = enabled; });
+        // Printing and exporting are actions inside the reports menu, not a
+        // separate role capability. Keep the legacy API key synchronized.
+        next.report_export = enabled;
+      }
+      if (permission === 'report_inventory' && !enabled) next.report_inventory_values = false;
+      if (permission.startsWith('report_') && permission !== 'report_export') {
+        next.reports = enabled || POS_REPORT_PERMISSION_KEYS.some((key) => key !== permission && key !== 'report_inventory_values' && next[key]);
+      }
+      return { ...current, [role]: next };
+    });
   };
 
   return (
@@ -336,6 +401,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
         >
           <Store className="w-4 h-4" />
           <span>ข้อมูลร้านค้า (Store Info)</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('stock')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl font-bold whitespace-nowrap transition-all ${activeTab === 'stock' ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20' : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}
+        >
+          <Store className="w-4 h-4" />
+          <span>ตั้งค่าสต็อก</span>
         </button>
 
         <button
@@ -568,12 +641,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
           </div>
         )}
 
+        {activeTab === 'stock' && (
+          <div className="space-y-5">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900">
+              <h3 className="text-sm font-black">คลังสินค้าและการตัดสต็อก</h3>
+              <p className="mt-1 text-xs text-slate-500">ยอดเดิมทั้งหมดอยู่ในสต็อกหลัก การเปลี่ยนคลังขายมีผลกับบิลใหม่เท่านั้น</p>
+              <label className="mt-5 flex items-center justify-between gap-4 rounded-xl border border-slate-200 p-4 dark:border-slate-700">
+                <span><b className="block text-xs">เปิดใช้งานสต็อกที่ 2</b><small className="text-slate-500">ต้องโอนยอดในสต็อกที่ 2 ให้เป็นศูนย์ก่อนปิด</small></span>
+                <input type="checkbox" checked={formData.secondaryStockEnabled} onChange={(e) => setFormData({ ...formData, secondaryStockEnabled: e.target.checked, saleStockLocation: e.target.checked ? formData.saleStockLocation : 'primary' })} className="h-5 w-5 accent-emerald-500" />
+              </label>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <label className="text-xs font-bold">ชื่อสต็อกหลัก<input value={formData.primaryStockName} onChange={(e) => setFormData({ ...formData, primaryStockName: e.target.value })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950" /></label>
+                <label className="text-xs font-bold">ชื่อสต็อกที่ 2<input disabled={!formData.secondaryStockEnabled} value={formData.secondaryStockName} onChange={(e) => setFormData({ ...formData, secondaryStockName: e.target.value })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-950" /></label>
+              </div>
+              <label className="mt-4 block text-xs font-bold">สต็อกที่ใช้ตัดเมื่อขาย
+                <select value={formData.saleStockLocation} onChange={(e) => setFormData({ ...formData, saleStockLocation: e.target.value as StoreSettings['saleStockLocation'] })} className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 dark:border-slate-700 dark:bg-slate-950">
+                  <option value="primary">{formData.primaryStockName || 'สต็อกหลัก'}</option>
+                  {formData.secondaryStockEnabled && <option value="secondary">{formData.secondaryStockName || 'สต็อกที่ 2'}</option>}
+                </select>
+              </label>
+            </div>
+          </div>
+        )}
+
         {activeTab === 'customer-display' && (
           <div className="grid gap-5 xl:grid-cols-[1fr_1.1fr]">
             <section className="space-y-4 rounded-3xl border border-slate-200 bg-white p-6 shadow-md dark:border-slate-800 dark:bg-slate-900">
               <div className="border-b border-slate-200 pb-3 dark:border-slate-800">
                 <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white"><Monitor className="h-4 w-4 text-emerald-500" />ข้อความหน้า Index จอลูกค้า</h3>
                 <p className="mt-1 text-[11px] text-slate-500">แสดงบน <span className="font-mono">display=customer</span> เมื่อตะกร้ายังไม่มีสินค้า</p>
+              </div>
+              <div className="rounded-2xl border border-sky-200 bg-sky-50 p-3 text-[11px] font-semibold leading-relaxed text-sky-900 dark:border-sky-500/20 dark:bg-sky-500/10 dark:text-sky-200">
+                จอแคชเชียร์และจอลูกค้าต้องตั้งเป็น <strong>Extend / ขยายจอ</strong> ไม่ใช่ Duplicate ระบบจึงจะตรวจพบและย้ายหน้าจอลูกค้าไปจอที่สองอัตโนมัติ ครั้งแรก Chrome จะขอสิทธิ์ Window management ให้กดอนุญาต
               </div>
               <label className="grid gap-1.5 text-xs font-bold text-slate-700 dark:text-slate-300">ข้อความหัวเรื่อง
                 <input maxLength={120} value={formData.customerDisplayTitle} onChange={(event) => setFormData({ ...formData, customerDisplayTitle: event.target.value })} className="h-10 rounded-xl border border-slate-200 bg-slate-50 px-3 text-xs outline-none focus:border-emerald-500 dark:border-slate-700 dark:bg-slate-950" />
@@ -833,16 +932,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
                     {PERMISSION_LABELS.map(([key, label]) => {
                       const enabled = permissions[role][key];
                       return (
-                        <label key={key} className={`flex items-center justify-between rounded-xl border px-3 py-2.5 ${enabled ? 'border-emerald-200 bg-white dark:border-emerald-500/20 dark:bg-slate-900' : 'border-slate-200 bg-slate-100 opacity-65 dark:border-slate-800 dark:bg-slate-900/50'}`}>
-                          <span className="text-xs font-semibold">{label}</span>
-                          <input
-                            type="checkbox"
-                            checked={enabled}
-                            disabled={role === 'owner' || !isOwner}
-                            onChange={() => role !== 'owner' && togglePermission(role, key)}
-                            className="h-4 w-4 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed"
-                          />
-                        </label>
+                        <React.Fragment key={key}>
+                          <label className={`flex items-center justify-between rounded-xl border px-3 py-2.5 ${enabled ? 'border-emerald-200 bg-white dark:border-emerald-500/20 dark:bg-slate-900' : 'border-slate-200 bg-slate-100 opacity-65 dark:border-slate-800 dark:bg-slate-900/50'}`}>
+                            <span className="text-xs font-semibold">{label}</span>
+                            <input
+                              type="checkbox"
+                              checked={enabled}
+                              disabled={role === 'owner' || !isOwner}
+                              onChange={() => role !== 'owner' && togglePermission(role, key)}
+                              className="h-4 w-4 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed"
+                            />
+                          </label>
+                          {key === 'stock' && (
+                            <label className={`ml-3 flex items-center justify-between rounded-lg border border-dashed px-2.5 py-2 ${permissions[role].view_costs ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100' : 'border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-800 dark:bg-slate-900'}`}>
+                              <span>
+                                <span className="block text-[10px] font-semibold">แสดงราคาต้นทุนและกำไร</span>
+                                <span className="block text-[9px] opacity-70">ปิดแล้ว API จะไม่ส่งข้อมูลต้นทุน</span>
+                              </span>
+                              <input type="checkbox" checked={permissions[role].view_costs} disabled={role === 'owner' || !isOwner || !enabled} onChange={() => role !== 'owner' && togglePermission(role, 'view_costs')} className="h-3.5 w-3.5 rounded border-slate-300 accent-amber-500 disabled:cursor-not-allowed" />
+                            </label>
+                          )}
+                          {key === 'reports' && (
+                            <div className={`ml-3 grid gap-1.5 border-l-2 py-1 pl-3 ${enabled ? 'border-emerald-200 dark:border-emerald-500/20' : 'border-slate-200 dark:border-slate-800'}`}>
+                              <p className="px-2 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300">เปิดแล้วสามารถพิมพ์และ Export รายงานที่อนุญาตได้ทันที</p>
+                              <p className="px-2 text-[10px] font-black uppercase tracking-wide text-slate-400">เมนูรายงานย่อย</p>
+                              {REPORT_PERMISSION_LABELS.map(([reportKey, reportLabel]) => {
+                                const reportEnabled = permissions[role][reportKey];
+                                return (
+                                  <React.Fragment key={reportKey}>
+                                  <label className={`flex items-center justify-between rounded-lg px-2.5 py-2 ${reportEnabled ? 'bg-emerald-50 text-emerald-900 dark:bg-emerald-500/10 dark:text-emerald-100' : 'bg-slate-100 text-slate-500 dark:bg-slate-900'}`}>
+                                    <span className="text-[11px] font-semibold">{reportLabel}</span>
+                                    <input type="checkbox" checked={reportEnabled} disabled={role === 'owner' || !isOwner} onChange={() => role !== 'owner' && togglePermission(role, reportKey)} className="h-3.5 w-3.5 rounded border-slate-300 accent-emerald-500 disabled:cursor-not-allowed" />
+                                  </label>
+                                  {reportKey === 'report_inventory' && (
+                                    <label className={`ml-3 flex items-center justify-between rounded-lg border border-dashed px-2.5 py-2 ${permissions[role].report_inventory_values ? 'border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100' : 'border-slate-200 bg-slate-100 text-slate-500 dark:border-slate-800 dark:bg-slate-900'}`}>
+                                      <span className="text-[10px] font-semibold">แสดงต้นทุนและราคาขาย</span>
+                                      <input type="checkbox" checked={permissions[role].report_inventory_values} disabled={role === 'owner' || !isOwner || !reportEnabled} onChange={() => role !== 'owner' && togglePermission(role, 'report_inventory_values')} className="h-3.5 w-3.5 rounded border-slate-300 accent-amber-500 disabled:cursor-not-allowed" />
+                                    </label>
+                                  )}
+                                  </React.Fragment>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </React.Fragment>
                       );
                     })}
                   </div>
@@ -1009,10 +1142,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ currentUser }) => {
           <button
             type="submit"
             id="save-settings-btn"
-            className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all scale-[1.01] active:scale-[0.99]"
+            disabled={isSavingSettings}
+            aria-busy={isSavingSettings}
+            className="flex min-w-[210px] items-center justify-center gap-2 px-6 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs shadow-lg shadow-emerald-500/20 transition-all scale-[1.01] active:scale-[0.99] disabled:cursor-wait disabled:opacity-70"
           >
-            <Save className="w-4 h-4" />
-            <span>บันทึกการตั้งค่า (Save Settings)</span>
+            {isSavingSettings ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="w-4 h-4" />}
+            <span>{isSavingSettings ? (activeTab === 'stock' ? 'กำลังบันทึกสต็อก...' : 'กำลังบันทึก...') : 'บันทึกการตั้งค่า (Save Settings)'}</span>
           </button>
         </div> : null}
       </form>

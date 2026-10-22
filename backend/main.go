@@ -29,11 +29,15 @@ type app struct {
 const defaultAnnouncementTemplate = "บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}"
 const defaultShuttleBrandID = "default"
 const defaultShuttleBrandName = "ลูกแบดทั่วไป"
+const apiContractVersion = "2026-09-05"
+
+var errSessionVersionConflict = errors.New("session version conflict")
 
 type HealthResponse struct {
-	Status    string    `json:"status"`
-	Service   string    `json:"service"`
-	Timestamp time.Time `json:"timestamp"`
+	Status          string    `json:"status"`
+	Service         string    `json:"service"`
+	ContractVersion string    `json:"contractVersion"`
+	Timestamp       time.Time `json:"timestamp"`
 }
 
 type SessionRecord struct {
@@ -44,21 +48,30 @@ type SessionRecord struct {
 }
 
 type SessionState struct {
-	Tab              string            `json:"tab"`
-	Theme            string            `json:"theme"`
-	Session          SessionInfo       `json:"session"`
-	Settings         Settings          `json:"settings"`
-	MemberTypes      []MemberType      `json:"memberTypes"`
-	Players          []Player          `json:"players"`
-	Couples          []Couple          `json:"couples"`
-	ReturnedShuttles []ReturnedShuttle `json:"returnedShuttles"`
-	Pending          []Match           `json:"pending"`
-	Queue            []Match           `json:"queue"`
-	Live             []Match           `json:"live"`
-	History          []Match           `json:"history"`
-	LiveShare        LiveShareHours    `json:"liveShare"`
-	NextIDs          NextIDs           `json:"nextIds"`
-	UpdatedAt        time.Time         `json:"updatedAt"`
+	Version           int64             `json:"version"`
+	Tab               string            `json:"tab"`
+	Theme             string            `json:"theme"`
+	Session           SessionInfo       `json:"session"`
+	Settings          Settings          `json:"settings"`
+	MemberTypes       []MemberType      `json:"memberTypes"`
+	Players           []Player          `json:"players"`
+	Couples           []Couple          `json:"couples"`
+	ReturnedShuttles  []ReturnedShuttle `json:"returnedShuttles"`
+	Pending           []Match           `json:"pending"`
+	Queue             []Match           `json:"queue"`
+	Live              []Match           `json:"live"`
+	History           []Match           `json:"history"`
+	LiveShare         LiveShareHours    `json:"liveShare"`
+	QueueAnnouncement QueueAnnouncement `json:"queueAnnouncement"`
+	NextIDs           NextIDs           `json:"nextIds"`
+	UpdatedAt         time.Time         `json:"updatedAt"`
+}
+
+type QueueAnnouncement struct {
+	Sequence    int64  `json:"sequence"`
+	MatchID     int    `json:"matchId"`
+	Court       string `json:"court"`
+	AnnouncedAt string `json:"announcedAt,omitempty"`
 }
 
 type SessionInfo struct {
@@ -76,32 +89,34 @@ type SessionInfo struct {
 }
 
 type Settings struct {
-	EntryFee                int            `json:"entryFee"`
-	ClubEntryFee            int            `json:"clubEntryFee"`
-	MemberEntryFees         map[string]int `json:"memberEntryFees"`
-	CourtFeePerHour         int            `json:"courtFeePerHour"`
-	ShuttleFee              int            `json:"shuttleFee"`
-	ShuttleBrands           []ShuttleBrand `json:"shuttleBrands"`
-	SessionFee              int            `json:"sessionFee"`
-	CourtCount              int            `json:"courtCount"`
-	CourtNames              []string       `json:"courtNames"`
-	Levels                  []string       `json:"levels"`
-	AllowCrossLevel         bool           `json:"allowCrossLevel"`
-	CrossLevelRange         int            `json:"crossLevelRange"`
-	RandomPriority          string         `json:"randomPriority"`
-	ShowPaymentOnShare      bool           `json:"showPaymentOnShare"`
-	ShowTotalOnShare        bool           `json:"showTotalOnShare"`
-	ShowWaitingOnQueueShare bool           `json:"showWaitingOnQueueShare"`
-	ShowWaitTimePlayers     bool           `json:"showWaitTimePlayers"`
-	ShowWaitTimePairing     bool           `json:"showWaitTimePairing"`
-	ShowWaitTimeQueue       bool           `json:"showWaitTimeQueue"`
-	ResetPlayersAfterFinish bool           `json:"resetPlayersAfterFinish"`
-	StartMatchWithShuttle   bool           `json:"startMatchWithShuttle"`
-	AnnouncementTemplate    string         `json:"announcementTemplate"`
-	AnnouncementBellKey     string         `json:"announcementBellKey,omitempty"`
-	AnnouncementBellName    string         `json:"announcementBellName,omitempty"`
-	AnnouncementBellMIME    string         `json:"announcementBellMime,omitempty"`
-	DashboardAnnouncements  []string       `json:"dashboardAnnouncements,omitempty"`
+	EntryFee                   int            `json:"entryFee"`
+	ClubEntryFee               int            `json:"clubEntryFee"`
+	MemberEntryFees            map[string]int `json:"memberEntryFees"`
+	CourtFeePerHour            int            `json:"courtFeePerHour"`
+	ShuttleFee                 int            `json:"shuttleFee"`
+	ShuttleBrands              []ShuttleBrand `json:"shuttleBrands"`
+	SessionFee                 int            `json:"sessionFee"`
+	CourtCount                 int            `json:"courtCount"`
+	CourtNames                 []string       `json:"courtNames"`
+	Levels                     []string       `json:"levels"`
+	AllowCrossLevel            bool           `json:"allowCrossLevel"`
+	CrossLevelRange            int            `json:"crossLevelRange"`
+	RandomPriority             string         `json:"randomPriority"`
+	ShowPaymentOnShare         bool           `json:"showPaymentOnShare"`
+	ShowTotalOnShare           bool           `json:"showTotalOnShare"`
+	ShowWaitingOnQueueShare    bool           `json:"showWaitingOnQueueShare"`
+	ShowWaitTimePlayers        bool           `json:"showWaitTimePlayers"`
+	ShowWaitTimePairing        bool           `json:"showWaitTimePairing"`
+	ShowWaitTimeQueue          bool           `json:"showWaitTimeQueue"`
+	IdleWaitAlertEnabled       bool           `json:"idleWaitAlertEnabled"`
+	MatchStartAnimationEnabled bool           `json:"matchStartAnimationEnabled"`
+	ResetPlayersAfterFinish    bool           `json:"resetPlayersAfterFinish"`
+	StartMatchWithShuttle      bool           `json:"startMatchWithShuttle"`
+	AnnouncementTemplate       string         `json:"announcementTemplate"`
+	AnnouncementBellKey        string         `json:"announcementBellKey,omitempty"`
+	AnnouncementBellName       string         `json:"announcementBellName,omitempty"`
+	AnnouncementBellMIME       string         `json:"announcementBellMime,omitempty"`
+	DashboardAnnouncements     []string       `json:"dashboardAnnouncements,omitempty"`
 }
 
 type Player struct {
@@ -116,14 +131,20 @@ type Player struct {
 	Active                  bool   `json:"active"`
 	Level                   string `json:"level"`
 	Coupon                  bool   `json:"coupon"`
+	Libero                  bool   `json:"libero"`
 	ClubMember              bool   `json:"clubMember"`
 	MemberTypeID            string `json:"memberTypeId,omitempty"`
 	MemberTypeName          string `json:"memberTypeName,omitempty"`
 	MemberID                string `json:"memberId,omitempty"`
+	AvatarURL               string `json:"avatarUrl,omitempty"`
 	BillingAccountID        string `json:"billingAccountId,omitempty"`
 	WaitStartedAt           string `json:"waitStartedAt"`
 	SettledAmountSatang     int64  `json:"settledAmountSatang"`
 	OutstandingAmountSatang int64  `json:"outstandingAmountSatang"`
+	Withdrawn               bool   `json:"withdrawn,omitempty"`
+	WithdrawnAt             string `json:"withdrawnAt,omitempty"`
+	WithdrawnBy             string `json:"withdrawnBy,omitempty"`
+	WithdrawalNote          string `json:"withdrawalNote,omitempty"`
 }
 
 type MemberType struct {
@@ -151,10 +172,11 @@ type PlayerPaymentItem struct {
 }
 
 type PlayerPaymentDetail struct {
-	Key           string  `json:"key"`
-	Label         string  `json:"label"`
-	Quantity      int     `json:"quantity"`
-	UnitAmountTHB float64 `json:"unitAmountThb"`
+	Key              string  `json:"key"`
+	Label            string  `json:"label"`
+	Quantity         int     `json:"quantity"`
+	UnitAmountTHB    float64 `json:"unitAmountThb"`
+	UnitAmountSatang int64   `json:"unitAmountSatang"`
 }
 
 type PlayerMatchHistoryItem struct {
@@ -188,15 +210,34 @@ type PlayerPaymentSummary struct {
 }
 
 type ShuttleBrand struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Price  int    `json:"price"`
-	Active bool   `json:"active"`
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Price        int    `json:"price"`
+	PriceSatang  int64  `json:"priceSatang"`
+	Active       bool   `json:"active"`
+	POSProductID string `json:"posProductId,omitempty"`
+}
+
+type ShuttleStockAvailability struct {
+	BrandID           string `json:"brandId"`
+	Linked            bool   `json:"linked"`
+	ProductID         string `json:"productId,omitempty"`
+	ProductName       string `json:"productName,omitempty"`
+	ProductSKU        string `json:"productSku,omitempty"`
+	StockLocation     string `json:"stockLocation,omitempty"`
+	AvailableQuantity int    `json:"availableQuantity"`
+	Selectable        bool   `json:"selectable"`
+	Code              string `json:"code,omitempty"`
 }
 
 type ShuttleSeqItem struct {
-	BrandID string `json:"brandId"`
-	Number  int    `json:"number"`
+	BrandID         string `json:"brandId"`
+	Number          int    `json:"number"`
+	UnitPriceSatang int64  `json:"unitPriceSatang,omitempty"`
+	PriceSource     string `json:"priceSource,omitempty"`
+	POSProductID    string `json:"posProductId,omitempty"`
+	ProductName     string `json:"productName,omitempty"`
+	ProductSKU      string `json:"productSku,omitempty"`
 }
 
 type ReturnedShuttle struct {
@@ -238,11 +279,18 @@ type Match struct {
 	ShuttlePricingMode     string           `json:"shuttlePricingMode"`
 	ShuttlePriceSnapshot   []ShuttleBrand   `json:"shuttlePriceSnapshot,omitempty"`
 	LegacyShuttleFee       int              `json:"legacyShuttleFee,omitempty"`
+	PairingPattern         string           `json:"pairingPattern"`
 }
 
 const (
-	shuttlePricingLegacy = "legacy_per_player"
-	shuttlePricingSplit  = "split_per_match"
+	shuttlePricingLegacy         = "legacy_per_player"
+	shuttlePricingSplit          = "split_per_match"
+	pairingPatternPairPair       = "pair_pair"
+	pairingPatternPairTwoSingles = "pair_two_singles"
+	pairingPatternFourSingles    = "four_singles"
+	pairingPatternOneOne         = "one_one"
+	pairingPatternManualFour     = "manual_four"
+	pairingPatternLegacyUnknown  = "legacy_unknown"
 )
 
 type LiveShareHours struct {
@@ -327,6 +375,7 @@ func main() {
 		return
 	}
 	go a.runExpiredBookingHoldCleanup(context.Background())
+	go a.runBookingSlipOKRetry(context.Background())
 	go a.runRateLimitCleanup(context.Background())
 	go a.runBookingSlipCleanup(context.Background())
 	go a.refreshAdminTelegramWebhooks(context.Background())
@@ -343,6 +392,7 @@ func main() {
 	mux.HandleFunc("/api/public-auth/", a.handlePublicAuth)
 	mux.HandleFunc("/api/public-booking/", a.handlePublicBooking)
 	mux.HandleFunc("/api/profile/", a.handleProfile)
+	mux.HandleFunc("/api/member-avatar/", a.serveMemberAvatar)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
 	mux.HandleFunc("/api/supervisor/session-detail", a.handleSupervisorSessionDetail)
 	mux.HandleFunc("/api/sessions/unlock", a.handleUnlockByPasscode)
@@ -396,6 +446,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table sessions add column if not exists created_at timestamptz not null default now();
 		alter table sessions add column if not exists updated_at timestamptz not null default now();
 		alter table sessions add column if not exists usage_started_at timestamptz;
+		alter table sessions add column if not exists version bigint not null default 0;
 		alter table sessions alter column name drop not null;
 		alter table sessions alter column admin_passcode drop not null;
 		alter table sessions alter column state drop not null;
@@ -429,6 +480,8 @@ func (a *app) migrate(ctx context.Context) error {
 			show_wait_time_players boolean not null default true,
 			show_wait_time_pairing boolean not null default true,
 			show_wait_time_queue boolean not null default true,
+			idle_wait_alert_enabled boolean not null default true,
+			match_start_animation_enabled boolean not null default true,
 			reset_players_after_finish boolean not null default true,
 			start_match_with_shuttle boolean not null default true,
 			announcement_template text not null default 'บุฟเฟ่ต์สนามที่ {court}
@@ -449,6 +502,8 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table session_settings add column if not exists show_wait_time_players boolean not null default true;
 		alter table session_settings add column if not exists show_wait_time_pairing boolean not null default true;
 		alter table session_settings add column if not exists show_wait_time_queue boolean not null default true;
+		alter table session_settings add column if not exists idle_wait_alert_enabled boolean not null default true;
+		alter table session_settings add column if not exists match_start_animation_enabled boolean not null default true;
 		alter table session_settings add column if not exists reset_players_after_finish boolean not null default true;
 		alter table session_settings add column if not exists start_match_with_shuttle boolean not null default true;
 		alter table session_settings add column if not exists session_fee integer not null default 0;
@@ -479,10 +534,14 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table players add column if not exists losses integer not null default 0;
 		alter table players alter column coupon set default false;
 		alter table players add column if not exists club_member boolean not null default false;
+		alter table players add column if not exists libero boolean not null default false;
 		alter table players add column if not exists member_id text;
 		alter table players add column if not exists member_type_id text;
 		alter table players add column if not exists wait_started_at timestamptz default now();
 		alter table players add column if not exists settled_amount_satang bigint not null default 0;
+		alter table players add column if not exists withdrawn_at timestamptz;
+		alter table players add column if not exists withdrawn_by text not null default '';
+		alter table players add column if not exists withdrawal_note text not null default '';
 		create table if not exists couples (
 			session_id text not null references sessions(id) on delete cascade,
 			id integer not null,
@@ -514,7 +573,15 @@ func (a *app) migrate(ctx context.Context) error {
 			shuttle_pricing_mode text not null default 'legacy_per_player',
 			shuttle_price_snapshot jsonb not null default '[]'::jsonb,
 			legacy_shuttle_fee integer not null default 0,
+			pairing_pattern text not null default 'legacy_unknown',
 			primary key (session_id, id)
+		);
+		create table if not exists session_queue_announcements (
+			session_id text primary key references sessions(id) on delete cascade,
+			sequence bigint not null default 0,
+			match_id integer not null,
+			court text not null,
+			announced_at timestamptz not null default now()
 		);
 		alter table matches drop constraint if exists matches_phase_check;
 		alter table matches add constraint matches_phase_check check (phase in ('pending', 'queue', 'live', 'history'));
@@ -528,8 +595,14 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table matches add column if not exists shuttle_pricing_mode text not null default 'legacy_per_player';
 		alter table matches add column if not exists shuttle_price_snapshot jsonb not null default '[]'::jsonb;
 		alter table matches add column if not exists legacy_shuttle_fee integer not null default 0;
+		alter table matches add column if not exists pairing_pattern text not null default 'legacy_unknown';
+		update matches set shuttle_price_snapshot='[]'::jsonb where jsonb_typeof(shuttle_price_snapshot) is distinct from 'array';
+		update matches set shuttle_sequence_items='[]'::jsonb where jsonb_typeof(shuttle_sequence_items) is distinct from 'array';
 		alter table matches drop constraint if exists matches_shuttle_pricing_mode_check;
 		alter table matches add constraint matches_shuttle_pricing_mode_check check (shuttle_pricing_mode in ('legacy_per_player','split_per_match'));
+		update matches set pairing_pattern='legacy_unknown' where pairing_pattern not in ('pair_pair','pair_two_singles','four_singles','one_one','manual_four','legacy_unknown');
+		alter table matches drop constraint if exists matches_pairing_pattern_check;
+		alter table matches add constraint matches_pairing_pattern_check check (pairing_pattern in ('pair_pair','pair_two_singles','four_singles','one_one','manual_four','legacy_unknown'));
 		update matches m
 		set shuttle_price_snapshot = case
 		      when jsonb_array_length(s.shuttle_brands) = 0 then jsonb_build_array(jsonb_build_object('id', 'default', 'name', 'ลูกแบดทั่วไป', 'price', s.shuttle_fee, 'active', true))
@@ -601,6 +674,8 @@ func (a *app) migrate(ctx context.Context) error {
 		update admin_users set pos_admin_number=nextval('pos_admin_number_seq') where pos_admin_number is null;
 		alter table admin_users alter column pos_admin_number set not null;
 		create unique index if not exists idx_admin_users_pos_admin_number on admin_users(pos_admin_number);
+		create index if not exists idx_admin_users_created on admin_users(created_at desc,id);
+		create index if not exists idx_admin_users_email_lower on admin_users(lower(email));
 		select setval('pos_admin_number_seq',greatest(coalesce((select max(pos_admin_number) from admin_users),1000),1000),true);
 		create table if not exists admin_default_settings (
 			admin_id text primary key references admin_users(id) on delete cascade,
@@ -760,6 +835,28 @@ func (a *app) migrate(ctx context.Context) error {
 			details text not null default '{}',
 			created_at timestamptz not null default now()
 		);
+		create table if not exists slipok_logs (
+			id bigserial primary key,
+			admin_id text not null default '',
+			admin_email text not null default '',
+			source_system text not null default '',
+			reference_id text not null default '',
+			request_method text not null default 'POST',
+			request_url text not null default '',
+			expected_amount_thb integer not null default 0,
+			request_payload text not null default '{}',
+			http_status integer not null default 0,
+			provider_code integer not null default 0,
+			result_status text not null default 'manual_review',
+			result_note text not null default '',
+			response_payload text not null default '',
+			trans_ref text not null default '',
+			detected_amount_thb integer,
+			detected_paid_at text not null default '',
+			detected_receiver text not null default '',
+			duration_ms bigint not null default 0,
+			created_at timestamptz not null default now()
+		);
 		create extension if not exists btree_gist;
 		create table if not exists admin_features (
 			admin_id text primary key references admin_users(id) on delete cascade,
@@ -873,6 +970,9 @@ func (a *app) migrate(ctx context.Context) error {
 		select 'member-type-'||md5(id||':club'),id,'club','สมาชิกชมรม',true,true from admin_users
 		on conflict do nothing;
 		alter table members add column if not exists profile_token text not null default '';
+		alter table members add column if not exists avatar_data bytea;
+		alter table members add column if not exists avatar_mime text not null default '';
+		alter table members add column if not exists avatar_version bigint not null default 0;
 		alter table members add column if not exists member_type_id text;
 		update members m set member_type_id=mt.id from member_types mt
 		where m.member_type_id is null and mt.admin_id=m.admin_id and mt.code=case when m.member_type='club' then 'club' else 'general' end and mt.deleted_at is null;
@@ -929,12 +1029,17 @@ func (a *app) migrate(ctx context.Context) error {
 			updated_at timestamptz not null default now()
 		);
 		alter table booking_settings add column if not exists public_token text not null default '';
+		alter table booking_settings add column if not exists bank_account_number text not null default '';
+		alter table booking_settings add column if not exists payment_qr_mode text not null default 'generated';
+		alter table booking_settings add column if not exists payment_qr_image text not null default '';
 		alter table booking_settings add column if not exists telegram_bot_fingerprint text not null default '';
 		alter table booking_settings add column if not exists booking_acceptance_enabled boolean not null default false;
 		alter table booking_settings add column if not exists booking_acceptance_open_time time;
 		alter table booking_settings add column if not exists booking_acceptance_close_time time;
+		alter table booking_settings add column if not exists allow_past_booking boolean not null default false;
 		alter table booking_settings add column if not exists single_slot_purchase_enabled boolean not null default false;
 		alter table booking_settings add column if not exists popup_enabled boolean not null default false;
+		alter table booking_settings add column if not exists show_booker_name boolean not null default true;
 		alter table booking_settings add column if not exists popup_image text not null default '';
 		alter table booking_settings add column if not exists popup_revision text not null default '';
 		alter table booking_settings add column if not exists slipok_enabled boolean not null default false;
@@ -942,8 +1047,21 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_settings add column if not exists slipok_api_key text not null default '';
 		alter table booking_settings add column if not exists slipok_monthly_cap integer not null default 0;
 		alter table booking_settings add column if not exists block_account_enabled boolean not null default true;
-		alter table booking_settings add column if not exists block_ip_enabled boolean not null default true;
+		alter table booking_settings add column if not exists block_ip_enabled boolean not null default false;
+		alter table booking_settings alter column block_ip_enabled set default false;
 		alter table booking_settings add column if not exists block_duration_minutes integer not null default 10;
+		do $$
+		begin
+			if not exists (
+				select 1 from information_schema.columns
+				where table_schema=current_schema()
+				  and table_name='booking_settings'
+				  and column_name='slipok_limit_enabled'
+			) then
+				alter table booking_settings add column slipok_limit_enabled boolean not null default false;
+				update booking_settings set slipok_limit_enabled=true where slipok_monthly_cap>0;
+			end if;
+		end $$;
 		create unique index if not exists idx_booking_settings_telegram_bot on booking_settings(telegram_bot_fingerprint) where telegram_bot_fingerprint <> '';
 		create table if not exists booking_courts (
 			id text primary key,
@@ -977,6 +1095,9 @@ func (a *app) migrate(ctx context.Context) error {
 			check (end_at > start_at)
 		);
 		alter table bookings add column if not exists booking_batch_id text;
+		alter table bookings add column if not exists decision_source text not null default '';
+		alter table bookings add column if not exists decision_at timestamptz;
+		alter table bookings add column if not exists decision_by text not null default '';
 		create index if not exists idx_bookings_batch on bookings(admin_id, booking_batch_id) where booking_batch_id is not null;
 		create table if not exists booking_occupancies (
 			id bigserial primary key,
@@ -1015,6 +1136,15 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table booking_payments add column if not exists verification_note text not null default '';
 		alter table booking_payments add column if not exists provider_error_code integer not null default 0;
 		alter table booking_payments add column if not exists checked_at timestamptz;
+		alter table booking_payments add column if not exists provider_retry_at timestamptz;
+		alter table booking_payments add column if not exists provider_retry_count integer not null default 0;
+		alter table booking_payments add column if not exists provider_retry_claimed_at timestamptz;
+		create index if not exists idx_booking_payments_provider_retry on booking_payments(provider_retry_at,id) where status='pending' and verification_status='pending_retry';
+		update bookings b set decision_source='auto_slip',decision_at=coalesce(p.checked_at,p.created_at),decision_by='Auto Slip'
+		from booking_payments p where p.booking_id=b.id and b.decision_source='' and p.verification_provider='slipok' and p.status in ('approved','rejected');
+		update bookings b set decision_source=case when p.reviewed_by ~ '^[0-9]+$' then 'telegram' else 'web' end,decision_at=p.reviewed_at,decision_by=p.reviewed_by
+		from booking_payments p where p.booking_id=b.id and b.decision_source='' and p.reviewed_at is not null;
+		update bookings set decision_source='web',decision_at=created_at,decision_by='Admin' where decision_source='' and booked_by='admin' and status='confirmed';
 		alter table booking_payments add column if not exists slip_file_key text not null default '';
 		alter table booking_payments add column if not exists slip_mime_type text not null default '';
 		alter table booking_payments add column if not exists slip_size_bytes bigint not null default 0;
@@ -1061,12 +1191,28 @@ func (a *app) migrate(ctx context.Context) error {
 		);
 		create index if not exists idx_booking_blocks_account on booking_blocks(admin_id,public_user_id,expires_at) where revoked_at is null and target_type='account';
 		create index if not exists idx_booking_blocks_ip on booking_blocks(admin_id,ip_hash,expires_at) where revoked_at is null and target_type='ip';
+		with applied as (
+			insert into app_migrations(migration_key)
+			values ('booking_automatic_ip_block_account_only_v1')
+			on conflict do nothing
+			returning migration_key
+		), disabled as (
+			update booking_settings set block_ip_enabled=false,updated_at=now()
+			where exists(select 1 from applied)
+			returning admin_id
+		)
+		update booking_blocks set revoked_at=coalesce(revoked_at,now()),updated_at=now()
+		where target_type='ip' and revoked_at is null and exists(select 1 from applied);
 		alter table booking_security_incidents add column if not exists client_ip_hash text not null default '';
 		alter table booking_security_incidents add column if not exists client_ip_encrypted text not null default '';
 		alter table booking_security_incidents add column if not exists client_ip_masked text not null default '';
 		create index if not exists idx_members_admin on members(admin_id, active, created_at desc);
 		create index if not exists idx_booking_courts_admin on booking_courts(admin_id, active, sort_order);
 		create index if not exists idx_bookings_admin_time on bookings(admin_id, start_at, end_at);
+		create index if not exists idx_bookings_admin_status_created on bookings(admin_id,status,created_at desc,id);
+		create index if not exists idx_matches_session_phase_id on matches(session_id,phase,id desc);
+		create index if not exists idx_players_session_active_id on players(session_id,active,id);
+		create index if not exists idx_payment_events_session_created on player_payment_events(session_id,created_at desc,id desc);
 		create index if not exists idx_booking_payments_booking on booking_payments(booking_id, created_at desc);
 		create index if not exists idx_player_payment_member on player_payment_events(member_id, created_at desc);
 		create table if not exists billing_accounts (
@@ -1113,6 +1259,11 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_settings add column if not exists customer_display_subtitle text not null default E'เชิญสั่งรายการเครื่องดื่ม กาแฟสด และเบเกอรี่ได้ที่เคาน์เตอร์\nหน้าจอจะแสดงรายการสินค้าและยอดเงินชำระแบบเรียลไทม์';
 		alter table pos_settings add column if not exists customer_display_card_text text not null default 'คัดสรรวัตถุดิบคุณภาพเพื่อรสชาติที่ดีที่สุด';
 		alter table pos_settings add column if not exists customer_display_cta_text text not null default 'สั่งรายการได้ที่พนักงานแคชเชียร์';
+		alter table pos_settings add column if not exists secondary_stock_enabled boolean not null default false;
+		alter table pos_settings add column if not exists primary_stock_name text not null default 'สต็อกหลัก';
+		alter table pos_settings add column if not exists secondary_stock_name text not null default 'สต็อกที่ 2';
+		alter table pos_settings add column if not exists sale_stock_location text not null default 'primary';
+		do $$ begin alter table pos_settings add constraint pos_settings_sale_stock_location_check check (sale_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		create table if not exists pos_staff (
 			id text primary key,
 			admin_id text not null references admin_users(id) on delete cascade,
@@ -1202,13 +1353,28 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_products add column if not exists cost_satang bigint not null default 0 check (cost_satang >= 0);
 		alter table pos_products add column if not exists price_satang bigint not null default 0 check (price_satang >= 0);
 		alter table pos_products add column if not exists units_per_pack integer not null default 0 check (units_per_pack between 0 and 1000000);
+		alter table pos_products add column if not exists secondary_stock_quantity integer not null default 0 check (secondary_stock_quantity >= 0);
+		alter table pos_products add column if not exists track_stock boolean not null default true;
+		update pos_products set low_stock_threshold=0,units_per_pack=0 where not track_stock and (low_stock_threshold<>0 or units_per_pack<>0);
 		update pos_products set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
 		update pos_products set price_satang=price_thb::bigint*100 where price_satang=0 and price_thb<>0;
 		drop index if exists idx_pos_products_barcode;
 		create unique index if not exists idx_pos_products_barcode on pos_products(admin_id,lower(barcode)) where barcode<>'' and deleted_at is null;
+		delete from pos_categories generated
+		using pos_categories canonical
+		where generated.admin_id=canonical.admin_id
+		  and generated.id='category-'||substr(md5(generated.admin_id||':'||lower(generated.name)),1,16)
+		  and generated.name=canonical.id
+		  and generated.id<>canonical.id;
 		insert into pos_categories (id,admin_id,name)
-		select 'category-'||substr(md5(admin_id||':'||lower(category)),1,16),admin_id,category
-		from pos_products where category<>'' and deleted_at is null
+		select 'category-'||substr(md5(p.admin_id||':'||lower(p.category)),1,16),p.admin_id,p.category
+		from pos_products p
+		where p.category<>'' and p.deleted_at is null
+		  and not exists (
+			select 1 from pos_categories c
+			where c.admin_id=p.admin_id
+			  and (c.id=p.category or lower(c.name)=lower(p.category))
+		  )
 		on conflict do nothing;
 		insert into pos_units (id,admin_id,name)
 		select 'unit-'||substr(md5(admin_id||':'||lower(unit)),1,16),admin_id,unit
@@ -1269,9 +1435,28 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_sales add column if not exists vat_satang bigint not null default 0 check (vat_satang >= 0);
 		alter table pos_sales add column if not exists prices_include_tax boolean not null default true;
 		alter table pos_sales add column if not exists total_satang bigint not null default 0 check (total_satang >= 0);
+		alter table pos_sales add column if not exists stock_location text not null default 'primary';
+		alter table pos_sales add column if not exists split_mode text not null default 'none';
+		alter table pos_sales add column if not exists split_count integer not null default 1 check (split_count > 0);
+		do $$ begin alter table pos_sales add constraint pos_sales_split_mode_check check (split_mode in ('none','equal')); exception when duplicate_object then null; end $$;
+		do $$ begin alter table pos_sales add constraint pos_sales_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_sales set cost_satang=cost_thb::bigint*100 where cost_satang=0 and cost_thb<>0;
 		update pos_sales set subtotal_satang=total_thb::bigint*100,net_before_vat_satang=total_thb::bigint*100,total_satang=total_thb::bigint*100 where total_satang=0 and total_thb<>0;
 		create unique index if not exists idx_pos_sales_request on pos_sales(admin_id,request_id) where request_id<>'';
+		create table if not exists pos_sale_splits (
+			id text primary key,
+			sale_id text not null references pos_sales(id) on delete cascade,
+			billing_account_id text not null references billing_accounts(id) on delete restrict,
+			position integer not null check (position >= 0),
+			share_satang bigint not null check (share_satang >= 0),
+			status text not null default 'open' check (status in ('open','paid','void')),
+			payment_id text references billing_payments(id) on delete set null,
+			created_at timestamptz not null default now(),
+			updated_at timestamptz not null default now(),
+			unique (sale_id,billing_account_id),
+			unique (sale_id,position)
+		);
+		create index if not exists idx_pos_sale_splits_account on pos_sale_splits(billing_account_id,status,created_at desc);
 		create table if not exists pos_sale_items (
 			id bigserial primary key,
 			sale_id text not null references pos_sales(id) on delete cascade,
@@ -1287,6 +1472,7 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_sale_items add column if not exists unit_price_satang bigint not null default 0 check (unit_price_satang >= 0);
 		alter table pos_sale_items add column if not exists line_total_satang bigint not null default 0 check (line_total_satang >= 0);
 		alter table pos_sale_items add column if not exists note text not null default '';
+		alter table pos_sale_items add column if not exists stock_tracked boolean not null default true;
 		update pos_sale_items set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
 		update pos_sale_items set unit_price_satang=unit_price_thb::bigint*100,line_total_satang=line_total_thb::bigint*100 where line_total_satang=0 and line_total_thb<>0;
 		create table if not exists pos_suppliers (
@@ -1326,6 +1512,22 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_batches add column if not exists total_cost_satang bigint not null default 0 check (total_cost_satang >= 0);
 		alter table pos_stock_batches add column if not exists actor_type text not null default 'admin';
 		alter table pos_stock_batches add column if not exists actor_name text not null default '';
+		alter table pos_stock_batches add column if not exists stock_location text not null default 'primary';
+		alter table pos_stock_batches add column if not exists source_stock_location text;
+		alter table pos_stock_batches add column if not exists destination_stock_location text;
+		alter table pos_stock_batches add column if not exists status text not null default 'active';
+		alter table pos_stock_batches add column if not exists cancelled_at timestamptz;
+		alter table pos_stock_batches add column if not exists cancelled_by_id text not null default '';
+		alter table pos_stock_batches add column if not exists cancelled_by_type text not null default '';
+		alter table pos_stock_batches add column if not exists cancelled_by_name text not null default '';
+		alter table pos_stock_batches add column if not exists cancel_reason text not null default '';
+		alter table pos_stock_batches drop constraint if exists pos_stock_batches_mode_check;
+		alter table pos_stock_batches add constraint pos_stock_batches_mode_check check (mode in ('in','out','adjust','transfer'));
+		alter table pos_stock_batches drop constraint if exists pos_stock_batches_status_check;
+		alter table pos_stock_batches add constraint pos_stock_batches_status_check check (status in ('active','cancelled'));
+		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
+		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_source_location_check check (source_stock_location is null or source_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
+		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_destination_location_check check (destination_stock_location is null or destination_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_stock_batches set total_cost_satang=total_cost_thb::bigint*100 where total_cost_satang=0 and total_cost_thb<>0;
 		create table if not exists pos_stock_movements (
 			id bigserial primary key,
@@ -1352,13 +1554,44 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_movements add column if not exists resulting_cost_satang bigint not null default 0 check (resulting_cost_satang >= 0);
 		alter table pos_stock_movements add column if not exists actor_type text not null default 'admin';
 		alter table pos_stock_movements add column if not exists actor_name text not null default '';
+		alter table pos_stock_movements add column if not exists stock_location text not null default 'primary';
+		alter table pos_stock_movements add column if not exists reversal_of_movement_id bigint references pos_stock_movements(id) on delete restrict;
+		alter table pos_stock_movements drop constraint if exists pos_stock_movements_reason_check;
+		alter table pos_stock_movements add constraint pos_stock_movements_reason_check check (reason in ('sale','void','restock','adjustment','transfer_out','transfer_in','match_use','match_return','restock_cancel','stock_out_cancel'));
+		do $$ begin alter table pos_stock_movements add constraint pos_stock_movements_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_stock_movements set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
 		update pos_stock_movements set gross_total_satang=total_cost_thb::bigint*100 where gross_total_satang=0 and total_cost_thb<>0;
 		update pos_stock_movements set net_total_satang=total_cost_thb::bigint*100 where net_total_satang=0 and total_cost_thb<>0;
 		update pos_stock_movements set previous_cost_satang=previous_cost_thb::bigint*100 where previous_cost_satang=0 and previous_cost_thb<>0;
 		update pos_stock_movements set resulting_cost_satang=resulting_cost_thb::bigint*100 where resulting_cost_satang=0 and resulting_cost_thb<>0;
 		create index if not exists idx_pos_stock_product on pos_stock_movements(product_id, created_at desc);
+		create index if not exists idx_pos_stock_movements_admin_created on pos_stock_movements(admin_id, created_at desc, id desc);
+		create index if not exists idx_pos_stock_movements_admin_location_created on pos_stock_movements(admin_id, stock_location, created_at desc, id desc);
 		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
+		create unique index if not exists idx_pos_stock_movement_reversal_once on pos_stock_movements(reversal_of_movement_id) where reversal_of_movement_id is not null;
+		create table if not exists match_shuttle_stock_usage (
+			id bigserial primary key,
+			admin_id text not null references admin_users(id) on delete cascade,
+			session_id text not null references sessions(id) on delete cascade,
+			match_id integer not null,
+			brand_id text not null,
+			shuttle_number integer not null,
+			product_id text not null references pos_products(id) on delete restrict,
+			stock_location text not null default 'primary' check (stock_location in ('primary','secondary')),
+			unit_price_satang bigint not null default 0 check (unit_price_satang >= 0),
+			price_source text not null default '',
+			product_name text not null default '',
+			product_sku text not null default '',
+			active boolean not null default true,
+			created_at timestamptz not null default now(),
+			returned_at timestamptz,
+			unique (session_id,match_id,brand_id,shuttle_number)
+		);
+		alter table match_shuttle_stock_usage add column if not exists unit_price_satang bigint not null default 0 check (unit_price_satang >= 0);
+		alter table match_shuttle_stock_usage add column if not exists price_source text not null default '';
+		alter table match_shuttle_stock_usage add column if not exists product_name text not null default '';
+		alter table match_shuttle_stock_usage add column if not exists product_sku text not null default '';
+		create index if not exists idx_match_shuttle_stock_usage_session on match_shuttle_stock_usage(session_id,active);
 		create table if not exists billing_payment_allocations (
 			id bigserial primary key,
 			payment_id text not null references billing_payments(id) on delete cascade,
@@ -1396,6 +1629,23 @@ func (a *app) migrate(ctx context.Context) error {
 		create unique index if not exists idx_coin_purchase_orders_subscription on coin_purchase_orders(subscription_id) where subscription_id is not null;
 		create unique index if not exists idx_coin_purchase_orders_pending_subscription on coin_purchase_orders(admin_id) where product_type = 'subscription' and status = 'pending';
 		create index if not exists idx_activity_logs_created on activity_logs(created_at desc);
+		create index if not exists idx_slipok_logs_created on slipok_logs(created_at desc, id desc);
+		create index if not exists idx_slipok_logs_admin_created on slipok_logs(admin_id, created_at desc, id desc);
+		create index if not exists idx_slipok_logs_usage on slipok_logs(admin_id,source_system,created_at) where request_method='POST';
+		create table if not exists slipok_monthly_usage (
+			admin_id text not null references admin_users(id) on delete cascade,
+			source_system text not null,
+			month_start date not null,
+			used integer not null default 0 check (used >= 0),
+			updated_at timestamptz not null default now(),
+			primary key (admin_id,source_system,month_start)
+		);
+		insert into slipok_monthly_usage(admin_id,source_system,month_start,used)
+		select log.admin_id,log.source_system,date_trunc('month',log.created_at at time zone 'Asia/Bangkok')::date,count(*)::int
+		from slipok_logs log join admin_users admin on admin.id=log.admin_id
+		where log.admin_id<>'' and log.request_method='POST'
+		group by log.admin_id,log.source_system,date_trunc('month',log.created_at at time zone 'Asia/Bangkok')::date
+		on conflict (admin_id,source_system,month_start) do update set used=greatest(slipok_monthly_usage.used,excluded.used);
 		create table if not exists support_issues (
 			id text primary key,
 			title text not null,
@@ -1436,7 +1686,13 @@ func (a *app) migrate(ctx context.Context) error {
 	`); err != nil {
 		return err
 	}
-	return a.backfillJSONStates(ctx)
+	if err := a.backfillJSONStates(ctx); err != nil {
+		return err
+	}
+	if err := a.backfillBookingSlipAliases(ctx); err != nil {
+		return err
+	}
+	return a.backfillMatchShuttlePriceSnapshots(ctx)
 }
 
 func (a *app) seedBackofficeSuperadmin(ctx context.Context) error {
@@ -1514,11 +1770,66 @@ func (a *app) backfillJSONStates(ctx context.Context) error {
 	return nil
 }
 
+func (a *app) backfillMatchShuttlePriceSnapshots(ctx context.Context) error {
+	rows, err := a.db.QueryContext(ctx, `select m.session_id,m.id,m.shuttle_pricing_mode,m.shuttle_sequence_items,m.shuttle_price_snapshot,m.legacy_shuttle_fee,s.shuttle_fee,s.shuttle_brands from matches m join session_settings s on s.session_id=m.session_id`)
+	if err != nil {
+		return err
+	}
+	type update struct {
+		sessionID string
+		matchID   int
+		items     []ShuttleSeqItem
+	}
+	updates := []update{}
+	for rows.Next() {
+		var sessionID, pricingMode string
+		var matchID, legacyFee, shuttleFee int
+		var itemsRaw, snapshotRaw, brandsRaw []byte
+		if err = rows.Scan(&sessionID, &matchID, &pricingMode, &itemsRaw, &snapshotRaw, &legacyFee, &shuttleFee, &brandsRaw); err != nil {
+			rows.Close()
+			return err
+		}
+		var items []ShuttleSeqItem
+		var brands, snapshots []ShuttleBrand
+		_ = json.Unmarshal(itemsRaw, &items)
+		_ = json.Unmarshal(brandsRaw, &brands)
+		_ = json.Unmarshal(snapshotRaw, &snapshots)
+		state := SessionState{Settings: Settings{ShuttleFee: shuttleFee, ShuttleBrands: brands}}
+		match := Match{ID: matchID, ShuttlePricingMode: pricingMode, ShuttlePriceSnapshot: snapshots, LegacyShuttleFee: legacyFee}
+		changed := false
+		for index := range items {
+			if items[index].PriceSource != "" {
+				continue
+			}
+			items[index].UnitPriceSatang = shuttleItemPriceSatang(state, match, items[index])
+			items[index].PriceSource = "legacy"
+			changed = true
+		}
+		if changed {
+			updates = append(updates, update{sessionID: sessionID, matchID: matchID, items: items})
+		}
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		raw, marshalErr := json.Marshal(item.items)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		if _, err = a.db.ExecContext(ctx, `update matches set shuttle_sequence_items=$3 where session_id=$1 and id=$2`, item.sessionID, item.matchID, raw); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *app) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, HealthResponse{
-		Status:    "ok",
-		Service:   "livematch-backend",
-		Timestamp: time.Now().UTC(),
+		Status:          "ok",
+		Service:         "livematch-backend",
+		ContractVersion: apiContractVersion,
+		Timestamp:       time.Now().UTC(),
 	})
 }
 
@@ -1918,22 +2229,13 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := parts[0]
-
-	state, err := a.loadState(r.Context(), id)
-	if err != nil {
-		status := http.StatusInternalServerError
-		if errors.Is(err, sql.ErrNoRows) {
-			status = http.StatusNotFound
-		}
-		writeJSON(w, status, map[string]string{"error": err.Error()})
-		return
-	}
-
 	action := ""
 	if len(parts) > 1 {
 		action = parts[1]
 	}
-	if action != "state" {
+	var routeUser adminUser
+	publicSessionRead := action == "state" || (r.Method == http.MethodGet && action == "queue-announcement")
+	if !publicSessionRead {
 		user, ok := a.currentAdmin(r.Context(), r)
 		if !ok {
 			writeAuthFailure(w, r, adminSessionKind)
@@ -1948,13 +2250,58 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "session owner required"})
 			return
 		}
-		if r.Method == http.MethodGet && action == "dashboard" && r.URL.Query().Get("open") == "1" {
+		routeUser = user
+		if r.Method == http.MethodGet && action == "players" && len(parts) == 2 {
+			a.writeSessionPlayersPage(w, r, id)
+			return
+		}
+		if r.Method == http.MethodGet && action == "history" && len(parts) == 2 {
+			a.writeSessionHistoryPage(w, r, id)
+			return
+		}
+	}
+	if r.Method == http.MethodGet && action == "queue-announcement" {
+		announcement, err := a.loadQueueAnnouncement(r.Context(), id)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, sql.ErrNoRows) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"queueAnnouncement": announcement})
+		return
+	}
+
+	state, err := a.loadState(r.Context(), id)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, sql.ErrNoRows) {
+			status = http.StatusNotFound
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	if !publicSessionRead {
+		user := routeUser
+		if r.Method == http.MethodGet && (action == "dashboard" || action == "bootstrap") && r.URL.Query().Get("open") == "1" {
 			a.insertActivityLog(r.Context(), "admin", user.ID, "open_session", "session", id, map[string]any{"name": state.Session.Name, "expired": state.Session.Expired, "readOnly": state.Session.ReadOnly, "readOnlyReason": state.Session.ReadOnlyReason})
 		}
 		if isSessionWrite(r.Method) && action != "unlock" && state.Session.ReadOnly {
 			a.insertActivityLog(r.Context(), "admin", user.ID, "blocked_readonly_session_action", "session", id, map[string]any{"name": state.Session.Name, "method": r.Method, "action": action, "path": r.URL.Path, "reason": state.Session.ReadOnlyReason})
 			writeJSON(w, http.StatusConflict, map[string]string{"error": readOnlySessionMessage(state)})
 			return
+		}
+		if isSessionWrite(r.Method) && action != "unlock" {
+			expectedRaw := strings.TrimSpace(r.Header.Get("X-Session-Version"))
+			if expectedRaw != "" {
+				expected, parseErr := strconv.ParseInt(expectedRaw, 10, 64)
+				if parseErr != nil || expected != state.Version {
+					writeJSON(w, http.StatusConflict, map[string]any{"error": "ข้อมูล Session ถูกแก้ไขจากแท็บอื่น กรุณารีเฟรชก่อนทำรายการอีกครั้ง", "code": "SESSION_VERSION_CONFLICT", "version": state.Version})
+					return
+				}
+			}
 		}
 	}
 
@@ -1967,6 +2314,8 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusGone, map[string]string{"error": "passcode login removed"})
 	case r.Method == http.MethodGet && action == "state":
 		writeJSON(w, http.StatusOK, state)
+	case r.Method == http.MethodGet && action == "bootstrap":
+		writeJSON(w, http.StatusOK, map[string]any{"version": state.Version, "session": state.Session, "settings": state.Settings, "memberTypes": state.MemberTypes, "shuttleStockAvailability": a.sessionShuttleStockAvailability(r.Context(), routeUser.ID, state.Settings.ShuttleBrands)})
 	case r.Method == http.MethodGet && action == "dashboard":
 		writeJSON(w, http.StatusOK, dashboardPayload(state))
 	case r.Method == http.MethodGet && action == "payment-events":
@@ -1986,6 +2335,70 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "withdraw":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		var body struct {
+			Note string `json:"note"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		for index := range state.Players {
+			player := &state.Players[index]
+			if player.ID != playerID || !player.Active {
+				continue
+			}
+			if completedMatchCountForPlayer(state, playerID) > 0 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นมีเกมที่จบแล้ว ไม่สามารถถอนตัวโดยไม่คิดเงิน", "code": "PLAYER_HAS_COMPLETED_MATCH"})
+				return
+			}
+			if matchListContainsPlayer(state.Pending, playerID) || matchListContainsPlayer(state.Queue, playerID) || matchListContainsPlayer(state.Live, playerID) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นยังอยู่ในรายการจับคู่ คิว หรือกำลังแข่งขัน", "code": "PLAYER_BUSY"})
+				return
+			}
+			if player.Paid || player.SettledAmountSatang > 0 {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "ผู้เล่นมีประวัติชำระเงินแล้ว ไม่สามารถถอนตัวโดยไม่คิดเงิน", "code": "PLAYER_HAS_PAYMENT"})
+				return
+			}
+			if cancelledMatchHasUnreturnedShuttle(state, playerID) {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": "เกมที่ยกเลิกยังมีลูกแบดที่ไม่ได้คืน กรุณาจัดการลูกแบดก่อน", "code": "PLAYER_HAS_UNRETURNED_SHUTTLE"})
+				return
+			}
+			player.Active = false
+			player.Coupon = false
+			player.Withdrawn = true
+			player.WithdrawnAt = time.Now().UTC().Format(time.RFC3339)
+			player.WithdrawnBy = firstNonEmpty(routeUser.Name, routeUser.Email, routeUser.ID)
+			player.WithdrawalNote = strings.TrimSpace(body.Note)
+			state.Couples = slices.DeleteFunc(state.Couples, func(c Couple) bool { return c.A == playerID || c.B == playerID })
+			a.respondSavedWithActivity(w, r, state, "withdraw_player", "player", strconv.Itoa(playerID), map[string]any{"note": player.WithdrawalNote})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "player not found"})
+	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "restore-withdrawn":
+		playerID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid player"})
+			return
+		}
+		for index := range state.Players {
+			player := &state.Players[index]
+			if player.ID != playerID || !player.Withdrawn {
+				continue
+			}
+			player.Active = true
+			player.Coupon = false
+			player.Withdrawn = false
+			player.WithdrawnAt = ""
+			player.WithdrawnBy = ""
+			player.WithdrawalNote = ""
+			player.WaitStartedAt = time.Now().UTC().Format(time.RFC3339)
+			a.respondSavedWithActivity(w, r, state, "restore_withdrawn_player", "player", strconv.Itoa(playerID), map[string]any{})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "withdrawn player not found"})
 	case r.Method == http.MethodPost && action == "players" && len(parts) >= 4 && parts[3] == "resume":
 		playerID, err := strconv.Atoi(parts[2])
 		if err != nil {
@@ -2116,6 +2529,7 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 			Paid         *bool   `json:"paid"`
 			Level        *string `json:"level"`
 			Coupon       *bool   `json:"coupon"`
+			Libero       *bool   `json:"libero"`
 			Active       *bool   `json:"active"`
 			ClubMember   *bool   `json:"clubMember"`
 			MemberID     *string `json:"memberId"`
@@ -2177,6 +2591,10 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					logDetails["coupon"] = *body.Coupon
 					state.Players[i].Coupon = *body.Coupon
 				}
+				if body.Libero != nil {
+					logDetails["libero"] = *body.Libero
+					state.Players[i].Libero = *body.Libero
+				}
 				if body.Active != nil {
 					logDetails["active"] = *body.Active
 					state.Players[i].Active = *body.Active
@@ -2235,26 +2653,50 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && action == "live-share-hours":
 		writeJSON(w, http.StatusOK, map[string]any{"liveShare": state.LiveShare})
 	case r.Method == http.MethodGet && action == "queue":
-		writeJSON(w, http.StatusOK, queuePayload(state))
+		payload := queuePayload(state)
+		payload["shuttleStockAvailability"] = a.sessionShuttleStockAvailability(r.Context(), routeUser.ID, state.Settings.ShuttleBrands)
+		writeJSON(w, http.StatusOK, payload)
 	case r.Method == http.MethodGet && action == "live":
-		writeJSON(w, http.StatusOK, map[string]any{"live": state.Live, "players": state.Players})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"live":                     state.Live,
+			"players":                  state.Players,
+			"shuttleStockAvailability": a.sessionShuttleStockAvailability(r.Context(), routeUser.ID, state.Settings.ShuttleBrands),
+		})
 	case r.Method == http.MethodGet && action == "history":
-		writeJSON(w, http.StatusOK, map[string]any{"history": state.History, "players": state.Players})
+		items := state.History
+		paged, page, pageSize := paginate(items, r)
+		writeJSON(w, http.StatusOK, map[string]any{"history": paged, "players": state.Players, "total": len(items), "page": page, "pageSize": pageSize})
 	case r.Method == http.MethodPut && action == "settings":
 		var body struct {
 			Settings
-			SessionName *string `json:"sessionName"`
+			SessionName                     *string `json:"sessionName"`
+			IdleWaitAlertEnabledValue       *bool   `json:"idleWaitAlertEnabled"`
+			MatchStartAnimationEnabledValue *bool   `json:"matchStartAnimationEnabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid settings"})
 			return
 		}
 		settings := body.Settings
+		if body.IdleWaitAlertEnabledValue == nil {
+			settings.IdleWaitAlertEnabled = state.Settings.IdleWaitAlertEnabled
+		} else {
+			settings.IdleWaitAlertEnabled = *body.IdleWaitAlertEnabledValue
+		}
+		if body.MatchStartAnimationEnabledValue == nil {
+			settings.MatchStartAnimationEnabled = state.Settings.MatchStartAnimationEnabled
+		} else {
+			settings.MatchStartAnimationEnabled = *body.MatchStartAnimationEnabledValue
+		}
 		// Bell files are server-owned. Session settings may not point at arbitrary files.
 		settings.AnnouncementBellKey = state.Settings.AnnouncementBellKey
 		settings.AnnouncementBellName = state.Settings.AnnouncementBellName
 		settings.AnnouncementBellMIME = state.Settings.AnnouncementBellMIME
 		normalizeSettings(&settings)
+		if err := a.hydrateLinkedShuttleBrandPrices(r.Context(), routeUser.ID, &settings, true); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		mergeMemberEntryFees(&settings, state.MemberTypes)
 		if isLiveShare(state) {
 			settings.StartMatchWithShuttle = false
@@ -2344,12 +2786,24 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		a.respondSavedWithActivity(w, r, state, "cancel_pending_match", "match", strconv.Itoa(matchID), map[string]any{})
 	case r.Method == http.MethodGet && action == "coupons":
 		busy := map[int]bool{}
-		for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+		for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
 			for _, id := range matchPlayers(match) {
-				busy[id] = true
+				player := playerByID(state.Players, id)
+				if player == nil || !player.Libero {
+					busy[id] = true
+				}
 			}
 		}
-		groups := buildAvailableGroups(state, busy)
+		for _, match := range state.Live {
+			for _, id := range matchPlayers(match) {
+				player := playerByID(state.Players, id)
+				if player == nil || !player.Libero {
+					busy[id] = true
+				}
+			}
+		}
+		includeNotReady := r.URL.Query().Get("includeNotReady") == "1" || r.URL.Query().Get("includeNotReady") == "true"
+		groups := buildPairingGroups(state, busy, !includeNotReady)
 		items := []map[string]any{}
 		for _, group := range groups {
 			names := []string{}
@@ -2360,11 +2814,17 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
+			pendingCount, queueCount, liveCourts := pairingScheduleForPlayers(state, group.ids)
 			items = append(items, map[string]any{
-				"ids":   group.ids,
-				"name":  strings.Join(names, " + "),
-				"level": group.level,
-				"games": group.games,
+				"ids":          group.ids,
+				"name":         strings.Join(names, " + "),
+				"level":        group.level,
+				"games":        group.games,
+				"coupon":       group.coupon,
+				"libero":       group.libero,
+				"pendingCount": pendingCount,
+				"queueCount":   queueCount,
+				"liveCourts":   liveCourts,
 			})
 		}
 		search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("search")))
@@ -2379,6 +2839,37 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		}
 		paged, page, pageSize := paginate(items, r)
 		writeJSON(w, http.StatusOK, map[string]any{"items": paged, "total": len(items), "page": page, "pageSize": pageSize})
+	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "announce":
+		matchID, _ := strconv.Atoi(parts[2])
+		var body struct {
+			Court string `json:"court"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		body.Court = strings.TrimSpace(body.Court)
+		if body.Court == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "court is required"})
+			return
+		}
+		found := false
+		for _, match := range state.Queue {
+			if match.ID == matchID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "match not found"})
+			return
+		}
+		announcement, err := a.recordQueueAnnouncement(r.Context(), state.Session.ID, matchID, body.Court)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if user, ok := a.currentAdmin(r.Context(), r); ok {
+			a.insertActivityLog(r.Context(), "admin", user.ID, "announce_queued_match", "match", strconv.Itoa(matchID), map[string]any{"sessionId": state.Session.ID, "court": body.Court})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"queueAnnouncement": announcement})
 	case r.Method == http.MethodPost && action == "queue" && len(parts) >= 4 && parts[3] == "start":
 		matchID, _ := strconv.Atoi(parts[2])
 		var body struct {
@@ -2388,6 +2879,23 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		if body.Court == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "court is required"})
+			return
+		}
+		if conflicts := queuedMatchLiveConflicts(state, matchID); len(conflicts) > 0 {
+			playerIDs := make([]int, 0, len(conflicts))
+			playerNames := make([]string, 0, len(conflicts))
+			details := make([]string, 0, len(conflicts))
+			for _, conflict := range conflicts {
+				playerIDs = append(playerIDs, conflict.PlayerID)
+				playerNames = append(playerNames, conflict.PlayerName)
+				details = append(details, fmt.Sprintf("%sกำลังเล่น%s", conflict.PlayerName, conflict.Court))
+			}
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"code":        "PLAYER_STILL_LIVE",
+				"error":       "ยังเริ่มเกมไม่ได้: " + strings.Join(details, ", "),
+				"playerIds":   playerIDs,
+				"playerNames": playerNames,
+			})
 			return
 		}
 		brandID := selectableShuttleBrandID(state, body.BrandID)
@@ -2470,20 +2978,114 @@ func (a *app) handleSessionRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state SessionState) {
-	if err := a.saveState(r.Context(), state); err != nil {
+func (a *app) writeSessionPlayersPage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	page, pageSize, offset := paginationParams(r, 20, 100)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	pattern := "%" + search + "%"
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `select count(*) from players where session_id=$1 and ($2='' or name ilike $3 or cast(id as text) ilike $3)`, sessionID, search, pattern).Scan(&total); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	rows, err := a.db.QueryContext(r.Context(), `select p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,ba.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from players p left join member_types mt on mt.id=p.member_type_id left join billing_accounts ba on ba.id=p.billing_account_id left join members mem on mem.id=coalesce(p.member_id,ba.member_id) and mem.deleted_at is null where p.session_id=$1 and ($2='' or p.name ilike $3 or cast(p.id as text) ilike $3) order by p.id limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	items := []Player{}
+	for rows.Next() {
+		var item Player
+		var avatarVersion int64
+		var wait, withdrawnAt sql.NullTime
+		if err = rows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.Libero, &item.ClubMember, &item.MemberID, &avatarVersion, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		item.AvatarURL = memberAvatarURL(item.MemberID, avatarVersion)
+		if wait.Valid {
+			item.WaitStartedAt = wait.Time.UTC().Format(time.RFC3339)
+		}
+		if withdrawnAt.Valid {
+			item.Withdrawn = true
+			item.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "pagination": paginationPayload(page, pageSize, total), "total": total, "page": page, "pageSize": pageSize})
+}
+
+func (a *app) writeSessionHistoryPage(w http.ResponseWriter, r *http.Request, sessionID string) {
+	page, pageSize, offset := paginationParams(r, 20, 100)
+	search := strings.TrimSpace(r.URL.Query().Get("search"))
+	pattern := "%" + search + "%"
+	filter := `m.session_id=$1 and m.phase='history' and ($2='' or m.court ilike $3 or m.level ilike $3 or m.note ilike $3 or exists(select 1 from players fp where fp.session_id=m.session_id and fp.id in (m.a1,m.a2,m.b1,m.b2) and fp.name ilike $3))`
+	var total int
+	if err := a.db.QueryRowContext(r.Context(), `select count(*) from matches m where `+filter, sessionID, search, pattern).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	rows, err := a.db.QueryContext(r.Context(), `select m.id,m.court,m.level,m.a1,m.a2,m.b1,m.b2,m.shuttles,m.winner,m.scores,m.shuttle_sequence,m.shuttle_sequence_items,m.shuttle_returned,m.returned_shuttle_brand_id,m.returned_shuttle_number,m.status,m.started_at,m.ended_at,m.note,m.shuttle_pricing_mode,m.shuttle_price_snapshot,m.legacy_shuttle_fee,m.pairing_pattern from matches m where `+filter+` order by m.id desc limit $4 offset $5`, sessionID, search, pattern, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	history := []Match{}
+	for rows.Next() {
+		var item Match
+		var scoresRaw, seqItemsRaw, priceRaw []byte
+		if err = rows.Scan(&item.ID, &item.Court, &item.Level, &item.A1, &item.A2, &item.B1, &item.B2, &item.Shuttles, &item.Winner, &scoresRaw, &item.ShuttleSeq, &seqItemsRaw, &item.ShuttleReturned, &item.ReturnedShuttleBrandID, &item.ReturnedShuttleNumber, &item.Status, &item.StartedAt, &item.EndedAt, &item.Note, &item.ShuttlePricingMode, &priceRaw, &item.LegacyShuttleFee, &item.PairingPattern); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.Unmarshal(scoresRaw, &item.Scores)
+		_ = json.Unmarshal(seqItemsRaw, &item.ShuttleSeqItems)
+		_ = json.Unmarshal(priceRaw, &item.ShuttlePriceSnapshot)
+		item.PairingPattern = normalizedPairingPattern(item.PairingPattern)
+		history = append(history, item)
+	}
+	rows.Close()
+	playerRows, err := a.db.QueryContext(r.Context(), `with selected as (select m.a1,m.a2,m.b1,m.b2 from matches m where `+filter+` order by m.id desc limit $4 offset $5) select distinct p.id,p.name,p.games,p.wins,p.draws,p.losses,p.shuttles,p.paid,p.active,p.level,p.coupon,p.libero,p.club_member,coalesce(p.member_id,ba.member_id,''),coalesce(mem.avatar_version,0),coalesce(p.member_type_id,''),coalesce(mt.name,''),coalesce(p.billing_account_id,''),p.wait_started_at,p.settled_amount_satang,p.withdrawn_at,p.withdrawn_by,p.withdrawal_note from selected s join players p on p.session_id=$1 and p.id in(s.a1,s.a2,s.b1,s.b2) left join member_types mt on mt.id=p.member_type_id left join billing_accounts ba on ba.id=p.billing_account_id left join members mem on mem.id=coalesce(p.member_id,ba.member_id) and mem.deleted_at is null order by p.id`, sessionID, search, pattern, pageSize, offset)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	defer playerRows.Close()
+	players := []Player{}
+	for playerRows.Next() {
+		var item Player
+		var avatarVersion int64
+		var wait, withdrawnAt sql.NullTime
+		if err = playerRows.Scan(&item.ID, &item.Name, &item.Games, &item.Wins, &item.Draws, &item.Losses, &item.Shuttles, &item.Paid, &item.Active, &item.Level, &item.Coupon, &item.Libero, &item.ClubMember, &item.MemberID, &avatarVersion, &item.MemberTypeID, &item.MemberTypeName, &item.BillingAccountID, &wait, &item.SettledAmountSatang, &withdrawnAt, &item.WithdrawnBy, &item.WithdrawalNote); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		item.AvatarURL = memberAvatarURL(item.MemberID, avatarVersion)
+		if withdrawnAt.Valid {
+			item.Withdrawn = true
+			item.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
+		}
+		players = append(players, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"history": history, "players": players, "pagination": paginationPayload(page, pageSize, total), "total": total, "page": page, "pageSize": pageSize})
+}
+
+func (a *app) respondSaved(w http.ResponseWriter, r *http.Request, state SessionState) {
+	if err := a.saveStateResolved(r.Context(), &state); err != nil {
+		a.writeStateSaveError(w, err)
+		return
+	}
+	refreshPlayerOutstandingAmounts(&state)
 	writeJSON(w, http.StatusOK, state)
 }
 
 func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, state SessionState, action, targetType, targetID string, details map[string]any) {
-	refreshPlayerOutstandingAmounts(&state)
-	if err := a.saveState(r.Context(), state); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if err := a.saveStateResolved(r.Context(), &state); err != nil {
+		a.writeStateSaveError(w, err)
 		return
 	}
+	refreshPlayerOutstandingAmounts(&state)
 	if user, ok := a.currentAdmin(r.Context(), r); ok {
 		if details == nil {
 			details = map[string]any{}
@@ -2522,10 +3124,308 @@ func (a *app) respondSavedWithActivity(w http.ResponseWriter, r *http.Request, s
 	writeJSON(w, http.StatusOK, state)
 }
 
+func (a *app) writeStateSaveError(w http.ResponseWriter, err error) {
+	if errors.Is(err, errSessionVersionConflict) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ข้อมูล Session ถูกแก้ไขจากแท็บอื่น กรุณารีเฟรชก่อนทำรายการอีกครั้ง", "code": "SESSION_VERSION_CONFLICT"})
+		return
+	}
+	var stockErr *shuttleStockError
+	if errors.As(err, &stockErr) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": stockErr.Error(), "code": stockErr.Code, "productId": stockErr.ProductID,
+			"productName": stockErr.ProductName, "availableQuantity": stockErr.AvailableQuantity,
+		})
+		return
+	}
+	writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+}
+
+type matchShuttleStockKey struct {
+	MatchID int
+	BrandID string
+	Number  int
+}
+
+type matchShuttleStockUsage struct {
+	ID              int64
+	ProductID       string
+	Location        string
+	UnitPriceSatang int64
+	PriceSource     string
+	ProductName     string
+	ProductSKU      string
+}
+
+type shuttleStockError struct {
+	Code              string
+	ProductID         string
+	ProductName       string
+	AvailableQuantity int
+}
+
+func (e *shuttleStockError) Error() string {
+	name := strings.TrimSpace(e.ProductName)
+	if name == "" {
+		name = strings.TrimSpace(e.ProductID)
+	}
+	switch e.Code {
+	case "POS_SHUTTLE_PRODUCT_INACTIVE":
+		return fmt.Sprintf("สินค้า POS %s ที่เชื่อมกับลูกแบดถูกปิดใช้งาน", name)
+	case "POS_SHUTTLE_TRACKING_DISABLED":
+		return fmt.Sprintf("สินค้า POS %s ที่เชื่อมกับลูกแบดไม่ได้เปิดติดตามสต็อก", name)
+	case "POS_SHUTTLE_PRODUCT_NOT_FOUND":
+		return fmt.Sprintf("ไม่พบสินค้า POS %s ที่เชื่อมกับลูกแบด", name)
+	default:
+		return fmt.Sprintf("สต็อกลูกแบดใน POS ไม่เพียงพอสำหรับ %s (คงเหลือ %d)", name, e.AvailableQuantity)
+	}
+}
+
+type desiredMatchShuttle struct {
+	ProductID string
+	Live      bool
+	Item      *ShuttleSeqItem
+	Match     *Match
+}
+
+func copyShuttlePriceSnapshot(target *ShuttleSeqItem, source ShuttleSeqItem) {
+	target.UnitPriceSatang = source.UnitPriceSatang
+	target.PriceSource = source.PriceSource
+	target.POSProductID = source.POSProductID
+	target.ProductName = source.ProductName
+	target.ProductSKU = source.ProductSKU
+}
+
+func (a *app) sessionShuttleStockAvailability(ctx context.Context, adminID string, brands []ShuttleBrand) []ShuttleStockAvailability {
+	location := "primary"
+	_ = a.db.QueryRowContext(ctx, `select case when secondary_stock_enabled then sale_stock_location else 'primary' end from pos_settings where admin_id=$1`, adminID).Scan(&location)
+	if !validStockLocation(location) {
+		location = "primary"
+	}
+	items := make([]ShuttleStockAvailability, 0, len(brands))
+	for _, brand := range brands {
+		item := ShuttleStockAvailability{BrandID: normalizedBrandID(brand.ID), ProductID: strings.TrimSpace(brand.POSProductID), StockLocation: location, Selectable: true}
+		item.Linked = item.ProductID != ""
+		if !item.Linked {
+			items = append(items, item)
+			continue
+		}
+		var primaryStock, secondaryStock int
+		var active, available, trackStock bool
+		err := a.db.QueryRowContext(ctx, `select name,sku,stock_quantity,secondary_stock_quantity,active,deleted_at is null,track_stock from pos_products where id=$1 and admin_id=$2`, item.ProductID, adminID).Scan(&item.ProductName, &item.ProductSKU, &primaryStock, &secondaryStock, &active, &available, &trackStock)
+		if errors.Is(err, sql.ErrNoRows) || !available {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_PRODUCT_NOT_FOUND"
+		} else if err != nil {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_AVAILABILITY_UNAVAILABLE"
+		} else if !active {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_PRODUCT_INACTIVE"
+		} else if !trackStock {
+			item.Selectable, item.Code = false, "POS_SHUTTLE_TRACKING_DISABLED"
+		} else {
+			item.AvailableQuantity = primaryStock
+			if location == "secondary" {
+				item.AvailableQuantity = secondaryStock
+			}
+			if item.AvailableQuantity < 1 {
+				item.Selectable, item.Code = false, "POS_SHUTTLE_OUT_OF_STOCK"
+			}
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func (a *app) syncMatchShuttleStockTx(ctx context.Context, tx *sql.Tx, adminID string, state *SessionState) error {
+	if adminID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `select pg_advisory_xact_lock(hashtextextended($1,0))`, "match-shuttle-stock:"+state.Session.ID); err != nil {
+		return err
+	}
+	brandProducts := map[string]string{}
+	for _, brand := range state.Settings.ShuttleBrands {
+		if strings.TrimSpace(brand.POSProductID) != "" {
+			brandProducts[normalizedBrandID(brand.ID)] = strings.TrimSpace(brand.POSProductID)
+		}
+	}
+
+	// Price fields are server-owned. Recover committed snapshots before applying
+	// the incoming state so an older browser tab cannot erase or rewrite them.
+	committedSnapshots := map[matchShuttleStockKey]ShuttleSeqItem{}
+	committedRows, err := tx.QueryContext(ctx, `select id,shuttle_sequence_items from matches where session_id=$1`, state.Session.ID)
+	if err != nil {
+		return err
+	}
+	for committedRows.Next() {
+		var matchID int
+		var raw []byte
+		if err = committedRows.Scan(&matchID, &raw); err != nil {
+			committedRows.Close()
+			return err
+		}
+		var items []ShuttleSeqItem
+		_ = json.Unmarshal(raw, &items)
+		for _, item := range items {
+			if item.Number > 0 && item.PriceSource != "" {
+				key := matchShuttleStockKey{MatchID: matchID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
+				committedSnapshots[key] = item
+			}
+		}
+	}
+	committedRows.Close()
+
+	desired := map[matchShuttleStockKey]desiredMatchShuttle{}
+	collect := func(matches []Match, live bool) {
+		for matchIndex := range matches {
+			match := &matches[matchIndex]
+			if isCancelledMatch(*match) && match.ShuttleReturned {
+				continue
+			}
+			match.ShuttleSeqItems = normalizedShuttleSeqItems(*match, *state)
+			for itemIndex := range match.ShuttleSeqItems {
+				item := &match.ShuttleSeqItems[itemIndex]
+				key := matchShuttleStockKey{MatchID: match.ID, BrandID: normalizedBrandID(item.BrandID), Number: item.Number}
+				if committed, ok := committedSnapshots[key]; ok {
+					copyShuttlePriceSnapshot(item, committed)
+				}
+				desired[key] = desiredMatchShuttle{ProductID: brandProducts[key.BrandID], Live: live, Item: item, Match: match}
+			}
+		}
+	}
+	collect(state.Live, true)
+	collect(state.History, false)
+
+	existing := map[matchShuttleStockKey]matchShuttleStockUsage{}
+	rows, err := tx.QueryContext(ctx, `select id,match_id,brand_id,shuttle_number,product_id,stock_location,unit_price_satang,price_source,product_name,product_sku from match_shuttle_stock_usage where session_id=$1 and active for update`, state.Session.ID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var usage matchShuttleStockUsage
+		var key matchShuttleStockKey
+		if err = rows.Scan(&usage.ID, &key.MatchID, &key.BrandID, &key.Number, &usage.ProductID, &usage.Location, &usage.UnitPriceSatang, &usage.PriceSource, &usage.ProductName, &usage.ProductSKU); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[key] = usage
+	}
+	rows.Close()
+	location := "primary"
+	_ = tx.QueryRowContext(ctx, `select case when secondary_stock_enabled then sale_stock_location else 'primary' end from pos_settings where admin_id=$1`, adminID).Scan(&location)
+	if !validStockLocation(location) {
+		location = "primary"
+	}
+	for key, wanted := range desired {
+		if usage, already := existing[key]; already {
+			if usage.PriceSource != "" {
+				copyShuttlePriceSnapshot(wanted.Item, ShuttleSeqItem{UnitPriceSatang: usage.UnitPriceSatang, PriceSource: usage.PriceSource, POSProductID: usage.ProductID, ProductName: usage.ProductName, ProductSKU: usage.ProductSKU})
+			}
+			delete(existing, key)
+			continue
+		}
+		if !wanted.Live {
+			if wanted.Item.PriceSource == "" {
+				wanted.Item.UnitPriceSatang = shuttleItemPriceSatang(*state, *wanted.Match, *wanted.Item)
+				wanted.Item.PriceSource = "legacy"
+			}
+			continue
+		}
+		if wanted.ProductID == "" {
+			if wanted.Item.PriceSource == "" {
+				wanted.Item.UnitPriceSatang = shuttleBrandPriceSatang(*state, key.BrandID)
+				wanted.Item.PriceSource = "match"
+			}
+			continue
+		}
+		var productName, productSKU string
+		var unitPrice, unitCost int64
+		var primaryStock, secondaryStock int
+		var active, available, trackStock bool
+		err = tx.QueryRowContext(ctx, `select name,sku,price_satang,cost_satang,stock_quantity,secondary_stock_quantity,active,deleted_at is null,track_stock from pos_products where id=$1 and admin_id=$2 for update`, wanted.ProductID, adminID).Scan(&productName, &productSKU, &unitPrice, &unitCost, &primaryStock, &secondaryStock, &active, &available, &trackStock)
+		if errors.Is(err, sql.ErrNoRows) {
+			return &shuttleStockError{Code: "POS_SHUTTLE_PRODUCT_NOT_FOUND", ProductID: wanted.ProductID}
+		}
+		if err != nil {
+			return err
+		}
+		if !available {
+			return &shuttleStockError{Code: "POS_SHUTTLE_PRODUCT_NOT_FOUND", ProductID: wanted.ProductID, ProductName: productName}
+		}
+		if !active {
+			return &shuttleStockError{Code: "POS_SHUTTLE_PRODUCT_INACTIVE", ProductID: wanted.ProductID, ProductName: productName}
+		}
+		if !trackStock {
+			return &shuttleStockError{Code: "POS_SHUTTLE_TRACKING_DISABLED", ProductID: wanted.ProductID, ProductName: productName}
+		}
+		stockAvailable := primaryStock
+		if location == "secondary" {
+			stockAvailable = secondaryStock
+		}
+		if stockAvailable < 1 {
+			return &shuttleStockError{Code: "POS_SHUTTLE_OUT_OF_STOCK", ProductID: wanted.ProductID, ProductName: productName, AvailableQuantity: stockAvailable}
+		}
+		balance := stockAvailable - 1
+		stockColumn := "stock_quantity"
+		if location == "secondary" {
+			stockColumn = "secondary_stock_quantity"
+		}
+		if _, err = tx.ExecContext(ctx, `update pos_products set `+stockColumn+`=`+stockColumn+`-1,updated_at=now() where id=$1 and admin_id=$2`, wanted.ProductID, adminID); err != nil {
+			return err
+		}
+		copyShuttlePriceSnapshot(wanted.Item, ShuttleSeqItem{UnitPriceSatang: unitPrice, PriceSource: "pos", POSProductID: wanted.ProductID, ProductName: productName, ProductSKU: productSKU})
+		note := fmt.Sprintf("Match %s เกม %d · %s #%d", state.Session.ID, key.MatchID, key.BrandID, key.Number)
+		if _, err = tx.ExecContext(ctx, `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,-1,$3,'match_use',$4,$5,'system','LiveMatch',$6,$6,$6,$6,$6,$7)`, adminID, wanted.ProductID, balance, note, state.Session.ID, unitCost, location); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `insert into match_shuttle_stock_usage (admin_id,session_id,match_id,brand_id,shuttle_number,product_id,stock_location,unit_price_satang,price_source,product_name,product_sku) values ($1,$2,$3,$4,$5,$6,$7,$8,'pos',$9,$10) on conflict (session_id,match_id,brand_id,shuttle_number) do update set product_id=excluded.product_id,stock_location=excluded.stock_location,unit_price_satang=excluded.unit_price_satang,price_source=excluded.price_source,product_name=excluded.product_name,product_sku=excluded.product_sku,active=true,returned_at=null`, adminID, state.Session.ID, key.MatchID, key.BrandID, key.Number, wanted.ProductID, location, unitPrice, productName, productSKU); err != nil {
+			return err
+		}
+	}
+	for key, usage := range existing {
+		var balance int
+		var unitCost int64
+		if usage.Location == "secondary" {
+			err = tx.QueryRowContext(ctx, `update pos_products set secondary_stock_quantity=secondary_stock_quantity+1,updated_at=now() where id=$1 and admin_id=$2 returning secondary_stock_quantity,cost_satang`, usage.ProductID, adminID).Scan(&balance, &unitCost)
+		} else {
+			err = tx.QueryRowContext(ctx, `update pos_products set stock_quantity=stock_quantity+1,updated_at=now() where id=$1 and admin_id=$2 returning stock_quantity,cost_satang`, usage.ProductID, adminID).Scan(&balance, &unitCost)
+		}
+		if err != nil {
+			return err
+		}
+		note := fmt.Sprintf("คืนจาก Match %s เกม %d · %s #%d", state.Session.ID, key.MatchID, key.BrandID, key.Number)
+		if _, err = tx.ExecContext(ctx, `insert into pos_stock_movements (admin_id,product_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,1,$3,'match_return',$4,$5,'system','LiveMatch',$6,$6,$6,$6,$6,$7)`, adminID, usage.ProductID, balance, note, state.Session.ID, unitCost, usage.Location); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `update match_shuttle_stock_usage set active=false,returned_at=now() where id=$1`, usage.ID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *app) saveState(ctx context.Context, state SessionState) error {
-	normalizeLiveShareState(&state)
+	// saveState is reserved for trusted internal/legacy callers that do not carry
+	// an HTTP X-Session-Version. Refresh the version before saving and retry one
+	// concurrent idempotent write. Request handlers use saveStateResolved and
+	// retain strict optimistic-concurrency behaviour.
+	var currentVersion int64
+	if err := a.db.QueryRowContext(ctx, `select version from sessions where id=$1`, state.Session.ID).Scan(&currentVersion); err == nil {
+		state.Version = currentVersion
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err := a.saveStateResolved(ctx, &state); !errors.Is(err, errSessionVersionConflict) {
+		return err
+	}
+	if err := a.db.QueryRowContext(ctx, `select version from sessions where id=$1`, state.Session.ID).Scan(&state.Version); err != nil {
+		return err
+	}
+	return a.saveStateResolved(ctx, &state)
+}
+
+func (a *app) saveStateResolved(ctx context.Context, state *SessionState) error {
+	normalizeLiveShareState(state)
 	state.UpdatedAt = time.Now().UTC()
-	usageStarted := sessionUsageStarted(state)
+	usageStarted := sessionUsageStarted(*state)
 	courtNames, err := json.Marshal(state.Settings.CourtNames)
 	if err != nil {
 		return err
@@ -2548,25 +3448,39 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		return err
 	}
 	defer tx.Rollback()
+	var currentVersion int64
+	versionErr := tx.QueryRowContext(ctx, `select version from sessions where id=$1 for update`, state.Session.ID).Scan(&currentVersion)
+	if versionErr != nil && !errors.Is(versionErr, sql.ErrNoRows) {
+		return versionErr
+	}
+	if versionErr == nil && currentVersion != state.Version {
+		return errSessionVersionConflict
+	}
+	nextVersion := int64(1)
+	if versionErr == nil {
+		nextVersion = currentVersion + 1
+	}
 
 	if _, err = tx.ExecContext(ctx, `
-		insert into sessions (id, name, session_type, admin_passcode, updated_at, usage_started_at)
-		values ($1, $2, $3, $4, now(), case when $5 then now() else null end)
+		insert into sessions (id, name, session_type, admin_passcode, updated_at, usage_started_at, version)
+		values ($1, $2, $3, $4, now(), case when $5 then now() else null end, $6)
 		on conflict (id) do update set
 			name = excluded.name,
 			session_type = excluded.session_type,
 			admin_passcode = excluded.admin_passcode,
 			updated_at = now(),
-			usage_started_at = case when $5 then coalesce(sessions.usage_started_at, now()) else sessions.usage_started_at end
-	`, state.Session.ID, state.Session.Name, sessionType(state), state.Session.AdminPasscode, usageStarted); err != nil {
+			usage_started_at = case when $5 then coalesce(sessions.usage_started_at, now()) else sessions.usage_started_at end,
+			version = excluded.version
+	`, state.Session.ID, state.Session.Name, sessionType(*state), state.Session.AdminPasscode, usageStarted, nextVersion); err != nil {
 		return err
 	}
+	state.Version = nextVersion
 
 	if _, err = tx.ExecContext(ctx, `
 		insert into session_settings (
-			session_id, entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
+			session_id, entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, idle_wait_alert_enabled, match_start_animation_enabled, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
 		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
 		on conflict (session_id) do update set
 			entry_fee = excluded.entry_fee,
 			club_entry_fee = excluded.club_entry_fee,
@@ -2587,13 +3501,15 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			show_wait_time_players = excluded.show_wait_time_players,
 			show_wait_time_pairing = excluded.show_wait_time_pairing,
 			show_wait_time_queue = excluded.show_wait_time_queue,
+			idle_wait_alert_enabled = excluded.idle_wait_alert_enabled,
+			match_start_animation_enabled = excluded.match_start_animation_enabled,
 			reset_players_after_finish = excluded.reset_players_after_finish,
 			start_match_with_shuttle = excluded.start_match_with_shuttle,
 			announcement_template = excluded.announcement_template,
 			announcement_bell_key = excluded.announcement_bell_key,
 			announcement_bell_name = excluded.announcement_bell_name,
 			announcement_bell_mime = excluded.announcement_bell_mime
-	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
+	`, state.Session.ID, state.Settings.EntryFee, state.Settings.ClubEntryFee, memberEntryFees, state.Settings.CourtFeePerHour, state.Settings.ShuttleFee, shuttleBrands, state.Settings.SessionFee, state.Settings.CourtCount, courtNames, levels, state.Settings.AllowCrossLevel, state.Settings.CrossLevelRange, state.Settings.RandomPriority, state.Settings.ShowPaymentOnShare, state.Settings.ShowTotalOnShare, state.Settings.ShowWaitingOnQueueShare, state.Settings.ShowWaitTimePlayers, state.Settings.ShowWaitTimePairing, state.Settings.ShowWaitTimeQueue, state.Settings.IdleWaitAlertEnabled, state.Settings.MatchStartAnimationEnabled, state.Settings.ResetPlayersAfterFinish, state.Settings.StartMatchWithShuttle, state.Settings.AnnouncementTemplate, state.Settings.AnnouncementBellKey, state.Settings.AnnouncementBellName, state.Settings.AnnouncementBellMIME); err != nil {
 		return err
 	}
 
@@ -2609,11 +3525,33 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 			if state.Players[index].MemberID == "" {
 				continue
 			}
-			accountID, accountErr := ensureBillingAccountTx(ctx, tx, sessionAdminID.String, "member", state.Players[index].MemberID, "", "")
+			// A session player is a historical snapshot and may outlive the central
+			// member record. Reuse the account created when the member joined before
+			// consulting the active-member directory; otherwise soft-deleting one
+			// member would make every later match mutation in the session fail.
+			var accountID string
+			accountErr := tx.QueryRowContext(ctx, `
+				select id from billing_accounts
+				where admin_id=$1 and member_id=$2
+				order by updated_at desc, id
+				limit 1
+			`, sessionAdminID.String, state.Players[index].MemberID).Scan(&accountID)
+			if errors.Is(accountErr, sql.ErrNoRows) {
+				accountID, accountErr = ensureBillingAccountTx(ctx, tx, sessionAdminID.String, "member", state.Players[index].MemberID, "", "")
+			}
+			if errors.Is(accountErr, sql.ErrNoRows) {
+				// Legacy sessions can contain a member link whose directory record was
+				// removed before billing accounts existed. Keep the player snapshot and
+				// allow operational Match data to be saved without inventing an account.
+				continue
+			}
 			if accountErr != nil {
 				return accountErr
 			}
 			state.Players[index].BillingAccountID = accountID
+		}
+		if err = a.syncMatchShuttleStockTx(ctx, tx, sessionAdminID.String, state); err != nil {
+			return err
 		}
 	}
 
@@ -2640,6 +3578,36 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		}
 	}
 
+	pairingRows, pairingErr := tx.QueryContext(ctx, `select id,pairing_pattern from matches where session_id=$1`, state.Session.ID)
+	if pairingErr != nil {
+		return pairingErr
+	}
+	existingPairingPatterns := map[int]string{}
+	for pairingRows.Next() {
+		var matchID int
+		var pattern string
+		if err = pairingRows.Scan(&matchID, &pattern); err != nil {
+			pairingRows.Close()
+			return err
+		}
+		existingPairingPatterns[matchID] = normalizedPairingPattern(pattern)
+	}
+	if err = pairingRows.Close(); err != nil {
+		return err
+	}
+	preservePairingPatterns := func(matches []Match) {
+		for index := range matches {
+			if matches[index].PairingPattern == "" {
+				matches[index].PairingPattern = existingPairingPatterns[matches[index].ID]
+			}
+			matches[index].PairingPattern = normalizedPairingPattern(matches[index].PairingPattern)
+		}
+	}
+	preservePairingPatterns(state.Pending)
+	preservePairingPatterns(state.Queue)
+	preservePairingPatterns(state.Live)
+	preservePairingPatterns(state.History)
+
 	for _, table := range []string{"players", "couples", "matches", "live_share_hours", "returned_shuttles"} {
 		if _, err = tx.ExecContext(ctx, "delete from "+table+" where session_id = $1", state.Session.ID); err != nil {
 			return err
@@ -2648,9 +3616,9 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 
 	for _, player := range state.Players {
 		if _, err = tx.ExecContext(ctx, `
-			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, nullif($14, ''), nullif($15, ''), nullif($16, ''), nullif($17, '')::timestamptz, $18)
-		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang); err != nil {
+			insert into players (session_id, id, name, games, wins, draws, losses, shuttles, paid, active, level, coupon, libero, club_member, member_id, member_type_id, billing_account_id, wait_started_at, settled_amount_satang, withdrawn_at, withdrawn_by, withdrawal_note)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, nullif($15, ''), nullif($16, ''), nullif($17, ''), nullif($18, '')::timestamptz, $19, nullif($20, '')::timestamptz, $21, $22)
+		`, state.Session.ID, player.ID, player.Name, player.Games, player.Wins, player.Draws, player.Losses, player.Shuttles, player.Paid, player.Active, player.Level, player.Coupon, player.Libero, player.ClubMember, player.MemberID, player.MemberTypeID, player.BillingAccountID, player.WaitStartedAt, player.SettledAmountSatang, player.WithdrawnAt, player.WithdrawnBy, player.WithdrawalNote); err != nil {
 			return err
 		}
 	}
@@ -2673,7 +3641,7 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 	}
 
 	insertMatch := func(phase string, match Match) error {
-		seqItems, err := json.Marshal(normalizedShuttleSeqItems(match, state))
+		seqItems, err := json.Marshal(normalizedShuttleSeqItems(match, *state))
 		if err != nil {
 			return err
 		}
@@ -2689,12 +3657,13 @@ func (a *app) saveState(ctx context.Context, state SessionState) error {
 		if pricingMode == "" {
 			pricingMode = shuttlePricingLegacy
 		}
+		pairingPattern := normalizedPairingPattern(match.PairingPattern)
 		_, err = tx.ExecContext(ctx, `
 			insert into matches (
-				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+				session_id, id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee, pairing_pattern
 			)
-			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
-		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, scores, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+		`, state.Session.ID, match.ID, phase, match.Court, match.Level, match.A1, match.A2, match.B1, match.B2, match.Shuttles, match.Winner, scores, match.ShuttleSeq, seqItems, match.ShuttleReturned, match.ReturnedShuttleBrandID, match.ReturnedShuttleNumber, match.Status, match.StartedAt, match.EndedAt, match.Note, pricingMode, priceSnapshot, match.LegacyShuttleFee, pairingPattern)
 		return err
 	}
 	for _, match := range state.Pending {
@@ -2764,14 +3733,17 @@ func sessionUsageStarted(state SessionState) bool {
 
 func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	var name, sessionTypeValue, passcode, adminID string
+	var stateVersion int64
 	var createdAt, updatedAt time.Time
 	if err := a.db.QueryRowContext(ctx, `
-		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at, coalesce(admin_id,'') from sessions where id = $1
-	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt, &adminID); err != nil {
+		select name, coalesce(session_type, 'liveMatch'), admin_passcode, created_at, updated_at, coalesce(admin_id,''),version from sessions where id = $1
+	`, id).Scan(&name, &sessionTypeValue, &passcode, &createdAt, &updatedAt, &adminID, &stateVersion); err != nil {
 		return SessionState{}, err
 	}
 
 	state := defaultState(id, name, passcode)
+	state.Version = stateVersion
+	state.QueueAnnouncement, _ = a.loadQueueAnnouncement(ctx, id)
 	state.Session.Type = normalizeSessionType(sessionTypeValue)
 	state.Session.Unlocked = true
 	state.UpdatedAt = updatedAt
@@ -2783,7 +3755,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 
 	var courtNamesRaw, levelsRaw, shuttleBrandsRaw, memberEntryFeesRaw []byte
 	err := a.db.QueryRowContext(ctx, `
-		select entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
+		select entry_fee, club_entry_fee, member_entry_fees, court_fee_per_hour, shuttle_fee, shuttle_brands, session_fee, court_count, court_names, levels, allow_cross_level, cross_level_range, random_priority, show_payment_on_share, show_total_on_share, show_waiting_on_queue_share, show_wait_time_players, show_wait_time_pairing, show_wait_time_queue, idle_wait_alert_enabled, match_start_animation_enabled, reset_players_after_finish, start_match_with_shuttle, announcement_template, announcement_bell_key, announcement_bell_name, announcement_bell_mime
 		from session_settings
 		where session_id = $1
 	`, id).Scan(
@@ -2806,6 +3778,8 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		&state.Settings.ShowWaitTimePlayers,
 		&state.Settings.ShowWaitTimePairing,
 		&state.Settings.ShowWaitTimeQueue,
+		&state.Settings.IdleWaitAlertEnabled,
+		&state.Settings.MatchStartAnimationEnabled,
 		&state.Settings.ResetPlayersAfterFinish,
 		&state.Settings.StartMatchWithShuttle,
 		&state.Settings.AnnouncementTemplate,
@@ -2829,13 +3803,20 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		_ = json.Unmarshal(memberEntryFeesRaw, &state.Settings.MemberEntryFees)
 	}
 	normalizeSettings(&state.Settings)
+	if adminID != "" {
+		if err := a.hydrateLinkedShuttleBrandPrices(ctx, adminID, &state.Settings, false); err != nil {
+			return SessionState{}, err
+		}
+	}
 	mergeMemberEntryFees(&state.Settings, state.MemberTypes)
 	normalizeLiveShareState(&state)
 
 	rows, err := a.db.QueryContext(ctx, `
-		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.club_member, coalesce(p.member_id, ''), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang
+		select p.id, p.name, p.games, p.wins, p.draws, p.losses, p.shuttles, p.paid, p.active, p.level, p.coupon, p.libero, p.club_member, coalesce(p.member_id, ba.member_id, ''), coalesce(mem.avatar_version,0), coalesce(p.member_type_id,''), coalesce(mt.name,''), coalesce(p.billing_account_id, ''), p.wait_started_at, p.settled_amount_satang, p.withdrawn_at, p.withdrawn_by, p.withdrawal_note
 		from players p
 		left join member_types mt on mt.id=p.member_type_id
+		left join billing_accounts ba on ba.id=p.billing_account_id
+		left join members mem on mem.id=coalesce(p.member_id,ba.member_id) and mem.deleted_at is null
 		where p.session_id = $1
 		order by p.id
 	`, id)
@@ -2845,12 +3826,18 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var player Player
-		var waitStartedAt sql.NullTime
-		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.ClubMember, &player.MemberID, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang); err != nil {
+		var avatarVersion int64
+		var waitStartedAt, withdrawnAt sql.NullTime
+		if err := rows.Scan(&player.ID, &player.Name, &player.Games, &player.Wins, &player.Draws, &player.Losses, &player.Shuttles, &player.Paid, &player.Active, &player.Level, &player.Coupon, &player.Libero, &player.ClubMember, &player.MemberID, &avatarVersion, &player.MemberTypeID, &player.MemberTypeName, &player.BillingAccountID, &waitStartedAt, &player.SettledAmountSatang, &withdrawnAt, &player.WithdrawnBy, &player.WithdrawalNote); err != nil {
 			return SessionState{}, err
 		}
+		player.AvatarURL = memberAvatarURL(player.MemberID, avatarVersion)
 		if waitStartedAt.Valid {
 			player.WaitStartedAt = waitStartedAt.Time.UTC().Format(time.RFC3339)
+		}
+		if withdrawnAt.Valid {
+			player.Withdrawn = true
+			player.WithdrawnAt = withdrawnAt.Time.UTC().Format(time.RFC3339)
 		}
 		state.Players = append(state.Players, player)
 		if player.ID > state.NextIDs.Player {
@@ -2886,7 +3873,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 	}
 
 	rows, err = a.db.QueryContext(ctx, `
-		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee
+		select id, phase, court, level, a1, a2, b1, b2, shuttles, winner, scores, shuttle_sequence, shuttle_sequence_items, shuttle_returned, returned_shuttle_brand_id, returned_shuttle_number, status, started_at, ended_at, note, shuttle_pricing_mode, shuttle_price_snapshot, legacy_shuttle_fee, pairing_pattern
 		from matches
 		where session_id = $1
 		order by id
@@ -2899,7 +3886,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 		var phase string
 		var match Match
 		var scoresRaw, seqItemsRaw, priceSnapshotRaw []byte
-		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &scoresRaw, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee); err != nil {
+		if err := rows.Scan(&match.ID, &phase, &match.Court, &match.Level, &match.A1, &match.A2, &match.B1, &match.B2, &match.Shuttles, &match.Winner, &scoresRaw, &match.ShuttleSeq, &seqItemsRaw, &match.ShuttleReturned, &match.ReturnedShuttleBrandID, &match.ReturnedShuttleNumber, &match.Status, &match.StartedAt, &match.EndedAt, &match.Note, &match.ShuttlePricingMode, &priceSnapshotRaw, &match.LegacyShuttleFee, &match.PairingPattern); err != nil {
 			return SessionState{}, err
 		}
 		if len(seqItemsRaw) > 0 {
@@ -2912,6 +3899,7 @@ func (a *app) loadState(ctx context.Context, id string) (SessionState, error) {
 			_ = json.Unmarshal(priceSnapshotRaw, &match.ShuttlePriceSnapshot)
 		}
 		match.ShuttleSeqItems = normalizedShuttleSeqItems(match, state)
+		match.PairingPattern = normalizedPairingPattern(match.PairingPattern)
 		switch phase {
 		case "pending":
 			state.Pending = append(state.Pending, match)
@@ -3019,28 +4007,30 @@ func defaultState(id, name, passcode string) SessionState {
 			Unlocked:      false,
 		},
 		Settings: Settings{
-			EntryFee:                120,
-			ClubEntryFee:            120,
-			MemberEntryFees:         map[string]int{},
-			CourtFeePerHour:         150,
-			ShuttleFee:              85,
-			ShuttleBrands:           []ShuttleBrand{{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: 85, Active: true}},
-			SessionFee:              0,
-			CourtCount:              4,
-			CourtNames:              []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
-			Levels:                  []string{"เบา", "กลาง", "หนัก"},
-			AllowCrossLevel:         true,
-			CrossLevelRange:         1,
-			RandomPriority:          "level",
-			ShowPaymentOnShare:      true,
-			ShowTotalOnShare:        true,
-			ShowWaitingOnQueueShare: false,
-			ShowWaitTimePlayers:     true,
-			ShowWaitTimePairing:     true,
-			ShowWaitTimeQueue:       true,
-			ResetPlayersAfterFinish: true,
-			StartMatchWithShuttle:   true,
-			AnnouncementTemplate:    defaultAnnouncementTemplate,
+			EntryFee:                   120,
+			ClubEntryFee:               120,
+			MemberEntryFees:            map[string]int{},
+			CourtFeePerHour:            150,
+			ShuttleFee:                 85,
+			ShuttleBrands:              []ShuttleBrand{{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: 85, Active: true}},
+			SessionFee:                 0,
+			CourtCount:                 4,
+			CourtNames:                 []string{"สนาม 1", "สนาม 2", "สนาม 3", "สนาม 4"},
+			Levels:                     []string{"เบา", "กลาง", "หนัก"},
+			AllowCrossLevel:            true,
+			CrossLevelRange:            1,
+			RandomPriority:             "level",
+			ShowPaymentOnShare:         true,
+			ShowTotalOnShare:           true,
+			ShowWaitingOnQueueShare:    false,
+			ShowWaitTimePlayers:        true,
+			ShowWaitTimePairing:        true,
+			ShowWaitTimeQueue:          true,
+			IdleWaitAlertEnabled:       true,
+			MatchStartAnimationEnabled: true,
+			ResetPlayersAfterFinish:    true,
+			StartMatchWithShuttle:      true,
+			AnnouncementTemplate:       defaultAnnouncementTemplate,
 		},
 		Players: []Player{},
 		Couples: []Couple{},
@@ -3061,9 +4051,20 @@ func defaultState(id, name, passcode string) SessionState {
 
 func randomMatch(state *SessionState) error {
 	busy := map[int]bool{}
-	for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+	for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
 		for _, id := range matchPlayers(match) {
-			busy[id] = true
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
+		}
+	}
+	for _, match := range state.Live {
+		for _, id := range matchPlayers(match) {
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
 		}
 	}
 
@@ -3091,6 +4092,7 @@ func randomMatch(state *SessionState) error {
 			B1:                 teams[2],
 			B2:                 teams[3],
 			ShuttlePricingMode: shuttlePricingSplit,
+			PairingPattern:     pairingPatternForMatch(Match{A1: teams[0], A2: teams[1], B1: teams[2], B2: teams[3]}, state.Couples),
 		})
 		for _, id := range selected {
 			busy[id] = true
@@ -3108,6 +4110,9 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 	if requested.A1 <= 0 || requested.B1 <= 0 {
 		return Match{}, errors.New("กรุณาเลือกผู้เล่น A1 และ B1")
 	}
+	if (requested.A2 > 0) != (requested.B2 > 0) {
+		return Match{}, errors.New("จัดทีมได้เฉพาะ 1 ต่อ 1 หรือ 2 ต่อ 2 เท่านั้น")
+	}
 	selected := map[int]bool{}
 	for _, id := range ids {
 		if id <= 0 {
@@ -3120,9 +4125,20 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 	}
 
 	busy := map[int]bool{}
-	for _, match := range append(append(append([]Match{}, state.Pending...), state.Queue...), state.Live...) {
+	for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
 		for _, id := range matchPlayers(match) {
-			busy[id] = true
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
+		}
+	}
+	for _, match := range state.Live {
+		for _, id := range matchPlayers(match) {
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
 		}
 	}
 	for _, id := range ids {
@@ -3170,18 +4186,83 @@ func createManualPendingMatch(state *SessionState, requested Match) (Match, erro
 		B1:                 requested.B1,
 		B2:                 requested.B2,
 		ShuttlePricingMode: shuttlePricingSplit,
+		PairingPattern:     manualPairingPatternForMatch(requested),
 	}
 	state.Pending = append(state.Pending, created)
 	return created, nil
 }
 
+func manualPairingPatternForMatch(match Match) string {
+	players := matchPlayers(match)
+	if len(players) == 2 && match.A1 > 0 && match.A2 == 0 && match.B1 > 0 && match.B2 == 0 {
+		return pairingPatternOneOne
+	}
+	if len(players) == 4 && match.A1 > 0 && match.A2 > 0 && match.B1 > 0 && match.B2 > 0 {
+		return pairingPatternManualFour
+	}
+	return pairingPatternLegacyUnknown
+}
+
+func normalizedPairingPattern(pattern string) string {
+	switch pattern {
+	case pairingPatternPairPair, pairingPatternPairTwoSingles, pairingPatternFourSingles, pairingPatternOneOne, pairingPatternManualFour, pairingPatternLegacyUnknown:
+		return pattern
+	default:
+		return pairingPatternLegacyUnknown
+	}
+}
+
+func pairingPatternForMatch(match Match, couples []Couple) string {
+	players := matchPlayers(match)
+	if len(players) == 2 && match.A1 > 0 && match.A2 == 0 && match.B1 > 0 && match.B2 == 0 {
+		return pairingPatternOneOne
+	}
+	if len(players) != 4 {
+		return pairingPatternLegacyUnknown
+	}
+	teamByPlayer := map[int]int{
+		match.A1: 0,
+		match.A2: 0,
+		match.B1: 1,
+		match.B2: 1,
+	}
+	pairCount := 0
+	for _, couple := range couples {
+		teamA, hasA := teamByPlayer[couple.A]
+		teamB, hasB := teamByPlayer[couple.B]
+		if !hasA || !hasB {
+			continue
+		}
+		if teamA != teamB {
+			return pairingPatternLegacyUnknown
+		}
+		pairCount++
+	}
+	switch pairCount {
+	case 0:
+		return pairingPatternFourSingles
+	case 1:
+		return pairingPatternPairTwoSingles
+	case 2:
+		return pairingPatternPairPair
+	default:
+		return pairingPatternLegacyUnknown
+	}
+}
+
 type group struct {
-	ids   []int
-	level string
-	games int
+	ids    []int
+	level  string
+	games  int
+	coupon bool
+	libero bool
 }
 
 func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
+	return buildPairingGroups(state, busy, true)
+}
+
+func buildPairingGroups(state SessionState, busy map[int]bool, requireCoupon bool) []group {
 	playersByID := map[int]Player{}
 	for _, p := range state.Players {
 		playersByID[p.ID] = p
@@ -3189,7 +4270,7 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 	used := map[int]bool{}
 	var groups []group
 	for _, p := range state.Players {
-		if used[p.ID] || !p.Active || p.Paid || !p.Coupon || busy[p.ID] {
+		if used[p.ID] || !p.Active || p.Paid || (requireCoupon && !p.Coupon) || busy[p.ID] {
 			continue
 		}
 		if c, ok := coupleForPlayer(state.Couples, p.ID); ok {
@@ -3198,13 +4279,19 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 				mateID = c.B
 			}
 			mate, exists := playersByID[mateID]
-			if exists && mate.Active && !mate.Paid && mate.Coupon && !busy[mateID] {
-				groups = append(groups, group{ids: []int{p.ID, mateID}, level: p.Level, games: p.Games + mate.Games})
+			if exists && mate.Active && !mate.Paid && (!requireCoupon || mate.Coupon) && !busy[mateID] {
+				groups = append(groups, group{
+					ids: []int{p.ID, mateID}, level: p.Level, games: p.Games + mate.Games,
+					coupon: p.Coupon && mate.Coupon, libero: p.Libero || mate.Libero,
+				})
 				used[p.ID], used[mateID] = true, true
 				continue
 			}
+			// A configured couple is one pairing unit. If the mate is unavailable,
+			// neither player may fall through as a single candidate.
+			continue
 		}
-		groups = append(groups, group{ids: []int{p.ID}, level: p.Level, games: p.Games})
+		groups = append(groups, group{ids: []int{p.ID}, level: p.Level, games: p.Games, coupon: p.Coupon, libero: p.Libero})
 		used[p.ID] = true
 	}
 	slices.SortFunc(groups, func(a, b group) int {
@@ -3214,6 +4301,47 @@ func buildAvailableGroups(state SessionState, busy map[int]bool) []group {
 		return len(b.ids) - len(a.ids)
 	})
 	return groups
+}
+
+func pairingScheduleForPlayers(state SessionState, playerIDs []int) (int, int, []string) {
+	wanted := map[int]bool{}
+	for _, id := range playerIDs {
+		wanted[id] = true
+	}
+	containsWanted := func(match Match) bool {
+		for _, id := range matchPlayers(match) {
+			if wanted[id] {
+				return true
+			}
+		}
+		return false
+	}
+	pendingCount := 0
+	for _, match := range state.Pending {
+		if containsWanted(match) {
+			pendingCount++
+		}
+	}
+	queueCount := 0
+	for _, match := range state.Queue {
+		if containsWanted(match) {
+			queueCount++
+		}
+	}
+	liveCourts := []string{}
+	for _, match := range state.Live {
+		if !containsWanted(match) {
+			continue
+		}
+		court := strings.TrimSpace(match.Court)
+		if court == "" || court == "-" {
+			court = "กำลังแข่ง"
+		}
+		if !slices.Contains(liveCourts, court) {
+			liveCourts = append(liveCourts, court)
+		}
+	}
+	return pendingCount, queueCount, liveCourts
 }
 
 func pickFour(groups []group) []int {
@@ -3499,6 +4627,49 @@ func startMatch(state *SessionState, matchID int, court string, brandIDs ...stri
 	return false
 }
 
+type livePlayerConflict struct {
+	PlayerID   int
+	PlayerName string
+	Court      string
+}
+
+func queuedMatchLiveConflicts(state SessionState, matchID int) []livePlayerConflict {
+	queuedPlayerIDs := []int{}
+	for _, match := range state.Queue {
+		if match.ID == matchID {
+			queuedPlayerIDs = matchPlayers(match)
+			break
+		}
+	}
+	if len(queuedPlayerIDs) == 0 {
+		return nil
+	}
+	wanted := map[int]bool{}
+	for _, id := range queuedPlayerIDs {
+		wanted[id] = true
+	}
+	seen := map[int]bool{}
+	conflicts := []livePlayerConflict{}
+	for _, match := range state.Live {
+		for _, id := range matchPlayers(match) {
+			if !wanted[id] || seen[id] {
+				continue
+			}
+			seen[id] = true
+			name := "ผู้เล่น #" + strconv.Itoa(id)
+			if player := playerByID(state.Players, id); player != nil {
+				name = player.Name
+			}
+			court := strings.TrimSpace(match.Court)
+			if court != "" && court != "-" {
+				court = "สนาม " + strings.TrimPrefix(court, "สนาม ")
+			}
+			conflicts = append(conflicts, livePlayerConflict{PlayerID: id, PlayerName: name, Court: court})
+		}
+	}
+	return conflicts
+}
+
 func confirmPendingMatch(state *SessionState, matchID int) bool {
 	for i, match := range state.Pending {
 		if match.ID == matchID {
@@ -3536,6 +4707,25 @@ func deletePlayer(state *SessionState, playerID int) error {
 		return nil
 	}
 	return errPlayerNotFound
+}
+
+func completedMatchCountForPlayer(state SessionState, playerID int) int {
+	count := 0
+	for _, match := range state.History {
+		if !isCancelledMatch(match) && slices.Contains(matchPlayers(match), playerID) {
+			count++
+		}
+	}
+	return count
+}
+
+func cancelledMatchHasUnreturnedShuttle(state SessionState, playerID int) bool {
+	for _, match := range state.History {
+		if isCancelledMatch(match) && match.Shuttles > 0 && !match.ShuttleReturned && slices.Contains(matchPlayers(match), playerID) {
+			return true
+		}
+	}
+	return false
 }
 
 func playerReferenced(state SessionState, playerID int) bool {
@@ -3730,7 +4920,10 @@ func closeLiveWithScores(state *SessionState, matchID int, cancelled bool, note 
 				}
 				state.Players[j].Games++
 				if state.Settings.ResetPlayersAfterFinish {
-					state.Players[j].Coupon = false
+					hasFutureMatch := matchListContainsPlayer(state.Pending, state.Players[j].ID) || matchListContainsPlayer(state.Queue, state.Players[j].ID)
+					if !state.Players[j].Libero || !hasFutureMatch {
+						state.Players[j].Coupon = false
+					}
 				}
 				if winner == "A" && (state.Players[j].ID == match.A1 || state.Players[j].ID == match.A2) {
 					state.Players[j].Wins++
@@ -3830,8 +5023,30 @@ func realRecordedMatchCount(state SessionState) int {
 	return total
 }
 
+func pairingPatternSummary(state SessionState) map[string]int {
+	result := map[string]int{
+		pairingPatternPairPair:       0,
+		pairingPatternPairTwoSingles: 0,
+		pairingPatternFourSingles:    0,
+		pairingPatternOneOne:         0,
+		pairingPatternManualFour:     0,
+		pairingPatternLegacyUnknown:  0,
+	}
+	for _, match := range state.Live {
+		result[normalizedPairingPattern(match.PairingPattern)]++
+	}
+	for _, match := range state.History {
+		if isCancelledMatch(match) {
+			continue
+		}
+		result[normalizedPairingPattern(match.PairingPattern)]++
+	}
+	return result
+}
+
 func dashboardPayload(state SessionState) map[string]any {
 	return map[string]any{
+		"version":  state.Version,
 		"players":  state.Players,
 		"queue":    state.Queue,
 		"live":     state.Live,
@@ -3861,6 +5076,7 @@ func dashboardPayload(state SessionState) map[string]any {
 			"realHistoryMatches":    len(state.History) - cancelledMatchCount(state),
 			"historyMatches":        len(state.History),
 			"availableCourtCount":   len(state.Settings.CourtNames),
+			"pairingPatterns":       pairingPatternSummary(state),
 		},
 	}
 }
@@ -3872,8 +5088,43 @@ func queuePayload(state SessionState) map[string]any {
 		"live":                state.Live,
 		"players":             state.Players,
 		"settings":            state.Settings,
+		"queueAnnouncement":   state.QueueAnnouncement,
 		"availableCourtNames": availableCourtNames(state),
 	}
+}
+
+func (a *app) loadQueueAnnouncement(ctx context.Context, sessionID string) (QueueAnnouncement, error) {
+	var announcement QueueAnnouncement
+	var announcedAt sql.NullTime
+	err := a.db.QueryRowContext(ctx, `
+		select coalesce(a.sequence,0),coalesce(a.match_id,0),coalesce(a.court,''),a.announced_at
+		from sessions s
+		left join session_queue_announcements a on a.session_id=s.id
+		where s.id=$1
+	`, sessionID).Scan(&announcement.Sequence, &announcement.MatchID, &announcement.Court, &announcedAt)
+	if announcedAt.Valid {
+		announcement.AnnouncedAt = announcedAt.Time.UTC().Format(time.RFC3339Nano)
+	}
+	return announcement, err
+}
+
+func (a *app) recordQueueAnnouncement(ctx context.Context, sessionID string, matchID int, court string) (QueueAnnouncement, error) {
+	var announcement QueueAnnouncement
+	var announcedAt time.Time
+	err := a.db.QueryRowContext(ctx, `
+		insert into session_queue_announcements (session_id,sequence,match_id,court,announced_at)
+		values ($1,1,$2,$3,now())
+		on conflict (session_id) do update set
+			sequence=session_queue_announcements.sequence+1,
+			match_id=excluded.match_id,
+			court=excluded.court,
+			announced_at=excluded.announced_at
+		returning sequence,match_id,court,announced_at
+	`, sessionID, matchID, court).Scan(&announcement.Sequence, &announcement.MatchID, &announcement.Court, &announcedAt)
+	if err == nil {
+		announcement.AnnouncedAt = announcedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return announcement, err
 }
 
 func activePlayerCount(state SessionState) int {
@@ -4042,23 +5293,49 @@ func playerEntryFee(state SessionState, player Player) int {
 }
 
 func shuttleBrandPrice(state SessionState, brandID string) int {
+	return roundedBaht(shuttleBrandPriceSatang(state, brandID))
+}
+
+func shuttleBrandPriceSatang(state SessionState, brandID string) int64 {
 	brandID = normalizedBrandID(brandID)
 	for _, brand := range state.Settings.ShuttleBrands {
 		if normalizedBrandID(brand.ID) == brandID {
-			return brand.Price
+			if brand.PriceSatang != 0 || brand.Price == 0 {
+				return max(int64(0), brand.PriceSatang)
+			}
+			return int64(max(0, brand.Price)) * 100
 		}
 	}
-	return state.Settings.ShuttleFee
+	return int64(max(0, state.Settings.ShuttleFee)) * 100
 }
 
-func shuttleBrandPriceFromSnapshot(match Match, brandID string) int {
+func shuttleBrandPriceFromSnapshotSatang(match Match, brandID string) int64 {
 	brandID = normalizedBrandID(brandID)
 	for _, brand := range match.ShuttlePriceSnapshot {
 		if normalizedBrandID(brand.ID) == brandID {
-			return brand.Price
+			if brand.PriceSatang != 0 || brand.Price == 0 {
+				return max(int64(0), brand.PriceSatang)
+			}
+			return int64(max(0, brand.Price)) * 100
 		}
 	}
-	return match.LegacyShuttleFee
+	return int64(max(0, match.LegacyShuttleFee)) * 100
+}
+
+func shuttleBrandPriceFromSnapshot(match Match, brandID string) int {
+	return roundedBaht(shuttleBrandPriceFromSnapshotSatang(match, brandID))
+}
+
+func shuttleItemPriceSatang(state SessionState, match Match, item ShuttleSeqItem) int64 {
+	if item.PriceSource != "" {
+		return max(int64(0), item.UnitPriceSatang)
+	}
+	if match.ShuttlePricingMode != shuttlePricingSplit {
+		if price := shuttleBrandPriceFromSnapshotSatang(match, item.BrandID); price > 0 {
+			return price
+		}
+	}
+	return shuttleBrandPriceSatang(state, item.BrandID)
 }
 
 func matchShuttleTotalSatang(state SessionState, match Match) int64 {
@@ -4068,14 +5345,7 @@ func matchShuttleTotalSatang(state SessionState, match Match) int64 {
 	items := normalizedShuttleSeqItems(match, state)
 	var total int64
 	for _, item := range items {
-		price := shuttleBrandPrice(state, item.BrandID)
-		if match.ShuttlePricingMode != shuttlePricingSplit {
-			price = shuttleBrandPriceFromSnapshot(match, item.BrandID)
-			if price == 0 {
-				price = shuttleBrandPrice(state, item.BrandID)
-			}
-		}
-		total += int64(price) * 100
+		total += shuttleItemPriceSatang(state, match, item)
 	}
 	if len(items) == 0 && match.Shuttles > 0 {
 		price := state.Settings.ShuttleFee
@@ -4237,23 +5507,26 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 	summary.Total += entryFee
 
 	type shuttleLine struct {
-		brandID string
-		count   int
+		brandID     string
+		label       string
+		priceSatang int64
+		count       int
 	}
 	lines := []shuttleLine{}
 	lineIndex := map[string]int{}
 	hasSplitPricing := false
-	addShuttles := func(brandID string, count int) {
+	addShuttles := func(brandID, label string, priceSatang int64, count int) {
 		if count <= 0 {
 			return
 		}
 		brandID = normalizedBrandID(brandID)
-		if index, ok := lineIndex[brandID]; ok {
+		key := brandID + ":" + strconv.FormatInt(priceSatang, 10) + ":" + label
+		if index, ok := lineIndex[key]; ok {
 			lines[index].count += count
 			return
 		}
-		lineIndex[brandID] = len(lines)
-		lines = append(lines, shuttleLine{brandID: brandID, count: count})
+		lineIndex[key] = len(lines)
+		lines = append(lines, shuttleLine{brandID: brandID, label: label, priceSatang: priceSatang, count: count})
 	}
 	for _, match := range append(append([]Match{}, state.Live...), state.History...) {
 		if !slices.Contains(matchPlayers(match), player.ID) || (isCancelledMatch(match) && match.ShuttleReturned) {
@@ -4264,11 +5537,19 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		}
 		items := normalizedShuttleSeqItems(match, state)
 		if len(items) == 0 {
-			addShuttles(defaultShuttleBrandID, match.Shuttles)
+			priceSatang := int64(max(0, state.Settings.ShuttleFee)) * 100
+			if match.ShuttlePricingMode != shuttlePricingSplit && match.LegacyShuttleFee > 0 {
+				priceSatang = int64(match.LegacyShuttleFee) * 100
+			}
+			addShuttles(defaultShuttleBrandID, shuttleBrandNameForPayment(state, defaultShuttleBrandID), priceSatang, match.Shuttles)
 			continue
 		}
 		for _, item := range items {
-			addShuttles(item.BrandID, 1)
+			label := shuttleBrandNameForPayment(state, item.BrandID)
+			if strings.TrimSpace(item.ProductName) != "" {
+				label = strings.TrimSpace(item.ProductName)
+			}
+			addShuttles(item.BrandID, label, shuttleItemPriceSatang(state, match, item), 1)
 		}
 	}
 	allocatedShuttleSatang := playerShuttleCostSatang(state, player.ID)
@@ -4276,8 +5557,8 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		details := make([]PlayerPaymentDetail, 0, len(lines))
 		for _, line := range lines {
 			details = append(details, PlayerPaymentDetail{
-				Key: "shuttle-detail-" + line.brandID, Label: shuttleBrandNameForPayment(state, line.brandID),
-				Quantity: line.count, UnitAmountTHB: float64(shuttleBrandPrice(state, line.brandID)),
+				Key: "shuttle-detail-" + line.brandID + "-" + strconv.FormatInt(line.priceSatang, 10), Label: line.label,
+				Quantity: line.count, UnitAmountTHB: thbFromSatang(line.priceSatang), UnitAmountSatang: line.priceSatang,
 			})
 		}
 		amount := int((allocatedShuttleSatang + 99) / 100)
@@ -4292,11 +5573,11 @@ func playerPaymentSummary(state SessionState, player Player) (summary PlayerPaym
 		if hasSplitPricing {
 			continue
 		}
-		unitAmount := shuttleBrandPrice(state, line.brandID)
-		amount := line.count * unitAmount
-		unitAmountSatang := int64(unitAmount) * 100
-		amountSatang := int64(amount) * 100
-		label := "ค่าลูกแบด " + shuttleBrandNameForPayment(state, line.brandID)
+		unitAmountSatang := line.priceSatang
+		amountSatang := int64(line.count) * unitAmountSatang
+		unitAmount := roundedBaht(unitAmountSatang)
+		amount := roundedBaht(amountSatang)
+		label := "ค่าลูกแบด " + line.label
 		quantity := line.count
 		summary.Items = append(summary.Items, PlayerPaymentItem{
 			Key: "shuttle-" + line.brandID, Label: label,
@@ -4630,7 +5911,7 @@ func defaultShuttleBrand(settings Settings) ShuttleBrand {
 	if price <= 0 {
 		price = 85
 	}
-	return ShuttleBrand{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: price, Active: true}
+	return ShuttleBrand{ID: defaultShuttleBrandID, Name: defaultShuttleBrandName, Price: price, PriceSatang: int64(price) * 100, Active: true}
 }
 
 func activeShuttleBrands(settings Settings) []ShuttleBrand {
@@ -4671,7 +5952,8 @@ func normalizedShuttleSeqItems(match Match, state SessionState) []ShuttleSeqItem
 	items := []ShuttleSeqItem{}
 	for _, item := range match.ShuttleSeqItems {
 		if item.Number > 0 {
-			items = append(items, ShuttleSeqItem{BrandID: normalizedBrandID(item.BrandID), Number: item.Number})
+			item.BrandID = normalizedBrandID(item.BrandID)
+			items = append(items, item)
 		}
 	}
 	if len(items) > 0 {
@@ -4857,6 +6139,13 @@ func normalizeSettings(settings *Settings) {
 		if brand.Price < 0 {
 			brand.Price = 0
 		}
+		if brand.PriceSatang < 0 {
+			brand.PriceSatang = 0
+		}
+		if brand.PriceSatang == 0 && brand.Price > 0 {
+			brand.PriceSatang = int64(brand.Price) * 100
+		}
+		brand.Price = roundedBaht(brand.PriceSatang)
 		seenBrands[brand.ID] = true
 		brands = append(brands, brand)
 	}
@@ -4867,7 +6156,7 @@ func normalizeSettings(settings *Settings) {
 		brands[0].Active = true
 	}
 	settings.ShuttleBrands = brands
-	settings.ShuttleFee = settings.ShuttleBrands[0].Price
+	settings.ShuttleFee = roundedBaht(settings.ShuttleBrands[0].PriceSatang)
 	if settings.SessionFee < 0 {
 		settings.SessionFee = 0
 	}
@@ -5144,6 +6433,9 @@ func (a *app) withCORS(next http.Handler) http.Handler {
 
 func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "no-store")
+	}
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(value); err != nil {
 		log.Printf("write json: %v", err)

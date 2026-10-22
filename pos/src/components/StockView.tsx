@@ -1,8 +1,11 @@
-import React, { useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { usePos } from '../context/PosContext';
 import { Product, StockMovement, Supplier, StockBatchSummary } from '../types';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
 import { DEFAULT_PRODUCT_IMAGE } from '../constants/product';
+import { POSPermissions } from '../api/posAccess';
+import { isAndroidDevice } from '../utils/browserHardware';
+import { listPOSStockMovements, POSStockMovementRecord } from '../api/posStock';
 import {
   PlusCircle,
   MinusCircle,
@@ -25,9 +28,45 @@ import {
   Tag,
   Coins,
   ChevronRight,
+  ChevronLeft,
   ExternalLink,
   Layers,
 } from 'lucide-react';
+
+const STOCK_PAGE_SIZE = 10;
+
+const stockMovementReasonLabel = (reason: string) => {
+  if (reason === 'restock_cancel') return 'ยกเลิกเอกสาร Stock In';
+  if (reason === 'stock_out_cancel') return 'ยกเลิกเอกสาร Stock Out';
+  return reason;
+};
+
+const stockMovementFromAPI = (item: POSStockMovementRecord): StockMovement => ({
+  id: String(item.id),
+  referenceNo: item.referenceNo || item.batchId || `MOV-${item.id}`,
+  batchId: item.batchId,
+  productId: item.productId,
+  productName: item.productName,
+  productSku: item.productSku,
+  type: item.type,
+  stockLocation: item.stockLocation,
+  quantity: item.quantity,
+  beforeStock: item.beforeStock,
+  afterStock: item.afterStock,
+  reason: item.reason || 'ทำรายการสต็อก',
+  supplierName: item.supplierName,
+  costPerUnit: (item.unitCostSatang ?? 0) / 100,
+  performedBy: item.actorName || 'Admin',
+  createdAt: item.createdAt,
+  note: item.note,
+  grossTotalValue: (item.grossTotalSatang ?? 0) / 100,
+  allocatedDiscountValue: (item.allocatedDiscountSatang ?? 0) / 100,
+  netTotalValue: (item.netTotalSatang ?? 0) / 100,
+  previousCostPerUnit: (item.previousCostSatang ?? 0) / 100,
+  resultingCostPerUnit: (item.resultingCostSatang ?? 0) / 100,
+  reversalOfMovementId: item.reversalOfMovementId ? String(item.reversalOfMovementId) : undefined,
+  reversedByMovementId: item.reversedByMovementId ? String(item.reversedByMovementId) : undefined,
+});
 
 const normalizeWholeNumberInput = (value: string) => {
   if (value === '') return '';
@@ -43,29 +82,45 @@ const normalizeDecimalInput = (value: string) => {
   return `${whole}.${decimal}`;
 };
 
-export const StockView: React.FC = () => {
+export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissions }) => {
   const {
     products,
     categories: catalogCategories,
-    stockMovements,
     stockBatches,
     stockSummary,
     batchStockOperation,
+    cancelStockBatch,
     suppliers,
     addSupplier,
+    deleteSupplier,
     settings,
     showToast,
   } = usePos();
+  const canViewCosts = permissions.view_costs;
+  const formatCost = (value: number, decimalPlaces = settings.decimalPlaces) => canViewCosts
+    ? formatCurrency(value, settings.currencySymbol, decimalPlaces)
+    : '***';
 
   // Navigation & View Mode inside Stock Management
   const [activeMainTab, setActiveMainTab] = useState<'master' | 'batches' | 'movements' | 'suppliers'>('master');
-  const [movementFilterTab, setMovementFilterTab] = useState<'all' | 'in' | 'out' | 'adjust'>('all');
+  const [movementFilterTab, setMovementFilterTab] = useState<'all' | 'in' | 'out' | 'adjust' | 'transfer'>('all');
+  const [selectedStockLocation, setSelectedStockLocation] = useState<'primary' | 'secondary'>(settings.saleStockLocation);
   const [stockStatusFilter, setStockStatusFilter] = useState<'all' | 'low' | 'out' | 'normal'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [supplierPendingDelete, setSupplierPendingDelete] = useState<Supplier | null>(null);
+  const [movementItems, setMovementItems] = useState<StockMovement[]>([]);
+  const [movementPage, setMovementPage] = useState(1);
+  const [movementTotal, setMovementTotal] = useState(0);
+  const [movementTotalPages, setMovementTotalPages] = useState(0);
+  const [movementLoading, setMovementLoading] = useState(false);
+  const [movementError, setMovementError] = useState('');
+  const [debouncedMovementSearch, setDebouncedMovementSearch] = useState('');
+  const [movementRefreshKey, setMovementRefreshKey] = useState(0);
 
   // Batch Operation Modal state
-  const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | null>(null);
+  const [batchModalMode, setBatchModalMode] = useState<'in' | 'out' | 'adjust' | 'transfer' | null>(null);
   const [batchDocRef, setBatchDocRef] = useState<string>('');
   const [batchExternalReference, setBatchExternalReference] = useState<string>('');
   const [batchSupplier, setBatchSupplier] = useState<string>('');
@@ -88,9 +143,13 @@ export const StockView: React.FC = () => {
   const [isPickerOpen, setIsPickerOpen] = useState<boolean>(false);
   const [pickerSearch, setPickerSearch] = useState<string>('');
   const [pickerCategory, setPickerCategory] = useState<string>('all');
+  const isAndroid = isAndroidDevice();
 
   // View Batch Details Modal
   const [selectedBatchForDetails, setSelectedBatchForDetails] = useState<StockBatchSummary | null>(null);
+  const [batchPendingCancel, setBatchPendingCancel] = useState<StockBatchSummary | null>(null);
+  const [cancelBatchReason, setCancelBatchReason] = useState('');
+  const [isCancellingBatch, setIsCancellingBatch] = useState(false);
 
   // Supplier Modal States
   const [isAddSupplierModalOpen, setIsAddSupplierModalOpen] = useState<boolean>(false);
@@ -104,11 +163,13 @@ export const StockView: React.FC = () => {
   });
 
   // Calculate Metrics
-  const totalStockUnits = stockSummary.totalUnits;
-  const totalInventoryCost = stockSummary.inventoryCostValue;
-  const totalInventoryRetail = stockSummary.inventoryRetailValue;
-  const lowStockCount = stockSummary.lowStockCount;
-  const outOfStockCount = stockSummary.outOfStockCount;
+  const selectedTrackedProducts = products.filter((product) => product.trackStock);
+  const selectedQuantities = selectedTrackedProducts.map((product) => ({ product, quantity: selectedStockLocation === 'secondary' ? product.secondaryStock : product.primaryStock }));
+  const totalStockUnits = selectedQuantities.reduce((sum, item) => sum + item.quantity, 0);
+  const totalInventoryCost = selectedQuantities.reduce((sum, item) => sum + item.quantity * item.product.cost, 0);
+  const totalInventoryRetail = selectedQuantities.reduce((sum, item) => sum + item.quantity * item.product.price, 0);
+  const lowStockCount = selectedQuantities.filter((item) => item.quantity > 0 && item.quantity <= item.product.minStockAlert).length;
+  const outOfStockCount = selectedQuantities.filter((item) => item.quantity <= 0).length;
 
   // Extract Categories
   const categoryIds = useMemo(() => {
@@ -122,9 +183,28 @@ export const StockView: React.FC = () => {
 
   const batchSummaries = stockBatches;
 
+  const openBatchCancellation = (batch: StockBatchSummary) => {
+    setBatchPendingCancel(batch);
+    setCancelBatchReason('');
+  };
+
+  const confirmBatchCancellation = async () => {
+    if (!batchPendingCancel?.id || !cancelBatchReason.trim() || isCancellingBatch) return;
+    setIsCancellingBatch(true);
+    const cancelled = await cancelStockBatch(batchPendingCancel.id, cancelBatchReason.trim());
+    setIsCancellingBatch(false);
+    if (!cancelled) return;
+    setBatchPendingCancel(null);
+    setCancelBatchReason('');
+    setSelectedBatchForDetails(null);
+    setMovementRefreshKey((value) => value + 1);
+  };
+
   // Filter Master Products
   const filteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (!p.trackStock) return false;
+      const selectedStock = selectedStockLocation === 'secondary' ? p.secondaryStock : p.primaryStock;
       const matchCat = selectedCategory === 'all' || p.category === selectedCategory;
       const matchSearch =
         p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -133,29 +213,16 @@ export const StockView: React.FC = () => {
 
       let matchStatus = true;
       if (stockStatusFilter === 'low') {
-        matchStatus = p.stock > 0 && p.stock <= p.minStockAlert;
+        matchStatus = selectedStock > 0 && selectedStock <= p.minStockAlert;
       } else if (stockStatusFilter === 'out') {
-        matchStatus = p.stock <= 0;
+        matchStatus = selectedStock <= 0;
       } else if (stockStatusFilter === 'normal') {
-        matchStatus = p.stock > p.minStockAlert;
+        matchStatus = selectedStock > p.minStockAlert;
       }
 
       return matchCat && matchSearch && matchStatus;
     });
-  }, [products, selectedCategory, searchQuery, stockStatusFilter]);
-
-  // Filter Detailed Movements
-  const filteredMovements = useMemo(() => {
-    return stockMovements.filter((m) => {
-      const matchTab = movementFilterTab === 'all' || m.type === movementFilterTab;
-      const matchSearch =
-        m.productName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.productSku.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.referenceNo.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        m.reason.toLowerCase().includes(searchQuery.toLowerCase());
-      return matchTab && matchSearch;
-    });
-  }, [stockMovements, movementFilterTab, searchQuery]);
+  }, [products, selectedCategory, searchQuery, stockStatusFilter, selectedStockLocation]);
 
   // Filter Batches
   const filteredBatches = useMemo(() => {
@@ -170,14 +237,116 @@ export const StockView: React.FC = () => {
     });
   }, [batchSummaries, searchQuery]);
 
+  const filteredSuppliers = useMemo(() => {
+    const search = searchQuery.trim().toLowerCase();
+    if (!search) return suppliers;
+    return suppliers.filter((supplier) =>
+      [supplier.name, supplier.code, supplier.contactPerson, supplier.phone, supplier.email, supplier.address]
+        .some((value) => String(value || '').toLowerCase().includes(search))
+    );
+  }, [suppliers, searchQuery]);
+
+  const activeItems = activeMainTab === 'master'
+    ? filteredProducts
+    : activeMainTab === 'batches'
+      ? filteredBatches
+      : activeMainTab === 'movements'
+        ? []
+        : filteredSuppliers;
+  const totalPages = Math.ceil(activeItems.length / STOCK_PAGE_SIZE);
+  const pageStart = (currentPage - 1) * STOCK_PAGE_SIZE;
+  const paginatedProducts = filteredProducts.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+  const paginatedBatches = filteredBatches.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+  const paginatedSuppliers = filteredSuppliers.slice(pageStart, pageStart + STOCK_PAGE_SIZE);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedMovementSearch(searchQuery.trim());
+      setMovementPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (activeMainTab !== 'movements') return;
+    let cancelled = false;
+    setMovementLoading(true);
+    setMovementError('');
+    void listPOSStockMovements({
+      page: movementPage,
+      pageSize: STOCK_PAGE_SIZE,
+      search: debouncedMovementSearch,
+      type: movementFilterTab === 'all' ? undefined : movementFilterTab,
+      stockLocation: selectedStockLocation,
+    }).then((result) => {
+      if (cancelled) return;
+      setMovementItems(result.items.map(stockMovementFromAPI));
+      setMovementTotal(result.total);
+      setMovementTotalPages(result.totalPages);
+      if (result.totalPages > 0 && movementPage > result.totalPages) setMovementPage(result.totalPages);
+    }).catch((error) => {
+      if (cancelled) return;
+      setMovementItems([]);
+      setMovementTotal(0);
+      setMovementTotalPages(0);
+      setMovementError(error instanceof Error ? error.message : 'โหลดประวัติสต็อกไม่สำเร็จ');
+    }).finally(() => {
+      if (!cancelled) setMovementLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeMainTab, debouncedMovementSearch, movementFilterTab, movementPage, movementRefreshKey, selectedStockLocation]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [activeMainTab, searchQuery, selectedCategory, stockStatusFilter, movementFilterTab, selectedStockLocation]);
+
+  useEffect(() => {
+    if (totalPages > 0 && currentPage > totalPages) setCurrentPage(totalPages);
+  }, [currentPage, totalPages]);
+
+  const paginationBar = (total: number) => (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-xs dark:border-slate-800">
+      <span className="text-slate-500 dark:text-slate-400">
+        ทั้งหมด {total.toLocaleString('th-TH')} รายการ · หน้า {totalPages > 0 ? currentPage : 0}/{totalPages}
+      </span>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={currentPage <= 1} onClick={() => setCurrentPage((page) => page - 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          <ChevronLeft className="h-4 w-4" /> ก่อนหน้า
+        </button>
+        <button type="button" disabled={currentPage >= totalPages || totalPages === 0} onClick={() => setCurrentPage((page) => page + 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          ถัดไป <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+
+  const movementPaginationBar = (
+    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-4 text-xs dark:border-slate-800">
+      <span className="text-slate-500 dark:text-slate-400">
+        ทั้งหมด {movementTotal.toLocaleString('th-TH')} รายการ · หน้า {movementTotalPages > 0 ? movementPage : 0}/{movementTotalPages}
+      </span>
+      <div className="flex items-center gap-2">
+        <button type="button" disabled={movementLoading || movementPage <= 1} onClick={() => setMovementPage((page) => page - 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          <ChevronLeft className="h-4 w-4" /> ก่อนหน้า
+        </button>
+        <button type="button" disabled={movementLoading || movementPage >= movementTotalPages || movementTotalPages === 0} onClick={() => setMovementPage((page) => page + 1)} className="inline-flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 py-2 font-bold disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900">
+          ถัดไป <ChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+
   // Open Modal Helpers
-  const handleOpenBatchModal = (mode: 'in' | 'out' | 'adjust', initialProduct?: Product, supplierId?: string) => {
-    if (mode === 'out' && initialProduct && initialProduct.stock <= 0) {
+  const stockAtSelectedLocation = (product: Product) => selectedStockLocation === 'secondary' ? product.secondaryStock : product.primaryStock;
+  const handleOpenBatchModal = (mode: 'in' | 'out' | 'adjust' | 'transfer', initialProduct?: Product, supplierId?: string) => {
+    if ((mode === 'out' || mode === 'transfer') && initialProduct && stockAtSelectedLocation(initialProduct) <= 0) {
       showToast(`สินค้า "${initialProduct.name}" ไม่มีสต็อกคงเหลือ`, 'warning');
       return;
     }
     const timestamp = Date.now().toString().slice(-6);
-    const prefix = mode === 'in' ? 'RCV' : mode === 'out' ? 'OUT' : 'ADJ';
+    const prefix = mode === 'in' ? 'RCV' : mode === 'out' ? 'OUT' : mode === 'transfer' ? 'TRF' : 'ADJ';
     setBatchDocRef(`${prefix}-${timestamp}`);
     setBatchExternalReference('');
     setPickerSearch('');
@@ -191,11 +360,11 @@ export const StockView: React.FC = () => {
         ? 'สั่งซื้อสินค้าเข้าสต็อกประจำงวด'
         : mode === 'out'
         ? 'เบิกใช้หน้าร้าน / สินค้าชำรุดเสียหาย'
-        : 'ตรวจนับสต็อกจริงสิ้นวัน'
+        : mode === 'transfer' ? `โอนจาก ${selectedStockLocation === 'primary' ? settings.primaryStockName : settings.secondaryStockName}` : 'ตรวจนับสต็อกจริงสิ้นวัน'
     );
 
     if (initialProduct) {
-      const quantity = mode === 'adjust' ? initialProduct.stock : mode === 'in' ? 10 : 1;
+      const quantity = mode === 'adjust' ? stockAtSelectedLocation(initialProduct) : mode === 'in' ? 10 : 1;
       setBatchItems([
         {
           productId: initialProduct.id,
@@ -214,7 +383,7 @@ export const StockView: React.FC = () => {
 
   // Add Product to Batch Line Items
   const handleAddProductToBatch = (product: Product) => {
-    if (batchModalMode === 'out' && product.stock <= 0) {
+    if ((batchModalMode === 'out' || batchModalMode === 'transfer') && stockAtSelectedLocation(product) <= 0) {
       showToast(`สินค้า "${product.name}" ไม่มีสต็อกคงเหลือ`, 'warning');
       return;
     }
@@ -229,8 +398,8 @@ export const StockView: React.FC = () => {
                 quantity:
                   batchModalMode === 'adjust'
                     ? item.quantity
-                    : batchModalMode === 'out'
-                    ? Math.min(item.product.stock, item.quantity + 1)
+                    : batchModalMode === 'out' || batchModalMode === 'transfer'
+                    ? Math.min(stockAtSelectedLocation(item.product), item.quantity + 1)
                     : item.quantity + 1,
               }
             : item
@@ -241,7 +410,7 @@ export const StockView: React.FC = () => {
         {
           productId: product.id,
           product,
-          quantity: batchModalMode === 'adjust' ? product.stock : batchModalMode === 'in' ? 10 : 1,
+          quantity: batchModalMode === 'adjust' ? stockAtSelectedLocation(product) : batchModalMode === 'in' ? 10 : 1,
           cost: product.cost,
           totalValue: batchModalMode === 'in' ? 10 * product.cost : 0,
           note: '',
@@ -263,6 +432,37 @@ export const StockView: React.FC = () => {
     setBatchItems((prev) =>
       prev.map((item) => (item.productId === productId ? { ...item, ...updates } : item))
     );
+  };
+
+  const normalizeBatchQuantity = (product: Product, value: number) => {
+    const minimum = batchModalMode === 'adjust' ? 0 : 1;
+    const normalized = Math.max(minimum, Number.isFinite(value) ? Math.trunc(value) : minimum);
+    return batchModalMode === 'out' || batchModalMode === 'transfer'
+      ? Math.min(stockAtSelectedLocation(product), normalized)
+      : normalized;
+  };
+
+  const handleAndroidStepperKey = (event: React.KeyboardEvent<HTMLInputElement>, item: { productId: string; product: Product; quantity: number }) => {
+    if (!isAndroid) return;
+    let next: number | null = null;
+    if (/^\d$/.test(event.key)) {
+      const target = event.currentTarget;
+      const replaceSelection = target.selectionStart === 0 && target.selectionEnd === target.value.length;
+      next = Number.parseInt(replaceSelection ? event.key : `${item.quantity}${event.key}`, 10);
+    } else if (event.key === 'Backspace' || event.key === 'Delete') {
+      next = Number.parseInt(String(item.quantity).slice(0, -1), 10);
+    } else if (event.key === 'ArrowUp') {
+      next = item.quantity + 1;
+    } else if (event.key === 'ArrowDown') {
+      next = item.quantity - 1;
+    } else if (event.key === 'Enter') {
+      event.currentTarget.blur();
+      return;
+    } else {
+      return;
+    }
+    event.preventDefault();
+    handleUpdateBatchItem(item.productId, { quantity: normalizeBatchQuantity(item.product, next) });
   };
 
   // Submit Batch Document
@@ -288,11 +488,15 @@ export const StockView: React.FC = () => {
       discountType: batchModalMode === 'in' ? batchDiscountType : 'amount',
       discountAmountSatang: batchModalMode === 'in' && batchDiscountType === 'amount' ? discountSatang : 0,
       discountRateBps: batchModalMode === 'in' && batchDiscountType === 'percent' ? Math.round(discountNumber * 100) : 0,
+      stockLocation: selectedStockLocation,
+      sourceStockLocation: batchModalMode === 'transfer' ? selectedStockLocation : undefined,
+      destinationStockLocation: batchModalMode === 'transfer' ? (selectedStockLocation === 'primary' ? 'secondary' : 'primary') : undefined,
     });
     setIsSavingBatch(false);
     if (saved) {
       setBatchModalMode(null);
       setBatchItems([]);
+      setMovementRefreshKey((key) => key + 1);
     }
   };
 
@@ -315,6 +519,7 @@ export const StockView: React.FC = () => {
   // Products available in Picker (filtered)
   const pickerFilteredProducts = useMemo(() => {
     return products.filter((p) => {
+      if (!p.trackStock) return false;
       const matchCat = pickerCategory === 'all' || p.category === pickerCategory;
       const matchSearch =
         p.name.toLowerCase().includes(pickerSearch.toLowerCase()) ||
@@ -357,11 +562,11 @@ export const StockView: React.FC = () => {
     : 0;
   const batchNetValue = (batchGrossSatang - discountSatang) / 100;
   const discountInvalid = batchModalMode === 'in' && (discountNumber > (batchDiscountType === 'percent' ? 100 : batchTotalValue));
-  const adjustmentBeforeUnits = batchItems.reduce((sum, it) => sum + it.product.stock, 0);
+  const adjustmentBeforeUnits = batchItems.reduce((sum, it) => sum + stockAtSelectedLocation(it.product), 0);
   const adjustmentAfterUnits = batchItems.reduce((sum, it) => sum + it.quantity, 0);
   const adjustmentUnitDelta = adjustmentAfterUnits - adjustmentBeforeUnits;
   const adjustmentBeforeValue = batchItems.reduce(
-    (sum, it) => sum + it.product.stock * it.cost,
+    (sum, it) => sum + stockAtSelectedLocation(it.product) * it.cost,
     0
   );
   const adjustmentAfterValue = batchItems.reduce(
@@ -397,6 +602,7 @@ export const StockView: React.FC = () => {
 
         {/* Major Action Buttons (Red, Yellow, White theme) */}
         <div className="flex flex-wrap items-center gap-2.5">
+          {settings.secondaryStockEnabled && <select aria-label="เลือกสต็อก" value={selectedStockLocation} onChange={(e) => { setSelectedStockLocation(e.target.value as 'primary' | 'secondary'); setMovementPage(1); }} className="rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-xs font-bold dark:border-slate-700 dark:bg-slate-900"><option value="primary">{settings.primaryStockName}</option><option value="secondary">{settings.secondaryStockName}</option></select>}
           <button
             id="stock-in-batch-btn"
             onClick={() => handleOpenBatchModal('in')}
@@ -423,6 +629,8 @@ export const StockView: React.FC = () => {
             <Sliders className="w-4 h-4 text-yellow-600 dark:text-yellow-400" />
             <span>ปรับปรุงสต็อก (Adjust)</span>
           </button>
+
+          {settings.secondaryStockEnabled && <button id="transfer-stock-batch-btn" onClick={() => handleOpenBatchModal('transfer')} className="flex items-center gap-2 rounded-2xl border border-sky-300 bg-sky-50 px-3.5 py-2.5 text-xs font-bold text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300"><ArrowUpRight className="h-4 w-4" /><span>โอนย้ายสต็อก</span></button>}
 
           <button
             id="manage-suppliers-btn"
@@ -463,7 +671,7 @@ export const StockView: React.FC = () => {
             </div>
           </div>
           <div className="text-2xl sm:text-3xl font-black text-yellow-600 dark:text-yellow-400 font-mono mt-2">
-            {formatCurrency(totalInventoryCost, settings.currencySymbol, settings.decimalPlaces)}
+            {formatCost(totalInventoryCost)}
           </div>
           <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400 mt-2 pt-2 border-t border-slate-100 dark:border-slate-800/80">
             <span>มูลค่าขายปลีก:</span>
@@ -575,7 +783,7 @@ export const StockView: React.FC = () => {
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="ค้นหาชื่อสินค้า, รหัส SKU, เลขที่เอกสาร..."
+              placeholder={activeMainTab === 'suppliers' ? 'ค้นหาชื่อ รหัส ผู้ติดต่อ หรือเบอร์โทร...' : 'ค้นหาชื่อสินค้า, รหัส SKU, เลขที่เอกสาร...'}
               className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-300 dark:border-slate-700 rounded-xl pl-9 pr-3.5 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500"
             />
           </div>
@@ -662,10 +870,11 @@ export const StockView: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    filteredProducts.map((p) => {
-                      const isLow = p.stock > 0 && p.stock <= p.minStockAlert;
-                      const isOut = p.stock <= 0;
-                      const totalLineCost = p.stock * p.cost;
+                    paginatedProducts.map((p) => {
+                      const currentStock = stockAtSelectedLocation(p);
+                      const isLow = currentStock > 0 && currentStock <= p.minStockAlert;
+                      const isOut = currentStock <= 0;
+                      const totalLineCost = currentStock * p.cost;
 
                       return (
                         <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
@@ -694,7 +903,7 @@ export const StockView: React.FC = () => {
                             {formatCurrency(p.price, settings.currencySymbol, settings.decimalPlaces)}
                           </td>
                           <td className="p-3.5 text-right font-mono text-slate-500 dark:text-slate-400">
-                            {formatCurrency(p.cost, settings.currencySymbol, settings.decimalPlaces)}
+                            {formatCost(p.cost)}
                           </td>
                           <td className="p-3.5 text-center">
                             <span
@@ -706,15 +915,11 @@ export const StockView: React.FC = () => {
                                   : 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white'
                               }`}
                             >
-                              {p.stock} {p.unit}
+                              {currentStock} {p.unit}
                             </span>
                           </td>
                           <td className="p-3.5 text-right font-mono font-bold text-yellow-600 dark:text-yellow-400">
-                            {formatCurrency(
-                              totalLineCost,
-                              settings.currencySymbol,
-                              settings.decimalPlaces
-                            )}
+                            {formatCost(totalLineCost)}
                           </td>
                           <td className="p-3.5 text-center">
                             {isOut ? (
@@ -763,6 +968,7 @@ export const StockView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {paginationBar(filteredProducts.length)}
           </div>
         )}
 
@@ -784,7 +990,7 @@ export const StockView: React.FC = () => {
                   ไม่มีเอกสารสต็อกรวมในประวัติ
                 </div>
               ) : (
-                filteredBatches.map((batch) => {
+                paginatedBatches.map((batch) => {
                   const isStockIn = batch.type === 'in';
                   const isStockOut = batch.type === 'out';
                   const isAdjust = batch.type === 'adjust';
@@ -830,6 +1036,11 @@ export const StockView: React.FC = () => {
                           <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
                             {formatThaiDateTime(batch.createdAt)}
                           </span>
+                          {batch.status === 'cancelled' && (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50 px-2.5 py-1 text-[11px] font-black text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-400">
+                              <X className="h-3 w-3" /> ยกเลิกแล้ว
+                            </span>
+                          )}
                         </div>
 
                         <div className="text-xs text-slate-700 dark:text-slate-300">
@@ -864,6 +1075,13 @@ export const StockView: React.FC = () => {
                             <strong className="text-slate-900 dark:text-white font-mono">{batch.totalQuantity} ชิ้น</strong>
                           </span>
                         </div>
+                        {batch.status === 'cancelled' && (
+                          <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                            ยกเลิกโดย <strong>{batch.cancelledByName || '-'}</strong>
+                            {batch.cancelledAt ? ` · ${formatThaiDateTime(batch.cancelledAt)}` : ''}
+                            {batch.cancelReason ? ` · เหตุผล: ${batch.cancelReason}` : ''}
+                          </div>
+                        )}
                       </div>
 
                       {/* Right Action & Value */}
@@ -871,27 +1089,36 @@ export const StockView: React.FC = () => {
                         <div className="text-right">
                           <span className="text-[11px] text-slate-500 dark:text-slate-400 block">มูลค่ารวมรายการ</span>
                           <span className="text-base sm:text-lg font-black text-yellow-600 dark:text-yellow-400 font-mono">
-                            {formatCurrency(
-                              batch.totalCostValue,
-                              settings.currencySymbol,
-                              settings.decimalPlaces
-                            )}
+                            {formatCost(batch.totalCostValue)}
                           </span>
                         </div>
 
-                        <button
-                          onClick={() => setSelectedBatchForDetails(batch)}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white text-xs font-bold border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
-                        >
-                          <Eye className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
-                          <span>ดูรายการสินค้าข้างใน ({batch.itemsCount})</span>
-                        </button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {batch.canCancel && permissions.stock_adjust && (
+                            <button
+                              type="button"
+                              onClick={() => openBatchCancellation(batch)}
+                              className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-bold text-red-700 transition-colors hover:bg-red-600 hover:text-white dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-600 dark:hover:text-white"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              <span>ยกเลิกรายการ</span>
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setSelectedBatchForDetails(batch)}
+                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white text-xs font-bold border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
+                            <span>ดูรายการสินค้าข้างใน ({batch.itemsCount})</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
                 })
               )}
             </div>
+            {paginationBar(filteredBatches.length)}
           </div>
         )}
 
@@ -902,7 +1129,7 @@ export const StockView: React.FC = () => {
             <div className="flex items-center gap-2">
               <div className="flex bg-slate-100 dark:bg-slate-950 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs">
                 <button
-                  onClick={() => setMovementFilterTab('all')}
+                  onClick={() => { setMovementFilterTab('all'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'all'
                       ? 'bg-red-600 text-white shadow-xs'
@@ -912,7 +1139,7 @@ export const StockView: React.FC = () => {
                   ทั้งหมด ({stockSummary.movementCount})
                 </button>
                 <button
-                  onClick={() => setMovementFilterTab('in')}
+                  onClick={() => { setMovementFilterTab('in'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'in'
                       ? 'bg-red-600 text-white shadow-xs'
@@ -922,7 +1149,7 @@ export const StockView: React.FC = () => {
                   รับเข้า (In)
                 </button>
                 <button
-                  onClick={() => setMovementFilterTab('out')}
+                  onClick={() => { setMovementFilterTab('out'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'out'
                       ? 'bg-yellow-500 text-slate-950 shadow-xs'
@@ -932,7 +1159,7 @@ export const StockView: React.FC = () => {
                   จ่ายออก (Out)
                 </button>
                 <button
-                  onClick={() => setMovementFilterTab('adjust')}
+                  onClick={() => { setMovementFilterTab('adjust'); setMovementPage(1); }}
                   className={`px-3 py-1.5 rounded-xl font-bold transition-colors ${
                     movementFilterTab === 'adjust'
                       ? 'bg-slate-800 text-white shadow-xs'
@@ -960,14 +1187,26 @@ export const StockView: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 bg-white dark:bg-slate-900/50">
-                  {filteredMovements.length === 0 ? (
+                  {movementLoading ? (
+                    <tr>
+                      <td colSpan={8} className="p-8 text-center text-slate-400 dark:text-slate-500">
+                        กำลังโหลดประวัติการเคลื่อนไหว...
+                      </td>
+                    </tr>
+                  ) : movementError ? (
+                    <tr>
+                      <td colSpan={8} className="p-8 text-center text-red-600 dark:text-red-400">
+                        {movementError}
+                      </td>
+                    </tr>
+                  ) : movementItems.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="p-8 text-center text-slate-400 dark:text-slate-500">
                         ไม่มีรายการเคลื่อนไหวสต็อกในเงื่อนไขนี้
                       </td>
                     </tr>
                   ) : (
-                    filteredMovements.map((m) => (
+                    movementItems.map((m) => (
                       <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors">
                         <td className="p-3.5 font-mono font-bold text-slate-900 dark:text-white">{m.referenceNo}</td>
                         <td className="p-3.5 text-slate-500 dark:text-slate-400 font-mono">
@@ -1009,7 +1248,13 @@ export const StockView: React.FC = () => {
                           <span className="font-bold text-slate-900 dark:text-white">{m.afterStock}</span>
                         </td>
                         <td className="p-3.5 max-w-[220px]">
-                          <div className="truncate text-slate-800 dark:text-slate-200">{m.reason}</div>
+                          <div className="truncate text-slate-800 dark:text-slate-200">{stockMovementReasonLabel(m.reason)}</div>
+                          {m.reversalOfMovementId && (
+                            <div className="text-[10px] font-mono text-red-600 dark:text-red-400">ย้อนรายการ MOV-{m.reversalOfMovementId}</div>
+                          )}
+                          {m.reversedByMovementId && (
+                            <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">ถูกย้อนโดย MOV-{m.reversedByMovementId}</div>
+                          )}
                           {m.supplierName && (
                             <div className="text-[10px] text-yellow-700 dark:text-yellow-400/90 truncate">
                               🏢 {m.supplierName}
@@ -1025,6 +1270,7 @@ export const StockView: React.FC = () => {
                 </tbody>
               </table>
             </div>
+            {movementPaginationBar}
           </div>
         )}
 
@@ -1045,7 +1291,10 @@ export const StockView: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {suppliers.map((sup) => (
+              {paginatedSuppliers.length === 0 && (
+                <div className="col-span-full rounded-3xl border border-slate-200 bg-slate-50 p-10 text-center text-sm text-slate-400 dark:border-slate-800 dark:bg-slate-950/60">ไม่พบซัพพลายเออร์ที่ตรงกับการค้นหา</div>
+              )}
+              {paginatedSuppliers.map((sup) => (
                 <div
                   key={sup.id}
                   className="bg-white dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 sm:p-5 flex flex-col justify-between gap-3 hover:border-slate-300 dark:hover:border-slate-700 shadow-xs transition-colors"
@@ -1076,13 +1325,39 @@ export const StockView: React.FC = () => {
                       <PlusCircle className="w-3.5 h-3.5" />
                       <span>เปิดใบรับสินค้าจากเจ้านี้</span>
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => setSupplierPendingDelete(sup)}
+                      disabled={sup.productsCount > 0}
+                      className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:text-slate-400 dark:text-red-400 dark:hover:bg-red-500/10"
+                      title={sup.productsCount > 0 ? 'ลบไม่ได้ เนื่องจากมีประวัติรับสินค้าแล้ว' : 'ลบซัพพลายเออร์'}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                      ลบ
+                    </button>
                   </div>
                 </div>
               ))}
             </div>
+            {paginationBar(filteredSuppliers.length)}
           </div>
         )}
       </div>
+
+      {supplierPendingDelete && (
+        <div className="fixed inset-0 z-[70] grid place-items-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="ยืนยันลบซัพพลายเออร์">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+            <div className="flex items-start gap-3">
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-red-50 text-red-600 dark:bg-red-500/10 dark:text-red-400"><Trash2 className="h-5 w-5" /></span>
+              <div><h3 className="font-black text-slate-900 dark:text-white">ลบซัพพลายเออร์?</h3><p className="mt-1 text-sm text-slate-500">ต้องการลบ “{supplierPendingDelete.name}” ออกจากรายการใช้งานหรือไม่</p></div>
+            </div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold dark:border-slate-700" onClick={() => setSupplierPendingDelete(null)}>ยกเลิก</button>
+              <button type="button" className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white" onClick={async () => { const target = supplierPendingDelete; setSupplierPendingDelete(null); await deleteSupplier(target.id); }}>ยืนยันลบ</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ========================================================================= */}
       {/* MODAL: BATCH STOCK OPERATION (รับเข้า / จ่ายออก / ปรับปรุง แบบเลือกเพิ่มสินค้าข้างใน) */}
@@ -1277,7 +1552,7 @@ export const StockView: React.FC = () => {
                         <input
                           id="stock-batch-product-search"
                           type="text"
-                          autoFocus
+                          autoFocus={!isAndroid || settings.hardwareKeyboardMode}
                           value={pickerSearch}
                           onChange={(e) => setPickerSearch(e.target.value)}
                           onKeyDown={handlePickerBarcodeEnter}
@@ -1326,7 +1601,7 @@ export const StockView: React.FC = () => {
                                 {prod.name}
                               </div>
                               <div className="text-[10px] text-slate-500 dark:text-slate-400 flex items-center justify-between">
-                                <span>คงเหลือ: {prod.stock}</span>
+                                <span>คงเหลือ: {stockAtSelectedLocation(prod)}</span>
                                 {inBatch && (
                                   <span className="text-yellow-700 dark:text-yellow-400 font-bold">
                                     ✓ {inBatch.quantity}
@@ -1369,7 +1644,7 @@ export const StockView: React.FC = () => {
                 ) : (
                   <div className="space-y-2">
                     {batchItems.map((item, index) => {
-                      const beforeStock = item.product.stock;
+                      const beforeStock = stockAtSelectedLocation(item.product);
                       let afterStock = beforeStock;
                       if (batchModalMode === 'in') afterStock = beforeStock + item.quantity;
                       if (batchModalMode === 'out')
@@ -1436,17 +1711,20 @@ export const StockView: React.FC = () => {
                                   -
                                 </button>
                                 <input
-                                  type="number"
-                                  min={batchModalMode === 'adjust' ? '0' : '1'}
-                                  max={batchModalMode === 'out' ? item.product.stock : undefined}
+                                  type="text"
+                                  inputMode="none"
+                                  pattern="[0-9]*"
+                                  aria-label={`จำนวน ${item.product.name}`}
+                                  readOnly={isAndroid}
                                   value={item.quantity}
                                   onFocus={(e) => e.currentTarget.select()}
+                                  onKeyDown={(event) => handleAndroidStepperKey(event, item)}
                                   onChange={(e) => {
                                     const normalized = normalizeWholeNumberInput(e.currentTarget.value);
                                     if (e.currentTarget.value !== normalized) e.currentTarget.value = normalized;
                                     const parsed = normalized === '' ? Number.NaN : Number.parseInt(normalized, 10);
-                                    const nextQuantity = batchModalMode === 'out'
-                                      ? Math.min(item.product.stock, parsed || 1)
+                                    const nextQuantity = batchModalMode === 'out' || batchModalMode === 'transfer'
+                                      ? Math.min(stockAtSelectedLocation(item.product), parsed || 1)
                                       : parsed || (batchModalMode === 'adjust' ? 0 : 1);
                                     if (normalized !== '' && e.currentTarget.value !== String(nextQuantity)) {
                                       e.currentTarget.value = String(nextQuantity);
@@ -1462,8 +1740,8 @@ export const StockView: React.FC = () => {
                                   onClick={() =>
                                     handleUpdateBatchItem(item.productId, {
                                       quantity:
-                                        batchModalMode === 'out'
-                                          ? Math.min(item.product.stock, item.quantity + 1)
+                                        batchModalMode === 'out' || batchModalMode === 'transfer'
+                                          ? Math.min(stockAtSelectedLocation(item.product), item.quantity + 1)
                                           : item.quantity + 1,
                                     })
                                   }
@@ -1538,11 +1816,7 @@ export const StockView: React.FC = () => {
                                     มูลค่าก่อน
                                   </span>
                                   <span className="text-xs font-mono font-bold text-slate-700 dark:text-slate-300">
-                                    {formatCurrency(
-                                      beforeValue,
-                                      settings.currencySymbol,
-                                      settings.decimalPlaces
-                                    )}
+                                    {formatCost(beforeValue)}
                                   </span>
                                 </div>
                                 <div>
@@ -1550,11 +1824,7 @@ export const StockView: React.FC = () => {
                                     มูลค่าหลัง
                                   </span>
                                   <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">
-                                    {formatCurrency(
-                                      afterValue,
-                                      settings.currencySymbol,
-                                      settings.decimalPlaces
-                                    )}
+                                    {formatCost(afterValue)}
                                   </span>
                                 </div>
                               </div>
@@ -1627,21 +1897,13 @@ export const StockView: React.FC = () => {
                   <div className="rounded-xl bg-slate-50 px-3 py-2 dark:bg-slate-950">
                     <span className="text-slate-500 dark:text-slate-400 block">มูลค่าก่อนปรับ</span>
                     <span className="text-sm font-black text-slate-900 dark:text-white font-mono">
-                      {formatCurrency(
-                        adjustmentBeforeValue,
-                        settings.currencySymbol,
-                        settings.decimalPlaces
-                      )}
+                      {formatCost(adjustmentBeforeValue)}
                     </span>
                   </div>
                   <div className="rounded-xl border border-yellow-300 bg-yellow-50 px-3 py-2 dark:border-yellow-500/30 dark:bg-yellow-500/10">
                     <span className="text-yellow-700 dark:text-yellow-400 block">มูลค่าหลังปรับ</span>
                     <span className="text-base font-black text-yellow-700 dark:text-yellow-400 font-mono">
-                      {formatCurrency(
-                        adjustmentAfterValue,
-                        settings.currencySymbol,
-                        settings.decimalPlaces
-                      )}
+                      {formatCost(adjustmentAfterValue)}
                     </span>
                     <span
                       className={`block text-[11px] font-bold font-mono ${
@@ -1653,11 +1915,7 @@ export const StockView: React.FC = () => {
                       }`}
                     >
                       {adjustmentValueDelta > 0 ? '+' : ''}
-                      {formatCurrency(
-                        adjustmentValueDelta,
-                        settings.currencySymbol,
-                        settings.decimalPlaces
-                      )}
+                      {formatCost(adjustmentValueDelta)}
                     </span>
                   </div>
                 </div>
@@ -1700,7 +1958,7 @@ export const StockView: React.FC = () => {
                     <div className="border-l border-slate-200 dark:border-slate-800 pl-4">
                       <span className="text-slate-500 dark:text-slate-400 block">มูลค่ารวมทั้งสิ้น:</span>
                       <span className="text-base font-black text-yellow-600 dark:text-yellow-400 font-mono">
-                        {formatCurrency(batchTotalValue, settings.currencySymbol, settings.decimalPlaces)}
+                        {formatCost(batchTotalValue)}
                       </span>
                     </div>
                   )}
@@ -1782,6 +2040,11 @@ export const StockView: React.FC = () => {
                     <span className="text-xs font-mono font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-950 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-800">
                       เลขที่: {selectedBatchForDetails.referenceNo}
                     </span>
+                    {selectedBatchForDetails.status === 'cancelled' && (
+                      <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-[10px] font-black text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-400">
+                        ยกเลิกแล้ว
+                      </span>
+                    )}
                   </div>
                   <h3 className="text-lg font-black text-slate-900 dark:text-white mt-0.5">
                     {selectedBatchForDetails.type === 'in'
@@ -1799,6 +2062,15 @@ export const StockView: React.FC = () => {
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {selectedBatchForDetails.status === 'cancelled' && (
+              <div className="shrink-0 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                <strong>เอกสารนี้ถูกยกเลิกแล้ว</strong>
+                <span className="ml-2">ผู้ยกเลิก: {selectedBatchForDetails.cancelledByName || '-'}</span>
+                {selectedBatchForDetails.cancelledAt && <span className="ml-2">เวลา: {formatThaiDateTime(selectedBatchForDetails.cancelledAt)}</span>}
+                <div className="mt-1">เหตุผล: {selectedBatchForDetails.cancelReason || '-'}</div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-50 dark:bg-slate-950 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shrink-0">
               <div>
@@ -1824,7 +2096,7 @@ export const StockView: React.FC = () => {
                   {selectedBatchForDetails.type === 'in' ? 'ยอดสุทธิ:' : 'มูลค่ารายการ:'}
                 </span>
                 <span className="font-black text-yellow-600 dark:text-yellow-400 font-mono">
-                  {formatCurrency(selectedBatchForDetails.netTotalValue ?? selectedBatchForDetails.totalCostValue, settings.currencySymbol, 2)}
+                  {formatCost(selectedBatchForDetails.netTotalValue ?? selectedBatchForDetails.totalCostValue, 2)}
                 </span>
               </div>
             </div>
@@ -1893,22 +2165,22 @@ export const StockView: React.FC = () => {
                         <>
                           <div className="text-right min-w-[95px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ต้นทุนรับ/หน่วย</span>
-                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(item.costPerUnit || 0, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCost(item.costPerUnit || 0, 2)}</span>
                           </div>
                           <div className="grid min-w-[190px] grid-cols-2 gap-2 rounded-xl bg-white px-2.5 py-1.5 text-right dark:bg-slate-900">
                             <div>
                               <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ก่อนลด</span>
-                              <span className="text-xs font-mono font-bold">{formatCurrency(item.grossTotalValue || 0, settings.currencySymbol, 2)}</span>
+                              <span className="text-xs font-mono font-bold">{formatCost(item.grossTotalValue || 0, 2)}</span>
                             </div>
                             <div>
                               <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ส่วนลด / สุทธิ</span>
-                              <span className="text-[10px] font-mono text-red-500">-{formatCurrency(item.allocatedDiscountValue || 0, settings.currencySymbol, 2)}</span>
-                              <span className="block text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(item.netTotalValue || 0, settings.currencySymbol, 2)}</span>
+                              <span className="text-[10px] font-mono text-red-500">{canViewCosts ? `-${formatCost(item.allocatedDiscountValue || 0, 2)}` : '***'}</span>
+                              <span className="block text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCost(item.netTotalValue || 0, 2)}</span>
                             </div>
                           </div>
                           <div className="text-right min-w-[125px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ต้นทุนเฉลี่ย ก่อน → หลัง</span>
-                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(previousCost, settings.currencySymbol, 2)} → {formatCurrency(resultingCost, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{canViewCosts ? `${formatCost(previousCost, 2)} → ${formatCost(resultingCost, 2)}` : '***'}</span>
                           </div>
                         </>
                       )}
@@ -1917,11 +2189,11 @@ export const StockView: React.FC = () => {
                         <>
                           <div className="text-right min-w-[100px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ต้นทุนเฉลี่ย/หน่วย</span>
-                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(item.costPerUnit || 0, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold text-slate-900 dark:text-white">{formatCost(item.costPerUnit || 0, 2)}</span>
                           </div>
                           <div className="text-right min-w-[100px]">
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่าจ่ายออก</span>
-                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(item.netTotalValue || 0, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCost(item.netTotalValue || 0, 2)}</span>
                           </div>
                         </>
                       )}
@@ -1930,16 +2202,16 @@ export const StockView: React.FC = () => {
                         <div className="grid min-w-[270px] grid-cols-3 gap-2 rounded-xl bg-white px-2.5 py-1.5 text-right dark:bg-slate-900">
                           <div>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่าก่อน</span>
-                            <span className="text-xs font-mono font-bold">{formatCurrency(beforeValue, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-bold">{formatCost(beforeValue, 2)}</span>
                           </div>
                           <div>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">มูลค่าหลัง</span>
-                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCurrency(afterValue, settings.currencySymbol, 2)}</span>
+                            <span className="text-xs font-mono font-black text-yellow-600 dark:text-yellow-400">{formatCost(afterValue, 2)}</span>
                           </div>
                           <div>
                             <span className="text-[10px] text-slate-500 dark:text-slate-400 block">ผลต่าง</span>
                             <span className={`text-xs font-mono font-black ${valueDelta > 0 ? 'text-emerald-600 dark:text-emerald-400' : valueDelta < 0 ? 'text-red-600 dark:text-red-400' : 'text-slate-500'}`}>
-                              {valueDelta > 0 ? '+' : ''}{formatCurrency(valueDelta, settings.currencySymbol, 2)}
+                              {canViewCosts && valueDelta > 0 ? '+' : ''}{formatCost(valueDelta, 2)}
                             </span>
                           </div>
                         </div>
@@ -1953,24 +2225,100 @@ export const StockView: React.FC = () => {
             <div className="pt-4 border-t border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
               {selectedBatchForDetails.type === 'in' ? (
                 <div className="flex items-center gap-4 text-xs">
-                  <div><span className="text-slate-500 block">ยอดก่อนลด</span><strong className="font-mono">{formatCurrency(selectedBatchForDetails.grossTotalValue || 0, settings.currencySymbol, 2)}</strong></div>
-                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ส่วนลด</span><strong className="font-mono text-red-500">-{formatCurrency(selectedBatchForDetails.discountValue || 0, settings.currencySymbol, 2)}</strong></div>
-                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ยอดสุทธิ</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCurrency(selectedBatchForDetails.netTotalValue || 0, settings.currencySymbol, 2)}</strong></div>
+                  <div><span className="text-slate-500 block">ยอดก่อนลด</span><strong className="font-mono">{formatCost(selectedBatchForDetails.grossTotalValue || 0, 2)}</strong></div>
+                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ส่วนลด</span><strong className="font-mono text-red-500">{canViewCosts ? `-${formatCost(selectedBatchForDetails.discountValue || 0, 2)}` : '***'}</strong></div>
+                  <div className="border-l border-slate-200 dark:border-slate-800 pl-4"><span className="text-slate-500 block">ยอดสุทธิ</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCost(selectedBatchForDetails.netTotalValue || 0, 2)}</strong></div>
                 </div>
               ) : selectedBatchForDetails.type === 'adjust' ? (
                 <div className="grid grid-cols-3 gap-2 text-xs flex-1 w-full">
                   <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-2"><span className="text-slate-500 block">จำนวนเพิ่ม/ลด</span><strong className="font-mono text-orange-600 dark:text-orange-400">{detailQuantityDelta > 0 ? '+' : ''}{detailQuantityDelta}</strong></div>
-                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-2"><span className="text-slate-500 block">มูลค่าก่อน</span><strong className="font-mono">{formatCurrency(detailBeforeValue, settings.currencySymbol, 2)}</strong></div>
-                  <div className="rounded-xl bg-yellow-50 dark:bg-yellow-500/10 px-3 py-2"><span className="text-yellow-700 dark:text-yellow-400 block">มูลค่าหลัง</span><strong className="font-mono text-yellow-700 dark:text-yellow-400">{formatCurrency(detailAfterValue, settings.currencySymbol, 2)}</strong></div>
+                  <div className="rounded-xl bg-slate-50 dark:bg-slate-950 px-3 py-2"><span className="text-slate-500 block">มูลค่าก่อน</span><strong className="font-mono">{formatCost(detailBeforeValue, 2)}</strong></div>
+                  <div className="rounded-xl bg-yellow-50 dark:bg-yellow-500/10 px-3 py-2"><span className="text-yellow-700 dark:text-yellow-400 block">มูลค่าหลัง</span><strong className="font-mono text-yellow-700 dark:text-yellow-400">{formatCost(detailAfterValue, 2)}</strong></div>
                 </div>
               ) : (
-                <div className="text-xs"><span className="text-slate-500 block">มูลค่าจ่ายออกรวม</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCurrency(selectedBatchForDetails.totalCostValue, settings.currencySymbol, 2)}</strong></div>
+                <div className="text-xs"><span className="text-slate-500 block">มูลค่าจ่ายออกรวม</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCost(selectedBatchForDetails.totalCostValue, 2)}</strong></div>
               )}
+              <div className="flex items-center gap-2">
+                {selectedBatchForDetails.canCancel && permissions.stock_adjust && (
+                  <button
+                    type="button"
+                    onClick={() => openBatchCancellation(selectedBatchForDetails)}
+                    className="rounded-xl bg-red-600 px-5 py-2 text-xs font-bold text-white hover:bg-red-700"
+                  >
+                    ยกเลิกรายการ
+                  </button>
+                )}
+                <button
+                  onClick={() => setSelectedBatchForDetails(null)}
+                  className="px-5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-white"
+                >
+                  ปิดหน้าต่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {batchPendingCancel && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="ยืนยันยกเลิกเอกสารสต็อก">
+          <div className="w-full max-w-lg space-y-4 rounded-3xl border border-red-200 bg-white p-5 text-slate-900 shadow-2xl dark:border-red-500/30 dark:bg-slate-900 dark:text-slate-100 sm:p-6">
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl bg-red-100 p-2.5 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black">ยืนยันยกเลิกเอกสาร {batchPendingCancel.referenceNo}</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  ระบบจะสร้างรายการย้อนกลับและคำนวณจำนวนกับต้นทุนเฉลี่ยปัจจุบันใหม่ โดยยังเก็บเอกสารเดิมไว้ตรวจสอบ
+                </p>
+              </div>
+            </div>
+
+            <div className="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+              {batchPendingCancel.items.map((item) => (
+                <div key={item.id} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="min-w-0 truncate font-bold">{item.productName}</span>
+                  <span className="shrink-0 font-mono text-slate-600 dark:text-slate-300">
+                    {batchPendingCancel.type === 'in' ? 'นำออก' : 'คืนเข้า'} {Math.abs(item.quantity)} ชิ้น
+                  </span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between border-t border-slate-200 pt-2 text-xs dark:border-slate-800">
+                <span className="text-slate-500">มูลค่าเอกสาร</span>
+                <strong className="font-mono text-yellow-600 dark:text-yellow-400">{formatCost(batchPendingCancel.netTotalValue ?? batchPendingCancel.totalCostValue, 2)}</strong>
+              </div>
+            </div>
+
+            <label className="block text-xs font-bold">
+              เหตุผลยกเลิก <span className="text-red-500">*</span>
+              <textarea
+                autoFocus
+                maxLength={300}
+                value={cancelBatchReason}
+                onChange={(event) => setCancelBatchReason(event.target.value)}
+                placeholder="เช่น บันทึกจำนวนผิด, เลือกสินค้าผิด"
+                className="mt-2 min-h-24 w-full resize-y rounded-2xl border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-red-500 dark:border-slate-700 dark:bg-slate-950"
+              />
+              <span className="mt-1 block text-right text-[10px] font-normal text-slate-400">{cancelBatchReason.length}/300</span>
+            </label>
+
+            <div className="flex justify-end gap-2">
               <button
-                onClick={() => setSelectedBatchForDetails(null)}
-                className="px-5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-white"
+                type="button"
+                disabled={isCancellingBatch}
+                onClick={() => { setBatchPendingCancel(null); setCancelBatchReason(''); }}
+                className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700 disabled:opacity-50 dark:bg-slate-800 dark:text-slate-200"
               >
-                ปิดหน้าต่าง
+                ปิด
+              </button>
+              <button
+                type="button"
+                disabled={!cancelBatchReason.trim() || isCancellingBatch}
+                onClick={confirmBatchCancellation}
+                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isCancellingBatch ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกรายการ'}
               </button>
             </div>
           </div>

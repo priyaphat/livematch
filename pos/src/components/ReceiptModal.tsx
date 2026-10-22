@@ -1,28 +1,310 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
-import { Printer, X, Check, Copy, Share2 } from 'lucide-react';
-import { printIminText } from '../utils/iminPrinter';
+import { Printer, X, Check, Copy, ChevronLeft, ChevronRight, Files, QrCode, LoaderCircle } from 'lucide-react';
+import QRCode from 'qrcode';
+import { toPng } from 'html-to-image';
+import { getPOSPaymentQR } from '../api/posSales';
+import { printIminBitmaps, printIminRichReceipt, printIminText } from '../utils/iminPrinter';
+
+const receiptText = (order: any, settings: any) => [
+  settings.storeName,
+  settings.address || '',
+  settings.email || '',
+  order.vatRate > 0 && settings.taxId ? `เลขประจำตัวผู้เสียภาษี: ${settings.taxId}` : '',
+  settings.phone ? `โทร: ${settings.phone}` : '',
+  '--------------------------------',
+  order.vatRate > 0 ? 'ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ' : 'ใบเสร็จรับเงิน',
+  `เลขที่: ${order.orderNumber}`,
+  `วันที่: ${formatThaiDateTime(order.createdAt)}`,
+  `พนักงานขาย: ${order.cashierName || '-'}`,
+  order.customerNote ? `ลูกค้า: ${order.customerNote}` : '',
+  order.referenceNumber ? `เลขอ้างอิง: ${order.referenceNumber}` : '',
+  '--------------------------------',
+  ...(order.items || []).flatMap((item: any) => [
+    `${item.name} x ${item.quantity}`,
+    item.note ? `  * ${item.note}` : '',
+    `  ${formatCurrency(item.price, settings.currencySymbol, settings.decimalPlaces)} = ${formatCurrency(item.total, settings.currencySymbol, settings.decimalPlaces)}`,
+  ]),
+  '--------------------------------',
+  order.matchTotal !== undefined ? `ยอด Match: ${formatCurrency(order.matchTotal || 0, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  order.posTotal !== undefined ? `ยอด POS: ${formatCurrency(order.posTotal || 0, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  `รวม: ${formatCurrency(order.subtotal, settings.currencySymbol, settings.decimalPlaces)}`,
+  order.discount > 0 ? `ส่วนลด: -${formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  order.vatRate > 0 ? `VAT ${order.vatRate}%: ${formatCurrency(order.vatAmount, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  `ยอดสุทธิ: ${formatCurrency(order.total, settings.currencySymbol, settings.decimalPlaces)}`,
+  `วิธีชำระ: ${order.paymentMethod === 'cash' ? 'เงินสด' : order.paymentMethod === 'promptpay' ? 'PromptPay QR' : order.paymentMethod === 'card' ? 'บัตรเครดิต' : 'โอนเงิน'}`,
+  order.cashReceived ? `รับเงิน: ${formatCurrency(order.cashReceived, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  order.change !== undefined ? `เงินทอน: ${formatCurrency(order.change, settings.currencySymbol, settings.decimalPlaces)}` : '',
+  '--------------------------------',
+  settings.receiptFooterMessage || '',
+  '\n\n',
+].filter(Boolean).join('\n');
+
+const preparePrinterLogo = (dataUrl: string) => new Promise<string>((resolve) => {
+  if (!dataUrl?.startsWith('data:image/')) {
+    resolve('');
+    return;
+  }
+  const image = new Image();
+  image.onload = () => {
+    const scale = Math.min(1, 180 / Math.max(image.naturalWidth || 1, image.naturalHeight || 1));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext('2d');
+    if (!context) {
+      resolve('');
+      return;
+    }
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    resolve(canvas.toDataURL('image/png'));
+  };
+  image.onerror = () => resolve('');
+  image.src = dataUrl;
+});
+
+const waitForReceiptLayout = () => new Promise<void>((resolve) => {
+  window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+});
+
+const assertReceiptBitmapHasContent = (dataUrl: string) => new Promise<void>((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext('2d', { willReadFrequently: true });
+    if (!context) {
+      reject(new Error('ตรวจสอบภาพใบเสร็จก่อนพิมพ์ไม่สำเร็จ'));
+      return;
+    }
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let inkSamples = 0;
+    const sampleStep = 24;
+    for (let index = 0; index < pixels.length; index += 4 * sampleStep) {
+      if (pixels[index + 3] > 20 && (pixels[index] < 240 || pixels[index + 1] < 240 || pixels[index + 2] < 240)) {
+        inkSamples += 1;
+        if (inkSamples >= 24) {
+          resolve();
+          return;
+        }
+      }
+    }
+    reject(new Error('ภาพใบเสร็จว่างเปล่า ระบบยกเลิกการพิมพ์ กรุณาลองใหม่'));
+  };
+  image.onerror = () => reject(new Error('เปิดภาพใบเสร็จก่อนพิมพ์ไม่สำเร็จ'));
+  image.src = dataUrl;
+});
+
+const renderReceiptBitmap = async (paperWidth: '58mm' | '80mm') => {
+  const receipt = document.getElementById('printable-receipt');
+  if (!(receipt instanceof HTMLElement)) throw new Error('ไม่พบใบเสร็จสำหรับพิมพ์');
+  await document.fonts?.ready;
+  await Promise.all(Array.from(receipt.querySelectorAll('img')).map(async (image) => {
+    if (image.complete) return;
+    try { await image.decode(); } catch { /* The renderer will report an unusable image below. */ }
+  }));
+  const widthDots = paperWidth === '58mm' ? 384 : 576;
+  const renderedWidth = Math.max(1, receipt.getBoundingClientRect().width);
+  const image = await toPng(receipt, {
+    backgroundColor: '#ffffff',
+    cacheBust: true,
+    pixelRatio: widthDots / renderedWidth,
+  });
+  if (!image.startsWith('data:image/png;base64,') || image.length < 2000) {
+    throw new Error('สร้างภาพใบเสร็จสำหรับเครื่องพิมพ์ไม่สำเร็จ');
+  }
+  await assertReceiptBitmapHasContent(image);
+  return image;
+};
+
+const splitReceiptBitmap = (dataUrl: string, maxChunkHeight = 640) => new Promise<string[]>((resolve, reject) => {
+  const image = new Image();
+  image.onload = () => {
+    if (!image.naturalWidth || !image.naturalHeight) {
+      reject(new Error('ภาพใบเสร็จไม่มีขนาดสำหรับพิมพ์'));
+      return;
+    }
+    const chunks: string[] = [];
+    for (let top = 0; top < image.naturalHeight; top += maxChunkHeight) {
+      const height = Math.min(maxChunkHeight, image.naturalHeight - top);
+      const canvas = document.createElement('canvas');
+      canvas.width = image.naturalWidth;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        reject(new Error('แบ่งภาพใบเสร็จสำหรับ iMin ไม่สำเร็จ'));
+        return;
+      }
+      context.fillStyle = '#ffffff';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(image, 0, top, image.naturalWidth, height, 0, 0, image.naturalWidth, height);
+      chunks.push(canvas.toDataURL('image/png'));
+    }
+    resolve(chunks);
+  };
+  image.onerror = () => reject(new Error('เปิดภาพใบเสร็จเพื่อแบ่งพิมพ์ไม่สำเร็จ'));
+  image.src = dataUrl;
+});
+
+const printReceiptOnImin = async (order: any, settings: any, paperWidth: '58mm' | '80mm', qrPayload = '') => {
+  if (/Android/i.test(navigator.userAgent)) {
+    await printIminRichReceipt({
+      text: receiptText(order, settings),
+      logoData: await preparePrinterLogo(settings.logoData || ''),
+      qrPayload,
+    }, paperWidth);
+    return 'rich' as const;
+  }
+  try {
+    const receiptImage = await renderReceiptBitmap(paperWidth);
+    await printIminBitmaps(await splitReceiptBitmap(receiptImage), paperWidth);
+    return 'bitmap' as const;
+  } catch (bitmapError) {
+    // Text printing is deliberately kept as the final hardware fallback. It is
+    // less visual, but a completed sale must never fail silently without a slip.
+    try {
+      await printIminText(receiptText(order, settings), paperWidth);
+      return 'text' as const;
+    } catch {
+      throw bitmapError;
+    }
+  }
+};
 
 export const ReceiptModal: React.FC = () => {
-  const { selectedOrderForReceipt, setSelectedOrderForReceipt, settings, showToast } = usePos();
-  const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>('80mm');
+  const { selectedOrderForReceipt, setSelectedOrderForReceipt, receiptBatch, setReceiptBatch, settings, showToast } = usePos();
+  const [paperWidth, setPaperWidth] = useState<'80mm' | '58mm'>(() => settings.printerType === 'thermal_58mm' ? '58mm' : '80mm');
   const [copied, setCopied] = useState(false);
   const [isPrinting, setIsPrinting] = useState(false);
+  const [isGeneratingQr, setIsGeneratingQr] = useState(false);
+  const [receiptQrDataUrl, setReceiptQrDataUrl] = useState('');
+  const [receiptQrPayload, setReceiptQrPayload] = useState('');
+  const [receiptQrAmountSatang, setReceiptQrAmountSatang] = useState(0);
+  const [receiptQrError, setReceiptQrError] = useState('');
+  const [printWithQr, setPrintWithQr] = useState(false);
+
+  useEffect(() => {
+    setReceiptQrDataUrl('');
+    setReceiptQrPayload('');
+    setReceiptQrAmountSatang(0);
+    setReceiptQrError('');
+    setPrintWithQr(false);
+  }, [selectedOrderForReceipt?.id]);
 
   if (!selectedOrderForReceipt) return null;
 
   const order = selectedOrderForReceipt;
+  const activeBatch = receiptBatch.length > 1 && receiptBatch.some((item) => item.id === order.id) ? receiptBatch : [];
+  const receiptIndex = activeBatch.findIndex((item) => item.id === order.id);
 
-  const handlePrint = async () => {
+  const closeReceipt = () => {
+    setSelectedOrderForReceipt(null);
+    setReceiptBatch([]);
+  };
+
+  const generateLockedReceiptQr = async () => {
+    const amountSatang = Math.round(order.total * 100);
+    if (amountSatang <= 0) throw new Error('ยอดใบเสร็จต้องมากกว่า 0 บาทจึงจะสร้าง QR ได้');
+    if (receiptQrDataUrl && receiptQrPayload && receiptQrAmountSatang === amountSatang) return { image: receiptQrDataUrl, payload: receiptQrPayload };
+
+    setIsGeneratingQr(true);
+    setReceiptQrError('');
+    try {
+      const result = await getPOSPaymentQR(amountSatang);
+      if (Number(result.amountSatang) !== amountSatang) throw new Error('ยอด QR ไม่ตรงกับยอดในใบเสร็จ ระบบยกเลิกการพิมพ์เพื่อความปลอดภัย');
+      if (!result.promptPayPayload) throw new Error('ต้องตั้งค่า PromptPay สำหรับสร้าง QR แบบล็อกยอดก่อน');
+      const image = await QRCode.toDataURL(result.promptPayPayload, { width: 360, margin: 1, errorCorrectionLevel: 'M' });
+      setReceiptQrDataUrl(image);
+      setReceiptQrPayload(result.promptPayPayload);
+      setReceiptQrAmountSatang(amountSatang);
+      return { image, payload: result.promptPayPayload };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'สร้าง QR สำหรับใบเสร็จไม่สำเร็จ';
+      setReceiptQrError(message);
+      throw new Error(message);
+    } finally {
+      setIsGeneratingQr(false);
+    }
+  };
+
+  const handlePrintAll = async () => {
+    if (activeBatch.length < 2) {
+      void handlePrint();
+      return;
+    }
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    const printWindow = isAndroid ? null : window.open('', '_blank', 'width=720,height=900');
+    if (!isAndroid && !printWindow) {
+      showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ทั้งหมด กรุณาอนุญาต Pop-up', 'warning');
+      return;
+    }
+    const original = order;
+    setIsPrinting(true);
+    setPrintWithQr(false);
+    try {
+      const images: string[] = [];
+      const nativeTextBatch = isAndroid;
+      if (!nativeTextBatch) {
+        for (const receipt of activeBatch) {
+          setSelectedOrderForReceipt(receipt);
+          await waitForReceiptLayout();
+          images.push(await renderReceiptBitmap(paperWidth));
+        }
+      }
+      setSelectedOrderForReceipt(original);
+      if (isAndroid) {
+        for (let index = 0; index < images.length; index += 1) {
+          try {
+            await printIminBitmaps(await splitReceiptBitmap(images[index]), paperWidth);
+          } catch (bitmapError) {
+            try {
+              await printIminText(receiptText(activeBatch[index], settings), paperWidth);
+            } catch {
+              throw bitmapError;
+            }
+          }
+        }
+        if (nativeTextBatch) {
+          for (const receipt of activeBatch) await printReceiptOnImin(receipt, settings, paperWidth);
+        }
+        showToast(`พิมพ์ใบเสร็จ ${activeBatch.length} ใบผ่าน InnerPrinter แล้ว`, 'success');
+      } else if (printWindow) {
+        printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>ใบเสร็จทั้งหมด</title><style>@page{size:${paperWidth} auto;margin:0}html,body{margin:0;background:#fff}.receipt{display:block;width:100%;height:auto;page-break-after:always}.receipt:last-child{page-break-after:auto}</style></head><body>${images.map((image) => `<img class="receipt" src="${image}" alt="ใบเสร็จ">`).join('')}<script>window.onload=()=>{window.print();window.onafterprint=()=>window.close()}<\/script></body></html>`);
+        printWindow.document.close();
+      }
+    } catch (error) {
+      printWindow?.close();
+      setSelectedOrderForReceipt(original);
+      showToast(error instanceof Error ? error.message : 'พิมพ์ใบเสร็จทั้งหมดไม่สำเร็จ', 'error');
+    } finally {
+      setIsPrinting(false);
+    }
+  };
+
+  const handlePrint = async (withQr = false) => {
     if (isPrinting) return;
     setIsPrinting(true);
+    let lockedQrPayload = '';
+    try {
+      if (withQr) lockedQrPayload = (await generateLockedReceiptQr()).payload;
+      setPrintWithQr(withQr);
+      await waitForReceiptLayout();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'สร้าง QR สำหรับใบเสร็จไม่สำเร็จ', 'error');
+      setIsPrinting(false);
+      return;
+    }
     if (/Android/i.test(navigator.userAgent)) {
       try {
-        const receiptText = document.getElementById('printable-receipt')?.innerText.trim();
-        if (!receiptText) throw new Error('ไม่พบข้อมูลใบเสร็จสำหรับพิมพ์');
-        await printIminText(receiptText, paperWidth);
-        showToast('พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว', 'success');
+        const mode = await printReceiptOnImin(order, settings, paperWidth, lockedQrPayload);
+        showToast(mode === 'rich'
+          ? (withQr ? 'พิมพ์ใบเสร็จใหม่พร้อมโลโก้และ QR ผ่าน iMin แล้ว' : 'พิมพ์ใบเสร็จใหม่พร้อมโลโก้ผ่าน iMin แล้ว')
+          : 'พิมพ์ใบเสร็จผ่าน iMin InnerPrinter แล้ว', 'success');
         setIsPrinting(false);
         return;
       } catch (error) {
@@ -34,42 +316,7 @@ export const ReceiptModal: React.FC = () => {
   };
 
   const handleCopyText = () => {
-    const textLines = [
-      `================================`,
-      `${settings.storeName}`,
-      order.vatRate > 0 ? `เลขประจำตัวผู้เสียภาษี: ${settings.taxId}` : '',
-      `โทร: ${settings.phone}`,
-      `--------------------------------`,
-      order.vatRate > 0 ? `ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ` : `ใบเสร็จรับเงิน`,
-      `เลขที่: ${order.orderNumber}`,
-      `วันที่: ${formatThaiDateTime(order.createdAt)}`,
-      `พนักงานขาย: ${order.cashierName}`,
-      `--------------------------------`,
-      ...order.items.map(
-        (it) =>
-          `${it.name}\n  ${it.quantity} x ${formatCurrency(it.price, settings.currencySymbol, settings.decimalPlaces)} = ${formatCurrency(it.total, settings.currencySymbol, settings.decimalPlaces)}`
-      ),
-      `--------------------------------`,
-      `รวมเงิน (Subtotal): ${formatCurrency(order.subtotal, settings.currencySymbol, settings.decimalPlaces)}`,
-      order.discount > 0
-        ? `ส่วนลด (Discount): -${formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}`
-        : '',
-      order.vatRate > 0 ? `ภาษีมูลค่าเพิ่ม (VAT ${order.vatRate}%): ${formatCurrency(order.vatAmount, settings.currencySymbol, settings.decimalPlaces)} (${order.isVatIncluded ? 'รวมในราคาสินค้า' : 'แยกนอก'})` : '',
-      `ยอดสุทธิ (Total): ${formatCurrency(order.total, settings.currencySymbol, settings.decimalPlaces)}`,
-      `วิธีชำระ: ${order.paymentMethod === 'cash' ? 'เงินสด' : order.paymentMethod === 'promptpay' ? 'PromptPay QR' : order.paymentMethod === 'card' ? 'บัตรเครดิต' : 'โอนเงิน'}`,
-      order.cashReceived
-        ? `รับเงิน: ${formatCurrency(order.cashReceived, settings.currencySymbol, settings.decimalPlaces)}`
-        : '',
-      order.change !== undefined
-        ? `เงินทอน: ${formatCurrency(order.change, settings.currencySymbol, settings.decimalPlaces)}`
-        : '',
-      `================================`,
-      `${settings.receiptFooterMessage}`,
-    ]
-      .filter(Boolean)
-      .join('\n');
-
-    navigator.clipboard.writeText(textLines);
+    navigator.clipboard.writeText(receiptText(order, settings));
     setCopied(true);
     showToast('คัดลอกข้อความใบเสร็จแล้ว', 'success');
     setTimeout(() => setCopied(false), 2000);
@@ -91,6 +338,7 @@ export const ReceiptModal: React.FC = () => {
             <h3 className="text-base font-bold text-slate-900 dark:text-white">
               {order.vatRate > 0 ? 'ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ' : 'ใบเสร็จรับเงิน'}
             </h3>
+            {activeBatch.length > 1 && <span className="rounded-full bg-yellow-100 px-2 py-1 text-[10px] font-black text-yellow-800">{receiptIndex + 1}/{activeBatch.length}</span>}
           </div>
 
           <div className="flex items-center gap-2">
@@ -120,7 +368,7 @@ export const ReceiptModal: React.FC = () => {
 
             <button
               id="close-receipt-modal-btn"
-              onClick={() => setSelectedOrderForReceipt(null)}
+              onClick={closeReceipt}
               className="p-1.5 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
             >
               <X className="w-5 h-5" />
@@ -148,6 +396,9 @@ export const ReceiptModal: React.FC = () => {
                 {order.vatRate > 0 && <>Tax ID: <span className="font-mono">{settings.taxId}</span> | </>}Tel:{' '}
                 <span className="font-mono">{settings.phone}</span>
               </div>
+              <div className="pt-1 text-[11px] font-bold">
+                {order.vatRate > 0 ? 'ใบเสร็จรับเงิน / ใบกำกับภาษีอย่างย่อ' : 'ใบเสร็จรับเงิน'}
+              </div>
             </div>
 
             {/* Receipt Meta */}
@@ -173,6 +424,7 @@ export const ReceiptModal: React.FC = () => {
                   <span className="font-mono text-[10px]">{order.referenceNumber}</span>
                 </div>
               )}
+              {order.customerNote && <div className="flex justify-between"><span className="text-slate-500">ลูกค้า:</span><span>{order.customerNote}</span></div>}
             </div>
 
             {/* Items table */}
@@ -217,7 +469,7 @@ export const ReceiptModal: React.FC = () => {
               </div>
               {order.discount > 0 && (
                 <div className="flex justify-between text-rose-600">
-                  <span>ส่วนลด ({order.discountType === 'percent' ? `${order.discount}%` : 'คูปอง'}):</span>
+                  <span>ส่วนลด ({order.discountType === 'percent' ? `${order.discountRate ?? 0}%` : 'จำนวนเงิน'}):</span>
                   <span>-{formatCurrency(order.discount, settings.currencySymbol, settings.decimalPlaces)}</span>
                 </div>
               )}
@@ -262,6 +514,15 @@ export const ReceiptModal: React.FC = () => {
               )}
             </div>
 
+            {printWithQr && receiptQrDataUrl && (
+              <div className="border-b border-dashed border-slate-300 py-3 text-center">
+                <p className="font-sans text-[11px] font-bold text-slate-900">สแกนชำระยอดตามใบเสร็จนี้</p>
+                <img src={receiptQrDataUrl} alt="QR PromptPay ล็อกยอดตามใบเสร็จ" className="mx-auto mt-2 h-36 w-36 object-contain" />
+                <p className="mt-1 font-sans text-[10px] font-semibold text-slate-600">ยอดล็อก {formatCurrency(receiptQrAmountSatang / 100, settings.currencySymbol, settings.decimalPlaces)}</p>
+                <p className="font-sans text-[9px] text-slate-500">อ้างอิงจากยอดสุทธิของใบเสร็จ {order.orderNumber}</p>
+              </div>
+            )}
+
             {/* Footer barcode & text */}
             <div className="pt-3 text-center space-y-2">
               {/* Barcode simulation */}
@@ -289,30 +550,56 @@ export const ReceiptModal: React.FC = () => {
         </div>
 
         {/* Modal Actions */}
-        <div className="px-6 py-4 bg-slate-50 dark:bg-slate-800/80 border-t border-slate-200 dark:border-slate-700/60 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
+        <div className="border-t border-slate-200 bg-slate-50 px-3 py-3 dark:border-slate-700/60 dark:bg-slate-800/80 sm:px-6">
+          {activeBatch.length > 1 && (
+            <div className="mb-2 flex items-center justify-end gap-2">
+              <button type="button" aria-label="ใบเสร็จก่อนหน้า" disabled={receiptIndex <= 0} onClick={() => setSelectedOrderForReceipt(activeBatch[receiptIndex - 1])} className="rounded-xl border border-slate-300 p-2 disabled:opacity-30 dark:border-slate-600"><ChevronLeft className="h-4 w-4" /></button>
+              <button type="button" aria-label="ใบเสร็จถัดไป" disabled={receiptIndex >= activeBatch.length - 1} onClick={() => setSelectedOrderForReceipt(activeBatch[receiptIndex + 1])} className="rounded-xl border border-slate-300 p-2 disabled:opacity-30 dark:border-slate-600"><ChevronRight className="h-4 w-4" /></button>
+              <button type="button" onClick={handlePrintAll} className="flex items-center gap-1.5 rounded-xl border border-slate-300 px-3 py-2 text-xs font-black dark:border-slate-600"><Files className="h-4 w-4" />พิมพ์ทั้งหมด</button>
+            </div>
+          )}
+
+          <div className="flex items-center gap-2 whitespace-nowrap">
             <button
               id="copy-receipt-btn"
               onClick={handleCopyText}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-200 text-xs font-bold transition-colors"
+              aria-label={copied ? 'คัดลอกข้อความแล้ว' : 'คัดลอกข้อความใบเสร็จ'}
+              title={copied ? 'คัดลอกแล้ว' : 'คัดลอกข้อความ'}
+              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-200 text-slate-800 transition-colors hover:bg-slate-300 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
             >
               {copied ? <Check className="w-4 h-4 text-emerald-500" /> : <Copy className="w-4 h-4" />}
-              <span>{copied ? 'คัดลอกแล้ว' : 'คัดลอกข้อความ'}</span>
             </button>
-          </div>
-
-          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1" />
+            <button
+              id="print-receipt-qr-btn"
+              onClick={() => void handlePrint(true)}
+              disabled={isPrinting || isGeneratingQr}
+              className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-sky-600 px-3 text-xs font-black text-white shadow-md shadow-sky-600/20 transition-all hover:bg-sky-500 disabled:cursor-wait disabled:opacity-60 sm:px-4"
+            >
+              {isGeneratingQr ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <QrCode className="h-4 w-4" />}
+              <span>{isGeneratingQr ? 'กำลังสร้าง…' : <><span className="sm:hidden">พิมพ์ QR</span><span className="hidden sm:inline">พิมพ์ใบเสร็จ (QR)</span></>}</span>
+            </button>
             <button
               id="print-receipt-btn"
               onClick={() => void handlePrint()}
               disabled={isPrinting}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 disabled:cursor-wait disabled:opacity-60 text-white text-xs font-black transition-all shadow-md shadow-red-600/20"
+              className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-red-600 px-3 text-xs font-black text-white shadow-md shadow-red-600/20 transition-all hover:bg-red-500 disabled:cursor-wait disabled:opacity-60 sm:px-4"
             >
               <Printer className="w-4 h-4" />
-              <span>{isPrinting ? 'กำลังพิมพ์…' : 'พิมพ์ใบเสร็จ (Print)'}</span>
+              <span>{isPrinting ? 'กำลังพิมพ์…' : <><span className="sm:hidden">พิมพ์</span><span className="hidden sm:inline">พิมพ์ใบเสร็จ</span></>}</span>
+            </button>
+            <button
+              id="close-receipt-action-btn"
+              type="button"
+              onClick={closeReceipt}
+              className="flex h-10 shrink-0 items-center gap-1.5 rounded-xl border border-slate-300 bg-white px-3 text-xs font-black text-slate-700 transition-colors hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+            >
+              <X className="h-4 w-4" />
+              <span>ปิด</span>
             </button>
           </div>
         </div>
+        {receiptQrError && <p className="bg-rose-50 px-6 py-2 text-xs font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{receiptQrError}</p>}
       </div>
     </div>
   );

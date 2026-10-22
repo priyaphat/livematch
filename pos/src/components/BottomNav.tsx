@@ -28,7 +28,7 @@ export const BottomNav: React.FC<BottomNavProps> = ({ permissions }) => {
   }, [dockSide]);
 
   // Calculate low stock alert count
-  const lowStockCount = products.filter((p) => p.stock <= p.minStockAlert).length;
+  const lowStockCount = products.filter((p) => p.trackStock && p.stock <= p.minStockAlert).length;
 
   const navItems = [
     {
