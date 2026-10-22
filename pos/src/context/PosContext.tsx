@@ -35,6 +35,7 @@ import {
   updatePOSProduct,
 } from '../api/posCatalog';
 import {
+  cancelPOSStockBatch,
   createPOSSupplier,
   createPOSStockBatch,
   deletePOSSupplier,
@@ -201,6 +202,7 @@ interface PosContextType {
     discountAmountSatang?: number;
     discountRateBps?: number;
   }) => Promise<boolean>;
+  cancelStockBatch: (batchId: string, reason: string) => Promise<boolean>;
 
   // Suppliers
   suppliers: Supplier[];
@@ -787,6 +789,11 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       externalReferenceNo: item.externalReferenceNo,
       performedBy: item.actorName || 'Admin',
       createdAt: item.createdAt,
+      status: item.status || 'active',
+      cancelledAt: item.cancelledAt,
+      cancelledByName: item.cancelledByName,
+      cancelReason: item.cancelReason,
+      canCancel: item.canCancel,
       items: movements,
     };
   };
@@ -2078,6 +2085,26 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
   };
 
+  const cancelStockBatch = async (batchId: string, reason: string): Promise<boolean> => {
+    try {
+      await cancelPOSStockBatch(batchId, reason);
+      await Promise.all([refreshPOSCatalog(), refreshPOSStock()]);
+      playBeep('success');
+      showToast('ยกเลิกเอกสารสต็อกและคืนยอดเรียบร้อยแล้ว', 'success');
+      return true;
+    } catch (requestError) {
+      let message = requestError instanceof Error ? requestError.message : 'ยกเลิกเอกสารสต็อกไม่สำเร็จ';
+      if (requestError instanceof POSApiError && requestError.code === 'STOCK_BATCH_CANCEL_INSUFFICIENT_STOCK') {
+        const productName = typeof requestError.details?.productName === 'string' ? requestError.details.productName : '';
+        const available = typeof requestError.details?.available === 'number' ? requestError.details.available : undefined;
+        const required = typeof requestError.details?.required === 'number' ? requestError.details.required : undefined;
+        message = `${message}${productName ? `: ${productName}` : ''}${available !== undefined && required !== undefined ? ` (คงเหลือ ${available}, ต้องใช้ ${required})` : ''}`;
+      }
+      showToast(message, 'error');
+      return false;
+    }
+  };
+
   // Suppliers CRUD
   const addSupplier = async (supplierData: Omit<Supplier, 'id' | 'productsCount'>): Promise<boolean> => {
     try {
@@ -2183,6 +2210,7 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         stockOut,
         adjustStock,
         batchStockOperation,
+        cancelStockBatch,
         suppliers,
         addSupplier,
         updateSupplier,

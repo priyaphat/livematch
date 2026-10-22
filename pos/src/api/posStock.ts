@@ -48,6 +48,8 @@ export interface POSStockMovementRecord {
   actorId: string;
   actorType: string;
   actorName: string;
+  reversalOfMovementId?: number;
+  reversedByMovementId?: number;
 }
 
 export interface POSStockMovementPage {
@@ -88,6 +90,13 @@ export interface POSStockBatchRecord {
   actorId: string;
   actorType: string;
   actorName: string;
+  status: 'active' | 'cancelled';
+  cancelledAt?: string;
+  cancelledById?: string;
+  cancelledByType?: string;
+  cancelledByName?: string;
+  cancelReason?: string;
+  canCancel: boolean;
   items: Array<{
     id: number;
     productId: string;
@@ -148,6 +157,13 @@ export function listPOSStockMovements(query: POSStockMovementQuery = {}) {
 
 export function createPOSStockBatch(input: POSStockBatchInput) {
   return posRequest<POSStockBatchRecord>('/api/admin/pos/stock/batch', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function cancelPOSStockBatch(id: string, reason: string) {
+  return posRequest<{ id: string; status: 'cancelled'; cancelReason: string }>(`/api/admin/pos/stock/batches/${encodeURIComponent(id)}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export async function listPOSSuppliers() {

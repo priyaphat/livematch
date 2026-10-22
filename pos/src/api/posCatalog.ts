@@ -44,11 +44,15 @@ export type POSProductInput = Omit<POSProductRecord, 'id' | 'lowStock'>;
 
 export class POSApiError extends Error {
   status: number;
+  code?: string;
+  details?: Record<string, unknown>;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, details?: Record<string, unknown>) {
     super(message);
     this.name = 'POSApiError';
     this.status = status;
+    this.code = typeof details?.code === 'string' ? details.code : undefined;
+    this.details = details;
   }
 }
 
@@ -74,7 +78,7 @@ export async function posRequest<T>(path: string, init: RequestInit = {}): Promi
     if (response.status === 401 || (response.status === 403 && payload.code === 'pos_not_enabled')) {
       window.dispatchEvent(new Event('livematch:pos-unauthorized'));
     }
-    throw new POSApiError(payload.error || payload.message || 'ไม่สามารถเชื่อมต่อ POS API ได้', response.status);
+    throw new POSApiError(payload.error || payload.message || 'ไม่สามารถเชื่อมต่อ POS API ได้', response.status, payload);
   }
   return payload as T;
 }

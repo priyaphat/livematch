@@ -237,6 +237,33 @@ func TestWeightedAverageCost(t *testing.T) {
 	}
 }
 
+func TestReversedAverageCostSatang(t *testing.T) {
+	tests := []struct {
+		name             string
+		currentQuantity  int
+		currentCost      int64
+		quantityDelta    int
+		valueDelta       int64
+		zeroQuantityCost int64
+		want             int64
+		valid            bool
+	}{
+		{name: "cancel receipt after later valuation input", currentQuantity: 20, currentCost: 10000, quantityDelta: -5, valueDelta: -60000, zeroQuantityCost: 9000, want: 9333, valid: true},
+		{name: "return stock out at original value", currentQuantity: 9, currentCost: 12222, quantityDelta: 3, valueDelta: 30000, want: 11667, valid: true},
+		{name: "zero quantity restores prior cost", currentQuantity: 5, currentCost: 12000, quantityDelta: -5, valueDelta: -60000, zeroQuantityCost: 10000, want: 10000, valid: true},
+		{name: "negative quantity rejected", currentQuantity: 2, currentCost: 10000, quantityDelta: -3, valueDelta: -10000, valid: false},
+		{name: "negative inventory value rejected", currentQuantity: 10, currentCost: 1000, quantityDelta: -1, valueDelta: -20000, valid: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, valid := reversedAverageCostSatang(tt.currentQuantity, tt.currentCost, tt.quantityDelta, tt.valueDelta, tt.zeroQuantityCost)
+			if got != tt.want || valid != tt.valid {
+				t.Fatalf("reversedAverageCostSatang()=(%d,%v), want (%d,%v)", got, valid, tt.want, tt.valid)
+			}
+		})
+	}
+}
+
 func TestStockReceiptRegressionKeepsOriginalCostFormula(t *testing.T) {
 	// Existing product: 6 units in primary + 4 in secondary at 100.00 each.
 	// Receipt: 5 units, gross 600.00, discount 10% => net 540.00.

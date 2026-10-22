@@ -35,6 +35,12 @@ import {
 
 const STOCK_PAGE_SIZE = 10;
 
+const stockMovementReasonLabel = (reason: string) => {
+  if (reason === 'restock_cancel') return 'ยกเลิกเอกสาร Stock In';
+  if (reason === 'stock_out_cancel') return 'ยกเลิกเอกสาร Stock Out';
+  return reason;
+};
+
 const stockMovementFromAPI = (item: POSStockMovementRecord): StockMovement => ({
   id: String(item.id),
   referenceNo: item.referenceNo || item.batchId || `MOV-${item.id}`,
@@ -58,6 +64,8 @@ const stockMovementFromAPI = (item: POSStockMovementRecord): StockMovement => ({
   netTotalValue: (item.netTotalSatang ?? 0) / 100,
   previousCostPerUnit: (item.previousCostSatang ?? 0) / 100,
   resultingCostPerUnit: (item.resultingCostSatang ?? 0) / 100,
+  reversalOfMovementId: item.reversalOfMovementId ? String(item.reversalOfMovementId) : undefined,
+  reversedByMovementId: item.reversedByMovementId ? String(item.reversedByMovementId) : undefined,
 });
 
 const normalizeWholeNumberInput = (value: string) => {
@@ -81,6 +89,7 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
     stockBatches,
     stockSummary,
     batchStockOperation,
+    cancelStockBatch,
     suppliers,
     addSupplier,
     deleteSupplier,
@@ -138,6 +147,9 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
 
   // View Batch Details Modal
   const [selectedBatchForDetails, setSelectedBatchForDetails] = useState<StockBatchSummary | null>(null);
+  const [batchPendingCancel, setBatchPendingCancel] = useState<StockBatchSummary | null>(null);
+  const [cancelBatchReason, setCancelBatchReason] = useState('');
+  const [isCancellingBatch, setIsCancellingBatch] = useState(false);
 
   // Supplier Modal States
   const [isAddSupplierModalOpen, setIsAddSupplierModalOpen] = useState<boolean>(false);
@@ -170,6 +182,23 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
     catalogCategories.find((category) => category.id === categoryId)?.name || categoryId;
 
   const batchSummaries = stockBatches;
+
+  const openBatchCancellation = (batch: StockBatchSummary) => {
+    setBatchPendingCancel(batch);
+    setCancelBatchReason('');
+  };
+
+  const confirmBatchCancellation = async () => {
+    if (!batchPendingCancel?.id || !cancelBatchReason.trim() || isCancellingBatch) return;
+    setIsCancellingBatch(true);
+    const cancelled = await cancelStockBatch(batchPendingCancel.id, cancelBatchReason.trim());
+    setIsCancellingBatch(false);
+    if (!cancelled) return;
+    setBatchPendingCancel(null);
+    setCancelBatchReason('');
+    setSelectedBatchForDetails(null);
+    setMovementRefreshKey((value) => value + 1);
+  };
 
   // Filter Master Products
   const filteredProducts = useMemo(() => {
@@ -1007,6 +1036,11 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                           <span className="text-xs text-slate-500 dark:text-slate-400 font-mono">
                             {formatThaiDateTime(batch.createdAt)}
                           </span>
+                          {batch.status === 'cancelled' && (
+                            <span className="inline-flex items-center gap-1 rounded-full border border-red-300 bg-red-50 px-2.5 py-1 text-[11px] font-black text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-400">
+                              <X className="h-3 w-3" /> ยกเลิกแล้ว
+                            </span>
+                          )}
                         </div>
 
                         <div className="text-xs text-slate-700 dark:text-slate-300">
@@ -1041,6 +1075,13 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                             <strong className="text-slate-900 dark:text-white font-mono">{batch.totalQuantity} ชิ้น</strong>
                           </span>
                         </div>
+                        {batch.status === 'cancelled' && (
+                          <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                            ยกเลิกโดย <strong>{batch.cancelledByName || '-'}</strong>
+                            {batch.cancelledAt ? ` · ${formatThaiDateTime(batch.cancelledAt)}` : ''}
+                            {batch.cancelReason ? ` · เหตุผล: ${batch.cancelReason}` : ''}
+                          </div>
+                        )}
                       </div>
 
                       {/* Right Action & Value */}
@@ -1052,13 +1093,25 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                           </span>
                         </div>
 
-                        <button
-                          onClick={() => setSelectedBatchForDetails(batch)}
-                          className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white text-xs font-bold border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
-                        >
-                          <Eye className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
-                          <span>ดูรายการสินค้าข้างใน ({batch.itemsCount})</span>
-                        </button>
+                        <div className="flex flex-wrap justify-end gap-2">
+                          {batch.canCancel && permissions.stock_adjust && (
+                            <button
+                              type="button"
+                              onClick={() => openBatchCancellation(batch)}
+                              className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-bold text-red-700 transition-colors hover:bg-red-600 hover:text-white dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-400 dark:hover:bg-red-600 dark:hover:text-white"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                              <span>ยกเลิกรายการ</span>
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setSelectedBatchForDetails(batch)}
+                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-800 dark:text-slate-200 hover:text-slate-900 dark:hover:text-white text-xs font-bold border border-slate-200 dark:border-slate-700 transition-colors shadow-xs"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-yellow-600 dark:text-yellow-400" />
+                            <span>ดูรายการสินค้าข้างใน ({batch.itemsCount})</span>
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
@@ -1195,7 +1248,13 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                           <span className="font-bold text-slate-900 dark:text-white">{m.afterStock}</span>
                         </td>
                         <td className="p-3.5 max-w-[220px]">
-                          <div className="truncate text-slate-800 dark:text-slate-200">{m.reason}</div>
+                          <div className="truncate text-slate-800 dark:text-slate-200">{stockMovementReasonLabel(m.reason)}</div>
+                          {m.reversalOfMovementId && (
+                            <div className="text-[10px] font-mono text-red-600 dark:text-red-400">ย้อนรายการ MOV-{m.reversalOfMovementId}</div>
+                          )}
+                          {m.reversedByMovementId && (
+                            <div className="text-[10px] font-mono text-slate-500 dark:text-slate-400">ถูกย้อนโดย MOV-{m.reversedByMovementId}</div>
+                          )}
                           {m.supplierName && (
                             <div className="text-[10px] text-yellow-700 dark:text-yellow-400/90 truncate">
                               🏢 {m.supplierName}
@@ -1981,6 +2040,11 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                     <span className="text-xs font-mono font-bold text-slate-900 dark:text-white bg-slate-100 dark:bg-slate-950 px-2 py-0.5 rounded-lg border border-slate-200 dark:border-slate-800">
                       เลขที่: {selectedBatchForDetails.referenceNo}
                     </span>
+                    {selectedBatchForDetails.status === 'cancelled' && (
+                      <span className="rounded-full border border-red-300 bg-red-50 px-2 py-0.5 text-[10px] font-black text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-400">
+                        ยกเลิกแล้ว
+                      </span>
+                    )}
                   </div>
                   <h3 className="text-lg font-black text-slate-900 dark:text-white mt-0.5">
                     {selectedBatchForDetails.type === 'in'
@@ -1998,6 +2062,15 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
                 <X className="w-5 h-5" />
               </button>
             </div>
+
+            {selectedBatchForDetails.status === 'cancelled' && (
+              <div className="shrink-0 rounded-2xl border border-red-200 bg-red-50 p-3 text-xs text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                <strong>เอกสารนี้ถูกยกเลิกแล้ว</strong>
+                <span className="ml-2">ผู้ยกเลิก: {selectedBatchForDetails.cancelledByName || '-'}</span>
+                {selectedBatchForDetails.cancelledAt && <span className="ml-2">เวลา: {formatThaiDateTime(selectedBatchForDetails.cancelledAt)}</span>}
+                <div className="mt-1">เหตุผล: {selectedBatchForDetails.cancelReason || '-'}</div>
+              </div>
+            )}
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 bg-slate-50 dark:bg-slate-950 p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 text-xs shrink-0">
               <div>
@@ -2165,11 +2238,87 @@ export const StockView: React.FC<{ permissions: POSPermissions }> = ({ permissio
               ) : (
                 <div className="text-xs"><span className="text-slate-500 block">มูลค่าจ่ายออกรวม</span><strong className="text-base font-mono text-yellow-600 dark:text-yellow-400">{formatCost(selectedBatchForDetails.totalCostValue, 2)}</strong></div>
               )}
+              <div className="flex items-center gap-2">
+                {selectedBatchForDetails.canCancel && permissions.stock_adjust && (
+                  <button
+                    type="button"
+                    onClick={() => openBatchCancellation(selectedBatchForDetails)}
+                    className="rounded-xl bg-red-600 px-5 py-2 text-xs font-bold text-white hover:bg-red-700"
+                  >
+                    ยกเลิกรายการ
+                  </button>
+                )}
+                <button
+                  onClick={() => setSelectedBatchForDetails(null)}
+                  className="px-5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-white"
+                >
+                  ปิดหน้าต่าง
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {batchPendingCancel && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-label="ยืนยันยกเลิกเอกสารสต็อก">
+          <div className="w-full max-w-lg space-y-4 rounded-3xl border border-red-200 bg-white p-5 text-slate-900 shadow-2xl dark:border-red-500/30 dark:bg-slate-900 dark:text-slate-100 sm:p-6">
+            <div className="flex items-start gap-3">
+              <div className="rounded-2xl bg-red-100 p-2.5 text-red-600 dark:bg-red-500/15 dark:text-red-400">
+                <AlertTriangle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black">ยืนยันยกเลิกเอกสาร {batchPendingCancel.referenceNo}</h3>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  ระบบจะสร้างรายการย้อนกลับและคำนวณจำนวนกับต้นทุนเฉลี่ยปัจจุบันใหม่ โดยยังเก็บเอกสารเดิมไว้ตรวจสอบ
+                </p>
+              </div>
+            </div>
+
+            <div className="max-h-44 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+              {batchPendingCancel.items.map((item) => (
+                <div key={item.id} className="flex items-center justify-between gap-3 text-xs">
+                  <span className="min-w-0 truncate font-bold">{item.productName}</span>
+                  <span className="shrink-0 font-mono text-slate-600 dark:text-slate-300">
+                    {batchPendingCancel.type === 'in' ? 'นำออก' : 'คืนเข้า'} {Math.abs(item.quantity)} ชิ้น
+                  </span>
+                </div>
+              ))}
+              <div className="flex items-center justify-between border-t border-slate-200 pt-2 text-xs dark:border-slate-800">
+                <span className="text-slate-500">มูลค่าเอกสาร</span>
+                <strong className="font-mono text-yellow-600 dark:text-yellow-400">{formatCost(batchPendingCancel.netTotalValue ?? batchPendingCancel.totalCostValue, 2)}</strong>
+              </div>
+            </div>
+
+            <label className="block text-xs font-bold">
+              เหตุผลยกเลิก <span className="text-red-500">*</span>
+              <textarea
+                autoFocus
+                maxLength={300}
+                value={cancelBatchReason}
+                onChange={(event) => setCancelBatchReason(event.target.value)}
+                placeholder="เช่น บันทึกจำนวนผิด, เลือกสินค้าผิด"
+                className="mt-2 min-h-24 w-full resize-y rounded-2xl border border-slate-300 bg-white px-3 py-2.5 text-sm outline-none focus:border-red-500 dark:border-slate-700 dark:bg-slate-950"
+              />
+              <span className="mt-1 block text-right text-[10px] font-normal text-slate-400">{cancelBatchReason.length}/300</span>
+            </label>
+
+            <div className="flex justify-end gap-2">
               <button
-                onClick={() => setSelectedBatchForDetails(null)}
-                className="px-5 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-800 dark:text-white"
+                type="button"
+                disabled={isCancellingBatch}
+                onClick={() => { setBatchPendingCancel(null); setCancelBatchReason(''); }}
+                className="rounded-xl bg-slate-100 px-4 py-2 text-sm font-bold text-slate-700 disabled:opacity-50 dark:bg-slate-800 dark:text-slate-200"
               >
-                ปิดหน้าต่าง
+                ปิด
+              </button>
+              <button
+                type="button"
+                disabled={!cancelBatchReason.trim() || isCancellingBatch}
+                onClick={confirmBatchCancellation}
+                className="rounded-xl bg-red-600 px-4 py-2 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isCancellingBatch ? 'กำลังยกเลิก...' : 'ยืนยันยกเลิกรายการ'}
               </button>
             </div>
           </div>

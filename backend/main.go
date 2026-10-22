@@ -1515,8 +1515,16 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_batches add column if not exists stock_location text not null default 'primary';
 		alter table pos_stock_batches add column if not exists source_stock_location text;
 		alter table pos_stock_batches add column if not exists destination_stock_location text;
+		alter table pos_stock_batches add column if not exists status text not null default 'active';
+		alter table pos_stock_batches add column if not exists cancelled_at timestamptz;
+		alter table pos_stock_batches add column if not exists cancelled_by_id text not null default '';
+		alter table pos_stock_batches add column if not exists cancelled_by_type text not null default '';
+		alter table pos_stock_batches add column if not exists cancelled_by_name text not null default '';
+		alter table pos_stock_batches add column if not exists cancel_reason text not null default '';
 		alter table pos_stock_batches drop constraint if exists pos_stock_batches_mode_check;
 		alter table pos_stock_batches add constraint pos_stock_batches_mode_check check (mode in ('in','out','adjust','transfer'));
+		alter table pos_stock_batches drop constraint if exists pos_stock_batches_status_check;
+		alter table pos_stock_batches add constraint pos_stock_batches_status_check check (status in ('active','cancelled'));
 		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_source_location_check check (source_stock_location is null or source_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		do $$ begin alter table pos_stock_batches add constraint pos_stock_batches_destination_location_check check (destination_stock_location is null or destination_stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
@@ -1547,8 +1555,9 @@ func (a *app) migrate(ctx context.Context) error {
 		alter table pos_stock_movements add column if not exists actor_type text not null default 'admin';
 		alter table pos_stock_movements add column if not exists actor_name text not null default '';
 		alter table pos_stock_movements add column if not exists stock_location text not null default 'primary';
+		alter table pos_stock_movements add column if not exists reversal_of_movement_id bigint references pos_stock_movements(id) on delete restrict;
 		alter table pos_stock_movements drop constraint if exists pos_stock_movements_reason_check;
-		alter table pos_stock_movements add constraint pos_stock_movements_reason_check check (reason in ('sale','void','restock','adjustment','transfer_out','transfer_in','match_use','match_return'));
+		alter table pos_stock_movements add constraint pos_stock_movements_reason_check check (reason in ('sale','void','restock','adjustment','transfer_out','transfer_in','match_use','match_return','restock_cancel','stock_out_cancel'));
 		do $$ begin alter table pos_stock_movements add constraint pos_stock_movements_stock_location_check check (stock_location in ('primary','secondary')); exception when duplicate_object then null; end $$;
 		update pos_stock_movements set unit_cost_satang=unit_cost_thb::bigint*100 where unit_cost_satang=0 and unit_cost_thb<>0;
 		update pos_stock_movements set gross_total_satang=total_cost_thb::bigint*100 where gross_total_satang=0 and total_cost_thb<>0;
@@ -1559,6 +1568,7 @@ func (a *app) migrate(ctx context.Context) error {
 		create index if not exists idx_pos_stock_movements_admin_created on pos_stock_movements(admin_id, created_at desc, id desc);
 		create index if not exists idx_pos_stock_movements_admin_location_created on pos_stock_movements(admin_id, stock_location, created_at desc, id desc);
 		create index if not exists idx_pos_stock_batch on pos_stock_movements(batch_id, id) where batch_id is not null;
+		create unique index if not exists idx_pos_stock_movement_reversal_once on pos_stock_movements(reversal_of_movement_id) where reversal_of_movement_id is not null;
 		create table if not exists match_shuttle_stock_usage (
 			id bigserial primary key,
 			admin_id text not null references admin_users(id) on delete cascade,

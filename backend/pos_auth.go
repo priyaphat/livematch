@@ -909,7 +909,7 @@ func authorizePOSPath(w http.ResponseWriter, user adminUser, method, path string
 		}
 		return requirePOSPermission(w, user, "settings")
 	}
-	if method == http.MethodPost && (path == "stock/batch" || (strings.HasPrefix(path, "products/") && strings.HasSuffix(path, "/stock"))) {
+	if method == http.MethodPost && (path == "stock/batch" || (strings.HasPrefix(path, "stock/batches/") && strings.HasSuffix(path, "/cancel")) || (strings.HasPrefix(path, "products/") && strings.HasSuffix(path, "/stock"))) {
 		return requirePOSPermission(w, user, "stock") && requirePOSPermission(w, user, "stock_adjust")
 	}
 	if strings.HasPrefix(path, "stock") || strings.HasPrefix(path, "suppliers") {

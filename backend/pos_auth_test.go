@@ -51,6 +51,13 @@ func TestPOSPermissionsEnforceRole(t *testing.T) {
 	if response.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d", response.Code)
 	}
+	response = httptest.NewRecorder()
+	if authorizePOSPath(response, cashier, http.MethodPost, "stock/batches/batch-1/cancel") {
+		t.Fatal("cashier stock cancellation should be denied")
+	}
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("expected cancellation 403, got %d", response.Code)
+	}
 	for _, path := range []string{"dashboard", "reports"} {
 		response = httptest.NewRecorder()
 		if authorizePOSPath(response, cashier, http.MethodGet, path) {
@@ -70,7 +77,7 @@ func TestPOSPermissionsEnforceRole(t *testing.T) {
 		t.Fatal("owner should be allowed to update permissions")
 	}
 	manager = adminUser{POSRole: "manager", POSPermissions: defaultPOSPermissions("manager")}
-	for _, request := range []struct{ method, path string }{{http.MethodPost, "stock/batch"}, {http.MethodPatch, "products/product-1"}, {http.MethodPost, "reports/export-authorize"}, {http.MethodPost, "sales/sale-1/void"}} {
+	for _, request := range []struct{ method, path string }{{http.MethodPost, "stock/batch"}, {http.MethodPost, "stock/batches/batch-1/cancel"}, {http.MethodPatch, "products/product-1"}, {http.MethodPost, "reports/export-authorize"}, {http.MethodPost, "sales/sale-1/void"}} {
 		if !authorizePOSPath(httptest.NewRecorder(), manager, request.method, request.path) {
 			t.Fatalf("manager default permissions should allow %s %s", request.method, request.path)
 		}

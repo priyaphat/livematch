@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -212,6 +213,13 @@ type posStockBatchRecord struct {
 	StockLocation            string                    `json:"stockLocation"`
 	SourceStockLocation      string                    `json:"sourceStockLocation,omitempty"`
 	DestinationStockLocation string                    `json:"destinationStockLocation,omitempty"`
+	Status                   string                    `json:"status"`
+	CancelledAt              string                    `json:"cancelledAt,omitempty"`
+	CancelledByID            string                    `json:"cancelledById,omitempty"`
+	CancelledByType          string                    `json:"cancelledByType,omitempty"`
+	CancelledByName          string                    `json:"cancelledByName,omitempty"`
+	CancelReason             string                    `json:"cancelReason,omitempty"`
+	CanCancel                bool                      `json:"canCancel"`
 	Items                    []posStockBatchItemRecord `json:"items"`
 }
 
@@ -595,6 +603,9 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 		a.deletePOSUnit(w, r, user, strings.TrimPrefix(path, "units/"))
 	case r.Method == http.MethodPost && path == "stock/batch":
 		a.adjustPOSStockBatch(w, r, user)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "stock/batches/") && strings.HasSuffix(path, "/cancel"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "stock/batches/"), "/cancel")
+		a.cancelPOSStockBatch(w, r, user, id)
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, "products/") && !strings.HasSuffix(path, "/stock"):
 		a.patchPOSProduct(w, r, user, strings.TrimPrefix(path, "products/"))
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "products/"):
@@ -854,6 +865,8 @@ type posStockMovementFilters struct {
 }
 
 const posStockMovementTypeSQL = `case
+	when m.reason='restock_cancel' then 'out'
+	when m.reason='stock_out_cancel' then 'in'
 	when coalesce(b.mode,'')<>'' then b.mode
 	when m.reason in ('restock','void') then 'in'
 	when m.reason='sale' then 'out'
@@ -898,28 +911,32 @@ func (a *app) listPOSStockMovementsPage(ctx context.Context, adminID string, raw
 
 	items := []map[string]any{}
 	queryArgs := append(args, filters.PageSize, (filters.Page-1)*filters.PageSize)
-	rows, err := a.db.QueryContext(ctx, `select m.id,m.product_id,p.name,p.sku,m.delta,m.balance,m.reason,m.note,coalesce(m.sale_id,''),coalesce(m.batch_id,''),coalesce(b.name,''),coalesce(b.supplier_name,''),coalesce(b.mode,''),m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang,m.resulting_cost_satang,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),m.actor_id,m.actor_type,m.actor_name,m.stock_location from pos_stock_movements m join pos_products p on p.id=m.product_id left join pos_stock_batches b on b.id=m.batch_id where `+filterSQL+` order by m.created_at desc,m.id desc limit $7 offset $8`, queryArgs...)
+	rows, err := a.db.QueryContext(ctx, `select m.id,m.product_id,p.name,p.sku,m.delta,m.balance,m.reason,m.note,coalesce(m.sale_id,''),coalesce(m.batch_id,''),coalesce(b.name,''),coalesce(b.supplier_name,''),coalesce(b.mode,''),m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang,m.resulting_cost_satang,to_char(m.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),m.actor_id,m.actor_type,m.actor_name,m.stock_location,coalesce(m.reversal_of_movement_id,0),coalesce((select reversal.id from pos_stock_movements reversal where reversal.reversal_of_movement_id=m.id limit 1),0) from pos_stock_movements m join pos_products p on p.id=m.product_id left join pos_stock_batches b on b.id=m.batch_id where `+filterSQL+` order by m.created_at desc,m.id desc limit $7 offset $8`, queryArgs...)
 	if err != nil {
 		return items, 0, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
+		var id, reversalOfMovementID, reversedByMovementID int64
 		var productID, productName, sku, reason, note, saleID, batchID, referenceNo, supplierName, batchMode, createdAt, actorID, actorType, actorName, stockLocation string
 		var delta, balance int
 		var unitCostSatang, grossTotalSatang, allocatedDiscountSatang, netTotalSatang, previousCostSatang, resultingCostSatang int64
-		if err = rows.Scan(&id, &productID, &productName, &sku, &delta, &balance, &reason, &note, &saleID, &batchID, &referenceNo, &supplierName, &batchMode, &unitCostSatang, &grossTotalSatang, &allocatedDiscountSatang, &netTotalSatang, &previousCostSatang, &resultingCostSatang, &createdAt, &actorID, &actorType, &actorName, &stockLocation); err != nil {
+		if err = rows.Scan(&id, &productID, &productName, &sku, &delta, &balance, &reason, &note, &saleID, &batchID, &referenceNo, &supplierName, &batchMode, &unitCostSatang, &grossTotalSatang, &allocatedDiscountSatang, &netTotalSatang, &previousCostSatang, &resultingCostSatang, &createdAt, &actorID, &actorType, &actorName, &stockLocation, &reversalOfMovementID, &reversedByMovementID); err != nil {
 			return items, 0, err
 		}
 		movementType := batchMode
-		if movementType == "" && (reason == "restock" || reason == "void") {
+		if reason == "restock_cancel" {
+			movementType = "out"
+		} else if reason == "stock_out_cancel" {
+			movementType = "in"
+		} else if movementType == "" && (reason == "restock" || reason == "void") {
 			movementType = "in"
 		} else if movementType == "" && reason == "sale" {
 			movementType = "out"
 		} else if movementType == "" {
 			movementType = "adjust"
 		}
-		items = append(items, map[string]any{"id": id, "referenceNo": referenceNo, "batchId": batchID, "productId": productID, "productName": productName, "productSku": sku, "type": movementType, "quantity": delta, "beforeStock": balance - delta, "afterStock": balance, "delta": delta, "balance": balance, "reason": reason, "note": note, "supplierName": supplierName, "saleId": saleID, "stockLocation": stockLocation, "unitCostSatang": unitCostSatang, "grossTotalSatang": grossTotalSatang, "allocatedDiscountSatang": allocatedDiscountSatang, "netTotalSatang": netTotalSatang, "previousCostSatang": previousCostSatang, "resultingCostSatang": resultingCostSatang, "createdAt": createdAt, "actorId": actorID, "actorType": actorType, "actorName": actorName})
+		items = append(items, map[string]any{"id": id, "referenceNo": referenceNo, "batchId": batchID, "productId": productID, "productName": productName, "productSku": sku, "type": movementType, "quantity": delta, "beforeStock": balance - delta, "afterStock": balance, "delta": delta, "balance": balance, "reason": reason, "note": note, "supplierName": supplierName, "saleId": saleID, "stockLocation": stockLocation, "unitCostSatang": unitCostSatang, "grossTotalSatang": grossTotalSatang, "allocatedDiscountSatang": allocatedDiscountSatang, "netTotalSatang": netTotalSatang, "previousCostSatang": previousCostSatang, "resultingCostSatang": resultingCostSatang, "createdAt": createdAt, "actorId": actorID, "actorType": actorType, "actorName": actorName, "reversalOfMovementId": reversalOfMovementID, "reversedByMovementId": reversedByMovementID})
 	}
 	return items, total, rows.Err()
 }
@@ -929,18 +946,19 @@ func (a *app) listPOSStockBatches(ctx context.Context, adminID string, limit int
 		limit = 100
 	}
 	items := []posStockBatchRecord{}
-	rows, err := a.db.QueryContext(ctx, `select id,name,mode,note,total_cost_thb,coalesce(supplier_id,''),supplier_name,external_reference_no,discount_type,discount_rate_bps,gross_total_satang,discount_satang,net_total_satang,total_cost_satang,to_char(created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),actor_id,actor_type,actor_name,stock_location,coalesce(source_stock_location,''),coalesce(destination_stock_location,'') from pos_stock_batches where admin_id=$1 order by created_at desc,id desc limit $2`, adminID, limit)
+	rows, err := a.db.QueryContext(ctx, `select id,name,mode,note,total_cost_thb,coalesce(supplier_id,''),supplier_name,external_reference_no,discount_type,discount_rate_bps,gross_total_satang,discount_satang,net_total_satang,total_cost_satang,to_char(created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),actor_id,actor_type,actor_name,stock_location,coalesce(source_stock_location,''),coalesce(destination_stock_location,''),status,coalesce(to_char(cancelled_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),''),cancelled_by_id,cancelled_by_type,cancelled_by_name,cancel_reason from pos_stock_batches where admin_id=$1 order by created_at desc,id desc limit $2`, adminID, limit)
 	if err != nil {
 		return items, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var item posStockBatchRecord
-		if err = rows.Scan(&item.ID, &item.Name, &item.Mode, &item.Note, &item.TotalCostTHB, &item.SupplierID, &item.SupplierName, &item.ExternalReferenceNo, &item.DiscountType, &item.DiscountRateBPS, &item.GrossTotalSatang, &item.DiscountSatang, &item.NetTotalSatang, &item.TotalCostSatang, &item.CreatedAt, &item.ActorID, &item.ActorType, &item.ActorName, &item.StockLocation, &item.SourceStockLocation, &item.DestinationStockLocation); err != nil {
+		if err = rows.Scan(&item.ID, &item.Name, &item.Mode, &item.Note, &item.TotalCostTHB, &item.SupplierID, &item.SupplierName, &item.ExternalReferenceNo, &item.DiscountType, &item.DiscountRateBPS, &item.GrossTotalSatang, &item.DiscountSatang, &item.NetTotalSatang, &item.TotalCostSatang, &item.CreatedAt, &item.ActorID, &item.ActorType, &item.ActorName, &item.StockLocation, &item.SourceStockLocation, &item.DestinationStockLocation, &item.Status, &item.CancelledAt, &item.CancelledByID, &item.CancelledByType, &item.CancelledByName, &item.CancelReason); err != nil {
 			return items, err
 		}
+		item.CanCancel = item.Status == "active" && (item.Mode == "in" || item.Mode == "out")
 		item.Items = []posStockBatchItemRecord{}
-		movementRows, queryErr := a.db.QueryContext(ctx, `select m.id,m.product_id,p.name,p.sku,m.delta,m.balance,m.unit_cost_thb,m.total_cost_thb,m.previous_cost_thb,m.resulting_cost_thb,m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang,m.resulting_cost_satang from pos_stock_movements m join pos_products p on p.id=m.product_id where m.batch_id=$1 order by m.id`, item.ID)
+		movementRows, queryErr := a.db.QueryContext(ctx, `select m.id,m.product_id,p.name,p.sku,m.delta,m.balance,m.unit_cost_thb,m.total_cost_thb,m.previous_cost_thb,m.resulting_cost_thb,m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang,m.resulting_cost_satang from pos_stock_movements m join pos_products p on p.id=m.product_id where m.batch_id=$1 and m.reversal_of_movement_id is null order by m.id`, item.ID)
 		if queryErr != nil {
 			return items, queryErr
 		}
@@ -1530,7 +1548,7 @@ func (a *app) writePOSPurchasesReport(w http.ResponseWriter, r *http.Request, ad
 	stockLocation := reportStockLocation(r.URL.Query())
 	base := `from pos_stock_batches b
 		left join pos_suppliers s on s.id=b.supplier_id and s.admin_id=b.admin_id
-		where b.admin_id=$1 and b.mode='in' and b.supplier_name<>'' and b.created_at>=$2 and b.created_at<$3
+		where b.admin_id=$1 and b.mode='in' and b.status='active' and b.supplier_name<>'' and b.created_at>=$2 and b.created_at<$3
 		and ($4='' or b.name ilike '%%'||$4||'%%' or b.external_reference_no ilike '%%'||$4||'%%' or b.supplier_name ilike '%%'||$4||'%%' or coalesce(s.code,'') ilike '%%'||$4||'%%' or b.actor_name ilike '%%'||$4||'%%'
 			or exists(select 1 from pos_stock_movements sm join pos_products sp on sp.id=sm.product_id where sm.batch_id=b.id and (sp.name ilike '%%'||$4||'%%' or sp.sku ilike '%%'||$4||'%%')))
 		and ($5='' or b.supplier_id=$5)`
@@ -3129,6 +3147,174 @@ func (a *app) adjustPOSStockBatch(w http.ResponseWriter, r *http.Request, user a
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": batchID, "grossTotalSatang": grossTotalSatang, "discountSatang": discountSatang, "netTotalSatang": totalBatchCostSatang})
+}
+
+func reversedAverageCostSatang(currentQuantity int, currentCostSatang int64, quantityDelta int, valueDeltaSatang int64, zeroQuantityCostSatang int64) (int64, bool) {
+	resultingQuantity := currentQuantity + quantityDelta
+	if currentQuantity < 0 || resultingQuantity < 0 || currentCostSatang < 0 {
+		return 0, false
+	}
+	if currentQuantity > 0 && currentCostSatang > math.MaxInt64/int64(currentQuantity) {
+		return 0, false
+	}
+	resultingValue := int64(currentQuantity)*currentCostSatang + valueDeltaSatang
+	if resultingValue < 0 {
+		return 0, false
+	}
+	if resultingQuantity == 0 {
+		if zeroQuantityCostSatang < 0 {
+			return 0, false
+		}
+		return zeroQuantityCostSatang, true
+	}
+	return (resultingValue + int64(resultingQuantity)/2) / int64(resultingQuantity), true
+}
+
+func (a *app) cancelPOSStockBatch(w http.ResponseWriter, r *http.Request, user adminUser, rawID string) {
+	id := strings.TrimSpace(rawID)
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if id == "" || json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body) != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลการยกเลิกไม่ถูกต้อง", "code": "INVALID_STOCK_BATCH_CANCELLATION"})
+		return
+	}
+	body.Reason = strings.TrimSpace(body.Reason)
+	if body.Reason == "" || utf8.RuneCountInString(body.Reason) > 300 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "กรุณาระบุเหตุผลยกเลิกไม่เกิน 300 ตัวอักษร", "code": "INVALID_STOCK_BATCH_CANCELLATION_REASON"})
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(r.Context(), `select pg_advisory_xact_lock(hashtext($1))`, "pos-stock-batch-cancel:"+user.ID+":"+id); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	var mode, status, stockLocation, batchName string
+	err = tx.QueryRowContext(r.Context(), `select mode,status,stock_location,name from pos_stock_batches where id=$1 and admin_id=$2 for update`, id, user.ID).Scan(&mode, &status, &stockLocation, &batchName)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ไม่พบเอกสารสต็อก", "code": "STOCK_BATCH_NOT_FOUND"})
+		return
+	}
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if status == "cancelled" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "เอกสารนี้ถูกยกเลิกไปแล้ว", "code": "STOCK_BATCH_ALREADY_CANCELLED"})
+		return
+	}
+	if mode != "in" && mode != "out" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ยกเลิกได้เฉพาะเอกสาร Stock In และ Stock Out", "code": "STOCK_BATCH_TYPE_NOT_CANCELLABLE"})
+		return
+	}
+	type originalMovement struct {
+		id, netTotalSatang, grossTotalSatang, allocatedDiscountSatang, unitCostSatang, previousCostSatang int64
+		productID, productName, location                                                                  string
+		delta                                                                                             int
+	}
+	movements := []originalMovement{}
+	rows, queryErr := tx.QueryContext(r.Context(), `select m.id,m.product_id,p.name,m.delta,m.stock_location,m.unit_cost_satang,m.gross_total_satang,m.allocated_discount_satang,m.net_total_satang,m.previous_cost_satang from pos_stock_movements m join pos_products p on p.id=m.product_id and p.admin_id=m.admin_id where m.batch_id=$1 and m.admin_id=$2 and m.reversal_of_movement_id is null order by m.product_id,m.id`, id, user.ID)
+	if queryErr != nil {
+		writePOSInternalError(w, r, queryErr)
+		return
+	}
+	for rows.Next() {
+		var movement originalMovement
+		if queryErr = rows.Scan(&movement.id, &movement.productID, &movement.productName, &movement.delta, &movement.location, &movement.unitCostSatang, &movement.grossTotalSatang, &movement.allocatedDiscountSatang, &movement.netTotalSatang, &movement.previousCostSatang); queryErr != nil {
+			rows.Close()
+			writePOSInternalError(w, r, queryErr)
+			return
+		}
+		movements = append(movements, movement)
+	}
+	queryErr = rows.Err()
+	rows.Close()
+	if queryErr != nil {
+		writePOSInternalError(w, r, queryErr)
+		return
+	}
+	if len(movements) == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "เอกสารไม่มีรายการต้นฉบับสำหรับย้อนกลับ", "code": "STOCK_BATCH_CANCEL_INVALID_VALUE"})
+		return
+	}
+	auditItems := make([]map[string]any, 0, len(movements))
+	for _, movement := range movements {
+		var primaryStock, secondaryStock int
+		var currentCostSatang int64
+		if err = tx.QueryRowContext(r.Context(), `select stock_quantity,secondary_stock_quantity,cost_satang from pos_products where id=$1 and admin_id=$2 for update`, movement.productID, user.ID).Scan(&primaryStock, &secondaryStock, &currentCostSatang); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		quantity := movement.delta
+		if quantity < 0 {
+			quantity = -quantity
+		}
+		locationStock := primaryStock
+		if movement.location == "secondary" {
+			locationStock = secondaryStock
+		}
+		reversalDelta := quantity
+		valueDeltaSatang := movement.netTotalSatang
+		reason := "stock_out_cancel"
+		if mode == "in" {
+			reversalDelta = -quantity
+			valueDeltaSatang = -movement.netTotalSatang
+			reason = "restock_cancel"
+			if locationStock < quantity {
+				writeJSON(w, http.StatusConflict, map[string]any{"error": "สต็อกสินค้าไม่เพียงพอสำหรับยกเลิก Stock In", "code": "STOCK_BATCH_CANCEL_INSUFFICIENT_STOCK", "productId": movement.productID, "productName": movement.productName, "required": quantity, "available": locationStock, "stockLocation": movement.location})
+				return
+			}
+		}
+		newLocationStock := locationStock + reversalDelta
+		newCostSatang, valid := reversedAverageCostSatang(primaryStock+secondaryStock, currentCostSatang, reversalDelta, valueDeltaSatang, movement.previousCostSatang)
+		if mode == "in" {
+			var hasLaterValuationInput bool
+			if err = tx.QueryRowContext(r.Context(), `select exists(select 1 from pos_stock_movements where admin_id=$1 and product_id=$2 and id>$3 and reason in ('restock','restock_cancel','stock_out_cancel'))`, user.ID, movement.productID, movement.id).Scan(&hasLaterValuationInput); err != nil {
+				writePOSInternalError(w, r, err)
+				return
+			}
+			if !hasLaterValuationInput {
+				newCostSatang, valid = movement.previousCostSatang, movement.previousCostSatang >= 0
+			}
+		}
+		if !valid {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": "มูลค่าสินค้าคงเหลือไม่เพียงพอสำหรับย้อนเอกสาร", "code": "STOCK_BATCH_CANCEL_INVALID_VALUE", "productId": movement.productID, "productName": movement.productName})
+			return
+		}
+		if movement.location == "secondary" {
+			_, err = tx.ExecContext(r.Context(), `update pos_products set secondary_stock_quantity=$3,cost_satang=$4,cost_thb=$5,updated_at=now() where id=$1 and admin_id=$2`, movement.productID, user.ID, newLocationStock, newCostSatang, roundedBaht(newCostSatang))
+		} else {
+			_, err = tx.ExecContext(r.Context(), `update pos_products set stock_quantity=$3,cost_satang=$4,cost_thb=$5,updated_at=now() where id=$1 and admin_id=$2`, movement.productID, user.ID, newLocationStock, newCostSatang, roundedBaht(newCostSatang))
+		}
+		if err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		note := "ยกเลิกเอกสาร " + batchName + " • " + body.Reason
+		if _, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,batch_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,allocated_discount_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location,reversal_of_movement_id) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`, user.ID, movement.productID, id, reversalDelta, newLocationStock, reason, note, posActorID(user), posActorType(user), posActorName(user), roundedBaht(movement.unitCostSatang), roundedBaht(movement.netTotalSatang), roundedBaht(currentCostSatang), roundedBaht(newCostSatang), movement.unitCostSatang, movement.grossTotalSatang, movement.allocatedDiscountSatang, movement.netTotalSatang, currentCostSatang, newCostSatang, movement.location, movement.id); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+		auditItems = append(auditItems, map[string]any{"productId": movement.productID, "delta": reversalDelta, "beforeQuantity": locationStock, "afterQuantity": newLocationStock, "beforeCostSatang": currentCostSatang, "afterCostSatang": newCostSatang, "reversalOfMovementId": movement.id})
+	}
+	if _, err = tx.ExecContext(r.Context(), `update pos_stock_batches set status='cancelled',cancelled_at=now(),cancelled_by_id=$2,cancelled_by_type=$3,cancelled_by_name=$4,cancel_reason=$5 where id=$1 and admin_id=$6 and status='active'`, id, posActorID(user), posActorType(user), posActorName(user), body.Reason, user.ID); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "cancel_pos_stock_batch", "pos_stock_batch", id, map[string]any{"adminId": user.ID, "mode": mode, "reason": body.Reason, "items": auditItems}); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "status": "cancelled", "cancelReason": body.Reason})
 }
 
 func ensureBillingAccountTx(ctx context.Context, tx *sql.Tx, adminID, kind, sourceID, name, phone string) (string, error) {

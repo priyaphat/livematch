@@ -129,6 +129,8 @@ export interface StockMovement {
   netTotalValue?: number;
   previousCostPerUnit?: number;
   resultingCostPerUnit?: number;
+  reversalOfMovementId?: string;
+  reversedByMovementId?: string;
 }
 
 export interface BatchStockOperationItem {
@@ -160,6 +162,11 @@ export interface StockBatchSummary {
   netTotalValue?: number;
   discountType?: 'none' | 'amount' | 'percent';
   discountRate?: number;
+  status: 'active' | 'cancelled';
+  cancelledAt?: string;
+  cancelledByName?: string;
+  cancelReason?: string;
+  canCancel: boolean;
 }
 
 export interface StockSummary {
