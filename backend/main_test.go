@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
@@ -25,6 +26,54 @@ import (
 type countingTTSSynthesizer struct {
 	mu    sync.Mutex
 	calls int
+}
+
+func TestValidateMemberAvatar(t *testing.T) {
+	valid := image.NewRGBA(image.Rect(0, 0, 720, 480))
+	var validPNG bytes.Buffer
+	if err := png.Encode(&validPNG, valid); err != nil {
+		t.Fatal(err)
+	}
+	if mimeType, err := validateMemberAvatar(validPNG.Bytes()); err != nil || mimeType != "image/png" {
+		t.Fatalf("validateMemberAvatar(valid) = %q, %v", mimeType, err)
+	}
+
+	oversized := image.NewRGBA(image.Rect(0, 0, 721, 300))
+	var oversizedPNG bytes.Buffer
+	if err := png.Encode(&oversizedPNG, oversized); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := validateMemberAvatar(oversizedPNG.Bytes()); err == nil || !strings.Contains(err.Error(), "720") {
+		t.Fatalf("expected dimension rejection, got %v", err)
+	}
+	if _, err := validateMemberAvatar([]byte("not-an-image")); err == nil {
+		t.Fatal("expected invalid image rejection")
+	}
+	if got := memberAvatarURL("member 1", 3); got != "/api/member-avatar/member%201?v=3" {
+		t.Fatalf("memberAvatarURL = %q", got)
+	}
+}
+
+func TestBackofficeDetailPagination(t *testing.T) {
+	tests := []struct {
+		name         string
+		url          string
+		wantPage     int
+		wantPageSize int
+	}{
+		{name: "requested page", url: "/api/backoffice/admins/a?sessionPage=3&sessionPageSize=20", wantPage: 3, wantPageSize: 20},
+		{name: "defaults invalid values", url: "/api/backoffice/admins/a?sessionPage=0&sessionPageSize=500", wantPage: 1, wantPageSize: 10},
+		{name: "allows minimum page size", url: "/api/backoffice/admins/a?sessionPage=2&sessionPageSize=5", wantPage: 2, wantPageSize: 5},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, test.url, nil)
+			page, pageSize := backofficeDetailPagination(req, "session", 10)
+			if page != test.wantPage || pageSize != test.wantPageSize {
+				t.Fatalf("got page=%d pageSize=%d; want page=%d pageSize=%d", page, pageSize, test.wantPage, test.wantPageSize)
+			}
+		})
+	}
 }
 
 func (s *countingTTSSynthesizer) Synthesize(_ context.Context, text, voice string) ([]byte, error) {
@@ -254,6 +303,45 @@ func TestSlipOKQuotaAndVerification(t *testing.T) {
 	}
 }
 
+func TestSlipOKCode1010SchedulesRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"code":    1010,
+			"message": "เนื่องจากเป็นสลิปจากธนาคารไทยพาณิชย์ กรุณารอการตรวจสอบสลิปหลังการโอนประมาณ 2 นาที",
+			"data": map[string]any{
+				"qrcodeData": "SCB-QR-PAYLOAD",
+				"bankCode":   "014",
+				"delay":      2,
+			},
+		})
+	}))
+	defer server.Close()
+	previous := slipOKAPIBaseURL
+	slipOKAPIBaseURL = server.URL
+	defer func() { slipOKAPIBaseURL = previous }()
+
+	result := (&app{}).checkSlipOK(t.Context(), slipOKSettings{Enabled: true, BranchID: "branch-1", APIKey: "secret"}, "data:image/png;base64,aGVsbG8=", 100)
+	if result.Passed || result.Definitive || !result.Retryable || result.Status != "pending_retry" || result.ErrorCode != 1010 || result.RetryAfter != 2*time.Minute || result.QRPayload != "SCB-QR-PAYLOAD" {
+		t.Fatalf("code 1010 must wait for retry without rejection: %#v", result)
+	}
+}
+
+func TestSlipOKTransientHTTPFailureSchedulesRetry(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "45")
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"message": "temporarily unavailable"})
+	}))
+	defer server.Close()
+	previous := slipOKAPIBaseURL
+	slipOKAPIBaseURL = server.URL
+	defer func() { slipOKAPIBaseURL = previous }()
+
+	result := (&app{}).checkSlipOK(t.Context(), slipOKSettings{Enabled: true, BranchID: "branch-1", APIKey: "secret"}, "data:image/png;base64,aGVsbG8=", 100)
+	if !result.Retryable || result.Definitive || result.Status != "pending_retry" || result.RetryAfter != 45*time.Second {
+		t.Fatalf("transient provider failure must schedule retry: %#v", result)
+	}
+}
+
 func TestMaskSecret(t *testing.T) {
 	if got := maskSecret("1234567890abcdef"); got != "1234••••••••cdef" {
 		t.Fatalf("unexpected masked secret %q", got)
@@ -272,6 +360,34 @@ func TestNormalizeSlipOKBranchID(t *testing.T) {
 		if got := normalizeSlipOKBranchID(input); got != expected {
 			t.Fatalf("normalizeSlipOKBranchID(%q) = %q, want %q", input, got, expected)
 		}
+	}
+}
+
+func TestParseSlipOKUsageMonth(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 23, 30, 0, 0, bangkokLocation)
+	current, err := parseSlipOKUsageMonth("", now)
+	if err != nil || current.Format("2006-01") != "2026-09" {
+		t.Fatalf("default month = %s, %v", current.Format("2006-01"), err)
+	}
+	historical, err := parseSlipOKUsageMonth("2025-12", now)
+	if err != nil || historical.Format("2006-01") != "2025-12" {
+		t.Fatalf("historical month = %s, %v", historical.Format("2006-01"), err)
+	}
+	for _, invalid := range []string{"2026-9", "2026-13", "September"} {
+		if _, err = parseSlipOKUsageMonth(invalid, now); err == nil {
+			t.Fatalf("expected %q to be rejected", invalid)
+		}
+	}
+}
+
+func TestSlipOKUsageWithoutProviderDoesNotExposeProviderQuota(t *testing.T) {
+	usage := slipOKMonthlyUsage{Month: "2026-09", Used: 7, Limit: 20, LimitEnabled: true}
+	payload, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "provider") {
+		t.Fatalf("user-admin usage payload exposed provider quota: %s", payload)
 	}
 }
 
@@ -412,17 +528,160 @@ func TestCreateManualPendingMatchKeepsSelectedPositionsWithoutCoupon(t *testing.
 	}
 }
 
-func TestCreateManualPendingMatchSupportsOneOrTwoPlayersPerTeam(t *testing.T) {
+func TestLiberoCanBePreparedWhileLiveButCannotStartTwice(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{Levels: []string{"middle"}},
-		Players:  []Player{{ID: 1, Active: true}, {ID: 2, Active: true}, {ID: 3, Active: true}},
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Active: true, Libero: true, Coupon: true, Level: "middle"},
+			{ID: 2, Name: "คู่เดิม", Active: true, Level: "middle"},
+			{ID: 3, Name: "คนใหม่ A", Active: true, Level: "middle"},
+			{ID: 4, Name: "คนใหม่ B", Active: true, Level: "middle"},
+			{ID: 5, Name: "คนใหม่ C", Active: true, Level: "middle"},
+		},
+		Live: []Match{{ID: 10, Court: "สนาม 2", A1: 1, B1: 2}},
 	}
-	created, err := createManualPendingMatch(&state, Match{A1: 1, B1: 2, B2: 3, Level: "middle"})
+	created, err := createManualPendingMatch(&state, Match{A1: 1, A2: 3, B1: 4, B2: 5, Level: "middle"})
 	if err != nil {
-		t.Fatalf("expected 1v2 match to be accepted: %v", err)
+		t.Fatalf("live libero should be available for a future match: %v", err)
 	}
-	if created.A2 != 0 || created.B2 != 3 || created.ShuttlePricingMode != shuttlePricingSplit {
-		t.Fatalf("unexpected flexible team match: %#v", created)
+	state.NextIDs.Match++
+	created.ID = state.NextIDs.Match
+	state.Pending = nil
+	state.Queue = []Match{created}
+	conflicts := queuedMatchLiveConflicts(state, created.ID)
+	if len(conflicts) != 1 || conflicts[0].PlayerID != 1 || conflicts[0].Court != "สนาม 2" {
+		t.Fatalf("expected the live libero to block starting the queued match: %#v", conflicts)
+	}
+	state.Live = nil
+	if conflicts = queuedMatchLiveConflicts(state, created.ID); len(conflicts) != 0 {
+		t.Fatalf("finished live match should release the libero: %#v", conflicts)
+	}
+}
+
+func TestLiberoCanBePreparedInMultiplePendingAndQueuedMatches(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Active: true, Libero: true, Coupon: true, Level: "middle"},
+			{ID: 2, Active: true, Level: "middle"},
+			{ID: 3, Active: true, Level: "middle"},
+			{ID: 4, Active: true, Level: "middle"},
+			{ID: 5, Active: true, Level: "middle"},
+			{ID: 6, Active: true, Level: "middle"},
+			{ID: 7, Active: true, Level: "middle"},
+		},
+		Queue: []Match{{ID: 10, A1: 1, A2: 2, B1: 3, B2: 4}},
+	}
+
+	created, err := createManualPendingMatch(&state, Match{A1: 1, A2: 5, B1: 6, B2: 7, Level: "middle"})
+	if err != nil {
+		t.Fatalf("queued libero should be available for another future match: %v", err)
+	}
+	if !slices.Contains(matchPlayers(created), 1) || len(state.Pending) != 1 {
+		t.Fatalf("unexpected future match: %#v", created)
+	}
+	if _, err := createManualPendingMatch(&state, Match{A1: 1, A2: 1, B1: 6, B2: 7, Level: "middle"}); err == nil {
+		t.Fatal("the same libero must not appear twice in one match")
+	}
+}
+
+func TestRandomMatchUsesLiberoOncePerActionAndAgainOnNextAction(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Libero: true, Level: "middle"},
+			{ID: 2, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Active: true, Coupon: true, Level: "middle"},
+		},
+	}
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("first random failed: %v", err)
+	}
+	if len(state.Pending) != 1 {
+		t.Fatalf("one random action should create one match with the available libero, got %d", len(state.Pending))
+	}
+	state.Players = append(state.Players,
+		Player{ID: 5, Active: true, Coupon: true, Level: "middle"},
+		Player{ID: 6, Active: true, Coupon: true, Level: "middle"},
+		Player{ID: 7, Active: true, Coupon: true, Level: "middle"},
+	)
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("second random should reuse the queued libero: %v", err)
+	}
+	if len(state.Pending) != 2 || !slices.Contains(matchPlayers(state.Pending[1]), 1) {
+		t.Fatalf("expected the next action to schedule the libero again: %#v", state.Pending)
+	}
+}
+
+func TestPairingGroupsExposeQueuedLiberoAndOptionalNotReadyPlayers(t *testing.T) {
+	state := SessionState{
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Active: true, Coupon: true, Libero: true, Level: "middle"},
+			{ID: 2, Name: "ยังไม่เปิดคูปอง", Active: true, Coupon: false, Level: "middle"},
+		},
+		Pending: []Match{{ID: -1, A1: 1}},
+		Queue:   []Match{{ID: 2, B1: 1}},
+		Live:    []Match{{ID: 1, Court: "สนาม 3", A1: 1}},
+	}
+	busy := map[int]bool{}
+	for _, match := range append(append([]Match{}, state.Pending...), state.Queue...) {
+		for _, id := range matchPlayers(match) {
+			player := playerByID(state.Players, id)
+			if player == nil || !player.Libero {
+				busy[id] = true
+			}
+		}
+	}
+	groups := buildPairingGroups(state, busy, false)
+	if len(groups) != 2 || groups[0].ids[0] != 1 || !groups[0].libero || groups[1].coupon {
+		t.Fatalf("unexpected coupon groups: %#v", groups)
+	}
+	pendingCount, queueCount, liveCourts := pairingScheduleForPlayers(state, []int{1})
+	if pendingCount != 1 || queueCount != 1 || !slices.Equal(liveCourts, []string{"สนาม 3"}) {
+		t.Fatalf("unexpected libero schedule pending=%d queue=%d courts=%#v", pendingCount, queueCount, liveCourts)
+	}
+	readyOnly := buildPairingGroups(state, busy, true)
+	if len(readyOnly) != 1 || readyOnly[0].ids[0] != 1 {
+		t.Fatalf("ready-only groups should preserve compatibility: %#v", readyOnly)
+	}
+}
+
+func TestRandomMatchIncludesLiveLiberoButNotRegularLivePlayer(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Libero: true, Level: "middle"},
+			{ID: 2, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Active: true, Coupon: true, Level: "middle"},
+			{ID: 5, Active: true, Coupon: true, Level: "middle"},
+		},
+		Live: []Match{{ID: 10, A1: 1, B1: 5}},
+	}
+	if err := randomMatch(&state); err != nil {
+		t.Fatalf("random should use a live libero with three free players: %v", err)
+	}
+	if len(state.Pending) != 1 || !slices.Contains(matchPlayers(state.Pending[0]), 1) || slices.Contains(matchPlayers(state.Pending[0]), 5) {
+		t.Fatalf("unexpected random selection: %#v", state.Pending)
+	}
+}
+
+func TestCreateManualPendingMatchRejectsUnevenTeamSizes(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players:  []Player{{ID: 1, Active: true}, {ID: 2, Active: true}, {ID: 3, Active: true}, {ID: 4, Active: true}},
+	}
+	for _, requested := range []Match{
+		{A1: 1, B1: 2, B2: 3, Level: "middle"},
+		{A1: 1, A2: 2, B1: 3, Level: "middle"},
+	} {
+		if _, err := createManualPendingMatch(&state, requested); err == nil {
+			t.Fatalf("expected uneven manual match to be rejected: %#v", requested)
+		}
+	}
+	if len(state.Pending) != 0 {
+		t.Fatalf("uneven matches must not be created: %#v", state.Pending)
 	}
 }
 
@@ -809,6 +1068,31 @@ func TestPlayerPaymentSummaryIncludesShuttleBrandDetailsAndCompactMatchHistory(t
 	}
 }
 
+func TestPlayerPaymentSummaryChargesOnlyAmountAddedAfterResume(t *testing.T) {
+	state := SessionState{
+		Session:  SessionInfo{Type: "liveMatch"},
+		Settings: Settings{EntryFee: 100, ShuttleFee: 40, ShuttleBrands: []ShuttleBrand{{ID: "default", Name: "ลูกแบด", Price: 40, Active: true}}},
+		Players:  []Player{{ID: 1, Name: "Member", Active: true, SettledAmountSatang: 10000}},
+	}
+
+	before := playerPaymentSummary(state, state.Players[0])
+	if before.FullTotalSatang != 10000 || before.SettledAmountSatang != 10000 || before.TotalSatang != 0 {
+		t.Fatalf("expected no new balance immediately after resume, got %#v", before)
+	}
+
+	state.History = []Match{{ID: 1, A1: 1, Status: "finished", Shuttles: 1, ShuttleSeqItems: []ShuttleSeqItem{{BrandID: "default", Number: 1}}}}
+	afterGame := playerPaymentSummary(state, state.Players[0])
+	if afterGame.FullTotalSatang != 14000 || afterGame.SettledAmountSatang != 10000 || afterGame.TotalSatang != 4000 {
+		t.Fatalf("expected only the added 40 baht to remain, got %#v", afterGame)
+	}
+
+	state.Players[0].SettledAmountSatang += afterGame.TotalSatang
+	secondPayment := playerPaymentSummary(state, state.Players[0])
+	if secondPayment.TotalSatang != 0 || secondPayment.SettledAmountSatang != 14000 {
+		t.Fatalf("expected the second payment to settle the cumulative total, got %#v", secondPayment)
+	}
+}
+
 func TestLegacyMatchUsesSnapshottedShuttlePrice(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{ShuttleFee: 120, ShuttleBrands: []ShuttleBrand{{ID: "default", Price: 120, Active: true}}},
@@ -1061,6 +1345,33 @@ func TestCloseLiveResetsPlayerReadinessAfterFinishOnly(t *testing.T) {
 	}
 }
 
+func TestCloseLiveKeepsLiberoCouponUntilFutureQueueIsEmpty(t *testing.T) {
+	state := SessionState{
+		Settings: Settings{ResetPlayersAfterFinish: true},
+		Players: []Player{
+			{ID: 1, Name: "ริโบโร่", Coupon: true, Libero: true},
+			{ID: 2, Coupon: true},
+		},
+		Live:  []Match{{ID: 1, A1: 1, B1: 2}},
+		Queue: []Match{{ID: 2, A1: 1, B1: 3}},
+	}
+	if !closeLive(&state, 1, false, "", "", false) {
+		t.Fatal("expected first live match to finish")
+	}
+	if !state.Players[0].Coupon {
+		t.Fatal("libero coupon must remain enabled while a future queue exists")
+	}
+
+	state.Live = []Match{state.Queue[0]}
+	state.Queue = nil
+	if !closeLive(&state, 2, false, "", "", false) {
+		t.Fatal("expected final live match to finish")
+	}
+	if state.Players[0].Coupon {
+		t.Fatal("libero coupon must reset after the final queued match finishes")
+	}
+}
+
 func TestCoupledPlayersShareRandomStatus(t *testing.T) {
 	state := SessionState{
 		Players: []Player{
@@ -1307,6 +1618,29 @@ func TestDeletePlayerRejectsReferencedPlayer(t *testing.T) {
 	}
 }
 
+func TestWithdrawEligibilityCountsOnlyCompletedMatches(t *testing.T) {
+	state := SessionState{History: []Match{
+		{ID: 1, A1: 7, A2: 2, B1: 3, B2: 4, Status: "cancelled", ShuttleReturned: true, Shuttles: 1},
+	}}
+	if got := completedMatchCountForPlayer(state, 7); got != 0 {
+		t.Fatalf("cancelled history must not count as completed, got %d", got)
+	}
+	if cancelledMatchHasUnreturnedShuttle(state, 7) {
+		t.Fatal("returned shuttle must not block withdrawal")
+	}
+	state.History = append(state.History, Match{ID: 2, A1: 7, A2: 2, B1: 3, B2: 4, Status: "finished"})
+	if got := completedMatchCountForPlayer(state, 7); got != 1 {
+		t.Fatalf("one finished match must hide and block withdrawal, got %d", got)
+	}
+}
+
+func TestWithdrawEligibilityBlocksUnreturnedCancelledShuttle(t *testing.T) {
+	state := SessionState{History: []Match{{ID: 1, A1: 7, A2: 2, B1: 3, B2: 4, Status: "cancelled", Shuttles: 1}}}
+	if !cancelledMatchHasUnreturnedShuttle(state, 7) {
+		t.Fatal("cancelled match with an unreturned shuttle must block free withdrawal")
+	}
+}
+
 func TestCancelQueuedMatchRemovesQueueWithoutHistory(t *testing.T) {
 	state := SessionState{
 		Players: []Player{
@@ -1407,6 +1741,96 @@ func TestRealRecordedMatchCountExcludesCancelledHistory(t *testing.T) {
 	}
 }
 
+func TestPairingPatternForMatchClassifiesSnapshottedGroups(t *testing.T) {
+	tests := []struct {
+		name    string
+		match   Match
+		couples []Couple
+		want    string
+	}{
+		{"pair versus pair", Match{A1: 1, A2: 2, B1: 3, B2: 4}, []Couple{{A: 1, B: 2}, {A: 3, B: 4}}, pairingPatternPairPair},
+		{"pair and two singles", Match{A1: 1, A2: 2, B1: 3, B2: 4}, []Couple{{A: 1, B: 2}}, pairingPatternPairTwoSingles},
+		{"four singles", Match{A1: 1, A2: 2, B1: 3, B2: 4}, nil, pairingPatternFourSingles},
+		{"one versus one", Match{A1: 1, B1: 2}, nil, pairingPatternOneOne},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := pairingPatternForMatch(test.match, test.couples); got != test.want {
+				t.Fatalf("expected %q, got %q", test.want, got)
+			}
+		})
+	}
+}
+
+func TestRandomAndManualMatchesSnapshotPairingPattern(t *testing.T) {
+	randomState := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Coupon: true, Level: "middle"},
+			{ID: 2, Active: true, Coupon: true, Level: "middle"},
+			{ID: 3, Active: true, Coupon: true, Level: "middle"},
+			{ID: 4, Active: true, Coupon: true, Level: "middle"},
+		},
+		Couples: []Couple{{A: 1, B: 2}, {A: 3, B: 4}},
+	}
+	if err := randomMatch(&randomState); err != nil {
+		t.Fatalf("random match failed: %v", err)
+	}
+	if got := randomState.Pending[0].PairingPattern; got != pairingPatternPairPair {
+		t.Fatalf("expected random pair snapshot, got %q", got)
+	}
+	randomState.Couples = nil
+	if got := randomState.Pending[0].PairingPattern; got != pairingPatternPairPair {
+		t.Fatalf("snapshot changed after couples were removed: %q", got)
+	}
+
+	manualState := SessionState{
+		Settings: Settings{Levels: []string{"middle"}},
+		Players: []Player{
+			{ID: 1, Active: true, Level: "middle"},
+			{ID: 2, Active: true, Level: "middle"},
+			{ID: 3, Active: true, Level: "middle"},
+			{ID: 4, Active: true, Level: "middle"},
+		},
+		Couples: []Couple{{A: 1, B: 2}},
+	}
+	created, err := createManualPendingMatch(&manualState, Match{A1: 1, A2: 2, B1: 3, B2: 4, Level: "middle"})
+	if err != nil {
+		t.Fatalf("manual match failed: %v", err)
+	}
+	if created.PairingPattern != pairingPatternManualFour {
+		t.Fatalf("expected manually arranged 2v2 to use its own snapshot category, got %q", created.PairingPattern)
+	}
+	manualSingles := manualState
+	manualSingles.Pending = nil
+	manualSingles.Couples = nil
+	manualSingles.NextIDs.Pending = 0
+	created, err = createManualPendingMatch(&manualSingles, Match{A1: 1, B1: 3, Level: "middle"})
+	if err != nil {
+		t.Fatalf("manual 1v1 match failed: %v", err)
+	}
+	if created.PairingPattern != pairingPatternOneOne {
+		t.Fatalf("expected manually arranged 1v1 snapshot, got %q", created.PairingPattern)
+	}
+}
+
+func TestPairingPatternSummaryCountsOnlyStartedNonCancelledMatches(t *testing.T) {
+	state := SessionState{
+		Pending: []Match{{ID: -1, PairingPattern: pairingPatternPairPair}},
+		Queue:   []Match{{ID: 1, PairingPattern: pairingPatternPairPair}},
+		Live:    []Match{{ID: 2, PairingPattern: pairingPatternPairTwoSingles}},
+		History: []Match{
+			{ID: 3, Status: "finished", PairingPattern: pairingPatternFourSingles},
+			{ID: 4, Status: "finished"},
+			{ID: 5, Status: "cancelled", PairingPattern: pairingPatternOneOne},
+		},
+	}
+	got := pairingPatternSummary(state)
+	if got[pairingPatternPairPair] != 0 || got[pairingPatternPairTwoSingles] != 1 || got[pairingPatternFourSingles] != 1 || got[pairingPatternLegacyUnknown] != 1 || got[pairingPatternOneOne] != 0 {
+		t.Fatalf("unexpected pairing summary: %#v", got)
+	}
+}
+
 func TestDashboardPayloadIncludesMenuSummaryOnly(t *testing.T) {
 	state := SessionState{
 		Settings: Settings{EntryFee: 100, ShuttleFee: 50, CourtNames: []string{"1", "2"}},
@@ -1428,6 +1852,10 @@ func TestDashboardPayloadIncludesMenuSummaryOnly(t *testing.T) {
 	}
 	if summary["totalShuttles"] != 3 {
 		t.Fatalf("expected live + real history shuttles 3, got %#v", summary["totalShuttles"])
+	}
+	patterns := summary["pairingPatterns"].(map[string]int)
+	if patterns[pairingPatternLegacyUnknown] != 2 {
+		t.Fatalf("expected legacy live and history matches in pairing summary, got %#v", patterns)
 	}
 	if _, exists := payload["pending"]; exists {
 		t.Fatal("dashboard payload should not include pending matches")
@@ -1633,6 +2061,14 @@ func TestNormalizePromptPayTargetUsesThaiQRIdentifierTags(t *testing.T) {
 				t.Fatalf("expected target %q tag %q, got target %q tag %q", tt.wantTarget, tt.wantTag, gotTarget, gotTag)
 			}
 		})
+	}
+}
+
+func TestNormalizePromptPayTargetRejectsRemovedTypes(t *testing.T) {
+	for _, promptPayType := range []string{"bank_account", "merchant"} {
+		if _, _, err := normalizePromptPayTarget(promptPaySettings{ID: "123456789012345", Type: promptPayType}); err == nil {
+			t.Fatalf("expected removed type %q to be rejected", promptPayType)
+		}
 	}
 }
 

@@ -1,6 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue'
-import { CheckCircle2, CircleDollarSign, Search, Shield, UsersRound, XCircle } from '@lucide/vue'
+import { CheckCircle2, CircleDollarSign, Search, Shield, UserRound, UsersRound, XCircle } from '@lucide/vue'
 
 const props = defineProps([
   'state',
@@ -13,7 +13,9 @@ const searchText = ref('')
 const paymentFilter = ref('all')
 
 const activePlayers = computed(() => props.state.players.filter((player) => player.active))
-const paidCount = computed(() => activePlayers.value.filter((player) => player.paid).length)
+const hasOutstanding = (player) => Number(player?.outstandingAmountSatang ?? (player?.paid ? 0 : Math.round(Number(props.playerCost(player) || 0) * 100))) > 0
+const paymentComplete = (player) => !hasOutstanding(player)
+const paidCount = computed(() => activePlayers.value.filter(paymentComplete).length)
 const unpaidCount = computed(() => activePlayers.value.length - paidCount.value)
 const totalCost = computed(() => activePlayers.value.reduce((sum, player) => sum + props.playerCost(player), 0))
 const playerScore = (player) => (player.wins || 0) + (player.draws || 0) * 0.5
@@ -26,8 +28,8 @@ const filteredPlayers = computed(() => {
       const matchesPayment =
         paymentFilter.value === 'all' ||
         !props.share.showPayment ||
-        (paymentFilter.value === 'paid' && player.paid) ||
-        (paymentFilter.value === 'unpaid' && !player.paid)
+        (paymentFilter.value === 'paid' && paymentComplete(player)) ||
+        (paymentFilter.value === 'unpaid' && hasOutstanding(player))
       return matchesSearch && matchesPayment
     })
     .sort((a, b) => playerScore(b) - playerScore(a) || (b.wins || 0) - (a.wins || 0) || b.games - a.games || a.name.localeCompare(b.name, 'th-TH'))
@@ -190,6 +192,10 @@ function rankStyle(index) {
                 >
                   {{ player.id }}
                 </span>
+                <span class="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-full bg-court-500/10 text-court-700 ring-2 ring-white dark:ring-stone-900">
+                  <img v-if="player.avatarUrl" :src="player.avatarUrl" :alt="`รูป ${player.name}`" class="h-full w-full object-cover" loading="lazy" />
+                  <UserRound v-else class="h-5 w-5" />
+                </span>
                 <span class="min-w-0">
                   <span class="block truncate text-base font-black">{{ player.name }}</span>
                   <span class="block truncate text-xs font-bold text-court-700 dark:text-court-300">
@@ -204,11 +210,11 @@ function rankStyle(index) {
             <span v-if="share.showPayment" class="hidden justify-self-end sm:block">
               <span
                 class="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-black"
-                :class="player.paid ? 'bg-court-500/12 text-court-700 dark:bg-court-500/20 dark:text-court-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300'"
+                :class="paymentComplete(player) ? 'bg-court-500/12 text-court-700 dark:bg-court-500/20 dark:text-court-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300'"
               >
-                <CheckCircle2 v-if="player.paid" class="h-4 w-4" />
+                <CheckCircle2 v-if="paymentComplete(player)" class="h-4 w-4" />
                 <XCircle v-else class="h-4 w-4" />
-                {{ player.paid ? 'จ่ายแล้ว' : 'ค้างจ่าย' }}
+                {{ paymentComplete(player) ? (player.paid ? 'จ่ายแล้ว' : 'ยังไม่มียอดเพิ่ม') : 'ค้างจ่าย' }}
               </span>
             </span>
           </div>
@@ -224,11 +230,11 @@ function rankStyle(index) {
             <span
               v-if="share.showPayment"
               class="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-black sm:hidden"
-              :class="player.paid ? 'bg-court-500/12 text-court-700 dark:bg-court-500/20 dark:text-court-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300'"
+              :class="paymentComplete(player) ? 'bg-court-500/12 text-court-700 dark:bg-court-500/20 dark:text-court-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300'"
             >
-              <CheckCircle2 v-if="player.paid" class="h-4 w-4" />
+              <CheckCircle2 v-if="paymentComplete(player)" class="h-4 w-4" />
               <XCircle v-else class="h-4 w-4" />
-              {{ player.paid ? 'จ่ายแล้ว' : 'ค้างจ่าย' }}
+              {{ paymentComplete(player) ? (player.paid ? 'จ่ายแล้ว' : 'ยังไม่มียอดเพิ่ม') : 'ค้างจ่าย' }}
             </span>
           </div>
         </div>

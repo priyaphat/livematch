@@ -1,0 +1,1596 @@
+import React, { useEffect, useState } from 'react';
+import QRCode from 'qrcode';
+import {
+  getPOSBillingSummary,
+  getPOSPaymentQR,
+  listPOSPaymentHistoryPage,
+  POSBillingSummary,
+  POSPaymentHistory,
+} from '../api/posSales';
+import { usePos } from '../context/PosContext';
+import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
+import {
+  PauseCircle,
+  Receipt,
+  Search,
+  RotateCcw,
+  Trash2,
+  Printer,
+  ShoppingBag,
+  User,
+  AlertCircle,
+  CheckCircle2,
+  XCircle,
+  Filter,
+  CheckSquare,
+  Square,
+  Zap,
+  Banknote,
+  QrCode,
+  Layers,
+  ArrowRight,
+  X,
+  Check,
+  Eye,
+} from 'lucide-react';
+import type { Order } from '../types';
+import { printPaymentQrSlip } from '../utils/paymentQrSlip';
+
+const HISTORY_PAGE_SIZE = 20;
+
+const historyPaymentDiscountSatang = (payment: POSPaymentHistory) => payment.lines.reduce((sum, line) => {
+  if (line.sourceType !== 'pos') return sum;
+  const snapshot = line.snapshot || {};
+  const recordedDiscount = Math.max(0, Number(snapshot.discountSatang) || 0);
+  const splitCount = Math.max(1, Math.trunc(Number(snapshot.splitCount) || 1));
+  const splitPosition = Math.max(1, Math.trunc(Number(snapshot.splitPosition) || 1));
+  const isSplit = splitCount > 1 && Number.isFinite(Number(snapshot.shareSatang));
+
+  let allocatedRecordedDiscount = recordedDiscount;
+  if (isSplit) {
+    const base = Math.floor(recordedDiscount / splitCount);
+    const remainder = recordedDiscount % splitCount;
+    allocatedRecordedDiscount = base + (splitPosition <= remainder ? 1 : 0);
+  }
+
+  // Held bills receive their final discount while settling. Their immutable
+  // snapshot contains the amount before that last discount, while the allocation
+  // contains the amount actually paid. This also preserves old payment history.
+  const amountBeforeSettlementDiscount = Math.max(0, Number(isSplit ? snapshot.shareSatang : snapshot.totalSatang) || 0);
+  const settlementDiscount = Math.max(0, amountBeforeSettlementDiscount - line.amountSatang);
+  return sum + allocatedRecordedDiscount + settlementDiscount;
+}, 0);
+
+const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
+  const items: Order['items'] = [];
+  payment.lines.forEach((line) => {
+    const snapshot = line.snapshot || {};
+    const snapshotItems = Array.isArray(snapshot.items) ? snapshot.items : [];
+    if (snapshotItems.length === 0) {
+      items.push({ productId: line.sourceId, name: line.label, sku: '', price: line.amountSatang / 100, cost: 0, quantity: 1, total: line.amountSatang / 100 });
+      return;
+    }
+    const sourceAmounts = snapshotItems.map((entry: Record<string, unknown>) => Number(entry.amountSatang ?? entry.lineTotalSatang ?? 0));
+    const sourceTotal = sourceAmounts.reduce((sum, amount) => sum + amount, 0);
+    const allocated = sourceAmounts.map((amount) => sourceTotal > 0 ? Math.floor(amount * line.amountSatang / sourceTotal) : 0);
+    if (allocated.length > 0) allocated[0] += line.amountSatang - allocated.reduce((sum, amount) => sum + amount, 0);
+    snapshotItems.forEach((entry: Record<string, unknown>, index: number) => {
+      const quantity = Number(entry.quantity || 1);
+      const amountSatang = allocated[index];
+      items.push({
+        productId: String(entry.productId || `${line.sourceId}-${index}`),
+        name: String(entry.name || entry.productName || entry.label || line.label),
+        sku: String(entry.sku || ''),
+        price: Number(entry.unitPriceSatang ?? entry.unitAmountSatang ?? (quantity > 0 ? amountSatang / quantity : amountSatang)) / 100,
+        cost: Number(entry.unitCostSatang || 0) / 100,
+        quantity,
+        total: amountSatang / 100,
+        note: entry.note ? String(entry.note) : undefined,
+      });
+    });
+    const matchHistory = Array.isArray(snapshot.matchHistory) ? snapshot.matchHistory : [];
+    matchHistory.forEach((match: Record<string, unknown>, index: number) => {
+      items.push({ productId: `${line.sourceId}-history-${index}`, name: `เกม ${match.matchId || '-'} · ${match.court || 'ไม่ระบุสนาม'}`, sku: '', price: 0, cost: 0, quantity: 1, total: 0, note: `${match.team || ''}${match.opponent ? ` พบ ${match.opponent}` : ''} · ใช้ลูก ${Number(match.shuttles || 0)} ลูก${match.result ? ` · ${match.result}` : ''}` });
+    });
+  });
+  const discountSatang = historyPaymentDiscountSatang(payment);
+  return {
+    id: payment.paymentId,
+    orderNumber: payment.paymentId,
+    items,
+    subtotal: (payment.amountSatang + discountSatang) / 100,
+    discount: discountSatang / 100,
+    discountType: 'amount',
+    vatAmount: 0,
+    vatRate: 0,
+    isVatIncluded: true,
+    total: payment.amountSatang / 100,
+    paymentMethod: payment.method,
+    cashReceived: (payment.cashReceivedSatang || 0) / 100,
+    change: (payment.changeSatang || 0) / 100,
+    status: 'completed',
+    createdAt: payment.createdAt,
+    cashierName: payment.receivedByName || 'Admin',
+    customerNote: payment.displayName,
+    referenceNumber: payment.referenceNumber,
+    paymentId: payment.paymentId,
+    originSystem: payment.originSystem,
+    matchTotal: payment.matchTotalSatang / 100,
+    posTotal: payment.posTotalSatang / 100,
+    billingLines: payment.lines,
+  };
+};
+
+export const BillsView: React.FC = () => {
+  const {
+    heldOrders,
+    refreshHeldOrders,
+    resumeHeldOrder,
+    deleteHeldOrder,
+    processBatchHeldPayment,
+    orders,
+    refundOrder,
+    cancelOrder,
+    setSelectedOrderForReceipt,
+    settings,
+    broadcastCustomerDisplay,
+    permissions,
+    showToast,
+  } = usePos();
+
+  const [activeSegment, setActiveSegment] = useState<'held' | 'history'>('held');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [heldSearchQuery, setHeldSearchQuery] = useState<string>('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'completed' | 'refunded'>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'cash' | 'promptpay'>('all');
+  const [selectedOrderForRefund, setSelectedOrderForRefund] = useState<string | null>(null);
+  const [selectedHistoryDetail, setSelectedHistoryDetail] = useState<Order | null>(null);
+  const [refundReason, setRefundReason] = useState<string>('');
+  const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
+  const [historyPage, setHistoryPage] = useState(1);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyBadgeTotal, setHistoryBadgeTotal] = useState(0);
+  const [historyTotalPages, setHistoryTotalPages] = useState(1);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [historyLoadError, setHistoryLoadError] = useState('');
+  const [historyQrOrder, setHistoryQrOrder] = useState<Order | null>(null);
+  const [historyQrDataUrl, setHistoryQrDataUrl] = useState('');
+  const [historyQrError, setHistoryQrError] = useState('');
+  const [historyQrReceiverName, setHistoryQrReceiverName] = useState('');
+
+  // Multi-selection state for Held Orders
+  const [selectedHeldIds, setSelectedHeldIds] = useState<string[]>([]);
+  const [isBatchPayModalOpen, setIsBatchPayModalOpen] = useState<boolean>(false);
+  const [isBatchPaying, setIsBatchPaying] = useState(false);
+  const [batchPayMethod, setBatchPayMethod] = useState<'cash' | 'promptpay'>('cash');
+  const [batchCashInput, setBatchCashInput] = useState<string>('');
+  const [batchRefNumber, setBatchRefNumber] = useState<string>('');
+  const [batchCustomerNote, setBatchCustomerNote] = useState<string>('');
+  const [billingSummary, setBillingSummary] = useState<POSBillingSummary | null>(null);
+  const [batchLiveTotal, setBatchLiveTotal] = useState<number | null>(null);
+  const [batchQrDataUrl, setBatchQrDataUrl] = useState('');
+  const [batchQrPayload, setBatchQrPayload] = useState('');
+  const [batchQrError, setBatchQrError] = useState('');
+  const [batchQrReceiverName, setBatchQrReceiverName] = useState('');
+  const [batchDiscountType, setBatchDiscountType] = useState<'amount' | 'percent'>('amount');
+  const [batchDiscountInput, setBatchDiscountInput] = useState('');
+
+  const filteredOrders = historyOrders;
+
+  // Filter held orders
+  const filteredHeldOrders = heldOrders.filter((h) => {
+    if (!heldSearchQuery.trim()) return true;
+    const q = heldSearchQuery.toLowerCase();
+    return (
+      h.heldNumber.toLowerCase().includes(q) ||
+      (h.customerName && h.customerName.toLowerCase().includes(q)) ||
+      (h.note && h.note.toLowerCase().includes(q)) ||
+      h.items.some((it) => it.product.name.toLowerCase().includes(q))
+    );
+  });
+
+  // Toggle single held order selection
+  const handleToggleSelectHeld = (id: string) => {
+    setSelectedHeldIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  // Toggle select all
+  const handleToggleSelectAllHeld = () => {
+    if (selectedHeldIds.length === filteredHeldOrders.length) {
+      setSelectedHeldIds([]);
+    } else {
+      setSelectedHeldIds(filteredHeldOrders.map((h) => h.id));
+    }
+  };
+
+  // Selected held orders objects & calculations
+  const selectedHeldObjects = heldOrders.filter((h) => selectedHeldIds.includes(h.id));
+  const selectedTotalAmount = selectedHeldObjects.reduce((sum, h) => sum + h.total, 0);
+  const basePaymentTotal = batchLiveTotal ?? (billingSummary ? billingSummary.totalSatang / 100 : selectedTotalAmount);
+  const selectedPOSTotal = billingSummary ? billingSummary.posTotalSatang / 100 : selectedHeldObjects.reduce((sum, item) => sum + (item.posTotal || 0), 0);
+  const batchDiscountValue = Math.max(0, Number(batchDiscountInput) || 0);
+  const batchDiscountAmount = Math.min(selectedPOSTotal, batchDiscountType === 'percent' ? selectedPOSTotal * Math.min(100, batchDiscountValue) / 100 : batchDiscountValue);
+  const paymentTotal = Math.max(0, basePaymentTotal - batchDiscountAmount);
+  const selectedTotalItemsCount = selectedHeldObjects.reduce(
+    (sum, h) => sum + h.items.reduce((s, it) => s + it.quantity, 0),
+    0
+  );
+
+  useEffect(() => {
+    if (!selectedHistoryDetail) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setSelectedHistoryDetail(null);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedHistoryDetail]);
+
+  useEffect(() => {
+    if (activeSegment !== 'held') return;
+    let disposed = false;
+    const refresh = () => {
+      if (disposed || document.visibilityState !== 'visible') return;
+      void refreshHeldOrders().catch(() => undefined);
+    };
+    refresh();
+    const timer = window.setInterval(refresh, 10_000);
+    document.addEventListener('visibilitychange', refresh);
+    window.addEventListener('focus', refresh);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+      window.removeEventListener('focus', refresh);
+    };
+  }, [activeSegment]);
+
+  useEffect(() => {
+    if (activeSegment !== 'history') return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setIsHistoryLoading(true);
+      setHistoryLoadError('');
+      try {
+        const result = await listPOSPaymentHistoryPage({
+          page: historyPage,
+          pageSize: HISTORY_PAGE_SIZE,
+          search: searchQuery,
+          status: statusFilter,
+          method: paymentFilter,
+        });
+        if (cancelled) return;
+        if (historyPage > result.totalPages) {
+          setHistoryPage(Math.max(1, result.totalPages));
+          return;
+        }
+        setHistoryOrders(result.items.map(paymentHistoryToOrder));
+        setHistoryTotal(result.total);
+        setHistoryTotalPages(Math.max(1, result.totalPages));
+        if (!searchQuery.trim() && statusFilter === 'all' && paymentFilter === 'all') {
+          setHistoryBadgeTotal(result.total);
+        }
+      } catch {
+        if (!cancelled) {
+          setHistoryOrders([]);
+          setHistoryLoadError('โหลดประวัติการขายไม่สำเร็จ กรุณาลองใหม่');
+        }
+      } finally {
+        if (!cancelled) setIsHistoryLoading(false);
+      }
+    }, searchQuery.trim() ? 350 : 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [activeSegment, historyPage, searchQuery, statusFilter, paymentFilter, orders.length, orders[0]?.paymentId]);
+
+  // Open Batch Pay Modal
+  const handleOpenBatchPay = async (idsToPay?: string[]) => {
+    const targetIds = idsToPay || selectedHeldIds;
+    if (targetIds.length === 0) return;
+    if (idsToPay) {
+      setSelectedHeldIds(idsToPay);
+    }
+    setBatchPayMethod('cash');
+    setBatchCashInput('');
+    setBatchRefNumber('');
+    setBatchCustomerNote('');
+    setBatchDiscountType('amount');
+    setBatchDiscountInput('');
+    setBillingSummary(null);
+    setBatchLiveTotal(null);
+    const targets = heldOrders.filter((item) => targetIds.includes(item.id));
+    const accountIDs: string[] = Array.from(new Set<string>(targets.flatMap((item) => item.billingAccountId ? [item.billingAccountId] : [])));
+    if (accountIDs.length > 0) {
+      try {
+        const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
+        setBatchLiveTotal(summaries.reduce((sum, item) => sum + item.totalSatang, 0) / 100);
+        setBillingSummary(summaries.length === 1 ? summaries[0] : null);
+      } catch {
+        setBillingSummary(null);
+        setBatchLiveTotal(null);
+      }
+    }
+    setIsBatchPayModalOpen(true);
+  };
+
+  const closeBatchPayModal = () => {
+    setIsBatchPayModalOpen(false);
+    const closedPaymentState = { isOpen: false, method: 'cash' as const, totalDue: 0 };
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(closedPaymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: closedPaymentState });
+  };
+
+  // Execute Batch Payment
+  const handleConfirmBatchPayment = async () => {
+    if (selectedHeldIds.length === 0 || isBatchPaying) return;
+
+    const cashGiven = parseFloat(batchCashInput) || 0;
+    if (batchPayMethod === 'cash' && cashGiven < paymentTotal) {
+      return;
+    }
+    if (batchPayMethod === 'promptpay' && !batchQrDataUrl) {
+      return;
+    }
+
+    setIsBatchPaying(true);
+    const completed = await processBatchHeldPayment({
+      heldIds: selectedHeldIds,
+      paymentMethod: batchPayMethod,
+      cashReceived: batchPayMethod === 'cash' ? cashGiven : undefined,
+      referenceNumber: batchRefNumber || undefined,
+      customerNote: batchCustomerNote || undefined,
+      discountType: batchDiscountType,
+      discountValue: batchDiscountValue,
+    });
+    setIsBatchPaying(false);
+
+    if (!completed) {
+      const accountIDs: string[] = Array.from(new Set<string>(selectedHeldObjects.flatMap((item) => item.billingAccountId ? [item.billingAccountId] : [])));
+      if (accountIDs.length > 0) {
+        try {
+          const summaries = await Promise.all(accountIDs.map((accountID) => getPOSBillingSummary(accountID)));
+          setBatchLiveTotal(summaries.reduce((sum, item) => sum + item.totalSatang, 0) / 100);
+          setBillingSummary(summaries.length === 1 ? summaries[0] : null);
+        } catch { /* Keep the payment modal open with the last visible total. */ }
+      }
+      return;
+    }
+
+    closeBatchPayModal();
+    setSelectedHeldIds([]);
+  };
+
+  const handleConfirmRefund = () => {
+    if (selectedOrderForRefund) {
+      refundOrder(selectedOrderForRefund, refundReason);
+      setSelectedOrderForRefund(null);
+      setRefundReason('');
+    }
+  };
+
+  const batchCashGiven = parseFloat(batchCashInput) || 0;
+  const batchChange = Math.max(0, batchCashGiven - paymentTotal);
+  const isBatchCashSufficient = batchCashGiven >= paymentTotal;
+
+  useEffect(() => {
+    if (!isBatchPayModalOpen || batchPayMethod !== 'promptpay' || paymentTotal <= 0) {
+      setBatchQrDataUrl('');
+      setBatchQrPayload('');
+      setBatchQrError('');
+      setBatchQrReceiverName('');
+      return;
+    }
+    let cancelled = false;
+    setBatchQrDataUrl('');
+    setBatchQrPayload('');
+    setBatchQrError('');
+    void getPOSPaymentQR(Math.round(paymentTotal * 100)).then(async (result) => {
+      const image = result.promptPayPayload ? await QRCode.toDataURL(result.promptPayPayload, { width: 260, margin: 1 }) : result.fallbackImage || '';
+      if (!image) throw new Error('ระบบยังไม่ได้ตั้งค่า PromptPay');
+      if (!cancelled) {
+        setBatchQrDataUrl(image);
+        setBatchQrPayload(result.promptPayPayload || '');
+        setBatchQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
+      }
+    }).catch((error) => {
+      if (!cancelled) {
+        setBatchQrDataUrl('');
+        setBatchQrReceiverName('');
+        setBatchQrError(error instanceof Error ? error.message : 'ไม่สามารถสร้าง QR PromptPay ได้');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [isBatchPayModalOpen, batchPayMethod, paymentTotal]);
+
+  const handlePrintBatchQrOnly = async () => {
+    if (!batchQrDataUrl) return;
+    try {
+      const posLines = selectedHeldObjects.flatMap((held) => held.items.map((item) => ({
+        name: item.product.name,
+        quantity: item.quantity,
+        amount: Number(item.allocatedTotal ?? item.product.price * item.quantity),
+      })));
+      const matchLines = (billingSummary?.lines || []).filter((line) => line.sourceType === 'match').flatMap((line) => {
+        const items = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+        if (!items.length) return [{ name: line.label, quantity: 1, amount: line.amountSatang / 100 }];
+        return items.map((item: Record<string, unknown>) => ({
+          name: String(item.label || line.label),
+          quantity: Math.max(1, Number(item.quantity || 1)),
+          amount: Number(item.amountSatang ?? Math.round(Number(item.amountThb || 0) * 100)) / 100,
+        }));
+      });
+      await printPaymentQrSlip({
+        storeName: settings.storeName,
+        phone: settings.phone,
+        logoData: settings.logoData,
+        customerName: selectedHeldObjects.map((item) => item.customerName).filter(Boolean).join(', ') || billingSummary?.displayName || 'ลูกค้าทั่วไป',
+        reference: selectedHeldObjects.map((item) => item.heldNumber).join(', '),
+        receiverName: batchQrReceiverName,
+        lines: [...posLines, ...matchLines],
+        subtotal: basePaymentTotal,
+        discount: batchDiscountAmount,
+        total: paymentTotal,
+        currencySymbol: settings.currencySymbol,
+        decimalPlaces: settings.decimalPlaces,
+        qrDataUrl: batchQrDataUrl,
+        qrPayload: batchQrPayload,
+        paperWidth: settings.printerType === 'thermal_58mm' ? '58mm' : '80mm',
+      });
+      showToast('ส่งพิมพ์ใบแจ้งชำระ PromptPay แล้ว', 'success');
+    } catch (error) { showToast(error instanceof Error ? error.message : 'พิมพ์ใบแจ้งชำระ QR ไม่สำเร็จ', 'error'); }
+  };
+
+  useEffect(() => {
+    if (!historyQrOrder || historyQrOrder.total <= 0) return;
+    let cancelled = false;
+    setHistoryQrDataUrl('');
+    setHistoryQrError('');
+    setHistoryQrReceiverName('');
+    void getPOSPaymentQR(Math.round(historyQrOrder.total * 100)).then(async (result) => {
+      const image = result.promptPayPayload ? await QRCode.toDataURL(result.promptPayPayload, { width: 320, margin: 1 }) : result.fallbackImage || '';
+      if (!image) throw new Error('ระบบยังไม่ได้ตั้งค่า PromptPay');
+      if (!cancelled) {
+        setHistoryQrDataUrl(image);
+        setHistoryQrReceiverName(result.receiverName || settings.promptPayReceiverName || settings.storeName);
+      }
+    }).catch((error) => {
+      if (!cancelled) setHistoryQrError(error instanceof Error ? error.message : 'ไม่สามารถสร้าง QR PromptPay ได้');
+    });
+    return () => { cancelled = true; };
+  }, [historyQrOrder]);
+
+  useEffect(() => {
+    if (!historyQrOrder) return;
+    const paymentState = {
+      isOpen: true,
+      method: 'promptpay' as const,
+      totalDue: historyQrOrder.total,
+      qrDataUrl: historyQrDataUrl || undefined,
+      qrError: historyQrError || undefined,
+      qrReceiverName: historyQrReceiverName || undefined,
+      items: historyQrOrder.items,
+    };
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
+  }, [historyQrOrder, historyQrDataUrl, historyQrError, historyQrReceiverName]);
+
+  const closeHistoryQr = () => {
+    setHistoryQrOrder(null);
+    setHistoryQrDataUrl('');
+    setHistoryQrError('');
+    const paymentState = { isOpen: false, method: 'cash' as const, totalDue: 0 };
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
+  };
+
+  useEffect(() => {
+    if (!isBatchPayModalOpen) return;
+
+    const billCart = selectedHeldObjects.flatMap((held) => held.items);
+    const paymentState = {
+      isOpen: true,
+      method: batchPayMethod,
+      totalDue: paymentTotal,
+      cashReceived: batchPayMethod === 'cash' ? batchCashGiven : undefined,
+      change: batchPayMethod === 'cash' ? batchChange : undefined,
+      qrDataUrl: batchPayMethod === 'promptpay' ? batchQrDataUrl : undefined,
+      qrError: batchPayMethod === 'promptpay' ? batchQrError : undefined,
+      qrReceiverName: batchPayMethod === 'promptpay' ? batchQrReceiverName : undefined,
+      items: billCart,
+      totals: {
+        itemCount: selectedTotalItemsCount,
+        subtotal: basePaymentTotal,
+        discountAmount: batchDiscountAmount,
+        netBeforeVat: paymentTotal,
+        vatAmount: 0,
+        total: paymentTotal,
+      },
+    };
+
+    localStorage.setItem('siampure_active_payment_modal', JSON.stringify(paymentState));
+    broadcastCustomerDisplay({ type: 'PAYMENT_MODAL_STATE', payload: paymentState });
+  }, [isBatchPayModalOpen, batchPayMethod, batchCashGiven, batchChange, paymentTotal, basePaymentTotal, batchDiscountAmount, heldOrders, selectedHeldIds, batchQrDataUrl, batchQrError, batchQrReceiverName]);
+
+  return (
+    <div className="box-border min-w-0 max-w-full flex-1 space-y-6 overflow-x-hidden overflow-y-auto bg-slate-50 p-4 pb-44 text-slate-900 dark:bg-slate-950 dark:text-slate-100 sm:p-6 sm:pb-48">
+      {/* Header & Segmented control */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+            จัดการบิล & ประวัติการขาย
+          </h1>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+            เลือกชำระรายการพักยอดหลายบิลพร้อมกัน หรือค้นหาประวัติการทำรายการย้อนหลัง
+          </p>
+        </div>
+
+        {/* Segmented Switcher */}
+        <div className="flex bg-white dark:bg-slate-900 p-1 rounded-2xl border border-slate-200 dark:border-slate-800 self-start sm:self-auto shadow-xs">
+          <button
+            id="tab-held-bills-btn"
+            onClick={() => setActiveSegment('held')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeSegment === 'held'
+                ? 'bg-amber-500 text-slate-950 shadow-md shadow-amber-500/20'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <PauseCircle className="w-4 h-4" />
+            <span>รายการพักยอด</span>
+            {heldOrders.length > 0 && (
+              <span
+                className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                  activeSegment === 'held'
+                    ? 'bg-slate-950 text-amber-400'
+                    : 'bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-400'
+                }`}
+              >
+                {heldOrders.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            id="tab-history-bills-btn"
+            onClick={() => setActiveSegment('history')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+              activeSegment === 'history'
+                ? 'bg-emerald-500 text-slate-950 shadow-md shadow-emerald-500/20'
+                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <Receipt className="w-4 h-4" />
+            <span>ประวัติการขาย</span>
+            <span
+              className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                activeSegment === 'history'
+                  ? 'bg-slate-950 text-emerald-400'
+                  : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+              }`}
+            >
+              {historyBadgeTotal}
+            </span>
+          </button>
+        </div>
+      </div>
+
+      {/* VIEW 1: HELD ORDERS */}
+      {activeSegment === 'held' && (
+        <div className="min-w-0 max-w-full space-y-4">
+          {/* Top Bar for Held Orders: Filter, Select All, Summary */}
+          {heldOrders.length > 0 && (
+            <div className="box-border flex min-w-0 max-w-full flex-col justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3.5 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:flex-row sm:items-center">
+              <div className="flex min-w-0 max-w-md flex-1 items-center gap-2.5">
+                <div className="relative w-full">
+                  <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    value={heldSearchQuery}
+                    onChange={(e) => setHeldSearchQuery(e.target.value)}
+                    placeholder="ค้นหาเลขที่พักยอด, ชื่อลูกค้า, สินค้า..."
+                    className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-xl pl-9 pr-3 py-1.5 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              {/* Multi-selection Toggle Buttons */}
+              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                <button
+                  onClick={handleToggleSelectAllHeld}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all ${
+                    selectedHeldIds.length === filteredHeldOrders.length && filteredHeldOrders.length > 0
+                      ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/40 text-amber-800 dark:text-amber-300'
+                      : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {selectedHeldIds.length === filteredHeldOrders.length && filteredHeldOrders.length > 0 ? (
+                    <CheckSquare className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  ) : (
+                    <Square className="w-4 h-4 text-slate-400" />
+                  )}
+                  <span>
+                    {selectedHeldIds.length === filteredHeldOrders.length && filteredHeldOrders.length > 0
+                      ? 'ยกเลิกเลือกทั้งหมด'
+                      : `เลือกทั้งหมด (${filteredHeldOrders.length})`}
+                  </span>
+                </button>
+
+                {selectedHeldIds.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => handleOpenBatchPay()}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-sm transition-all"
+                    >
+                      <Zap className="w-3.5 h-3.5 fill-slate-950" />
+                      <span>ชำระรวม ({selectedHeldIds.length})</span>
+                    </button>
+                    <button
+                      onClick={() => setSelectedHeldIds([])}
+                      className="px-2 py-1.5 rounded-xl text-xs text-slate-500 hover:text-slate-800 dark:hover:text-white"
+                    >
+                      ล้าง
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {heldOrders.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-3xl p-12 text-center flex flex-col items-center justify-center space-y-3 shadow-xs">
+              <div className="w-14 h-14 rounded-2xl bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 dark:text-slate-500">
+                <PauseCircle className="w-8 h-8" />
+              </div>
+              <h3 className="text-base font-bold text-slate-800 dark:text-slate-300">ไม่มีรายการพักยอดในขณะนี้</h3>
+              <p className="text-xs text-slate-500 max-w-sm">
+                เมื่อคุณกดปุ่ม &quot;พักยอด&quot; ในหน้าขาย รายการคำสั่งซื้อจะมาแสดงที่นี่เพื่อรอการเรียกกลับไปชำระเงิน หรือเลือกชำระเงินพร้อมกันหลายบิล
+              </p>
+            </div>
+          ) : filteredHeldOrders.length === 0 ? (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-8 text-center text-slate-500 text-xs">
+              ไม่พบรายการพักยอดที่ตรงกับคำค้นหา &quot;{heldSearchQuery}&quot;
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 justify-items-center gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {filteredHeldOrders.map((held) => {
+                const isSelected = selectedHeldIds.includes(held.id);
+                const itemCount = held.items.reduce((sum, item) => sum + item.quantity, 0);
+                const splitAllocation = held.splitAllocations?.[0];
+                return (
+                  <div
+                    key={held.id}
+                    id={`held-card-${held.id}`}
+                    onClick={() => handleToggleSelectHeld(held.id)}
+                    className={`flex w-full max-w-[360px] cursor-pointer select-none flex-col overflow-hidden rounded-3xl border bg-white shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-lg dark:bg-slate-900 ${
+                      isSelected
+                        ? 'border-amber-500 ring-2 ring-amber-500/20 bg-amber-50/20 dark:bg-amber-500/5'
+                        : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="border-b border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/35">
+                      <div className="flex items-center gap-3">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleSelectHeld(held.id);
+                            }}
+                            aria-label={isSelected ? `ยกเลิกเลือกบิลของ ${held.customerName || 'ไม่ระบุชื่อ'}` : `เลือกบิลของ ${held.customerName || 'ไม่ระบุชื่อ'}`}
+                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border transition-all ${
+                              isSelected
+                                ? 'bg-amber-500 border-amber-600 text-slate-950 shadow-xs'
+                                : 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700 text-transparent hover:border-amber-400'
+                            }`}
+                          >
+                            <Check className="w-4 h-4 stroke-[3]" />
+                          </button>
+
+                          <div className="min-w-0 flex-1">
+                            <h3 className="flex items-center gap-2 text-lg font-black text-slate-900 dark:text-white">
+                              <User className="h-5 w-5 shrink-0 text-amber-500" />
+                              <span className="truncate">{held.customerName || 'ไม่ระบุชื่อ'}</span>
+                            </h3>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        {held.posTotal != null && held.posTotal > 0 && <span className="rounded-lg bg-sky-100 px-2 py-1 text-[10px] font-bold text-sky-700 dark:bg-sky-500/15 dark:text-sky-300">POS {formatCurrency(held.posTotal, settings.currencySymbol, 2)}</span>}
+                        {held.matchTotal != null && held.matchTotal > 0 && <span className="rounded-lg bg-emerald-100 px-2 py-1 text-[10px] font-bold text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">Match {formatCurrency(held.matchTotal, settings.currencySymbol, 2)}</span>}
+                        {splitAllocation && <span className="rounded-lg bg-yellow-100 px-2 py-1 text-[10px] font-black text-yellow-800 dark:bg-yellow-500/15 dark:text-yellow-300">หาร {splitAllocation.count} คน · ส่วนที่ {splitAllocation.position}/{splitAllocation.count}</span>}
+                      </div>
+                    </div>
+
+                    <div className="flex-1 p-4">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <span className="flex items-center gap-1.5 text-[11px] font-black text-slate-700 dark:text-slate-300"><Layers className="h-3.5 w-3.5 text-amber-500" />รายการในบิล</span>
+                        <span className="text-[10px] font-semibold text-slate-400">{held.items.length} รายการ · {itemCount} ชิ้น</span>
+                      </div>
+                      <div className="max-h-44 space-y-1 overflow-y-auto rounded-2xl border border-slate-200 bg-slate-50/70 p-2 custom-scrollbar dark:border-slate-800 dark:bg-slate-950/50">
+                        {held.items.map((item, idx) => (
+                          <div
+                            key={idx}
+                            className="flex items-start justify-between gap-3 rounded-xl bg-white px-2.5 py-2 text-xs shadow-xs dark:bg-slate-900"
+                          >
+                            <div className="min-w-0">
+                              <p className="truncate font-bold text-slate-800 dark:text-slate-200">{item.product.name}</p>
+                              <p className="mt-0.5 text-[10px] text-slate-500 dark:text-slate-400">{item.quantity} {item.product.unit} × {formatCurrency((item.allocatedTotal ?? item.product.price * item.quantity) / Math.max(1, item.quantity), settings.currencySymbol, settings.decimalPlaces)}</p>
+                            </div>
+                            <span className="shrink-0 font-mono font-black text-slate-900 dark:text-white">
+                              {formatCurrency(
+                                item.allocatedTotal ?? item.product.price * item.quantity,
+                                settings.currencySymbol,
+                                settings.decimalPlaces
+                              )}
+                            </span>
+                          </div>
+                        ))}
+                        {held.items.length === 0 && <div className="rounded-xl border border-dashed border-rose-300 bg-rose-50 px-3 py-4 text-center text-[11px] font-bold text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-300">ไม่พบรายละเอียดรายการ กรุณารีเฟรชอีกครั้ง</div>}
+                      </div>
+                    </div>
+
+                    {/* Total & Action Buttons */}
+                    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/80 p-4 dark:border-slate-800 dark:bg-slate-950/35">
+                      <div>
+                        <span className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400">ยอดที่ต้องชำระ</span>
+                        <span className="font-mono text-xl font-black text-amber-600 dark:text-amber-400">
+                          {formatCurrency(held.total, settings.currencySymbol, settings.decimalPlaces)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                        <button
+                          onClick={() => deleteHeldOrder(held.id)}
+						  disabled={!held.sourceSaleIds?.length}
+						  className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-rose-100 dark:hover:bg-rose-950/50 text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 border border-slate-200 dark:border-slate-700 transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+						  title={held.sourceSaleIds?.length ? 'ลบรายการพักยอด POS' : 'ยอด Match ต้องจัดการที่ระบบ Match'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          onClick={() => resumeHeldOrder(held.id)}
+						  disabled={!held.sourceSaleIds?.length}
+						  className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 transition-colors disabled:cursor-not-allowed disabled:opacity-35"
+						  title={held.sourceSaleIds?.length ? 'ดึงรายการ POS กลับไปแก้ไขในหน้าขาย' : 'ไม่มีสินค้า POS ในยอดนี้'}
+                        >
+                          <ShoppingBag className="w-4 h-4" />
+                        </button>
+
+                        <button
+                          onClick={() => handleOpenBatchPay([held.id])}
+                          className="flex items-center gap-1.5 rounded-xl bg-amber-500 px-3.5 py-2.5 text-xs font-black text-slate-950 shadow-md shadow-amber-500/20 transition-all hover:bg-amber-400"
+                          title="ชำระเงินทันที"
+                        >
+                          <Zap className="w-3.5 h-3.5 fill-slate-950" />
+                          <span>ชำระทันที</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Sticky Floating Multi-Select Action Toolbar */}
+          {selectedHeldIds.length > 0 && (
+            <div id="held-batch-actions" className="fixed bottom-24 sm:bottom-24 left-1/2 -translate-x-1/2 w-[calc(100%-1.5rem)] sm:w-[calc(100%-2rem)] max-w-2xl z-30 bg-white/95 dark:bg-slate-900/95 border-2 border-amber-500 rounded-3xl p-3 sm:p-4 shadow-2xl backdrop-blur-xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 animate-in fade-in slide-in-from-bottom-5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500 text-slate-950 flex items-center justify-center font-black text-base shadow-md shadow-amber-500/30 shrink-0">
+                  {selectedHeldIds.length}
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs font-semibold text-slate-500 dark:text-slate-400 truncate">
+                    เลือก {selectedHeldIds.length} บิล ({selectedTotalItemsCount} ชิ้น)
+                  </div>
+                  <div className="text-base sm:text-lg font-black text-amber-600 dark:text-amber-400 font-mono truncate">
+                    ยอดรวม {formatCurrency(selectedTotalAmount, settings.currencySymbol, settings.decimalPlaces)}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap sm:flex-nowrap justify-end">
+                <button
+                  id="batch-pay-submit-btn"
+                  onClick={() => handleOpenBatchPay()}
+                  className="flex-1 sm:flex-none flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-400 hover:from-amber-400 hover:to-amber-300 text-slate-950 text-xs font-black shadow-lg shadow-amber-500/25 transition-all whitespace-nowrap"
+                >
+                  <Zap className="w-4 h-4 fill-slate-950" />
+                  <span>ชำระรวมทันที ({selectedHeldIds.length} บิล)</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* VIEW 2: SALES HISTORY */}
+      {activeSegment === 'history' && (
+        <div className="space-y-4">
+          {/* Filter Bar */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-4 space-y-3 shadow-md">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+              {/* Search */}
+              <div className="md:col-span-6 relative">
+                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => {
+                    setSearchQuery(e.target.value);
+                    setHistoryPage(1);
+                  }}
+                  placeholder="ค้นหาตามเลขที่บิล, แคชเชียร์, หมายเหตุ..."
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-10 pr-4 py-2 text-xs text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                />
+              </div>
+
+              {/* Status Filter */}
+              <div className="md:col-span-3">
+                <select
+                  value={statusFilter}
+                  onChange={(e) => {
+                    setStatusFilter(e.target.value as 'all' | 'completed' | 'refunded');
+                    setHistoryPage(1);
+                  }}
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="all">สถานะบิลทั้งหมด</option>
+                  <option value="completed">ชำระสำเร็จ</option>
+                  <option value="refunded">คืนเงินแล้ว</option>
+                </select>
+              </div>
+
+              {/* Payment Method Filter */}
+              <div className="md:col-span-3">
+                <select
+                  value={paymentFilter}
+                  onChange={(e) => {
+                    setPaymentFilter(e.target.value as 'all' | 'cash' | 'promptpay');
+                    setHistoryPage(1);
+                  }}
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl px-3.5 py-2 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                >
+                  <option value="all">วิธีชำระทั้งหมด</option>
+                  <option value="cash">เงินสด (Cash)</option>
+                  <option value="promptpay">PromptPay QR</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {/* Sales History Table */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl overflow-hidden shadow-md">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-700 dark:text-slate-300">
+                <thead className="bg-slate-100/80 dark:bg-slate-800/80 text-slate-700 dark:text-slate-300 border-b border-slate-200 dark:border-slate-700 font-bold uppercase tracking-wider text-[11px]">
+                  <tr>
+                    <th className="p-4">เลขที่บิล</th>
+                    <th className="p-4">วัน-เวลา / แคชเชียร์</th>
+                    <th className="p-4">รายการสินค้า</th>
+                    <th className="p-4">ช่องทางชำระ</th>
+                    <th className="p-4 text-right">ยอดสุทธิ</th>
+                    <th className="p-4 text-center">สถานะ</th>
+                    <th className="p-4 text-right">จัดการ</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {filteredOrders.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-8 text-center text-slate-400 dark:text-slate-500">
+                        {isHistoryLoading ? 'กำลังโหลดประวัติการขาย...' : historyLoadError || 'ไม่พบประวัติการขายที่ตรงกับเงื่อนไข'}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredOrders.map((order) => (
+                      <tr
+                        key={order.id}
+                        className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition-colors"
+                      >
+                        <td className="p-4 font-mono font-bold text-slate-900 dark:text-white">
+                          <div>{order.orderNumber}</div>
+						  <span className={`mt-1 inline-flex rounded-md px-2 py-0.5 text-[10px] font-black ${order.originSystem === 'match' ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'}`}>
+							รับชำระที่ {order.originSystem === 'match' ? 'Match' : 'POS'}
+						  </span>
+                          {order.referenceNumber && (
+                            <div className="text-[10px] text-slate-400 dark:text-slate-500 font-mono">
+                              Ref: {order.referenceNumber}
+                            </div>
+                          )}
+                        </td>
+                        <td className="p-4 text-slate-600 dark:text-slate-400">
+                          <div>{formatThaiDateTime(order.createdAt)}</div>
+                          <div className="text-[10px] text-slate-400 dark:text-slate-500">{order.cashierName}</div>
+                        </td>
+                        <td className="p-4">
+                          <div className="max-w-[220px] truncate text-slate-800 dark:text-slate-200 font-medium">
+                            {order.items.map((it) => `${it.name} (${it.quantity})`).join(', ')}
+                          </div>
+                          <div className="text-[10px] text-slate-400 dark:text-slate-500">
+                            {order.items.reduce((s, it) => s + it.quantity, 0)} ชิ้น
+                          </div>
+                        </td>
+                        <td className="p-4">
+                          <span className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                            {order.paymentMethod === 'promptpay' ? 'PromptPay QR' : 'เงินสด'}
+                          </span>
+                        </td>
+                        <td className="p-4 text-right font-mono font-bold text-sm text-emerald-600 dark:text-emerald-400">
+                          {formatCurrency(
+                            order.total,
+                            settings.currencySymbol,
+                            settings.decimalPlaces
+                          )}
+						  <div className="mt-1 text-[10px] font-semibold text-slate-400">Match {formatCurrency(order.matchTotal || 0, settings.currencySymbol, 2)} · POS {formatCurrency(order.posTotal || 0, settings.currencySymbol, 2)}</div>
+                          {order.discount > 0 && <div className="mt-1 text-[10px] font-bold text-rose-500">ส่วนลด -{formatCurrency(order.discount, settings.currencySymbol, 2)}</div>}
+                        </td>
+                        <td className="p-4 text-center">
+                          {order.status === 'completed' ? (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-100 dark:bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-500/30">
+                              <CheckCircle2 className="w-3 h-3" />
+                              สำเร็จ
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-100 dark:bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-300 dark:border-rose-500/30">
+                              <RotateCcw className="w-3 h-3" />
+                              คืนเงินแล้ว
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedHistoryDetail(order)}
+                              className="inline-flex items-center gap-1.5 rounded-xl border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] font-bold text-amber-700 transition-colors hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300 dark:hover:bg-amber-500/20"
+                              title="ดูรายละเอียดการชำระเงิน"
+                              aria-label={`ดูรายละเอียดบิล ${order.orderNumber}`}
+                            >
+                              <Eye className="h-4 w-4" />
+                              <span>ดูรายละเอียด</span>
+                            </button>
+                            <button
+                              onClick={() => setSelectedOrderForReceipt(order)}
+                              className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white border border-slate-200 dark:border-slate-700 transition-colors"
+                              title="ดูและพิมพ์ใบเสร็จ"
+                            >
+                              <Printer className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setHistoryQrOrder(order)}
+                              className="p-2 rounded-xl bg-sky-50 dark:bg-sky-500/10 hover:bg-sky-100 dark:hover:bg-sky-500/20 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-500/30 transition-colors"
+                              title="สร้าง QR ชำระยอดนี้อีกครั้ง"
+                              aria-label={`สร้าง QR บิล ${order.orderNumber}`}
+                            >
+                              <QrCode className="w-4 h-4" />
+                            </button>
+
+						{order.status === 'completed' && !order.paymentId && (
+                              <button
+                                onClick={() => setSelectedOrderForRefund(order.id)}
+                                className="p-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-rose-100 dark:hover:bg-rose-950/40 text-slate-500 dark:text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 border border-slate-200 dark:border-slate-700 transition-colors"
+                                title="คืนเงิน / ยกเลิกบิล"
+                              >
+                                <RotateCcw className="w-4 h-4" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-3 text-xs dark:border-slate-800">
+              <span className="text-slate-500 dark:text-slate-400">
+                {historyTotal > 0
+                  ? `แสดง ${(historyPage - 1) * HISTORY_PAGE_SIZE + 1}–${Math.min(historyPage * HISTORY_PAGE_SIZE, historyTotal)} จากทั้งหมด ${historyTotal.toLocaleString('th-TH')} รายการ · หน้า ${historyPage}/${historyTotalPages}`
+                  : `ทั้งหมด 0 รายการ · หน้า 1/${historyTotalPages}`}
+                {isHistoryLoading && <span className="ml-2 font-bold text-amber-600 dark:text-amber-400">กำลังโหลด...</span>}
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={historyPage <= 1 || isHistoryLoading}
+                  onClick={() => setHistoryPage((page) => Math.max(1, page - 1))}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  ก่อนหน้า
+                </button>
+                <button
+                  type="button"
+                  disabled={historyPage >= historyTotalPages || isHistoryLoading || historyTotal === 0}
+                  onClick={() => setHistoryPage((page) => Math.min(historyTotalPages, page + 1))}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-1.5 font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  ถัดไป
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PAYMENT HISTORY DETAIL MODAL */}
+      {selectedHistoryDetail && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center overflow-y-auto bg-black/75 p-3 backdrop-blur-xs sm:p-4"
+          onMouseDown={(event) => {
+            if (event.currentTarget === event.target) setSelectedHistoryDetail(null);
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-history-detail-title"
+            className="flex max-h-[94vh] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800 sm:px-6">
+              <div className="min-w-0">
+                <div className="mb-1 flex flex-wrap items-center gap-2">
+                  <span className="inline-flex rounded-full border border-amber-200 bg-amber-50 px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+                    Payment Detail
+                  </span>
+                  <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-black ${selectedHistoryDetail.originSystem === 'match' ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'}`}>
+                    รับชำระที่ {selectedHistoryDetail.originSystem === 'match' ? 'Match' : 'POS'}
+                  </span>
+                </div>
+                <h2 id="payment-history-detail-title" className="text-lg font-black text-slate-900 dark:text-white sm:text-xl">
+                  รายละเอียดการชำระเงิน
+                </h2>
+                <p className="mt-1 break-all font-mono text-[11px] text-slate-500 dark:text-slate-400">
+                  เลขที่บิล {selectedHistoryDetail.orderNumber}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedHistoryDetail(null)}
+                className="rounded-xl border border-slate-200 bg-slate-50 p-2 text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400 dark:hover:text-white"
+                aria-label="ปิดรายละเอียดการชำระเงิน"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="space-y-5 overflow-y-auto p-5 sm:p-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">ลูกค้า / สมาชิก</p>
+                  <p className="mt-1 truncate text-sm font-black text-slate-900 dark:text-white">{selectedHistoryDetail.customerNote || 'ลูกค้าทั่วไป'}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">วันและเวลา</p>
+                  <p className="mt-1 text-sm font-black text-slate-900 dark:text-white">{formatThaiDateTime(selectedHistoryDetail.createdAt)}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">ผู้รับชำระ</p>
+                  <p className="mt-1 truncate text-sm font-black text-slate-900 dark:text-white">{selectedHistoryDetail.cashierName || 'Admin'}</p>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 dark:border-slate-700 dark:bg-slate-950/60">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">ช่องทางชำระ</p>
+                  <p className="mt-1 text-sm font-black text-slate-900 dark:text-white">{selectedHistoryDetail.paymentMethod === 'promptpay' ? 'PromptPay QR' : 'เงินสด'}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-2xl border border-sky-200 bg-sky-50 p-4 dark:border-sky-500/25 dark:bg-sky-500/10">
+                  <p className="text-[11px] font-bold text-sky-700 dark:text-sky-300">ยอดจาก Match</p>
+                  <p className="mt-1 font-mono text-xl font-black text-sky-800 dark:text-sky-200">{formatCurrency(selectedHistoryDetail.matchTotal || 0, settings.currencySymbol, 2)}</p>
+                </div>
+                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 dark:border-amber-500/25 dark:bg-amber-500/10">
+                  <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">ยอดจาก POS</p>
+                  <p className="mt-1 font-mono text-xl font-black text-amber-800 dark:text-amber-200">{formatCurrency(selectedHistoryDetail.posTotal ?? selectedHistoryDetail.total, settings.currencySymbol, 2)}</p>
+                </div>
+                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 dark:border-emerald-500/25 dark:bg-emerald-500/10">
+                  <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">ยอดชำระรวม</p>
+                  <p className="mt-1 font-mono text-xl font-black text-emerald-700 dark:text-emerald-300">{formatCurrency(selectedHistoryDetail.total, settings.currencySymbol, 2)}</p>
+                </div>
+              </div>
+
+              <section>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h3 className="flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                    <Layers className="h-4 w-4 text-amber-500" />
+                    รายการที่ชำระ
+                  </h3>
+                  <span className="text-[11px] font-semibold text-slate-400">{selectedHistoryDetail.items.reduce((sum, item) => sum + item.quantity, 0)} รายการสินค้า</span>
+                </div>
+
+                <div className="space-y-3">
+                  {selectedHistoryDetail.billingLines && selectedHistoryDetail.billingLines.length > 0 ? (
+                    selectedHistoryDetail.billingLines.map((line, lineIndex) => {
+                      const snapshotItems = Array.isArray(line.snapshot?.items) ? line.snapshot.items : [];
+                      const snapshotAmounts = snapshotItems.map((item: Record<string, unknown>) => Number(item.amountSatang ?? item.lineTotalSatang ?? 0));
+                      const snapshotTotal = snapshotAmounts.reduce((sum, amount) => sum + amount, 0);
+                      const allocatedAmounts = snapshotAmounts.map((amount) => snapshotTotal > 0 ? Math.floor(amount * line.amountSatang / snapshotTotal) : 0);
+                      if (allocatedAmounts.length > 0) allocatedAmounts[0] += line.amountSatang - allocatedAmounts.reduce((sum, amount) => sum + amount, 0);
+                      const matchHistory = Array.isArray(line.snapshot?.matchHistory) ? line.snapshot.matchHistory : [];
+                      return (
+                        <article key={`${line.sourceType}-${line.sourceId}-${lineIndex}`} className="overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-700">
+                          <div className="flex items-start justify-between gap-3 bg-slate-50 px-4 py-3 dark:bg-slate-800/70">
+                            <div className="min-w-0">
+                              <span className={`mr-2 inline-flex rounded-md px-2 py-0.5 text-[10px] font-black ${line.sourceType === 'match' ? 'bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'}`}>
+                                {line.sourceType === 'match' ? 'MATCH' : 'POS'}
+                              </span>
+                              <span className="text-xs font-bold text-slate-900 dark:text-white">{line.label}</span>
+                            </div>
+                            <span className="shrink-0 font-mono text-sm font-black text-slate-900 dark:text-white">{formatCurrency(line.amountSatang / 100, settings.currencySymbol, 2)}</span>
+                          </div>
+                          {snapshotItems.length > 0 && (
+                            <div className="divide-y divide-slate-100 px-4 dark:divide-slate-800">
+                              {snapshotItems.map((item: Record<string, unknown>, itemIndex: number) => {
+                                const quantity = Number(item.quantity || 1);
+                                const lineTotalSatang = allocatedAmounts[itemIndex];
+                                const unitPriceSatang = quantity > 0 ? lineTotalSatang / quantity : lineTotalSatang;
+                                return (
+                                  <div key={`${line.sourceId}-item-${itemIndex}`} className="grid grid-cols-[1fr_auto] gap-3 py-2.5 text-xs">
+                                    <div className="min-w-0">
+                                      <p className="font-bold text-slate-800 dark:text-slate-200">{String(item.name || item.productName || item.label || line.label)}</p>
+                                      <p className="mt-0.5 text-[10px] text-slate-400">{quantity} × {formatCurrency(unitPriceSatang / 100, settings.currencySymbol, 2)}</p>
+                                    </div>
+                                    <p className="self-center font-mono font-bold text-slate-700 dark:text-slate-300">{formatCurrency(lineTotalSatang / 100, settings.currencySymbol, 2)}</p>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                          {matchHistory.length > 0 && <div className="border-t border-dashed border-slate-200 px-4 py-3 dark:border-slate-700"><p className="mb-2 text-[10px] font-black uppercase tracking-wider text-sky-600">ประวัติ Match ที่เกี่ยวข้อง</p><div className="grid gap-1.5">{matchHistory.map((match: Record<string, unknown>, historyIndex: number) => <div key={`${line.sourceId}-history-${historyIndex}`} className="rounded-lg bg-sky-50 px-3 py-2 text-[11px] dark:bg-sky-500/10"><b>เกม {String(match.matchId || '-')} · {String(match.court || 'ไม่ระบุสนาม')}</b><p className="mt-0.5 text-slate-500">{String(match.team || '')}{match.opponent ? ` พบ ${String(match.opponent)}` : ''} · ใช้ลูก {Number(match.shuttles || 0)} ลูก{match.result ? ` · ${String(match.result)}` : ''}</p></div>)}</div></div>}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 px-4 dark:divide-slate-800 dark:border-slate-700">
+                      {selectedHistoryDetail.items.map((item, itemIndex) => (
+                        <div key={`${item.productId}-${itemIndex}`} className="grid grid-cols-[1fr_auto] gap-3 py-3 text-xs">
+                          <div className="min-w-0">
+                            <p className="font-bold text-slate-900 dark:text-white">{item.name}</p>
+                            <p className="mt-0.5 text-[10px] text-slate-400">{item.quantity} × {formatCurrency(item.price, settings.currencySymbol, 2)}{item.sku ? ` · SKU ${item.sku}` : ''}</p>
+                          </div>
+                          <p className="self-center font-mono font-black text-slate-800 dark:text-slate-200">{formatCurrency(item.total, settings.currencySymbol, 2)}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="rounded-2xl border border-slate-200 p-4 dark:border-slate-700">
+                  <h3 className="mb-3 flex items-center gap-2 text-sm font-black text-slate-900 dark:text-white">
+                    {selectedHistoryDetail.paymentMethod === 'promptpay' ? <QrCode className="h-4 w-4 text-sky-500" /> : <Banknote className="h-4 w-4 text-emerald-500" />}
+                    รายละเอียดรับชำระ
+                  </h3>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between gap-3"><span className="text-slate-500">ช่องทาง</span><span className="font-bold text-slate-900 dark:text-white">{selectedHistoryDetail.paymentMethod === 'promptpay' ? 'PromptPay QR' : 'เงินสด'}</span></div>
+                    {selectedHistoryDetail.paymentMethod === 'cash' && (
+                      <>
+                        <div className="flex justify-between gap-3"><span className="text-slate-500">รับเงินมา</span><span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(selectedHistoryDetail.cashReceived || 0, settings.currencySymbol, 2)}</span></div>
+                        <div className="flex justify-between gap-3"><span className="text-slate-500">เงินทอน</span><span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(selectedHistoryDetail.change || 0, settings.currencySymbol, 2)}</span></div>
+                      </>
+                    )}
+                    {selectedHistoryDetail.referenceNumber && <div className="flex justify-between gap-3"><span className="text-slate-500">เลขอ้างอิง</span><span className="break-all text-right font-mono font-bold text-slate-900 dark:text-white">{selectedHistoryDetail.referenceNumber}</span></div>}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-950/60">
+                  <h3 className="mb-3 text-sm font-black text-slate-900 dark:text-white">สรุปยอดบิล</h3>
+                  <div className="space-y-2 text-xs">
+                    <div className="flex justify-between gap-3"><span className="text-slate-500">ยอดก่อนส่วนลด</span><span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(selectedHistoryDetail.subtotal, settings.currencySymbol, 2)}</span></div>
+                    <div className="flex justify-between gap-3"><span className="text-slate-500">ส่วนลด</span><span className="font-mono font-bold text-rose-600 dark:text-rose-400">{selectedHistoryDetail.discount > 0 ? '-' : ''}{formatCurrency(selectedHistoryDetail.discount, settings.currencySymbol, 2)}</span></div>
+                    {selectedHistoryDetail.vatAmount > 0 && <div className="flex justify-between gap-3"><span className="text-slate-500">VAT {selectedHistoryDetail.vatRate}%</span><span className="font-mono font-bold text-slate-900 dark:text-white">{formatCurrency(selectedHistoryDetail.vatAmount, settings.currencySymbol, 2)}</span></div>}
+                    <div className="mt-2 flex justify-between gap-3 border-t border-slate-200 pt-2 dark:border-slate-700"><span className="font-black text-slate-900 dark:text-white">ยอดสุทธิ</span><span className="font-mono text-lg font-black text-emerald-600 dark:text-emerald-400">{formatCurrency(selectedHistoryDetail.total, settings.currencySymbol, 2)}</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/50 sm:px-6">
+              <button
+                type="button"
+                onClick={() => setSelectedHistoryDetail(null)}
+                className="rounded-xl bg-slate-200 px-4 py-2 text-xs font-bold text-slate-700 transition-colors hover:bg-slate-300 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              >
+                ปิด
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedOrderForReceipt(selectedHistoryDetail);
+                  setSelectedHistoryDetail(null);
+                }}
+                className="inline-flex items-center gap-2 rounded-xl bg-amber-500 px-4 py-2 text-xs font-black text-slate-950 shadow-lg shadow-amber-500/20 transition-colors hover:bg-amber-400"
+              >
+                <Printer className="h-4 w-4" />
+                ดูใบเสร็จ / พิมพ์
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* BATCH PAYMENT MODAL */}
+      {isBatchPayModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-5xl w-full p-5 sm:p-6 shadow-2xl space-y-4 max-h-[94vh] flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+              <div>
+                <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider bg-amber-100 dark:bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-200 dark:border-amber-500/20">
+                  ชำระเงินรวม • BATCH CHECKOUT
+                </span>
+                <h2 className="text-lg font-black text-slate-900 dark:text-white mt-1">
+                  ชำระเงินรวมรายการพักยอด ({selectedHeldObjects.length} บิล)
+                </h2>
+              </div>
+              <button
+                onClick={closeBatchPayModal}
+                className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-400 hover:text-slate-700 dark:hover:text-white"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-y-auto pr-1 custom-scrollbar">
+              <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] gap-4 lg:gap-5">
+                <div className="space-y-4 min-w-0">
+              {/* Selected Held Bills Summary */}
+              <div className="bg-slate-50 dark:bg-slate-950/70 border border-slate-200 dark:border-slate-800/80 rounded-2xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-300">
+                  <span className="flex items-center gap-1.5">
+                    <Layers className="w-4 h-4 text-amber-500" />
+                    <span>รายการบิลที่รวมชำระ ({selectedHeldObjects.length} บิล)</span>
+                  </span>
+                  <span className="font-mono text-slate-500">รวม {selectedTotalItemsCount} ชิ้น</span>
+                </div>
+
+                <div className="divide-y divide-slate-200/60 dark:divide-slate-800/60 max-h-[54vh] overflow-y-auto custom-scrollbar pr-1">
+                  {selectedHeldObjects.map((held) => (
+                    <div key={held.id} className="py-3 first:pt-1 last:pb-1 text-xs space-y-2">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="font-mono font-bold text-amber-600 dark:text-amber-400">{held.heldNumber}</span>
+                            <span className="font-bold text-slate-800 dark:text-slate-200">{held.customerName || 'ไม่ระบุชื่อ'}</span>
+                          </div>
+                          <p className="mt-0.5 text-[10px] text-slate-400">
+                            Match {formatCurrency(held.matchTotal || 0, settings.currencySymbol, 2)} · POS {formatCurrency(held.posTotal ?? held.items.reduce((sum, item) => sum + item.product.price * item.quantity, 0), settings.currencySymbol, 2)}
+                          </p>
+                        </div>
+                        <span className="shrink-0 font-mono font-bold text-slate-900 dark:text-white">
+                          {formatCurrency(held.total, settings.currencySymbol, settings.decimalPlaces)}
+                        </span>
+                      </div>
+
+                      <div className="rounded-xl border border-slate-200 bg-white/80 px-2.5 py-1.5 dark:border-slate-800 dark:bg-slate-900/70">
+                        {held.matchTotal != null && held.matchTotal > 0 && (
+                          <div className="flex items-center justify-between gap-3 py-1 text-[11px]">
+                            <span className="text-slate-600 dark:text-slate-400">ค่าใช้จ่าย LiveMatch</span>
+                            <span className="font-mono font-semibold">{formatCurrency(held.matchTotal, settings.currencySymbol, 2)}</span>
+                          </div>
+                        )}
+                        {held.items.map((item, index) => (
+                          <div key={`${held.id}:${item.product.id}:${index}`} className="flex items-start justify-between gap-3 border-t border-slate-100 py-1.5 first:border-t-0 dark:border-slate-800/70">
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <p className="min-w-0 truncate font-semibold text-slate-700 dark:text-slate-300">{item.product.name}</p>
+                                {item.splitAllocation && <span className="shrink-0 rounded-md bg-yellow-100 px-1.5 py-0.5 text-[9px] font-black text-yellow-800 dark:bg-yellow-500/15 dark:text-yellow-300">หาร {item.splitAllocation.count} คน · คนนี้ {formatCurrency(item.splitAllocation.share, settings.currencySymbol, 2)}</span>}
+                              </div>
+                              <p className="text-[10px] text-slate-400">{item.quantity} {item.product.unit} × {formatCurrency((item.allocatedTotal ?? item.product.price * item.quantity) / Math.max(1, item.quantity), settings.currencySymbol, 2)}</p>
+                            </div>
+                            <span className="shrink-0 font-mono font-semibold text-slate-800 dark:text-slate-200">{formatCurrency(item.allocatedTotal ?? item.product.price * item.quantity, settings.currencySymbol, 2)}</span>
+                          </div>
+                        ))}
+                        {held.items.length === 0 && (!held.matchTotal || held.matchTotal <= 0) && (
+                          <p className="py-1 text-[11px] text-slate-400">ไม่มีรายละเอียดสินค้าในบิลนี้</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                  <span className="text-xs font-bold text-slate-700 dark:text-slate-300">ยอดรวมทั้งสิ้นที่ต้องชำระ</span>
+                  <span className="text-xl font-black text-emerald-600 dark:text-emerald-400 font-mono">
+                    {formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)}
+                  </span>
+                </div>
+                {billingSummary && billingSummary.matchTotalSatang > 0 && <p className="text-[11px] font-semibold text-slate-500">POS {formatCurrency(billingSummary.posTotalSatang / 100, settings.currencySymbol, 2)} + Match {formatCurrency(billingSummary.matchTotalSatang / 100, settings.currencySymbol, 2)}</p>}
+              </div>
+                </div>
+
+                <div className="space-y-4 min-w-0 lg:border-l lg:border-slate-200 lg:pl-5 dark:lg:border-slate-800">
+
+              {permissions.discounts && selectedPOSTotal > 0 && (
+                <div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-3 dark:border-amber-500/25 dark:bg-amber-500/10">
+                  <div className="mb-2 flex items-center justify-between gap-3"><label className="text-xs font-black text-slate-700 dark:text-slate-200">ส่วนลดสินค้า POS ท้ายบิล</label>{batchDiscountAmount > 0 && <span className="text-xs font-bold text-rose-600">-{formatCurrency(batchDiscountAmount, settings.currencySymbol, 2)}</span>}</div>
+                  <div className="flex gap-2">
+                    <select value={batchDiscountType} onChange={(event) => setBatchDiscountType(event.target.value as 'amount' | 'percent')} className="rounded-xl border border-amber-200 bg-white px-3 py-2 text-xs font-bold dark:border-amber-500/30 dark:bg-slate-900"><option value="amount">บาท</option><option value="percent">เปอร์เซ็นต์</option></select>
+                    <input type="number" min="0" max={batchDiscountType === 'percent' ? 100 : selectedPOSTotal} step="0.01" value={batchDiscountInput} onChange={(event) => setBatchDiscountInput(event.target.value)} placeholder="0" className="min-w-0 flex-1 rounded-xl border border-amber-200 bg-white px-3 py-2 text-right font-mono text-sm font-bold dark:border-amber-500/30 dark:bg-slate-900" />
+                    {batchDiscountValue > 0 && <button type="button" onClick={() => setBatchDiscountInput('')} className="rounded-xl px-2 text-xs font-bold text-rose-600">ล้าง</button>}
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-500">คิดส่วนลดจากสินค้า POS เท่านั้น ค่าใช้จ่าย Match ไม่ถูกลด</p>
+                </div>
+              )}
+
+              {/* Payment Methods */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-2">
+                  เลือกช่องทางการชำระเงิน
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setBatchPayMethod('cash')}
+                    className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
+                      batchPayMethod === 'cash'
+                        ? 'bg-emerald-500/10 border-emerald-500 text-emerald-600 dark:text-emerald-400 font-bold shadow-xs'
+                        : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                    }`}
+                  >
+                    <Banknote className="w-5 h-5" />
+                    <span className="text-xs">เงินสด (Cash)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setBatchPayMethod('promptpay')}
+                    className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all ${
+                      batchPayMethod === 'promptpay'
+                        ? 'bg-blue-500/10 border-blue-500 text-blue-600 dark:text-blue-400 font-bold shadow-xs'
+                        : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:border-slate-300'
+                    }`}
+                  >
+                    <QrCode className="w-5 h-5" />
+                    <span className="text-xs">PromptPay QR</span>
+                  </button>
+
+                </div>
+              </div>
+
+              {/* Method Detail */}
+              {batchPayMethod === 'cash' && (
+                <div className="space-y-3 bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                      จำนวนเงินสดที่รับจากลูกค้า
+                    </label>
+                    {batchCashGiven > 0 && (
+                      <span
+                        className={`text-xs font-bold px-2 py-0.5 rounded-md ${
+                          isBatchCashSufficient
+                            ? 'bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400'
+                            : 'bg-rose-100 dark:bg-rose-500/20 text-rose-700 dark:text-rose-400'
+                        }`}
+                      >
+                        {isBatchCashSufficient ? 'เงินครบถ้วน' : 'ยอดเงินไม่พอ'}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="relative">
+                    <input
+                      type="number"
+                      step="any"
+                      value={batchCashInput}
+                      onFocus={(e) => e.currentTarget.select()}
+                      onChange={(e) => setBatchCashInput(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-2.5 text-lg font-mono font-bold text-slate-900 dark:text-white focus:outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  {/* Quick Cash Buttons */}
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setBatchCashInput(paymentTotal.toString())}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-100 dark:bg-emerald-500/20 text-emerald-800 dark:text-emerald-300 text-xs font-bold border border-emerald-300 dark:border-emerald-500/30"
+                    >
+                      พอดี (฿{paymentTotal.toLocaleString()})
+                    </button>
+                    {[100, 500, 1000, 2000].map((val) => (
+                      <button
+                        key={val}
+                        type="button"
+                        onClick={() => setBatchCashInput(val.toString())}
+                        className="px-2.5 py-1.5 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-mono font-semibold border border-slate-200 dark:border-slate-700 hover:bg-slate-100"
+                      >
+                        ฿{val}
+                      </button>
+                    ))}
+                    {[+20, +50, +100, +500].map((val) => (
+                      <button
+                        key={`plus-${val}`}
+                        type="button"
+                        onClick={() => {
+                          const cur = parseFloat(batchCashInput) || 0;
+                          setBatchCashInput((cur + val).toString());
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300 text-xs font-mono font-semibold border border-amber-200 dark:border-amber-500/20"
+                      >
+                        +{val}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Change calculation */}
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+                    <span className="text-xs text-slate-500 dark:text-slate-400">เงินทอน (Change)</span>
+                    <span
+                      className={`text-base font-black font-mono ${
+                        isBatchCashSufficient
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-slate-400'
+                      }`}
+                    >
+                      {formatCurrency(batchChange, settings.currencySymbol, settings.decimalPlaces)}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {batchPayMethod === 'promptpay' && (
+                <div className="bg-slate-50 dark:bg-slate-950 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col items-center text-center space-y-3">
+                  <div className="p-3 bg-white rounded-2xl shadow-sm border border-slate-200 inline-block">
+                    {batchQrDataUrl ? <img src={batchQrDataUrl} alt="PromptPay QR" className="w-36 h-36 object-contain" /> : <div className="grid h-36 w-36 place-items-center px-3 text-center">{batchQrError ? <span className="text-xs font-bold text-rose-600">{batchQrError}</span> : <QrCode className="w-16 h-16 animate-pulse text-slate-400" />}</div>}
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-900 dark:text-white">
+                      ผู้รับ: {batchQrReceiverName || settings.promptPayReceiverName || settings.storeName}
+                    </p>
+                    {settings.effectivePromptPayIdMasked && <p className="text-[10px] text-slate-400">PromptPay: {settings.effectivePromptPayIdMasked}</p>}
+                    <p className="text-xs text-slate-500">สแกนเพื่อชำระยอดรวม {formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)}</p>
+                  </div>
+                  <input
+                    type="text"
+                    value={batchRefNumber}
+                    onChange={(e) => setBatchRefNumber(e.target.value)}
+                    placeholder="เลขอ้างอิงสลิป / Ref (ถ้ามี)"
+                    className="w-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white"
+                  />
+                </div>
+              )}
+
+              {/* Extra Note */}
+              <div>
+                <input
+                  type="text"
+                  value={batchCustomerNote}
+                  onChange={(e) => setBatchCustomerNote(e.target.value)}
+                  placeholder="หมายเหตุเพิ่มเติมในใบเสร็จ (ถ้ามี)..."
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-900 dark:text-white"
+                />
+              </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer buttons */}
+            <div className="pt-3 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={closeBatchPayModal}
+                title={batchPayMethod === 'promptpay' ? 'ยกเลิก' : undefined}
+                aria-label="ยกเลิกการชำระเงินรวม"
+                className={`${batchPayMethod === 'promptpay' ? 'h-10 w-10 shrink-0 p-0' : 'px-4 py-2.5'} inline-flex items-center justify-center rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300`}
+              >
+                {batchPayMethod === 'promptpay' ? <X className="h-4 w-4" aria-hidden="true" /> : 'ยกเลิก'}
+              </button>
+
+              {batchPayMethod === 'promptpay' && (
+                <button
+                  id="print-held-promptpay-qr-only-btn"
+                  type="button"
+                  disabled={!batchQrDataUrl}
+                  onClick={() => void handlePrintBatchQrOnly()}
+                  className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-sky-300 bg-sky-50 px-3 text-xs font-black text-sky-700 transition-colors hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-300 dark:hover:bg-sky-500/20"
+                >
+                  <Printer className="h-4 w-4" />
+                  <span className="hidden sm:inline">พิมพ์ใบแจ้งชำระ QR</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                disabled={isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient) || (batchPayMethod === 'promptpay' && !batchQrDataUrl)}
+                onClick={handleConfirmBatchPayment}
+                className={`flex-1 flex items-center justify-center gap-2 px-6 py-2.5 rounded-xl text-xs font-black shadow-lg transition-all ${
+                  isBatchPaying || (batchPayMethod === 'cash' && !isBatchCashSufficient) || (batchPayMethod === 'promptpay' && !batchQrDataUrl)
+                    ? 'bg-slate-300 dark:bg-slate-800 text-slate-500 cursor-not-allowed'
+                    : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-600/25'
+                }`}
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>
+                  {isBatchPaying ? 'กำลังบันทึกการชำระ...' : `ยืนยันชำระเงินรวม (${formatCurrency(paymentTotal, settings.currencySymbol, settings.decimalPlaces)})`}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {historyQrOrder && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs" role="dialog" aria-modal="true" aria-label="QR ชำระเงินจากประวัติ">
+          <div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex items-start justify-between gap-3">
+              <div><p className="text-[10px] font-black uppercase tracking-wider text-sky-600">สร้าง QR จากประวัติ</p><h3 className="mt-1 text-lg font-black text-slate-900 dark:text-white">บิล {historyQrOrder.orderNumber}</h3><p className="mt-1 text-xs font-semibold text-slate-500">QR นี้ใช้ยอดเดิมและไม่บันทึกการชำระซ้ำอัตโนมัติ</p></div>
+              <button type="button" onClick={closeHistoryQr} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 dark:border-slate-700" aria-label="ปิด QR"><X className="h-4 w-4" /></button>
+            </div>
+            <div className="mt-5 flex flex-col items-center rounded-2xl border border-sky-200 bg-sky-50 p-5 text-center dark:border-sky-500/30 dark:bg-sky-500/10">
+              <div className="grid h-64 w-64 place-items-center rounded-2xl bg-white p-3 shadow-sm">
+                {historyQrDataUrl ? <img src={historyQrDataUrl} alt="PromptPay QR จากประวัติการขาย" className="h-full w-full object-contain" /> : historyQrError ? <span className="px-4 text-sm font-bold text-rose-600">{historyQrError}</span> : <QrCode className="h-20 w-20 animate-pulse text-slate-300" />}
+              </div>
+              <p className="mt-4 text-3xl font-black text-sky-700 dark:text-sky-300">{formatCurrency(historyQrOrder.total, settings.currencySymbol, settings.decimalPlaces)}</p>
+              <p className="mt-1 text-xs font-bold text-slate-600 dark:text-slate-300">ผู้รับ: {historyQrReceiverName || settings.promptPayReceiverName || settings.storeName}</p>
+              <p className="mt-1 text-xs text-slate-500">{historyQrOrder.customerNote || 'ลูกค้าทั่วไป'}</p>
+            </div>
+            <button type="button" onClick={closeHistoryQr} className="mt-4 h-11 w-full rounded-xl bg-slate-900 font-bold text-white dark:bg-slate-700">ปิด</button>
+          </div>
+        </div>
+      )}
+
+      {/* REFUND MODAL */}
+      {selectedOrderForRefund && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
+                <RotateCcw className="w-5 h-5" />
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">ยืนยันการคืนเงิน / ยกเลิกบิล</h3>
+              </div>
+              <button
+                onClick={() => setSelectedOrderForRefund(null)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 p-3.5 rounded-2xl text-xs text-rose-800 dark:text-rose-300 space-y-1">
+              <p className="font-semibold">⚠️ ข้อควรทราบ:</p>
+              <p>ระบบจะปรับสถานะบิลเป็น &quot;คืนเงินแล้ว&quot; และทำการคืนจำนวนสินค้ากลับเข้าสต็อกคงคลังอัตโนมัติ</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
+                เหตุผลการคืนเงิน (Refund Reason)
+              </label>
+              <input
+                type="text"
+                value={refundReason}
+                onChange={(e) => setRefundReason(e.target.value)}
+                placeholder="เช่น ลูกค้าขอเปลี่ยนเมนู, อาหารมีปัญหา, คืนเงินสด"
+                className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-rose-500"
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSelectedOrderForRefund(null)}
+                className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmRefund}
+                className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20"
+              >
+                ยืนยันการคืนเงิน
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

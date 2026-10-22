@@ -46,6 +46,23 @@ func TestPhoneSearchDigits(t *testing.T) {
 	}
 }
 
+func TestPublicBookingNameVisibilityRedactsAtBackend(t *testing.T) {
+	original := bookingRecord{ID: "booking-1", MemberID: "member-1", BookerName: "สมชาย", BookedBy: "member", PaymentStatus: "paid", Note: "private"}
+	hidden := original
+	redactPublicBookingRecord(&hidden, false)
+	if hidden.BookerName != "" || hidden.ID != "" || hidden.MemberID != "" || hidden.Note != "" {
+		t.Fatalf("hidden public booking leaked private data: %+v", hidden)
+	}
+	shown := original
+	redactPublicBookingRecord(&shown, true)
+	if shown.BookerName != "สมชาย" {
+		t.Fatalf("enabled public booking name = %q, want %q", shown.BookerName, "สมชาย")
+	}
+	if shown.ID != "" || shown.MemberID != "" || shown.PaymentStatus != "" {
+		t.Fatalf("showing a name must not expose private identifiers: %+v", shown)
+	}
+}
+
 func TestMemberSearchQuerySearchesFromFirstCharacter(t *testing.T) {
 	tests := []struct {
 		values url.Values
@@ -124,6 +141,15 @@ func TestBookingRateLimitUsesRemoteIPAndScope(t *testing.T) {
 	}
 	if !allowBookingRequest(r, "slip", 2, time.Minute) {
 		t.Fatal("a separate scope should have a separate bucket")
+	}
+}
+
+func TestBookingHoldRatePolicyAllowsFrequentBulkBooking(t *testing.T) {
+	if bookingHoldUserRateLimit != 60 {
+		t.Fatalf("booking hold user limit = %d, want 60 requests", bookingHoldUserRateLimit)
+	}
+	if bookingHoldRateWindow != time.Minute {
+		t.Fatalf("booking hold window = %s, want 1m", bookingHoldRateWindow)
 	}
 }
 
@@ -240,6 +266,23 @@ func TestPublicBookingServerValidationRejectsTamperedPayloadTimes(t *testing.T) 
 	}
 }
 
+func TestPublicBookingCanAllowPastSlotOnlyForToday(t *testing.T) {
+	now := time.Date(2026, 8, 12, 18, 4, 0, 0, bangkokLocation)
+	settings := bookingSettingsRecord{OpenTime: "16:00", CloseTime: "22:00", IntervalMinutes: 60, AllowPastBooking: true}
+	pastToday := time.Date(2026, 8, 12, 16, 0, 0, 0, bangkokLocation)
+	if err := validatePublicBookingWindow(settings, pastToday, pastToday.Add(time.Hour), now); err != nil {
+		t.Fatalf("enabled past booking should accept a free slot from today: %v", err)
+	}
+	yesterday := pastToday.AddDate(0, 0, -1)
+	if err := validatePublicBookingWindow(settings, yesterday, yesterday.Add(time.Hour), now); !errors.Is(err, errPublicBookingDateNotAllowed) {
+		t.Fatalf("past calendar dates must remain blocked, got %v", err)
+	}
+	settings.AllowPastBooking = false
+	if err := validatePublicBookingWindow(settings, pastToday, pastToday.Add(time.Hour), now); err == nil {
+		t.Fatal("disabled past booking must reject a slot that already started")
+	}
+}
+
 func TestAdminBookingCanCrossDaysWhenPublicAdvanceBookingIsDisabled(t *testing.T) {
 	settings := bookingSettingsRecord{
 		OpenTime:        "16:00",
@@ -296,6 +339,29 @@ func TestTelegramBookingMessageShowsEveryBookedSlot(t *testing.T) {
 	for _, expected := range []string{"จำนวน: 3 ช่วง", "1. สนาม 1", "2. สนาม 1", "3. สนาม 2", "ยอดรวม: 320 บาท"} {
 		if !strings.Contains(message, expected) {
 			t.Fatalf("telegram message missing %q: %s", expected, message)
+		}
+	}
+}
+
+func TestBookingDashboardRangeUsesBangkokCalendarBoundaries(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 13, 45, 0, 0, bangkokLocation)
+	tests := []struct {
+		period string
+		start  string
+		end    string
+	}{
+		{"day", "2026-09-08", "2026-09-09"},
+		{"week", "2026-09-07", "2026-09-14"},
+		{"month", "2026-09-01", "2026-10-01"},
+		{"invalid", "2026-09-08", "2026-09-09"},
+	}
+	for _, test := range tests {
+		start, end, _ := bookingDashboardRange(now, test.period)
+		if got := start.Format("2006-01-02"); got != test.start {
+			t.Fatalf("%s start=%s want %s", test.period, got, test.start)
+		}
+		if got := end.Format("2006-01-02"); got != test.end {
+			t.Fatalf("%s end=%s want %s", test.period, got, test.end)
 		}
 	}
 }

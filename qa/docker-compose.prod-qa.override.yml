@@ -1,0 +1,40 @@
+services:
+  frontend:
+    ports: !override
+      - "5373:80"
+
+  pos:
+    ports: !override
+      - "5375:80"
+
+  backend:
+    ports: !override
+      - "8282:8080"
+    environment:
+      APP_ENV: qa-production-smoke
+      DATABASE_URL: postgres://livematch_prod_qa:livematch_prod_qa_only@postgres:5432/livematch_prod_qa?sslmode=disable
+      APP_BASE_URL: http://localhost:5373
+      POS_BASE_URL: http://localhost:5375
+      APP_ALLOWED_ORIGINS: http://localhost:5373,http://localhost:5375
+      COOKIE_SECURE: "false"
+      SUPERADMIN_USERNAME: qa-superadmin
+      SUPERADMIN_PASSWORD: qa-superadmin-only
+      SMTP_HOST: ""
+      TELEGRAM_BOT_TOKEN: ""
+      SLIPOK_API_KEY: ""
+      GOOGLE_TTS_ENABLED: "false"
+
+  postgres:
+    ports: !override
+      - "5634:5432"
+    environment:
+      POSTGRES_USER: livematch_prod_qa
+      POSTGRES_PASSWORD: livematch_prod_qa_only
+      POSTGRES_DB: livematch_prod_qa
+
+  pgadmin:
+    ports: !override
+      - "5150:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: qa-pgadmin@example.com
+      PGADMIN_DEFAULT_PASSWORD: qa-pgadmin-only

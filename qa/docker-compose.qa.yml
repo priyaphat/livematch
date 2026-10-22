@@ -1,0 +1,79 @@
+name: livematch-pos-qa
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: livematch_qa
+      POSTGRES_PASSWORD: livematch_qa_only
+      POSTGRES_DB: livematch_qa
+    ports:
+      - "5534:5432"
+    volumes:
+      # PostgreSQL 18 stores versioned clusters below /var/lib/postgresql.
+      - qa_postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U livematch_qa -d livematch_qa"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  backend:
+    build:
+      context: ../backend
+    environment:
+      APP_ENV: qa
+      PORT: 8080
+      DATABASE_URL: postgres://livematch_qa:livematch_qa_only@postgres:5432/livematch_qa?sslmode=disable
+      APP_BASE_URL: http://localhost:5273
+      POS_BASE_URL: http://localhost:5275
+      APP_ALLOWED_ORIGINS: http://localhost:5273,http://localhost:5275
+      COOKIE_SECURE: "false"
+      SMTP_HOST: ""
+      TELEGRAM_BOT_TOKEN: ""
+      SLIPOK_API_KEY: ""
+      SLIPOK_MONTHLY_CAP: "0"
+      GOOGLE_TTS_ENABLED: "false"
+      SUPERADMIN_USERNAME: qa-superadmin
+      SUPERADMIN_PASSWORD: qa-superadmin-only
+    ports:
+      - "8182:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health >/dev/null 2>&1"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  frontend:
+    build:
+      context: ../frontend
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    environment:
+      VITE_API_URL: ""
+      VITE_DEV_API_PROXY: http://backend:8080
+    ports:
+      - "5273:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  pos:
+    build:
+      context: ../pos
+    command: npm run dev -- --host 0.0.0.0 --port 5175
+    environment:
+      VITE_API_URL: ""
+      VITE_DEV_API_PROXY: http://backend:8080
+      DISABLE_HMR: "true"
+    ports:
+      - "5275:5175"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  qa_postgres_data:
+    name: livematch_pos_qa_postgres_data

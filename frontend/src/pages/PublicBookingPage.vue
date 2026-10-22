@@ -17,7 +17,7 @@ import {
 } from "@lucide/vue";
 
 const props = defineProps(["apiRequest", "token", "theme"]);
-const AUTO_REFRESH_MS = 10000;
+const AUTO_REFRESH_MS = 15000;
 const emit = defineEmits(["toggle-theme"]);
 const today = new Date().toLocaleDateString("en-CA", {
   timeZone: "Asia/Bangkok",
@@ -50,6 +50,7 @@ let toastTimer;
 let loadRequest = 0;
 let loadInFlight = false;
 let loadQueued = false;
+let loadQueuedIdentity = false;
 let availabilityLoaded = false;
 
 function handleSessionEnded(event) {
@@ -212,13 +213,13 @@ function changeDate(days) {
   state.date = next;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
-  load();
+  load(false);
 }
 function goToday() {
   state.date = today;
   if (scheduleScroll.value) scheduleScroll.value.scrollLeft = 0;
   clearSelection();
-  load();
+  load(false);
 }
 
 async function maybeShowPopup() {
@@ -257,6 +258,7 @@ function status(court, minute) {
       new Date(item.endAt).getTime() > start,
   );
   if (booking) {
+	const bookerLabel = booking.bookerName ? ` · ${booking.bookerName}` : "";
     if (booking.status === "hold") {
       const seconds = Math.max(
         0,
@@ -265,13 +267,13 @@ function status(court, minute) {
         ),
       );
       return {
-        text: `กำลังจอง ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
+        text: `กำลังจอง${bookerLabel} ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`,
         tone: "hold",
       };
     }
     return booking.status === "pending_review"
-      ? { text: "รอตรวจสอบ", tone: "pending" }
-      : { text: "จองแล้ว", tone: "busy" };
+      ? { text: `รอตรวจสอบ${bookerLabel}`, tone: "pending" }
+      : { text: booking.bookerName || "จองแล้ว", tone: "busy" };
   }
   const closure = state.closures.find(
     (item) =>
@@ -281,9 +283,11 @@ function status(court, minute) {
   );
   if (closure)
     return {
-      text: closure.note ? `ปิด · ${closure.note}` : "ปิดสนาม",
+      text: closure.note || "ปิดสนาม",
       tone: "closed",
     };
+  if (state.settings.allowPastBooking === false && start < state.now - 60000)
+    return { text: "เวลาผ่านแล้ว", tone: "closed" };
   return { text: "ว่าง", tone: "free" };
 }
 function isSelected(court, minute) {
@@ -297,9 +301,10 @@ function slotClass(court, minute) {
   const tone = status(court, minute).tone;
   return `public-slot--${tone} booking-state--${tone}`;
 }
-async function load() {
+async function load(refreshIdentity = true) {
   if (loadInFlight) {
     loadQueued = true;
+    loadQueuedIdentity = loadQueuedIdentity || refreshIdentity;
     loadRequest += 1;
     return;
   }
@@ -313,11 +318,11 @@ async function load() {
   state.error = "";
   try {
     const availability = await props.apiRequest(
-      `/api/public-booking/${props.token}/availability?date=${requestedDate}`,
+      `/api/public-booking/${props.token}/availability?date=${requestedDate}${refreshIdentity ? '' : '&includeConfiguration=false'}`,
     );
     if (request !== loadRequest || requestedDate !== state.date) return;
     Object.assign(state, availability);
-    await maybeShowPopup();
+    if (refreshIdentity) await maybeShowPopup();
     availabilityLoaded = true;
     if (availability.serverNow) {
       state.clockOffsetMs = timestamp(availability.serverNow) - Date.now();
@@ -327,7 +332,7 @@ async function load() {
       if (scheduleScroll.value && requestedDate === state.date)
         scheduleScroll.value.scrollLeft = previousScroll;
     });
-    try {
+    if (refreshIdentity) try {
       const me = await props.apiRequest(
         `/api/public-auth/me?tenant=${props.token}`,
       );
@@ -374,10 +379,29 @@ async function load() {
     if (request === loadRequest) state.loading = false;
     loadInFlight = false;
     if (loadQueued) {
+      const queuedIdentity = loadQueuedIdentity;
       loadQueued = false;
-      queueMicrotask(load);
+      loadQueuedIdentity = false;
+      queueMicrotask(() => load(queuedIdentity));
     }
   }
+}
+
+function scheduleAvailabilityRefresh() {
+  clearTimeout(timer);
+  if (document.hidden || !navigator.onLine) return;
+  timer = window.setTimeout(async () => {
+    await load(false);
+    scheduleAvailabilityRefresh();
+  }, AUTO_REFRESH_MS + Math.floor(Math.random() * 2500));
+}
+
+function handleBookingVisibility() {
+  if (document.hidden || !navigator.onLine) {
+    clearTimeout(timer);
+    return;
+  }
+  void load(false).finally(scheduleAvailabilityRefresh);
 }
 function googleLogin() {
   if (actionBusy.login) return;
@@ -402,6 +426,16 @@ function queueCountdown(queue) {
   );
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
+async function paymentQRSource(promptPayPayload = "") {
+  if (
+    state.settings.paymentQrMode === "uploaded" &&
+    state.settings.paymentQrImageUrl
+  )
+    return state.settings.paymentQrImageUrl;
+  return promptPayPayload
+    ? QRCode.toDataURL(promptPayPayload, { width: 300, margin: 1 })
+    : "";
+}
 async function openQueuePayment(queue) {
   payment.value = {
     id: queue.id,
@@ -409,9 +443,7 @@ async function openQueuePayment(queue) {
     totalPriceThb: queue.totalPriceThb,
     holdExpiresAt: queue.holdExpiresAt,
   };
-  qr.value = queue.promptPayPayload
-    ? await QRCode.toDataURL(queue.promptPayPayload, { width: 300, margin: 1 })
-    : "";
+  qr.value = await paymentQRSource(queue.promptPayPayload);
 }
 async function claimMember() {
   if (actionBusy.claim) return;
@@ -529,9 +561,7 @@ async function hold() {
       { method: "POST", body: JSON.stringify(selection) },
     );
     payment.value = data.booking;
-    qr.value = data.promptPayPayload
-      ? await QRCode.toDataURL(data.promptPayPayload, { width: 300, margin: 1 })
-      : "";
+    qr.value = await paymentQRSource(data.promptPayPayload);
     await load();
     showToast("ล็อกช่วงเวลาจองแล้ว กรุณาชำระเงินภายใน 5 นาที", "success");
   } catch (error) {
@@ -570,9 +600,7 @@ async function holdBatch() {
         data.booking?.holdExpiresAt ||
         new Date(Date.now() + 5 * 60 * 1000).toISOString(),
     };
-    qr.value = data.promptPayPayload
-      ? await QRCode.toDataURL(data.promptPayPayload, { width: 300, margin: 1 })
-      : "";
+    qr.value = await paymentQRSource(data.promptPayPayload);
     clearSelection();
     await load();
     showToast("ล็อกช่วงเวลาจองแล้ว กรุณาชำระเงินภายใน 5 นาที", "success");
@@ -604,7 +632,14 @@ async function upload(event) {
 				{ method: "POST", body: form },
 			);
       payment.value.status = result.status || "pending_review";
-      showToast(result.status === "confirmed" ? "ชำระเงินผ่านและยืนยันการจองแล้ว" : "ส่งสลิปแล้ว รอผู้ดูแลตรวจสอบ", "success");
+      showToast(
+        result.status === "confirmed"
+          ? "ชำระเงินผ่านและยืนยันการจองแล้ว"
+          : result.verificationStatus === "pending_retry"
+            ? "รับสลิปแล้ว ธนาคารกำลังประมวลผล ระบบจะตรวจซ้ำอัตโนมัติประมาณ 2 นาที"
+            : "ส่งสลิปแล้ว รอผู้ดูแลตรวจสอบ",
+        "success",
+      );
       await load();
 	} catch (error) {
       showToast(error.message || "อัปโหลดสลิปไม่สำเร็จ กรุณาตรวจสอบสถานะการจอง");
@@ -619,7 +654,10 @@ async function upload(event) {
 onMounted(async () => {
   window.addEventListener("livematch:session-ended", handleSessionEnded);
   await load();
-  timer = setInterval(load, AUTO_REFRESH_MS);
+  document.addEventListener("visibilitychange", handleBookingVisibility);
+  window.addEventListener("online", handleBookingVisibility);
+  window.addEventListener("offline", handleBookingVisibility);
+  scheduleAvailabilityRefresh();
   clock = setInterval(() => {
     state.now = Date.now() + state.clockOffsetMs;
     const expiredQueueIds = state.queues
@@ -639,7 +677,7 @@ onMounted(async () => {
         qr.value = "";
       }
       showToast("หมดเวลาชำระเงินแล้ว รายการจองถูกลบ กรุณาเลือกเวลาใหม่");
-      load();
+      load(false);
       return;
     }
     if (
@@ -650,13 +688,16 @@ onMounted(async () => {
       payment.value = null;
       qr.value = "";
       showToast("หมดเวลาชำระเงินแล้ว รายการจองถูกลบ กรุณาเลือกเวลาใหม่");
-      load();
+      load(false);
     }
   }, 1000);
 });
 onUnmounted(() => {
   window.removeEventListener("livematch:session-ended", handleSessionEnded);
-  clearInterval(timer);
+  document.removeEventListener("visibilitychange", handleBookingVisibility);
+  window.removeEventListener("online", handleBookingVisibility);
+  window.removeEventListener("offline", handleBookingVisibility);
+  clearTimeout(timer);
   clearInterval(clock);
   clearTimeout(toastTimer);
 });
@@ -668,8 +709,8 @@ onUnmounted(() => {
     <header class="public-booking-header">
       <div class="flex min-w-0 items-center gap-3">
         <img
-          v-if="state.settings.logoData"
-          :src="state.settings.logoData"
+          v-if="state.settings.logoUrl || state.settings.logoData"
+          :src="state.settings.logoUrl || state.settings.logoData"
           alt="โลโก้สนาม"
           class="h-12 w-12 rounded-xl object-contain"
         />
@@ -928,7 +969,7 @@ onUnmounted(() => {
               aria-label="วันที่จอง"
               @change="
                 clearSelection();
-                load();
+                load(false);
               "
           /></label>
           <button
@@ -1151,10 +1192,7 @@ onUnmounted(() => {
             alt="QR PromptPay"
             class="mx-auto mt-5 h-64 w-64 rounded-2xl border bg-white p-3"
           />
-          <p
-            v-else
-            class="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-800"
-          >
+          <p v-else class="mt-4 rounded-xl bg-amber-50 p-3 font-bold text-amber-800">
             ยังไม่ได้ตั้งค่า PromptPay กรุณาติดต่อผู้ดูแล
           </p>
           <label class="booking-primary-button mt-5 h-12" :class="actionBusy.slip ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'"

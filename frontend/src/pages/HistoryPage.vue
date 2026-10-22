@@ -1,6 +1,6 @@
 <script setup>
-import { computed, ref } from 'vue'
-import { CreditCard, Download, Plus, Trophy, X } from '@lucide/vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { CreditCard, Download, Plus, Search, Trophy, X } from '@lucide/vue'
 import { exportHistoryExcel, exportPaymentHistoryExcel } from '../excelExport'
 import { emptyMatchScores, matchScoreSummary, validateMatchScores } from '../matchScores.js'
 
@@ -12,16 +12,49 @@ const props = defineProps([
   'matchShuttleSummary',
   'matchShuttleSequenceText',
   'updateHistoryWinner',
+  'loadMatchHistory',
   'isSessionReadOnly',
   'apiRequest'
 ])
 
-const sortedHistory = computed(() => [...props.state.history].sort((a, b) => a.id - b.id))
+const historyView = computed(() => props.state.historyView || {
+  items: props.state.history || [],
+  page: 1,
+  pageSize: Math.max(1, props.state.history?.length || 20),
+  total: props.state.history?.length || 0,
+  totalPages: props.state.history?.length ? 1 : 0,
+  search: ''
+})
+const sortedHistory = computed(() => [...(historyView.value.items || [])].sort((a, b) => a.id - b.id))
 const activeTab = ref('matches')
 const paymentEvents = ref([])
+const historyNameFilter = ref('')
+const normalizedNameFilter = computed(() => historyNameFilter.value.trim().toLocaleLowerCase('th-TH'))
+const filteredHistory = computed(() => {
+  if (props.loadMatchHistory) return sortedHistory.value
+  if (!normalizedNameFilter.value) return sortedHistory.value
+  return sortedHistory.value.filter((match) => (
+    [match.a1, match.a2, match.b1, match.b2]
+      .filter((id) => Number(id) > 0)
+      .some((id) => props.playerName(id).toLocaleLowerCase('th-TH').includes(normalizedNameFilter.value))
+  ))
+})
+let searchTimer
+watch(historyNameFilter, (value) => {
+  if (!props.loadMatchHistory || activeTab.value !== 'matches') return
+  window.clearTimeout(searchTimer)
+  searchTimer = window.setTimeout(() => {
+    void props.loadMatchHistory(1, value)
+  }, 350)
+})
+const filteredPaymentEvents = computed(() => {
+  if (!normalizedNameFilter.value) return paymentEvents.value
+  return paymentEvents.value.filter((event) => String(event.playerName || '').toLocaleLowerCase('th-TH').includes(normalizedNameFilter.value))
+})
 const paymentLoading = ref(false)
 const paymentLoaded = ref(false)
 const paymentError = ref('')
+const selectedPayment = ref(null)
 const exportLoading = ref(false)
 const exportError = ref('')
 const editingMatch = ref(null)
@@ -104,7 +137,7 @@ async function loadPaymentEvents(force = false) {
   paymentLoading.value = true
   paymentError.value = ''
   try {
-    const payload = await props.apiRequest(`/api/sessions/${props.state.session.id}/payment-events?all=1`)
+    const payload = await props.apiRequest(`/api/sessions/${props.state.session.id}/payment-events?page=1&pageSize=100`)
     paymentEvents.value = payload?.items || []
     paymentLoaded.value = true
   } catch (error) {
@@ -113,6 +146,20 @@ async function loadPaymentEvents(force = false) {
     paymentLoading.value = false
   }
 }
+
+function handleBillingSync(event) {
+  const items = event?.detail?.paymentHistory
+  if (!Array.isArray(items)) return
+  paymentEvents.value = items
+  paymentLoaded.value = true
+  paymentError.value = ''
+}
+
+onMounted(() => window.addEventListener('livematch:billing-sync', handleBillingSync))
+onUnmounted(() => {
+  window.removeEventListener('livematch:billing-sync', handleBillingSync)
+  window.clearTimeout(searchTimer)
+})
 
 function selectTab(tab) {
   activeTab.value = tab
@@ -127,9 +174,9 @@ async function exportExcel() {
     if (activeTab.value === 'payments') {
       await loadPaymentEvents(true)
       if (paymentError.value) throw new Error(paymentError.value)
-      await exportPaymentHistoryExcel(props, paymentEvents.value)
+      await exportPaymentHistoryExcel(props, filteredPaymentEvents.value)
     } else {
-      await exportHistoryExcel(props)
+      await exportHistoryExcel({ ...props, state: { ...props.state, history: filteredHistory.value } })
     }
   } catch (error) {
     exportError.value = error?.message || 'สร้างไฟล์ Excel ไม่สำเร็จ'
@@ -144,7 +191,7 @@ async function exportExcel() {
     <div class="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
       <div>
         <h1 class="font-black">ประวัติ</h1>
-        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? sortedHistory.length : paymentEvents.length }} รายการ</p>
+        <p class="text-xs font-semibold text-stone-500 dark:text-stone-400">{{ activeTab === 'matches' ? historyView.total : filteredPaymentEvents.length }} รายการ</p>
       </div>
       <button
         class="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-court-200 bg-court-500/10 px-4 text-sm font-bold text-court-700 disabled:cursor-wait disabled:opacity-60 dark:border-court-900/60 dark:text-court-300"
@@ -179,28 +226,51 @@ async function exportExcel() {
       </button>
     </nav>
 
+    <label class="relative block">
+      <Search class="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-stone-400" />
+      <input
+        v-model="historyNameFilter"
+        type="search"
+        aria-label="กรองประวัติด้วยชื่อ"
+        placeholder="ค้นหาชื่อผู้เล่น..."
+        class="h-11 w-full rounded-lg border border-stone-200 bg-white pl-10 pr-3 text-sm font-bold outline-none transition focus:border-court-500 focus:ring-2 focus:ring-court-500/15 dark:border-stone-700 dark:bg-stone-900"
+      />
+    </label>
+
     <div v-if="activeTab === 'payments'" class="overflow-hidden rounded-lg border border-stone-200 bg-white dark:border-stone-700 dark:bg-stone-900">
       <p v-if="paymentLoading" class="p-5 text-center text-sm font-bold text-stone-500">กำลังโหลดประวัติการชำระเงิน...</p>
       <p v-else-if="paymentError" class="p-5 text-center text-sm font-bold text-rose-700 dark:text-rose-300">{{ paymentError }}</p>
-      <p v-else-if="!paymentEvents.length" class="p-5 text-center text-sm font-bold text-stone-500">ยังไม่มีประวัติการชำระเงิน</p>
+      <p v-else-if="!filteredPaymentEvents.length" class="p-5 text-center text-sm font-bold text-stone-500">{{ paymentEvents.length ? 'ไม่พบชื่อที่ค้นหา' : 'ยังไม่มีประวัติการชำระเงิน' }}</p>
       <div v-else class="divide-y divide-stone-100 dark:divide-stone-800">
-        <article v-for="event in paymentEvents" :key="event.id" class="grid gap-2 p-4 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5">
+		<article v-for="event in filteredPaymentEvents" :key="event.id" data-testid="payment-history-item" class="grid cursor-pointer gap-2 p-4 hover:bg-paper-50 sm:grid-cols-[1fr_auto_auto] sm:items-center sm:gap-5 dark:hover:bg-stone-800/50" @click="selectedPayment = event">
           <div class="min-w-0">
             <p class="truncate font-black">{{ event.playerName }}</p>
             <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">{{ event.createdAt }}</p>
-            <p class="mt-1 text-xs font-black text-stone-600 dark:text-stone-300">{{ event.paid ? (event.paymentMethod === 'promptpay' ? 'สแกน' : 'เงินสด') : '—' }}</p>
+			<p class="mt-1 text-xs font-black text-stone-600 dark:text-stone-300">{{ event.paid ? (event.paymentMethod === 'promptpay' ? 'สแกน' : 'เงินสด') : '—' }} <span v-if="event.originSystem" class="ml-1 rounded px-1.5 py-0.5" :class="event.originSystem === 'pos' ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-200' : 'bg-sky-100 text-sky-800 dark:bg-sky-950/40 dark:text-sky-200'">รับที่ {{ event.originSystem === 'pos' ? 'POS' : 'Match' }}</span></p>
           </div>
           <span class="w-fit rounded-md px-2 py-1 text-xs font-black" :class="event.paid ? 'bg-court-500/10 text-court-700 dark:text-court-300' : 'bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300'">
             {{ event.paid ? 'ชำระเงิน' : 'ยกเลิกการชำระเงิน' }}
           </span>
-          <p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ formatAmount(event.amount) }}</p>
-        </article>
-      </div>
+		  <div class="text-right"><p class="font-black tabular-nums text-court-700 dark:text-court-300">฿{{ formatAmount(event.amount) }}</p><p v-if="event.matchTotalSatang !== undefined" class="mt-1 text-[10px] font-bold text-stone-400">Match ฿{{ formatAmount(Number(event.matchTotalSatang || 0) / 100) }} · POS ฿{{ formatAmount(Number(event.posTotalSatang || 0) / 100) }}</p></div>
+		</article>
+	</div>
+
+	<div v-if="selectedPayment" class="fixed inset-0 z-[70] grid place-items-end bg-stone-950/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" @click.self="selectedPayment = null">
+	  <div class="w-full max-w-lg overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900">
+		<div class="flex items-start justify-between border-b border-stone-100 p-4 dark:border-stone-800"><div><p class="text-xs font-black text-court-600">{{ selectedPayment.paymentId || selectedPayment.id }}</p><h2 class="mt-1 text-lg font-black">รายละเอียดการชำระเงิน · {{ selectedPayment.playerName }}</h2></div><button class="grid h-9 w-9 place-items-center rounded-md hover:bg-stone-100 dark:hover:bg-stone-800" @click="selectedPayment = null"><X class="h-4 w-4" /></button></div>
+		<div class="max-h-[65vh] space-y-3 overflow-y-auto p-4">
+		  <div class="grid grid-cols-3 gap-2 text-center text-sm"><div class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">Match</p><b>฿{{ formatAmount(Number(selectedPayment.matchTotalSatang || 0) / 100) }}</b></div><div class="rounded-lg bg-paper-100 p-3 dark:bg-stone-800"><p class="text-xs font-bold text-stone-500">POS</p><b>฿{{ formatAmount(Number(selectedPayment.posTotalSatang || 0) / 100) }}</b></div><div class="rounded-lg bg-court-500/10 p-3"><p class="text-xs font-bold text-stone-500">รวม</p><b class="text-court-700">฿{{ formatAmount(selectedPayment.amount) }}</b></div></div>
+		  <section v-for="line in (selectedPayment.lines || [])" :key="`${line.sourceType}-${line.sourceId}`" class="rounded-lg border border-stone-200 p-3 dark:border-stone-700"><div class="flex items-center justify-between gap-3"><div><span class="rounded px-1.5 py-0.5 text-[10px] font-black" :class="line.sourceType === 'pos' ? 'bg-amber-100 text-amber-800' : 'bg-sky-100 text-sky-800'">{{ line.sourceType.toUpperCase() }}</span><p class="mt-1 font-black">{{ line.label }}</p></div><b>฿{{ formatAmount(Number(line.amountSatang || 0) / 100) }}</b></div><div v-if="Array.isArray(line.snapshot?.items)" class="mt-2 grid gap-1 border-t border-stone-100 pt-2 text-xs dark:border-stone-800"><div v-for="(item, index) in line.snapshot.items" :key="index" class="flex justify-between gap-3"><span>{{ item.quantity || 1 }} × {{ item.name || item.productName || item.label || 'รายการ' }}</span><b>฿{{ formatAmount(Number(item.amountSatang ?? item.lineTotalSatang ?? 0) / 100) }}</b></div></div></section>
+		</div>
+	  </div>
+	</div>
     </div>
+    <p v-if="activeTab === 'matches' && !filteredHistory.length" class="rounded-lg border border-stone-200 bg-white p-5 text-center text-sm font-bold text-stone-500 dark:border-stone-700 dark:bg-stone-900">{{ sortedHistory.length ? 'ไม่พบชื่อที่ค้นหา' : 'ยังไม่มีประวัติการแข่งขัน' }}</p>
     <article
-      v-for="match in sortedHistory"
+      v-for="match in filteredHistory"
       v-show="activeTab === 'matches'"
       :key="match.id"
+      data-testid="match-history-item"
       class="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-soft dark:border-stone-700 dark:bg-stone-900"
     >
       <div class="flex items-start justify-between gap-3 border-b border-stone-100 bg-paper-100 p-3 dark:border-stone-800 dark:bg-stone-800">
@@ -311,6 +381,17 @@ async function exportExcel() {
         </div>
       </div>
     </article>
+
+    <nav
+      v-if="activeTab === 'matches' && historyView.totalPages > 1"
+      class="flex items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900"
+      aria-label="เปลี่ยนหน้าประวัติการแข่งขัน"
+      data-testid="match-history-pagination"
+    >
+      <button type="button" class="h-10 rounded-md border border-stone-200 px-4 text-sm font-black disabled:opacity-40 dark:border-stone-700" :disabled="historyView.page <= 1" @click="loadMatchHistory(historyView.page - 1, historyNameFilter)">ก่อนหน้า</button>
+      <span class="text-sm font-black">หน้า {{ historyView.page }} / {{ historyView.totalPages }}</span>
+      <button type="button" class="h-10 rounded-md border border-stone-200 px-4 text-sm font-black disabled:opacity-40 dark:border-stone-700" :disabled="historyView.page >= historyView.totalPages" @click="loadMatchHistory(historyView.page + 1, historyNameFilter)">ถัดไป</button>
+    </nav>
 
     <div v-if="editingMatch" class="fixed inset-0 z-50 grid place-items-end bg-black/50 p-3 sm:place-items-center" role="dialog" aria-modal="true" aria-labelledby="edit-match-score-title">
       <section class="max-h-[92dvh] w-full max-w-md overflow-y-auto rounded-lg bg-white p-4 shadow-2xl dark:bg-stone-900">

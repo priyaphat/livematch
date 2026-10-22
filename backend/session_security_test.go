@@ -2,12 +2,15 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func TestSessionCookieProfiles(t *testing.T) {
@@ -41,12 +44,84 @@ func TestProductionSessionCookieUsesHostPrefix(t *testing.T) {
 	}
 }
 
+func TestSessionCookieCanFollowRememberPreference(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/api/auth/login", nil)
+	persistentRecorder := httptest.NewRecorder()
+	setSessionCookiePersistence(persistentRecorder, req, adminSessionKind, "remembered-token", true)
+	if cookie := persistentRecorder.Result().Cookies()[0]; cookie.MaxAge <= 0 {
+		t.Fatalf("remembered login must set a persistent cookie: %#v", cookie)
+	}
+
+	sessionRecorder := httptest.NewRecorder()
+	setSessionCookiePersistence(sessionRecorder, req, adminSessionKind, "session-token", false)
+	if cookie := sessionRecorder.Result().Cookies()[0]; cookie.MaxAge != 0 {
+		t.Fatalf("login without remember must set a browser-session cookie: %#v", cookie)
+	}
+}
+
 func TestLegacyCookieCanBeReadDuringMigration(t *testing.T) {
 	t.Setenv("APP_ENV", "production")
 	req := httptest.NewRequest(http.MethodGet, "https://example.test/api/auth/me", nil)
 	req.AddCookie(&http.Cookie{Name: adminCookieName, Value: "legacy-token"})
 	if token, ok := readSessionCookie(req, adminSessionKind); !ok || token != "legacy-token" {
 		t.Fatalf("legacy cookie was not accepted: %q %v", token, ok)
+	}
+}
+
+func TestBackofficeRollingDeploymentContractsIntegration(t *testing.T) {
+	dsn := strings.TrimSpace(os.Getenv("LIVEMATCH_TEST_DATABASE_URL"))
+	if dsn == "" {
+		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL backoffice integration tests")
+	}
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	username := "backoffice-contract-" + randHex(6)
+	password := "contract-test-password"
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`insert into backoffice_users(username,name,password_hash,active) values($1,'Contract test',$2,true)`, username, string(hash)); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = db.Exec(`delete from backoffice_sessions where username=$1`, username)
+		_, _ = db.Exec(`delete from backoffice_users where username=$1`, username)
+	}()
+	a := &app{db: db}
+
+	call := func(path string) (map[string]any, []*http.Cookie) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.SetBasicAuth(username, password)
+		rec := httptest.NewRecorder()
+		a.handleBackofficeRoutes(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s returned %d: %s", path, rec.Code, rec.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		return payload, rec.Result().Cookies()
+	}
+
+	bootstrap, cookies := call("/api/backoffice/bootstrap")
+	if _, ok := bootstrap["liveMatchSessionCost"]; !ok {
+		t.Fatalf("bootstrap lost system contract: %#v", bootstrap)
+	}
+	if _, ok := bootstrap["users"]; ok {
+		t.Fatal("bootstrap must not eagerly include the admin list")
+	}
+	if len(cookies) == 0 || cookies[0].Value == "" {
+		t.Fatal("successful basic login did not issue a backoffice session cookie")
+	}
+
+	legacy, _ := call("/api/backoffice/summary")
+	if _, ok := legacy["users"]; !ok {
+		t.Fatal("legacy summary contract must remain available during rolling deployment")
 	}
 }
 
@@ -74,6 +149,11 @@ func TestRotatingSessionIntegration(t *testing.T) {
 	if err = insertAuthSession(t.Context(), db, adminSessionKind, adminID, raw); err != nil {
 		t.Fatal(err)
 	}
+	authRequest := httptest.NewRequest(http.MethodGet, "http://localhost/api/auth/me", nil)
+	authRequest.AddCookie(&http.Cookie{Name: authCookieName(adminSessionKind), Value: raw})
+	if user, ok := a.currentAdmin(t.Context(), authRequest); !ok || user.ID != adminID || user.POSAdminNumber == 0 {
+		t.Fatalf("new admin session was not readable through currentAdmin: user=%#v ok=%v", user, ok)
+	}
 	if _, err = db.Exec(`update admin_sessions set rotate_after=now()-interval '1 second' where admin_id=$1`, adminID); err != nil {
 		t.Fatal(err)
 	}
@@ -89,12 +169,12 @@ func TestRotatingSessionIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	reused := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
-	if reused.failure != "session_reuse_detected" {
-		t.Fatalf("expected reuse detection, got %#v", reused)
+	if reused.failure != "session_token_stale" {
+		t.Fatalf("expected stale-token response, got %#v", reused)
 	}
 	var revoked, detected bool
-	if err = db.QueryRow(`select revoked_at is not null,reuse_detected_at is not null from admin_sessions where admin_id=$1`, adminID).Scan(&revoked, &detected); err != nil || !revoked || !detected {
-		t.Fatalf("session family was not revoked: revoked=%v detected=%v err=%v", revoked, detected, err)
+	if err = db.QueryRow(`select revoked_at is not null,reuse_detected_at is not null from admin_sessions where admin_id=$1`, adminID).Scan(&revoked, &detected); err != nil || revoked || detected {
+		t.Fatalf("a delayed tab must not revoke the current session: revoked=%v detected=%v err=%v", revoked, detected, err)
 	}
 
 	idleToken := randHex(24)

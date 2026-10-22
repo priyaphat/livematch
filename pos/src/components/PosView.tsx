@@ -1,0 +1,1552 @@
+import React, { useState, useMemo, useRef, useEffect, useCallback } from "react";
+import { usePos } from "../context/PosContext";
+import { Product } from "../types";
+import { formatCurrency } from "../utils/formatters";
+import { PaymentModal } from "./PaymentModal";
+import { CustomerCombobox, CustomerSuggestion } from "./CustomerCombobox";
+import { createPOSMember, listPOSMembers, listPOSMemberTypes, POSMemberType } from "../api/posSales";
+import {
+  Search,
+  Plus,
+  Minus,
+  Trash2,
+  PauseCircle,
+  CreditCard,
+  Tag,
+  ShoppingBag,
+  Coffee,
+  Croissant,
+  Utensils,
+  Cookie,
+  IceCream,
+  LayoutGrid,
+  ArrowRight,
+  ListOrdered,
+  Tv,
+  ExternalLink,
+  Calculator,
+  Hash,
+  Delete,
+  UserPlus,
+  Star,
+} from "lucide-react";
+
+const POPULAR_CATEGORY = "__popular__";
+const BARCODE_INTER_KEY_MAX_MS = 450;
+const BARCODE_COMPLETION_DELAY_MS = 500;
+
+const THAI_KEYBOARD_TO_BARCODE: Record<string, string> = {
+  "ๅ": "1", "/": "2", "-": "3", "ภ": "4", "ถ": "5", "ุ": "6", "ึ": "7", "ค": "8", "ต": "9", "จ": "0",
+  "ๆ": "q", "ไ": "w", "ำ": "e", "พ": "r", "ะ": "t", "ั": "y", "ี": "u", "ร": "i", "น": "o", "ย": "p",
+  "ฟ": "a", "ห": "s", "ก": "d", "ด": "f", "เ": "g", "้": "h", "่": "j", "า": "k", "ส": "l",
+  "ผ": "z", "ป": "x", "แ": "c", "อ": "v", "ิ": "b", "ื": "n", "ท": "m",
+};
+
+const getBarcodeCharacter = (event: KeyboardEvent): string => {
+  const digitMatch = /^Digit([0-9])$/.exec(event.code);
+  if (digitMatch) return digitMatch[1];
+
+  const numpadMatch = /^Numpad([0-9])$/.exec(event.code);
+  if (numpadMatch) return numpadMatch[1];
+
+  const letterMatch = /^Key([A-Z])$/.exec(event.code);
+  if (letterMatch) return letterMatch[1].toLowerCase();
+
+  if (event.code === "Minus") return event.shiftKey ? "_" : "-";
+  if (event.code === "Period" || event.code === "NumpadDecimal") return ".";
+
+  const translatedThaiKey = THAI_KEYBOARD_TO_BARCODE[event.key];
+  if (translatedThaiKey) return translatedThaiKey;
+
+  return event.key.length === 1 && /^[0-9A-Za-z._-]$/.test(event.key)
+    ? event.key
+    : "";
+};
+
+const normalizeScannerText = (value: string): string => Array.from(value)
+  .map((character) => THAI_KEYBOARD_TO_BARCODE[character] ?? (/^[0-9A-Za-z._-]$/.test(character) ? character : ""))
+  .join("");
+
+export const PosView: React.FC = () => {
+  const {
+    products,
+    cart,
+    addToCart,
+    updateCartQuantity,
+    removeFromCart,
+    clearCart,
+    discount,
+    discountType,
+    setDiscount,
+    cartTotals,
+    editingHeldOrder,
+    holdCurrentCart,
+    members,
+    categories,
+    settings,
+    openCustomerDisplayWindow,
+    playBeep,
+    showToast,
+  } = usePos();
+
+  const [selectedCategory, setSelectedCategory] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [mobileTab, setMobileTab] = useState<"menu" | "cart">("menu");
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState<boolean>(false);
+  const [isReholdingEditedOrder, setIsReholdingEditedOrder] = useState(false);
+  const [isHoldModalOpen, setIsHoldModalOpen] = useState<boolean>(false);
+  const [holdMode, setHoldMode] = useState<"single" | "split">("single");
+  const [holdCustomerName, setHoldCustomerName] = useState<string>("");
+  const [holdSingleMember, setHoldSingleMember] = useState<CustomerSuggestion | null>(null);
+	const [holdSplitMembers, setHoldSplitMembers] = useState<CustomerSuggestion[]>([]);
+  const [holdMemberSuggestions, setHoldMemberSuggestions] = useState<CustomerSuggestion[]>([]);
+  const [isHoldMemberLoading, setIsHoldMemberLoading] = useState(false);
+  const [isCreateHoldMemberOpen, setIsCreateHoldMemberOpen] = useState(false);
+  const [newHoldMemberName, setNewHoldMemberName] = useState("");
+  const [newHoldMemberPhone, setNewHoldMemberPhone] = useState("");
+  const [newHoldMemberTypeId, setNewHoldMemberTypeId] = useState("");
+  const [holdMemberTypes, setHoldMemberTypes] = useState<POSMemberType[]>([]);
+  const [isCreatingHoldMember, setIsCreatingHoldMember] = useState(false);
+  const [createHoldMemberError, setCreateHoldMemberError] = useState("");
+  const holdMemberRequestRef = useRef(0);
+  const [isDiscountModalOpen, setIsDiscountModalOpen] =
+    useState<boolean>(false);
+  const [tempDiscountVal, setTempDiscountVal] = useState<string>('');
+  const [tempDiscountType, setTempDiscountType] = useState<
+    "amount" | "percent"
+  >("amount");
+
+  // Quick Quantity Selector & Numpad State
+  const [quantityModalItem, setQuantityModalItem] = useState<{
+    product: Product;
+    currentQty: number;
+    isAddingNew?: boolean;
+  } | null>(null);
+  const [tempQuantityStr, setTempQuantityStr] = useState<string>("1");
+
+  const cartListEndRef = useRef<HTMLDivElement>(null);
+  const prevCartLengthRef = useRef<number>(cart.length);
+  const barcodeBufferRef = useRef("");
+  const barcodeLastKeyAtRef = useRef(0);
+  const barcodeCaptureInputRef = useRef<HTMLInputElement>(null);
+  const captureScannerTextRef = useRef<(value: string) => void>(() => undefined);
+
+  // Auto-scroll cart when new item is added
+  useEffect(() => {
+    if (cart.length > prevCartLengthRef.current) {
+      cartListEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+    prevCartLengthRef.current = cart.length;
+  }, [cart.length]);
+
+  useEffect(() => {
+    let barcodeCompletionTimer: number | undefined;
+
+    const resetBarcodeBuffer = () => {
+      if (barcodeCompletionTimer !== undefined) {
+        window.clearTimeout(barcodeCompletionTimer);
+        barcodeCompletionTimer = undefined;
+      }
+      barcodeBufferRef.current = "";
+      barcodeLastKeyAtRef.current = 0;
+      if (barcodeCaptureInputRef.current) barcodeCaptureInputRef.current.value = "";
+    };
+
+    const completeBarcode = (now: number) => {
+      const barcode = barcodeBufferRef.current.trim();
+      const completedQuickly = barcode.length >= 4 && now - barcodeLastKeyAtRef.current <= BARCODE_COMPLETION_DELAY_MS + 100;
+      resetBarcodeBuffer();
+      if (!completedQuickly) return false;
+
+      const matches = products.filter(
+        (product) => product.status === "active" && product.barcode?.trim().toLowerCase() === barcode.toLowerCase(),
+      );
+      setSearchQuery("");
+      if (matches.length === 0) {
+        playBeep("alert");
+        showToast(`ไม่พบสินค้าบาร์โค้ด ${barcode}`, "warning");
+        return true;
+      }
+      if (matches.length > 1) {
+        playBeep("alert");
+        showToast(`บาร์โค้ด ${barcode} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, "error");
+        return true;
+      }
+      addToCart(matches[0]);
+      return true;
+    };
+
+    const scheduleBarcodeCompletion = () => {
+      if (barcodeCompletionTimer !== undefined) window.clearTimeout(barcodeCompletionTimer);
+      barcodeCompletionTimer = window.setTimeout(() => completeBarcode(performance.now()), BARCODE_COMPLETION_DELAY_MS);
+    };
+
+    captureScannerTextRef.current = (value: string) => {
+      if (barcodeBufferRef.current || !value) return;
+      const barcode = normalizeScannerText(value);
+      if (!barcode) return;
+      barcodeBufferRef.current = barcode;
+      barcodeLastKeyAtRef.current = performance.now();
+      scheduleBarcodeCompletion();
+    };
+
+    const handleBarcodeKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.repeat || event.ctrlKey || event.altKey || event.metaKey) return;
+      if (["Shift", "CapsLock", "NumLock", "ScrollLock"].includes(event.key)) return;
+      if (isPaymentModalOpen || isHoldModalOpen || isCreateHoldMemberOpen || isDiscountModalOpen || quantityModalItem) {
+        resetBarcodeBuffer();
+        return;
+      }
+
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      const isEditable = Boolean(target?.closest('input, textarea, select, [contenteditable="true"]'));
+      const isSaleSearch = target?.id === "pos-search-input";
+      const isScannerCapture = target?.id === "pos-barcode-capture-input";
+      if (isEditable && !isSaleSearch && !isScannerCapture) {
+        resetBarcodeBuffer();
+        return;
+      }
+
+      const now = performance.now();
+      if (event.key === "Enter" || event.key === "Tab") {
+        if (completeBarcode(now)) event.preventDefault();
+        return;
+      }
+
+      const barcodeCharacter = getBarcodeCharacter(event);
+      if (!barcodeCharacter) {
+        resetBarcodeBuffer();
+        return;
+      }
+      barcodeBufferRef.current = now - barcodeLastKeyAtRef.current <= BARCODE_INTER_KEY_MAX_MS
+        ? barcodeBufferRef.current + barcodeCharacter
+        : barcodeCharacter;
+      barcodeLastKeyAtRef.current = now;
+      scheduleBarcodeCompletion();
+    };
+
+    window.addEventListener("keydown", handleBarcodeKeyDown, true);
+    return () => {
+      resetBarcodeBuffer();
+      window.removeEventListener("keydown", handleBarcodeKeyDown, true);
+    };
+  }, [addToCart, isCreateHoldMemberOpen, isDiscountModalOpen, isHoldModalOpen, isPaymentModalOpen, playBeep, products, quantityModalItem, showToast]);
+
+  useEffect(() => {
+    if (isPaymentModalOpen || isHoldModalOpen || isCreateHoldMemberOpen || isDiscountModalOpen || quantityModalItem) return;
+
+    const focusScannerCapture = () => {
+      const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      const isEditing = Boolean(activeElement?.closest('input:not(#pos-barcode-capture-input), textarea, select, [contenteditable="true"]'));
+      if (!isEditing) barcodeCaptureInputRef.current?.focus({ preventScroll: true });
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest('input, textarea, select, [contenteditable="true"]')) return;
+      window.setTimeout(focusScannerCapture, 0);
+    };
+
+    const focusTimer = window.setTimeout(focusScannerCapture, 0);
+    document.addEventListener("pointerup", handlePointerUp, true);
+    return () => {
+      window.clearTimeout(focusTimer);
+      document.removeEventListener("pointerup", handlePointerUp, true);
+    };
+  }, [isCreateHoldMemberOpen, isDiscountModalOpen, isHoldModalOpen, isPaymentModalOpen, quantityModalItem]);
+
+  // Filter products by category and search
+  const filteredProducts = useMemo(() => {
+    return products.filter((p) => {
+      if (p.status !== "active") return false;
+      const matchCat =
+        selectedCategory === "all" ||
+        (selectedCategory === POPULAR_CATEGORY ? Boolean(p.isPopular) : p.category === selectedCategory);
+      const matchSearch =
+        p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        p.sku.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (p.barcode && p.barcode.includes(searchQuery));
+      return matchCat && matchSearch;
+    });
+  }, [products, selectedCategory, searchQuery]);
+
+  const handleSearchBarcodeEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.key !== "Enter") return;
+
+    const barcode = searchQuery.trim().toLowerCase();
+    if (!barcode) return;
+
+    const matches = products.filter(
+      (product) => product.status === "active" && product.barcode?.trim().toLowerCase() === barcode,
+    );
+    if (matches.length === 0) return;
+
+    event.preventDefault();
+    if (matches.length > 1) {
+      playBeep("alert");
+      showToast(`บาร์โค้ด ${searchQuery.trim()} ซ้ำ กรุณาตรวจสอบข้อมูลสินค้า`, "error");
+      return;
+    }
+
+    addToCart(matches[0]);
+    setSearchQuery("");
+  };
+
+  const handleOpenQuantityModal = (
+    product: Product,
+    currentQty = 1,
+    isAddingNew = false,
+  ) => {
+    setQuantityModalItem({
+      product,
+      currentQty,
+      isAddingNew,
+    });
+    setTempQuantityStr(String(currentQty > 0 ? currentQty : 1));
+  };
+
+  const handleSaveQuantityModal = () => {
+    if (!quantityModalItem) return;
+    const parsed = parseInt(tempQuantityStr, 10);
+    const safeQty = isNaN(parsed) || parsed <= 0 ? 1 : parsed;
+
+    if (quantityModalItem.isAddingNew) {
+      addToCart(quantityModalItem.product, safeQty);
+    } else {
+      updateCartQuantity(quantityModalItem.product.id, safeQty);
+    }
+    setQuantityModalItem(null);
+  };
+
+  const handleNumpadInput = (val: string) => {
+    if (val === "C") {
+      setTempQuantityStr("0");
+      return;
+    }
+    if (val === "DEL") {
+      setTempQuantityStr((prev) => (prev.length > 1 ? prev.slice(0, -1) : "0"));
+      return;
+    }
+    setTempQuantityStr((prev) => {
+      if (prev === "0" || prev === "") {
+        return val === "00" ? "0" : val;
+      }
+      const nextVal = prev + val;
+      // Cap length to 5 digits (99,999)
+      return nextVal.length <= 5 ? nextVal : prev;
+    });
+  };
+
+  const handleAddPresetDelta = (delta: number) => {
+    const parsed = parseInt(tempQuantityStr, 10) || 0;
+    const nextVal = Math.max(1, parsed + delta);
+    setTempQuantityStr(String(nextVal));
+  };
+
+  const handleSetPresetExact = (qty: number) => {
+    setTempQuantityStr(String(qty));
+  };
+
+  const handleOpenDiscountModal = () => {
+    setTempDiscountVal(discount > 0 ? String(discount) : '');
+    setTempDiscountType(discountType);
+    setIsDiscountModalOpen(true);
+  };
+
+  const handleApplyDiscount = () => {
+    const parsedDiscount = Math.max(0, Number(tempDiscountVal) || 0);
+    setDiscount(tempDiscountType === 'percent' ? Math.min(100, parsedDiscount) : parsedDiscount, tempDiscountType);
+    setIsDiscountModalOpen(false);
+  };
+
+  const handleHoldOrderSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+	const memberIds = holdMode === "split" ? holdSplitMembers.map((member) => member.id) : [holdSingleMember?.id].filter(Boolean) as string[];
+	const memberNames = holdMode === "split" ? holdSplitMembers.map((member) => member.name) : [holdSingleMember?.name].filter(Boolean) as string[];
+	if (holdMode === "split" && memberIds.length < 2) {
+		showToast("กรุณาเลือกสมาชิกอย่างน้อย 2 คนสำหรับหารบิล", "warning");
+		return;
+	}
+    const success = await holdCurrentCart(memberIds, memberNames);
+    if (success) {
+      setIsHoldModalOpen(false);
+      setHoldCustomerName("");
+	  setHoldSingleMember(null);
+		setHoldSplitMembers([]);
+    }
+  };
+
+  const handleHoldButtonClick = async () => {
+    if (!editingHeldOrder) {
+      setIsHoldModalOpen(true);
+      return;
+    }
+    if (isReholdingEditedOrder) return;
+    setIsReholdingEditedOrder(true);
+    try {
+      await holdCurrentCart([], []);
+    } finally {
+      setIsReholdingEditedOrder(false);
+    }
+  };
+
+  const searchHoldMembers = useCallback(async (query: string) => {
+    const requestId = ++holdMemberRequestRef.current;
+    setIsHoldMemberLoading(true);
+    try {
+      const results = await listPOSMembers(query);
+      if (requestId !== holdMemberRequestRef.current) return;
+      setHoldMemberSuggestions(results.map((member) => ({
+        id: member.id,
+        name: member.name,
+        category: "member",
+        categoryLabel: "สมาชิก",
+        detail: member.phone || "สมาชิกของระบบ",
+      })));
+    } catch {
+      if (requestId === holdMemberRequestRef.current) setHoldMemberSuggestions([]);
+    } finally {
+      if (requestId === holdMemberRequestRef.current) setIsHoldMemberLoading(false);
+    }
+  }, []);
+
+  const openCreateHoldMember = async () => {
+    setNewHoldMemberName(holdCustomerName.trim());
+    setNewHoldMemberPhone("");
+    setCreateHoldMemberError("");
+    setIsCreateHoldMemberOpen(true);
+    try {
+      const types = await listPOSMemberTypes();
+      setHoldMemberTypes(types);
+      setNewHoldMemberTypeId((current) => current || types[0]?.id || "");
+    } catch (requestError) {
+      setCreateHoldMemberError(requestError instanceof Error ? requestError.message : "โหลดประเภทสมาชิกไม่สำเร็จ");
+    }
+  };
+
+  const handleCreateHoldMember = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const phoneDigits = newHoldMemberPhone.replace(/\D/g, "");
+    if (phoneDigits.length !== 10) {
+      setCreateHoldMemberError("กรุณากรอกเบอร์โทรให้ครบ 10 หลัก");
+      return;
+    }
+    if (!newHoldMemberTypeId) {
+      setCreateHoldMemberError("กรุณาเลือกประเภทสมาชิก");
+      return;
+    }
+    setIsCreatingHoldMember(true);
+    setCreateHoldMemberError("");
+    try {
+      const member = await createPOSMember({
+        name: newHoldMemberName.trim(),
+        phone: phoneDigits,
+        memberTypeId: newHoldMemberTypeId,
+      });
+      const suggestion: CustomerSuggestion = {
+        id: member.id,
+        name: member.name,
+        category: "member",
+        categoryLabel: "สมาชิก",
+        detail: member.phone || "สมาชิกของระบบ",
+      };
+      setHoldMemberSuggestions((current) => [suggestion, ...current.filter((item) => item.id !== member.id)]);
+		if (holdMode === "split") {
+			setHoldSplitMembers((current) => current.some((item) => item.id === member.id) ? current : [...current, suggestion]);
+			setHoldCustomerName("");
+		} else {
+			setHoldSingleMember(suggestion);
+			setHoldCustomerName("");
+		}
+      setIsCreateHoldMemberOpen(false);
+    } catch (requestError) {
+      setCreateHoldMemberError(requestError instanceof Error ? requestError.message : "เพิ่มสมาชิกไม่สำเร็จ");
+    } finally {
+      setIsCreatingHoldMember(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isHoldModalOpen) return;
+    setHoldMemberSuggestions(members.map((member) => ({
+      id: member.id,
+      name: member.name,
+      category: "member",
+      categoryLabel: "สมาชิก",
+      detail: member.phone || "สมาชิกของระบบ",
+    })));
+  }, [isHoldModalOpen, members]);
+
+  const getCategoryIcon = (iconName: string) => {
+    switch (iconName) {
+      case "Coffee":
+        return <Coffee className="w-4 h-4" />;
+      case "Croissant":
+        return <Croissant className="w-4 h-4" />;
+      case "Utensils":
+        return <Utensils className="w-4 h-4" />;
+      case "Cookie":
+        return <Cookie className="w-4 h-4" />;
+      case "IceCream":
+        return <IceCream className="w-4 h-4" />;
+      default:
+        return <LayoutGrid className="w-4 h-4" />;
+    }
+  };
+
+  return (
+    <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden relative pb-16 lg:pb-0">
+      <input
+        ref={barcodeCaptureInputRef}
+        id="pos-barcode-capture-input"
+        type="text"
+        inputMode="none"
+        autoComplete="off"
+        tabIndex={-1}
+        aria-hidden="true"
+        className="fixed -left-[9999px] top-0 h-px w-px opacity-0 pointer-events-none"
+        onInput={(event) => captureScannerTextRef.current(event.currentTarget.value)}
+      />
+      {/* Mobile Top View Switcher (Only visible on screens < lg) */}
+      <div className="lg:hidden shrink-0 bg-slate-900 border-b border-slate-800 p-2 flex items-center gap-2">
+        <button
+          id="mobile-tab-menu-btn"
+          onClick={() => setMobileTab("menu")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+            mobileTab === "menu"
+              ? "bg-red-600 text-white shadow-md shadow-red-600/20"
+              : "bg-slate-950 text-slate-400 border border-slate-800 hover:text-white"
+          }`}
+        >
+          <ShoppingBag className="w-4 h-4" />
+          <span>เมนูสินค้า ({filteredProducts.length})</span>
+        </button>
+
+        <button
+          id="mobile-tab-cart-btn"
+          onClick={() => setMobileTab("cart")}
+          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-xl text-xs font-bold transition-all ${
+            mobileTab === "cart"
+              ? "bg-red-600 text-white shadow-md shadow-red-600/20"
+              : "bg-slate-950 text-slate-400 border border-slate-800 hover:text-white"
+          }`}
+        >
+          <ListOrdered className="w-4 h-4" />
+          <span>ตะกร้า</span>
+          <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-slate-900 text-yellow-400 border border-slate-700 font-bold">
+            {cartTotals.itemCount}
+          </span>
+        </button>
+      </div>
+
+      {/* Main Content Layout: Side-by-side on lg+, Toggled or Contained on mobile */}
+      <div className="flex-1 flex flex-col lg:flex-row h-full min-h-0 overflow-hidden">
+        {/* LEFT PANE: PRODUCTS CATALOG (Contains its own independent scrollbar) */}
+        <div
+          className={`flex-1 flex flex-col h-full min-h-0 overflow-hidden bg-slate-100/60 dark:bg-slate-950/40 ${
+            mobileTab === "cart" ? "hidden lg:flex" : "flex"
+          }`}
+        >
+          {/* Top Controls: Search & Category Filter (Fixed at top of left pane) */}
+          <div className="p-3 sm:p-4 bg-white dark:bg-slate-900/90 border-b border-slate-200 dark:border-slate-800/80 space-y-3 shrink-0 shadow-xs">
+            {/* Search bar */}
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  id="pos-search-input"
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={handleSearchBarcodeEnter}
+                  placeholder="ค้นหาสินค้า หรือยิงบาร์โค้ด..."
+                  className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700/80 rounded-2xl pl-10 pr-10 py-2.5 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 focus:outline-none focus:border-red-500 transition-colors font-medium shadow-xs"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 text-xs bg-slate-200 dark:bg-slate-800 p-1 rounded-full"
+                  >
+                    ล้าง
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Category Scroller */}
+            <div className="flex items-center gap-2 overflow-x-auto pb-1 custom-scrollbar">
+              {/* All Category */}
+              <button
+                id="cat-filter-all"
+                onClick={() => setSelectedCategory("all")}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border shrink-0 ${
+                  selectedCategory === "all"
+                    ? "bg-red-600 text-white border-red-500 font-bold shadow-md shadow-red-600/20 scale-[1.02]"
+                    : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700/70 hover:bg-slate-100 dark:hover:bg-slate-800"
+                }`}
+              >
+                <LayoutGrid className="w-4 h-4" />
+                <span>ทั้งหมด (All)</span>
+                <span
+                  className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                    selectedCategory === "all"
+                      ? "bg-white/20 text-white font-black"
+                      : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                  }`}
+                >
+                  {products.filter((p) => p.status === "active").length}
+                </span>
+              </button>
+
+              {/* Popular products */}
+              <button
+                id="cat-filter-popular"
+                onClick={() => setSelectedCategory(POPULAR_CATEGORY)}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border shrink-0 ${
+                  selectedCategory === POPULAR_CATEGORY
+                    ? "bg-amber-500 text-slate-950 border-amber-400 font-bold shadow-md shadow-amber-500/20 scale-[1.02]"
+                    : "bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/70 hover:bg-amber-100 dark:hover:bg-amber-950/50"
+                }`}
+              >
+                <Star className="w-4 h-4" />
+                <span>สินค้ายอดนิยม</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${selectedCategory === POPULAR_CATEGORY ? "bg-black/10 text-slate-950" : "bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-300"}`}>
+                  {products.filter((p) => p.status === "active" && p.isPopular).length}
+                </span>
+              </button>
+
+              {/* Dynamic Categories */}
+              {categories.map((cat) => {
+                const isActive = selectedCategory === cat.id;
+                const count = products.filter(
+                  (p) => p.status === "active" && p.category === cat.id,
+                ).length;
+
+                return (
+                  <button
+                    key={cat.id}
+                    id={`cat-filter-${cat.id}`}
+                    onClick={() => setSelectedCategory(cat.id)}
+                    className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all border shrink-0 ${
+                      isActive
+                        ? "bg-red-600 text-white border-red-500 font-bold shadow-md shadow-red-600/20 scale-[1.02]"
+                        : "bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700/70 hover:bg-slate-100 dark:hover:bg-slate-800"
+                    }`}
+                  >
+                    {getCategoryIcon(cat.icon || cat.id)}
+                    <span>{cat.name}</span>
+                    <span
+                      className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+                        isActive
+                          ? "bg-white/20 text-white font-black"
+                          : "bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400"
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Product Cards Grid (Contained with independent vertical scrollbar) */}
+          <div className="flex-1 p-3 sm:p-4 overflow-y-auto min-h-0 custom-scrollbar">
+            {filteredProducts.length === 0 ? (
+              <div className="h-64 flex flex-col items-center justify-center text-center p-6 text-slate-500">
+                <ShoppingBag className="w-12 h-12 stroke-[1.2] mb-3 text-slate-400 dark:text-slate-600" />
+                <p className="text-sm font-semibold text-slate-700 dark:text-slate-400">
+                  ไม่พบรายการสินค้าที่ค้นหา
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  ลองเปลี่ยนคำค้นหา หรือเลือกหมวดหมู่อื่น
+                </p>
+              </div>
+            ) : (
+              <div id="pos-product-grid" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-3 xl:grid-cols-5 gap-2.5 sm:gap-3 pb-4">
+                {filteredProducts.map((product) => {
+                  const isOutOfStock = product.trackStock && product.stock <= 0;
+                  const isLowStock =
+                    product.trackStock && product.stock <= product.minStockAlert && !isOutOfStock;
+                  const inCartItem = cart.find(
+                    (it) => it.product.id === product.id,
+                  );
+
+                  return (
+                    <div
+                      key={product.id}
+                      id={`pos-product-${product.id}`}
+                      onClick={() => !isOutOfStock && addToCart(product)}
+                      className={`group relative bg-white dark:bg-slate-900 border rounded-2xl p-2.5 flex flex-col justify-between transition-all select-none shadow-xs ${
+                        isOutOfStock
+                          ? "opacity-50 border-slate-200 dark:border-slate-800 cursor-not-allowed"
+                          : "border-slate-200 dark:border-slate-800/90 hover:border-red-500 dark:hover:border-yellow-500/60 hover:shadow-lg cursor-pointer active:scale-[0.98]"
+                      }`}
+                    >
+                      {/* Top Image & Badges */}
+                      <div className="relative aspect-4/3 w-full rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-950 mb-2">
+                        <img
+                          src={product.image}
+                          alt={product.name}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          loading="lazy"
+                        />
+
+                        {/* Stock Badge */}
+                        <div className="absolute top-2 left-2 flex flex-col gap-1">
+                          {!product.trackStock ? null : isOutOfStock ? (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-600 text-white shadow-xs">
+                              สินค้าหมด
+                            </span>
+                          ) : isLowStock ? (
+                            <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-yellow-100 dark:bg-yellow-950/90 border border-yellow-300 dark:border-yellow-500/60 text-yellow-800 dark:text-yellow-300 flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 animate-ping"></span>
+                              เหลือ {product.stock} {product.unit}
+                            </span>
+                          ) : (
+                            <span className="px-1.5 py-0.5 rounded-md text-[10px] font-medium bg-white/90 dark:bg-slate-950/80 backdrop-blur border border-slate-200 dark:border-slate-700/60 text-slate-700 dark:text-slate-300 shadow-xs">
+                              คงเหลือ {product.stock}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* In Cart Indicator */}
+                        {inCartItem && (
+                          <div className="absolute top-2 right-2 w-6 h-6 rounded-full bg-red-600 text-white font-black text-xs flex items-center justify-center shadow-lg animate-scale">
+                            {inCartItem.quantity}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Product Info */}
+                      <div className="flex-1 flex flex-col justify-between">
+                        <div className="flex min-w-0 items-center justify-between gap-2">
+                          <h3 className="min-w-0 truncate text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 leading-snug">
+                            {product.name}
+                          </h3>
+                          <span className="max-w-[45%] shrink-0 truncate text-[10px] text-slate-400 capitalize">
+                            {categories.find((category) => category.id === product.category)?.name || product.category}
+                          </span>
+                        </div>
+
+                        {/* Price & Action */}
+                        <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between gap-1">
+                          <div className="min-w-0">
+                            <span className="text-[10px] text-slate-400 block">
+                              ราคาขาย
+                            </span>
+                            <span className="text-sm sm:text-base font-black text-red-600 dark:text-yellow-400 font-mono truncate block">
+                              {formatCurrency(
+                                product.price,
+                                settings.currencySymbol,
+                                settings.decimalPlaces,
+                              )}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            {/* Specify quantity button (For ordering in bulk/large quantities) */}
+                            <button
+                              type="button"
+                              disabled={isOutOfStock}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleOpenQuantityModal(
+                                  product,
+                                  inCartItem ? inCartItem.quantity : 1,
+                                  !inCartItem,
+                                );
+                              }}
+                              title="ระบุจำนวนที่ต้องการสั่งซื้อ (พิมพ์ตัวเลขหรือใช้แป้นตัวเลข)"
+                              className={`p-1.5 sm:px-2 sm:py-1 rounded-xl text-[11px] font-bold flex items-center gap-1 transition-all ${
+                                isOutOfStock
+                                  ? "opacity-40 cursor-not-allowed text-slate-400 bg-slate-100 dark:bg-slate-800"
+                                  : "text-slate-600 dark:text-slate-300 hover:text-red-600 dark:hover:text-yellow-400 bg-slate-100 dark:bg-slate-800/90 hover:bg-slate-200 dark:hover:bg-slate-700 active:scale-95"
+                              }`}
+                            >
+                              <Hash className="w-3.5 h-3.5" />
+                              <span className="hidden 2xl:inline text-[10px]">
+                                ระบุจำนวน
+                              </span>
+                            </button>
+
+                            <button
+                              disabled={isOutOfStock}
+                              className={`w-8 h-8 rounded-xl flex items-center justify-center transition-all ${
+                                isOutOfStock
+                                  ? "bg-slate-100 dark:bg-slate-800 text-slate-400"
+                                  : "bg-red-50 dark:bg-red-600/20 group-hover:bg-red-600 text-red-600 group-hover:text-white dark:text-red-400"
+                              }`}
+                            >
+                              <Plus className="w-4 h-4 stroke-[2.5]" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Floating Mobile Cart Bar (When on mobile and items in cart) */}
+          {cart.length > 0 && mobileTab === "menu" && (
+            <div className="lg:hidden p-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between shrink-0">
+              <div>
+                <span className="text-[11px] text-slate-400 block">
+                  {cartTotals.itemCount} ชิ้นในตะกร้า
+                </span>
+                <span className="text-base font-black text-yellow-400 font-mono">
+                  {formatCurrency(
+                    cartTotals.total,
+                    settings.currencySymbol,
+                    settings.decimalPlaces,
+                  )}
+                </span>
+              </div>
+              <button
+                onClick={() => setMobileTab("cart")}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl bg-red-600 text-white font-bold text-xs shadow-lg shadow-red-600/20"
+              >
+                <span>ดูตะกร้า & ชำระเงิน</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT PANE: ORDER CART SIDEBAR (Contains its own independent scrollbar) */}
+        <div
+          id="pos-cart-sidebar"
+          className={`w-full lg:w-[380px] xl:w-[430px] bg-white dark:bg-slate-900 border-t lg:border-t-0 lg:border-l border-slate-200 dark:border-slate-800 flex flex-col h-full min-h-0 shadow-lg dark:shadow-2xl z-20 overflow-hidden shrink-0 ${
+            mobileTab === "menu" ? "hidden lg:flex" : "flex"
+          }`}
+        >
+          {/* Cart Header (Fixed at top of cart sidebar) */}
+          <div className="p-3 sm:p-3.5 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between bg-slate-50 dark:bg-slate-900/95 shrink-0">
+            <div className="flex items-center gap-2">
+              <div className="w-7 h-7 rounded-xl bg-red-100 dark:bg-yellow-500/20 border border-red-300 dark:border-yellow-500/30 flex items-center justify-center text-red-600 dark:text-yellow-400 font-black text-xs">
+                {cartTotals.itemCount}
+              </div>
+              <div>
+                <h2 className="text-xs font-black text-slate-900 dark:text-white">
+                  รายการคำสั่งซื้อ
+                </h2>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400">
+                  {cart.length} รายการ ({cartTotals.itemCount} ชิ้น)
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              {cart.length > 0 && (
+                <button
+                  id="clear-cart-btn"
+                  onClick={clearCart}
+                  className="text-[11px] text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 border border-red-200 dark:border-red-900/50 px-2 py-1 rounded-lg transition-colors flex items-center gap-1 font-bold"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>ล้าง</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Cart Items List (Independent Contained Scrollbar) */}
+          <div
+            id="pos-cart-items-container"
+            className="flex-1 p-3 overflow-y-auto space-y-2 min-h-0 custom-scrollbar bg-slate-50/50 dark:bg-transparent"
+          >
+            {cart.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-400 dark:text-slate-500 space-y-2">
+                <ShoppingBag className="w-12 h-12 stroke-[1.2] text-slate-300 dark:text-slate-700" />
+                <p className="text-sm font-bold text-slate-700 dark:text-slate-400">
+                  ยังไม่มีสินค้าในตะกร้า
+                </p>
+                <p className="text-xs text-slate-400 max-w-[200px]">
+                  คลิกที่รายการสินค้าทางซ้าย เพื่อเพิ่มลงในคำสั่งซื้อ
+                </p>
+                <button
+                  onClick={() => setMobileTab("menu")}
+                  className="lg:hidden mt-2 text-xs px-3 py-1.5 rounded-lg bg-red-600 text-white font-bold"
+                >
+                  เลือกรายการสินค้า
+                </button>
+              </div>
+            ) : (
+              <>
+                {cart.map((item) => (
+                  <div
+                    key={item.product.id}
+                    id={`cart-item-${item.product.id}`}
+                    className="bg-white dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800/90 rounded-2xl p-2.5 flex flex-col gap-2 hover:border-slate-300 dark:hover:border-slate-700 transition-colors shadow-xs"
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                        <img
+                          src={item.product.image}
+                          alt={item.product.name}
+                          referrerPolicy="no-referrer"
+                          className="w-10 h-10 rounded-lg object-cover bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-slate-100 truncate">
+                            {item.product.name}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400 font-mono">
+                            {formatCurrency(
+                              item.product.price,
+                              settings.currencySymbol,
+                              settings.decimalPlaces,
+                            )}{" "}
+                            / {item.product.unit}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={() => removeFromCart(item.product.id)}
+                        className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-slate-800 rounded-lg transition-colors shrink-0"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {/* Quantity Controls & Line Total */}
+                    <div className="flex items-center justify-end pt-1 border-t border-slate-100 dark:border-slate-900">
+                      <div className="flex items-center gap-1.5 sm:gap-2">
+                        {/* Stepper with Direct Editable Input */}
+                        <div className="flex items-center bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-xl p-0.5 shadow-2xs">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateCartQuantity(
+                                item.product.id,
+                                item.quantity - 1,
+                              )
+                            }
+                            title="ลดจำนวน 1"
+                            className="w-6 h-6 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 flex items-center justify-center active:scale-95 transition-all shadow-xs shrink-0"
+                          >
+                            <Minus className="w-3 h-3" />
+                          </button>
+
+                          {/* Interactive Number Input - user can click and type any quantity */}
+                          <input
+                            type="number"
+                            min="1"
+                            max={item.product.trackStock ? (item.product.stock || 0) : 99999}
+                            value={item.quantity}
+                            onChange={(e) => {
+                              const val = parseInt(e.target.value, 10);
+                              if (!isNaN(val)) {
+                                const safeVal = Math.max(
+                                  1,
+                                  Math.min(item.product.trackStock ? item.product.stock : 99999, val),
+                                );
+                                updateCartQuantity(item.product.id, safeVal);
+                              }
+                            }}
+                            onFocus={(e) => e.target.select()}
+                            className="w-10 sm:w-12 text-center text-xs font-black font-mono text-slate-900 dark:text-white bg-transparent border-0 focus:outline-none focus:bg-amber-100/80 dark:focus:bg-amber-950/60 rounded py-0.5 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            title="คลิกเพื่อพิมพ์ตัวเลขระบุจำนวนได้โดยตรง"
+                          />
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              updateCartQuantity(
+                                item.product.id,
+                                item.quantity + 1,
+                              )
+                            }
+                            title="เพิ่มจำนวน 1"
+                            className="w-6 h-6 rounded-lg bg-white dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 flex items-center justify-center active:scale-95 transition-all shadow-xs shrink-0"
+                          >
+                            <Plus className="w-3 h-3" />
+                          </button>
+                        </div>
+
+                        {/* Quick Quantity / Numpad Modal trigger */}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleOpenQuantityModal(
+                              item.product,
+                              item.quantity,
+                              false,
+                            )
+                          }
+                          title="เปิดแป้นพิมพ์ตัวเลขระบุจำนวน (สั่งจำนวนมาก)"
+                          className="p-1.5 text-slate-400 hover:text-red-600 dark:hover:text-yellow-400 hover:bg-slate-200 dark:hover:bg-slate-800 rounded-lg transition-colors"
+                        >
+                          <Calculator className="w-3.5 h-3.5" />
+                        </button>
+
+                        {/* Subtotal for line */}
+                        <span className="text-xs font-black text-red-600 dark:text-yellow-400 font-mono min-w-[60px] sm:min-w-[65px] text-right">
+                          {formatCurrency(
+                            item.product.price * item.quantity,
+                            settings.currencySymbol,
+                            settings.decimalPlaces,
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                <div ref={cartListEndRef} />
+              </>
+            )}
+          </div>
+
+          {/* Financial Summary & Actions (Fixed at bottom of cart sidebar) */}
+          <div className="p-3.5 sm:p-4 bg-white dark:bg-slate-950/95 border-t border-slate-200 dark:border-slate-800 space-y-2.5 shrink-0 shadow-md">
+            {/* Discount Trigger */}
+            <div className="flex items-center justify-between text-xs">
+              <button
+                id="pos-discount-btn"
+                onClick={handleOpenDiscountModal}
+                className="flex items-center gap-1.5 text-slate-600 dark:text-slate-400 hover:text-red-600 dark:hover:text-yellow-400 font-medium transition-colors"
+              >
+                <Tag className="w-3.5 h-3.5" />
+                <span>
+                  ส่วนลด / คูปอง{" "}
+                  {discount > 0 &&
+                    `(${discountType === "percent" ? `${discount}%` : `-${discount}฿`})`}
+                </span>
+              </button>
+              {discount > 0 ? (
+                <span className="font-bold text-red-600">
+                  -
+                  {formatCurrency(
+                    cartTotals.discountAmount,
+                    settings.currencySymbol,
+                    settings.decimalPlaces,
+                  )}
+                </span>
+              ) : (
+                <span className="text-slate-400 text-[11px]">ไม่มีส่วนลด</span>
+              )}
+            </div>
+
+            {/* Subtotal & VAT */}
+            <div className="space-y-1 text-xs text-slate-500 dark:text-slate-400 pt-1.5 border-t border-slate-200 dark:border-slate-800/80">
+              <div className="flex justify-between">
+                <span>ยอดรวมสินค้า:</span>
+                <span className="text-slate-800 dark:text-slate-200 font-mono font-bold">
+                  {formatCurrency(
+                    cartTotals.subtotal,
+                    settings.currencySymbol,
+                    settings.decimalPlaces,
+                  )}
+                </span>
+              </div>
+              {settings.vatEnabled && (
+                <div className="flex justify-between text-[11px] text-slate-500">
+                  <span>
+                    ภาษีมูลค่าเพิ่ม (VAT {settings.vatRate}%{" "}
+                    {settings.vatType === "included" ? "รวมในราคา" : "แยกนอก"}):
+                  </span>
+                  <span className="font-mono">
+                    {formatCurrency(
+                      cartTotals.vatAmount,
+                      settings.currencySymbol,
+                      settings.decimalPlaces,
+                    )}
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Grand Total Bar */}
+            <div className="pt-2 border-t border-slate-200 dark:border-slate-800 flex items-center justify-between">
+              <div>
+                <span className="text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wider block font-bold">
+                  ยอดชำระสุทธิ (Net Total)
+                </span>
+                <span className="text-xl sm:text-2xl font-black text-red-600 dark:text-yellow-400 tracking-tight font-mono">
+                  {formatCurrency(
+                    cartTotals.total,
+                    settings.currencySymbol,
+                    settings.decimalPlaces,
+                  )}
+                </span>
+              </div>
+
+              <span className="text-[11px] px-2.5 py-1 rounded-full bg-red-100 dark:bg-yellow-500/15 text-red-700 dark:text-yellow-300 border border-red-200 dark:border-yellow-500/30 font-bold">
+                {cartTotals.itemCount} ชิ้น
+              </span>
+            </div>
+
+            {/* Checkout & Hold Buttons */}
+            <div className="grid grid-cols-12 gap-2 pt-1">
+              <button
+                id="pos-hold-bill-btn"
+                disabled={cart.length === 0 || isReholdingEditedOrder}
+                onClick={() => void handleHoldButtonClick()}
+                title={editingHeldOrder ? `พักบิล ${editingHeldOrder.customerName}` : 'พักยอด'}
+                className="col-span-4 flex min-w-0 items-center justify-center gap-1.5 overflow-hidden py-2.5 sm:py-3 rounded-2xl bg-yellow-100 dark:bg-yellow-500/15 hover:bg-yellow-200 dark:hover:bg-yellow-500/25 border border-yellow-300 dark:border-yellow-500/40 text-yellow-800 dark:text-yellow-400 text-xs font-bold disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-95"
+              >
+                <PauseCircle className="h-4 w-4 shrink-0" />
+                <span className={`min-w-0 truncate ${editingHeldOrder ? 'text-[10px] sm:text-xs' : ''}`}>
+                  {isReholdingEditedOrder ? 'กำลังพักบิล…' : editingHeldOrder ? `พักบิล ${editingHeldOrder.customerName}` : 'พักยอด'}
+                </span>
+              </button>
+
+              <button
+                id="pos-pay-btn"
+                disabled={cart.length === 0}
+                onClick={() => setIsPaymentModalOpen(true)}
+                className="col-span-8 flex items-center justify-center gap-2 py-2.5 sm:py-3 rounded-2xl bg-gradient-to-r from-red-600 to-red-500 hover:from-red-500 hover:to-red-600 text-white font-black text-sm shadow-md shadow-red-600/30 disabled:opacity-40 disabled:cursor-not-allowed transition-all active:scale-[0.99]"
+              >
+                <CreditCard className="w-5 h-5 text-white" />
+                <span>ชำระเงิน</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* MODAL 1: PAYMENT */}
+      <PaymentModal
+        isOpen={isPaymentModalOpen}
+        onClose={() => setIsPaymentModalOpen(false)}
+      />
+
+      {/* MODAL 2: HOLD ORDER MODAL */}
+      {isHoldModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-yellow-500/10 text-yellow-600 dark:text-yellow-400">
+                  <PauseCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">
+                    พักยอดคำสั่งซื้อ (Hold Order)
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    ค้นหาและเลือกสมาชิกเพื่อเรียกบิลคืน
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsHoldModalOpen(false)}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleHoldOrderSubmit} className="space-y-4">
+				<div className="grid grid-cols-2 rounded-xl border border-slate-200 bg-slate-100 p-1 text-xs dark:border-slate-700 dark:bg-slate-950">
+					<button type="button" onClick={() => { setHoldMode("single"); setHoldSplitMembers([]); setHoldCustomerName(""); }} className={`rounded-lg py-2.5 font-black transition ${holdMode === "single" ? "bg-white text-slate-950 shadow-xs dark:bg-slate-800 dark:text-white" : "text-slate-500"}`}>ไม่หาร</button>
+					<button type="button" onClick={() => { setHoldMode("split"); setHoldSingleMember(null); setHoldCustomerName(""); }} className={`rounded-lg py-2.5 font-black transition ${holdMode === "split" ? "bg-yellow-500 text-slate-950 shadow-xs" : "text-slate-500"}`}>หารเท่ากัน</button>
+				</div>
+              <div>
+                <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>ชื่อลูกค้า *</span>
+                </label>
+                <CustomerCombobox
+                  autoFocus
+                  value={holdCustomerName}
+                  onChange={(value) => {
+                    setHoldCustomerName(value);
+                    if (value) setHoldSingleMember(null);
+                  }}
+                  onSelect={(member) => {
+					if (holdMode === "split") {
+						setHoldSplitMembers((current) => current.some((item) => item.id === member.id) ? current : [...current, member]);
+						setHoldCustomerName("");
+					} else {
+						setHoldSingleMember(member);
+						setHoldCustomerName("");
+					}
+                  }}
+                  onSearch={searchHoldMembers}
+                  suggestions={holdMemberSuggestions}
+                  isLoading={isHoldMemberLoading}
+                  delayMs={500}
+                  allowCustom={false}
+                  clearOnSelect
+                  placeholder="พิมพ์ชื่อหรือเบอร์โทรสมาชิก..."
+                />
+				{holdMode === "single" && holdSingleMember && <div className="mt-3 flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs dark:border-emerald-500/30 dark:bg-emerald-500/10"><div><p className="font-black text-slate-900 dark:text-white">{holdSingleMember.name}</p><p className="text-[10px] text-slate-500">สมาชิกที่เลือก · ไม่หารบิล</p></div><button type="button" onClick={() => setHoldSingleMember(null)} className="rounded-lg p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40" aria-label={`ลบ ${holdSingleMember.name}`}>✕</button></div>}
+				{holdMode === "split" && (
+					<div className="mt-3 space-y-2">
+						{holdSplitMembers.map((member, index) => {
+							const totalSatang = Math.round(cartTotals.total * 100);
+							const count = holdSplitMembers.length || 1;
+							const share = Math.floor(totalSatang / count) + (index < totalSatang % count ? 1 : 0);
+							return <div key={member.id} className="flex items-center justify-between gap-3 rounded-xl border border-yellow-200 bg-yellow-50 px-3 py-2 text-xs dark:border-yellow-500/30 dark:bg-yellow-500/10">
+								<div className="min-w-0"><p className="truncate font-black text-slate-900 dark:text-white">{index + 1}. {member.name}</p><p className="text-[10px] text-slate-400">ส่วนแบ่ง {(share / 100).toFixed(2)} บาท</p></div>
+								<button type="button" onClick={() => setHoldSplitMembers((current) => current.filter((item) => item.id !== member.id))} className="rounded-lg p-1.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-950/40" aria-label={`ลบ ${member.name}`}>✕</button>
+							</div>;
+						})}
+						<p className="text-[11px] font-bold text-slate-500">เลือกแล้ว {holdSplitMembers.length} คน · ระบบหักสต็อกเพียงครั้งเดียว</p>
+					</div>
+				)}
+                <button
+                  type="button"
+                  onClick={openCreateHoldMember}
+                  className="mt-2 w-full flex items-center justify-center gap-2 rounded-xl border border-dashed border-yellow-400/70 bg-yellow-50 dark:bg-yellow-500/10 px-3 py-2.5 text-xs font-black text-yellow-700 dark:text-yellow-400 hover:bg-yellow-100 dark:hover:bg-yellow-500/15 transition-colors"
+                >
+                  <UserPlus className="w-4 h-4" />
+                  เพิ่มสมาชิกใหม่
+                </button>
+              </div>
+
+              <div className="pt-2 flex justify-end gap-2 border-t border-slate-100 dark:border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setIsHoldModalOpen(false)}
+                  className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300 transition-colors"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  type="submit"
+				  disabled={holdMode === "split" ? holdSplitMembers.length < 2 : !holdSingleMember}
+                  className="px-5 py-2.5 rounded-xl bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 text-xs font-black shadow-md shadow-yellow-500/20 transition-all"
+                >
+                  บันทึกการพักยอด
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {isCreateHoldMemberOpen && (
+        <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in">
+          <form onSubmit={handleCreateHoldMember} className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-yellow-500/10 text-yellow-600 dark:text-yellow-400"><UserPlus className="w-5 h-5" /></div>
+                <div>
+                  <h3 className="text-base font-black text-slate-900 dark:text-white">เพิ่มสมาชิกใหม่</h3>
+                  <p className="text-[11px] text-slate-400">เพิ่มเข้าระบบสมาชิกของร้านและเลือกให้ทันที</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => setIsCreateHoldMemberOpen(false)} className="p-1 rounded-xl text-slate-400 hover:text-slate-700 dark:hover:text-white">✕</button>
+            </div>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">ชื่อสมาชิก *</label>
+                <input required autoFocus value={newHoldMemberName} onChange={(e) => setNewHoldMemberName(e.target.value)} placeholder="ชื่อ" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500" />
+                <p className="mt-1.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 px-2.5 py-1.5 text-[11px] font-bold text-amber-700 dark:text-amber-300">ชื่อซ้ำจะมีผลตอนเรียกชื่อ</p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">เบอร์โทร *</label>
+                <input required inputMode="tel" autoComplete="tel" maxLength={10} value={newHoldMemberPhone} onChange={(e) => setNewHoldMemberPhone(e.target.value.replace(/\D/g, "").slice(0, 10))} placeholder="เบอร์โทร 10 หลัก" className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500" />
+                <p className={`mt-1 text-[11px] font-semibold ${newHoldMemberPhone.length > 0 && newHoldMemberPhone.length !== 10 ? "text-red-500" : "text-slate-400"}`}>กรอกเบอร์โทรให้ครบ 10 หลัก</p>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs font-bold text-slate-700 dark:text-slate-300">ประเภทสมาชิก *</label>
+                <select required value={newHoldMemberTypeId} onChange={(e) => setNewHoldMemberTypeId(e.target.value)} className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2.5 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-yellow-500">
+                  <option value="">เลือกประเภทสมาชิก</option>
+                  {holdMemberTypes.map((type) => <option key={type.id} value={type.id}>{type.name}</option>)}
+                </select>
+              </div>
+              {createHoldMemberError && <p className="rounded-xl bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs font-bold text-red-600 dark:text-red-300">{createHoldMemberError}</p>}
+            </div>
+            <div className="pt-2 grid grid-cols-2 gap-2 border-t border-slate-100 dark:border-slate-800">
+              <button type="button" disabled={isCreatingHoldMember} onClick={() => setIsCreateHoldMemberOpen(false)} className="py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 text-xs font-bold text-slate-700 dark:text-slate-300 disabled:opacity-50">ยกเลิก</button>
+              <button type="submit" disabled={isCreatingHoldMember || !newHoldMemberName.trim() || newHoldMemberPhone.length !== 10 || !newHoldMemberTypeId} className="py-2.5 rounded-xl bg-yellow-500 hover:bg-yellow-600 text-slate-950 text-xs font-black disabled:opacity-50 disabled:cursor-not-allowed">{isCreatingHoldMember ? "กำลังเพิ่ม..." : "เพิ่มสมาชิก"}</button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL 4: DISCOUNT MODAL */}
+      {isDiscountModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-sm w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Tag className="w-5 h-5 text-red-600 dark:text-yellow-400" />
+                <h3 className="text-base font-black text-slate-900 dark:text-white">
+                  กำหนดส่วนลดคำสั่งซื้อ
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsDiscountModalOpen(false)}
+                className="text-slate-400 hover:text-slate-700 dark:hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Type selector */}
+            <div className="grid grid-cols-2 bg-slate-100 dark:bg-slate-950 p-1 rounded-xl border border-slate-200 dark:border-slate-800 text-xs">
+              <button
+                type="button"
+                onClick={() => setTempDiscountType("amount")}
+                className={`py-2 rounded-lg font-black transition-colors ${
+                  tempDiscountType === "amount"
+                    ? "bg-red-600 text-white shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                }`}
+              >
+                จำนวนเงิน (฿)
+              </button>
+              <button
+                type="button"
+                onClick={() => setTempDiscountType("percent")}
+                className={`py-2 rounded-lg font-black transition-colors ${
+                  tempDiscountType === "percent"
+                    ? "bg-red-600 text-white shadow-xs"
+                    : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
+                }`}
+              >
+                เปอร์เซ็นต์ (%)
+              </button>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1">
+                มูลค่าส่วนลด
+              </label>
+              <input
+                type="number"
+                min="0"
+                max={tempDiscountType === "percent" ? 100 : undefined}
+                step="0.01"
+                value={tempDiscountVal}
+                onChange={(e) => setTempDiscountVal(e.target.value)}
+                placeholder="0"
+                className="w-full text-xl font-black bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 text-red-600 dark:text-yellow-400 focus:outline-none focus:border-red-500 font-mono"
+              />
+            </div>
+
+            <div className="pt-2 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setDiscount(0, "amount");
+                  setIsDiscountModalOpen(false);
+                }}
+                className="px-3 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-red-600"
+              >
+                ลบส่วนลด
+              </button>
+              <button
+                type="button"
+                onClick={handleApplyDiscount}
+                className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-black"
+              >
+                บันทึก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 5: QUANTITY SELECTOR & NUMPAD (ระบุจำนวนสินค้า / สั่งจำนวนมาก) */}
+      {quantityModalItem && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-5 sm:p-6 shadow-2xl space-y-4 text-slate-900 dark:text-white">
+            {/* Header */}
+            <div className="flex items-start justify-between gap-3 border-b border-slate-100 dark:border-slate-800 pb-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <img
+                  src={quantityModalItem.product.image}
+                  alt={quantityModalItem.product.name}
+                  referrerPolicy="no-referrer"
+                  className="w-12 h-12 rounded-xl object-cover border border-slate-200 dark:border-slate-800 shrink-0 bg-slate-100 dark:bg-slate-950"
+                />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-black text-slate-900 dark:text-white truncate">
+                      {quantityModalItem.product.name}
+                    </h3>
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5 flex items-center gap-2">
+                    <span className="font-mono text-amber-600 dark:text-yellow-400 font-bold">
+                      {formatCurrency(
+                        quantityModalItem.product.price,
+                        settings.currencySymbol,
+                        settings.decimalPlaces,
+                      )}
+                    </span>
+                    <span>/ {quantityModalItem.product.unit}</span>
+                    {quantityModalItem.product.trackStock && <span>• สต็อก: {quantityModalItem.product.stock}</span>}
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setQuantityModalItem(null)}
+                className="p-1.5 rounded-xl hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors shrink-0"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Input & Real-time Total Preview */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs font-bold text-slate-600 dark:text-slate-400">
+                <label htmlFor="modal-qty-input">
+                  พิมพ์จำนวน หรือกดแป้นตัวเลขด้านล่าง:
+                </label>
+                <span className="text-slate-400 font-normal">
+                  หน่วย: {quantityModalItem.product.unit}
+                </span>
+              </div>
+
+              <div className="relative">
+                <input
+                  id="modal-qty-input"
+                  type="number"
+                  min="1"
+                  max={quantityModalItem.product.trackStock ? quantityModalItem.product.stock : 99999}
+                  value={tempQuantityStr}
+                  autoFocus
+                  onFocus={(e) => e.target.select()}
+                  onChange={(e) => setTempQuantityStr(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleSaveQuantityModal();
+                    }
+                  }}
+                  className="w-full text-3xl sm:text-4xl font-black text-center bg-slate-50 dark:bg-slate-950 border-2 border-red-500 dark:border-yellow-500 rounded-2xl py-3 text-red-600 dark:text-yellow-400 font-mono focus:outline-none focus:ring-4 focus:ring-red-500/20 shadow-inner"
+                />
+
+                {tempQuantityStr && tempQuantityStr !== "0" && (
+                  <button
+                    type="button"
+                    onClick={() => setTempQuantityStr("0")}
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-xs font-bold px-2.5 py-1 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700"
+                  >
+                    ล้าง
+                  </button>
+                )}
+              </div>
+
+              {/* Subtotal preview banner */}
+              <div className="flex items-center justify-between px-3.5 py-2 rounded-xl bg-amber-50 dark:bg-yellow-950/30 border border-amber-200 dark:border-yellow-500/40 text-xs">
+                <span className="text-amber-900 dark:text-yellow-300 font-medium">
+                  รวม ({tempQuantityStr || 0} {quantityModalItem.product.unit} ×{" "}
+                  {formatCurrency(
+                    quantityModalItem.product.price,
+                    settings.currencySymbol,
+                    settings.decimalPlaces,
+                  )}
+                  ):
+                </span>
+                <span className="text-base font-black font-mono text-amber-700 dark:text-yellow-400">
+                  {formatCurrency(
+                    quantityModalItem.product.price *
+                      (parseInt(tempQuantityStr, 10) || 0),
+                    settings.currencySymbol,
+                    settings.decimalPlaces,
+                  )}
+                </span>
+              </div>
+            </div>
+
+            {/* Quick Preset Buttons (Add Delta) */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                <span>ปุ่มลัดเพิ่มจำนวนเร็ว (+):</span>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {[1, 5, 10, 20, 50].map((delta) => (
+                  <button
+                    key={`plus-${delta}`}
+                    type="button"
+                    onClick={() => handleAddPresetDelta(delta)}
+                    className="py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-red-50 hover:text-red-600 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-xs font-bold font-mono transition-colors border border-slate-200 dark:border-slate-700 active:scale-95"
+                  >
+                    +{delta}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Exact Preset Buttons */}
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                <span>หรือเลือกจำนวนตามชุดสำเร็จ:</span>
+              </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {[1, 10, 20, 50, 100].map((qty) => (
+                  <button
+                    key={`exact-${qty}`}
+                    type="button"
+                    onClick={() => handleSetPresetExact(qty)}
+                    className={`py-1.5 rounded-xl text-xs font-bold font-mono transition-colors border active:scale-95 ${
+                      parseInt(tempQuantityStr, 10) === qty
+                        ? "bg-red-600 dark:bg-yellow-500 text-white dark:text-slate-950 border-transparent shadow-xs"
+                        : "bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700"
+                    }`}
+                  >
+                    {qty}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Touch Numpad Grid */}
+            <div className="grid grid-cols-3 gap-1.5 pt-1">
+              {[
+                "1",
+                "2",
+                "3",
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9",
+                "C",
+                "0",
+                "DEL",
+              ].map((key) => {
+                const isAction = key === "C" || key === "DEL";
+                return (
+                  <button
+                    key={`numpad-${key}`}
+                    type="button"
+                    onClick={() => handleNumpadInput(key)}
+                    className={`py-2.5 rounded-xl text-base font-black font-mono transition-all active:scale-95 ${
+                      isAction
+                        ? "bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-300 dark:hover:bg-slate-700 border border-slate-300 dark:border-slate-700"
+                        : "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xs"
+                    }`}
+                  >
+                    {key === "DEL" ? "⌫" : key}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Action Buttons */}
+            <div className="pt-2 flex justify-end gap-2.5 border-t border-slate-100 dark:border-slate-800">
+              <button
+                type="button"
+                onClick={() => setQuantityModalItem(null)}
+                className="px-4 py-2.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-300"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveQuantityModal}
+                className="flex-1 px-6 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 dark:bg-yellow-500 dark:hover:bg-yellow-400 text-white dark:text-slate-950 text-xs font-black shadow-md shadow-red-600/30 flex items-center justify-center gap-2"
+              >
+                <span>ยืนยันจำนวน ({tempQuantityStr || 0} ชิ้น)</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

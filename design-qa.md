@@ -1,5 +1,166 @@
 # LiveMatch POS Full-System Design QA
 
+## Bottom navigation wrap addendum — 2026-08-27
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-10d78c32-0310-4595-bdf5-c90ab25dec1a.png`
+- Implementation screenshot: `D:/VibeStudio/LiveMatch/artifacts/pos-bottom-nav-wrap-390-dark-full.png`
+- Focused paired comparison: `D:/VibeStudio/LiveMatch/artifacts/pos-bottom-nav-wrap-comparison.png`
+- Viewport: 390 × 844 CSS px, device scale factor 1
+- Source pixels: 612 × 75; focused implementation pixels: 366 × 122; compared without density scaling because the requested difference is responsive reflow rather than one-to-one frame size
+- State: POS authenticated, dark theme, bottom navigation docked right, all seven permitted menu items visible
+
+### Findings
+
+- No actionable P0, P1, or P2 issues remain.
+- The source's internal vertical scrollbar is removed. At 390px the seven menu items wrap into exactly two rows and the Dock grows from its single-row height to 122px.
+- The page remains 390px wide with `scrollWidth === clientWidth`; the wrap container reports `overflow-x: visible`, so there is no horizontal or vertical scrollbar inside the Dock.
+- The existing typography, colors, active red state, badges, icons, radius, shadow, and left/right toggle remain consistent with the source component.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing Thai labels, font size, weight, nowrap behavior, and active-state hierarchy are preserved.
+- Spacing and layout rhythm: fixed-width 68px menu buttons produce a balanced 4+3 two-row layout; the Dock height expands naturally.
+- Colors and visual tokens: dark surface, slate border, red active state, yellow icon accent, and status badge colors remain unchanged.
+- Image and icon fidelity: existing Lucide icons are preserved; no new raster asset, custom SVG, CSS drawing, or placeholder was introduced.
+- Copy and content: all seven menu labels and both accessible left/right toggle labels remain unchanged.
+
+### Interaction and responsive checks
+
+- [x] Left/right slide still uses the existing 300ms animation.
+- [x] Toggle remains reachable at the outer edge of the Dock.
+- [x] Menu items wrap to two rows at 390px.
+- [x] No internal scrollbar and no page-level horizontal overflow.
+- [x] Browser console error log is empty.
+
+### Comparison history
+
+- Earlier finding [P2]: the menu used `overflow-x-auto`, showing an internal scrollbar and hiding items within a fixed-height row.
+- Fix: replaced horizontal scrolling with `flex-wrap`, allowed automatic Dock height, and fixed each menu item at 68px to avoid an unnecessary third row.
+- Post-fix evidence: `artifacts/pos-bottom-nav-wrap-comparison.png`.
+
+final result: passed
+
+---
+
+# POS Held Bills Card — Design QA
+
+## Evidence
+
+- Source issue capture: `D:\VibeStudio\LiveMatch\artifacts\design-qa\held-bill-card-source.png`
+- Revised full page: `D:\VibeStudio\LiveMatch\artifacts\design-qa\held-bill-page.png`
+- Revised card detail: `D:\VibeStudio\LiveMatch\artifacts\design-qa\held-bill-card-detail.png`
+- Route/state: `http://localhost:5175/`, Bills & History > Held bills, dark theme, one three-hour-old open sale placed behind 60 newer paid sales.
+- Source pixels: 465 × 270. Implementation viewport/capture: 403 × 562. The source is a focused desktop crop while the implementation evidence is the in-app browser's narrow responsive viewport; comparison focuses on hierarchy, content recovery, and overflow behavior rather than one-to-one page geometry.
+
+## Findings and comparison history
+
+- [P1] The original card showed a correct outstanding total but an empty item region. The client fetched only the latest 50 sales across all statuses, so an older open sale could not be joined to its receivable. Fixed by rendering POS items directly from each receivable line's immutable server snapshot and removing that unrelated 50-sale dependency.
+- [P1] The source mixed generated text (`Match 0.00 · POS 20.00`) into a quoted note block and left the empty item panel unexplained. Fixed with dedicated POS/Match source chips and a structured item row containing name, quantity, unit price, and allocated total.
+- [P2] The first redesign retained status/count/time metadata the user did not need. Fixed by removing the status/count header badge and timestamp, enlarging the customer name, and constraining each card to 360px.
+- [P2] Follow-up capture showed the page filter surface reaching the right viewport edge. Fixed with `box-border`, `min-w-0`, `max-w-full`, and horizontal overflow containment on the page and held-list shells. The revised full-page capture shows a consistent right inset.
+
+## Required fidelity surfaces
+
+- Typography: customer name is now the strongest card label; item and total hierarchy remain readable at the narrow viewport.
+- Spacing/layout: the card is centered, capped at 360px, and has distinct identity, item, and payment regions without horizontal clipping.
+- Colors/tokens: existing slate, amber, sky, and dark-mode tokens are retained; no new visual language was introduced.
+- Image/assets: no raster imagery is required. Existing Lucide icons are used consistently; no placeholder or custom SVG asset was introduced.
+- Copy/content: generated quote text is removed; labels now describe source, item count, item details, and amount due directly.
+
+## Interaction and runtime checks
+
+- [x] A held sale older than 60 newer paid sales still displays `น้ำดื่ม`, quantity 1, and ฿20.00 from its billing snapshot.
+- [x] Select, delete, restore-to-cart, and pay-now controls remain present and accessible.
+- [x] The page and search panel no longer exceed the narrow viewport width.
+- [x] POS TypeScript lint and production build pass.
+- [x] Backend `go test ./...` passes.
+
+No actionable P0, P1, or P2 findings remain in the requested held-card scope.
+
+final result: passed
+
+---
+
+# POS Receipt Printing — Design QA
+
+## Evidence
+
+- Source visual truth: `C:\Users\OTAMOS\AppData\Local\Temp\codex-clipboard-07614db3-df1e-48f0-a2b4-2458f5d10794.png`
+- Browser-rendered implementation: `D:\VibeStudio\LiveMatch\artifacts\design-qa\receipt-modal-implementation.png`
+- Combined comparison: `D:\VibeStudio\LiveMatch\artifacts\design-qa\receipt-modal-comparison.png`
+- Route/state: `http://localhost:5175/`, POS > Bills & History > Sales history > Receipt modal, 80 mm.
+- Source pixels: 367 × 727. Implementation viewport/capture: 403 × 562.
+
+## Visual comparison
+
+The implementation preserves the displayed receipt as the print source: the same white paper surface, centered store identity, dashed metadata and total separators, item hierarchy, payment summary, barcode, and footer are rasterized directly from `#printable-receipt`. Screen-only modal chrome and action buttons are excluded from the printable node. The QA tenant has no logo asset, so the implementation capture correctly omits a fabricated replacement; configured production logos remain part of the shared receipt node.
+
+## Interaction and runtime checks
+
+- [x] The Sales, held Bills, and Sales History flows all open the single global `ReceiptModal`, so all three use the same visual print renderer.
+- [x] Standard print creates an exact bitmap of the visible receipt for iMin and a standalone image document for browser printing.
+- [x] “พิมพ์ใบเสร็จ (QR)” is visible and reachable at the mobile viewport without horizontal overflow.
+- [x] The QR API was called with the immutable stored total of 12,500 satang and returned a dynamic PromptPay payload with `amountSatang: 12500`.
+- [x] QR printing rejects a server amount mismatch or a fallback/static image that cannot guarantee a locked amount.
+- [x] The bitmap pipeline checks for non-white content before sending data to the printer, preventing blank-paper output.
+- [x] Browser console error log is empty.
+- [x] POS TypeScript lint and production build pass.
+
+## Findings and fixes
+
+- [P1] The previous iMin path printed separately assembled plain text, so the physical receipt could not match the on-screen layout. Fixed by rasterizing the existing receipt node and printing that bitmap.
+- [P1] The receipt modal had no locked-amount QR print action. Fixed with a server-verified PromptPay payload generated from the saved receipt total.
+- [P1] A failed DOM/image capture could still feed a visually blank receipt to the printer. Fixed with PNG validation plus sampled pixel-content validation.
+- [P2] Three action buttons could overflow on a narrow device. Fixed by wrapping the action area and keeping the QR button reachable in the footer.
+- [P2] Follow-up review found the text copy button used too much width and there was no explicit Close action beside printing. Fixed by converting Copy to an accessible icon-only control, shortening print labels responsively, and placing Copy, Print, Print QR, and Close on one non-wrapping row. The revised `receipt-modal-implementation.png` confirms all four controls remain visible at 403 × 562.
+- [P3] Final requested ordering places Print QR before the standard Print action. The final browser capture confirms Copy, Print QR, Print, and Close remain on one row.
+
+No actionable P0, P1, or P2 visual differences remain for the requested receipt-printing scope.
+
+final result: passed
+## POS split-share bill presentation addendum — 2026-09-03
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-bed719ce-530c-4906-9c74-605f96e7b55b.png` and `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-3b70b54c-ff58-4694-9576-dd1e8073c3ca.png`
+- Implementation: `pos/src/context/PosContext.tsx`, `pos/src/components/BillsView.tsx`, and `pos/src/types.ts`
+- Implementation screenshots: Codex in-app Browser final dark-theme captures in this task, tab 2, for held-bill and batch-checkout states
+- Viewport: 690 × 740 CSS px, device scale factor 1.2; document `scrollWidth === clientWidth === 690`
+- Source pixels: 573 × 526 and 480 × 440. The source crops and implementation captures were compared by the same card/modal regions without scaling the surrounding POS shell.
+- State: one member owes water ฿20, one shuttle share of ฿50 from a two-person split, and one shuttle share of ฿25 from a four-person split; total ฿95
+
+### Full-view and focused comparison evidence
+
+- Held bill: the two standalone split explanation banners are gone. The item list directly shows ฿20, ฿50, and ฿25, matching the member's payable total of ฿95.
+- Batch checkout: each split badge sits beside its related shuttle item, showing “หาร 2 คน · คนนี้ ฿50.00” and “หาร 4 คน · คนนี้ ฿25.00”. The row amount and quantity detail use the same allocated amount.
+- The dark-theme implementation preserves the source hierarchy, yellow split emphasis, green payable total, compact item card, and visible checkout actions.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing Thai POS typography, monospace currency, bold item labels, and compact metadata remain consistent; allocation badges do not wrap at this viewport.
+- Spacing and layout rhythm: badges are attached to their item names instead of occupying separate full-width rows, reducing ambiguity and vertical noise.
+- Colors and visual tokens: amber remains the split/allocation signal, emerald remains the payable-total signal, and slate dark surfaces match the existing POS design system.
+- Image quality and asset fidelity: no raster assets were needed; existing Lucide operational icons remain unchanged.
+- Copy and content: the held card communicates allocation through the actual line amount without extra “บิลหาร” text; batch checkout retains the split count only where it identifies the affected shuttle line.
+
+### Interaction and responsive checks
+
+- [x] Held-bill item amounts sum exactly to the member total.
+- [x] Batch checkout split badges are attached to the correct shuttle rows.
+- [x] A non-split item remains unbadged and keeps its original price.
+- [x] Selecting the held bill and opening batch checkout works end to end.
+- [x] No horizontal document overflow at the captured viewport.
+- [x] Browser console warning/error log is empty.
+- [x] POS TypeScript check and production build pass.
+
+### Comparison history
+
+- Earlier finding [P1]: held cards displayed full product prices and separate split banners, so three visible lines could total ฿220 while the member owed ฿95.
+- Fix: allocate the saved sale total proportionally in satang and render each member's allocated line amount directly.
+- Earlier finding [P1]: batch checkout placed split badges above the item list, leaving it unclear which shuttle each split belonged to.
+- Fix: move each split badge inline with its corresponding shuttle item and repeat the exact allocated amount in the row.
+- Post-fix evidence: final held-bill and batch-checkout browser captures in this task. No actionable P0/P1/P2 findings remain.
+
+final result: passed
+
 - Source visual truth: `C:/Users/OTAMOS/Desktop/livematch-pos/` rendered from the Stitch React app at `http://localhost:3000`
 - Implementation: `frontend/src/pages/POSPage.vue` rendered from the production Vue component with realistic mock API data
 - Mobile viewport: 390 × 844 CSS px, device scale factor 1
@@ -88,6 +249,26 @@
 
 final result: passed
 
+## POS Customer Display orange payment-state addendum
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-13292f5c-4023-4d3a-abd7-8a9e3d67b6ee.png` (orange customer-display layout, 1024 x 768).
+- Rejected previous state: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-d70b3793-b7db-42d7-a0eb-2cbe13362563.png` (white cash overlay, 1005 x 765).
+- Implementation cash screenshot: `artifacts/product-design/customer-display-payment-orange/implementation-cash.png`.
+- Implementation QR screenshot: `artifacts/product-design/customer-display-payment-orange/implementation-qr.png`.
+- Full-view paired comparisons: `artifacts/product-design/customer-display-payment-orange/comparison-cash.png` and `comparison-qr.png`.
+- Viewport and density: source and implementation captured at 1024 x 768 CSS px, device scale factor 1; no density normalization required.
+- State: standalone `display=customer`, one Match billing line, cash payment with received/change and PromptPay payment with QR.
+- Typography: passed; the existing Thai hierarchy, bold totals, compact metadata and monospace money remain consistent with the target.
+- Spacing/layout: passed; item list stays left, summary stays right, and both cash and QR fit inside the 1024 x 768 viewport without document overflow.
+- Colors/tokens: passed; the orange net-total card remains the primary payment surface and no dark scrim or white payment overlay appears.
+- Images/assets: passed; product/default imagery and QR remain real assets generated by the existing application flow, with no replacement illustration.
+- Copy/content: passed; cash received, change, PromptPay receiver, countdown, item count and bill amount are visible in the shared layout.
+- Primary interaction checked: switching the shared payment state between cash and PromptPay updates the right panel while preserving the same customer-display page.
+- Browser console errors: none during the final captures.
+- Comparison history: the earlier implementation opened a P1 white modal over the orange customer display. The fix moved cash received/change into the orange total card, moved QR below that card, reused payment items in the main list, and disabled both legacy overlays. Post-fix paired evidence shows no remaining P0/P1/P2 findings.
+
+final result: passed
+
 ## Match announcement bell card redesign addendum
 
 - Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-a14bfff1-edf9-4ef2-8a33-ae9048350fa0.png`
@@ -106,5 +287,142 @@ final result: passed
 - Interaction tested: preview and reset controls are enabled; preview click completes; browser console reports no errors.
 - Comparison history: P1 wrapping and equal-weight actions in the source were replaced with a responsive stacked hierarchy. Post-fix comparison shows no remaining P0/P1/P2 findings. The 33 px height increase is intentional to preserve touch targets and readable metadata.
 - Automated verification: focused App Vitest 72/72 passed; production frontend build passed.
+
+final result: passed
+
+## Shared Queue navbar clock addendum
+
+## Evidence
+
+- Source of visual truth: `C:\Users\OTAMOS\AppData\Local\Temp\codex-clipboard-54fcddb6-0f35-40bf-b467-b6bbb69c9d42.png` (472 x 116)
+- Implementation screenshot: `D:\VibeStudio\LiveMatch\implementation-queue-clock-final.png` (1280 x 720, desktop PC queue state)
+- Focused comparison: `D:\VibeStudio\LiveMatch\design-qa-clock-comparison-final.png`
+- Route/state: public `?view=queue`, session loaded, desktop navbar visible
+- Device pixel ratio: 1
+
+## Comparison
+
+- Typography: passed. The clock uses a real DSEG7 font with six `HH:mm:ss` digits and fixed-width segments.
+- Spacing and layout: passed. The display remains centered in the three-column navbar and does not overlap the session name or summary card.
+- Color and treatment: passed. Near-black rectangular display, bright red active segments, dark-red inactive segments, minimal glow, and nearly square corners match the reference direction.
+- Assets and rendering: passed. The bundled WOFF/WOFF2 font renders locally without relying on a remote font request.
+- Copy/content: passed. Thai locale uses Latin numerals and Bangkok time, updating once per second.
+
+## Iteration history
+
+- Initial implementation was visually too small, too rounded, and had excessive glow.
+- Increased the display/digit size, reduced corner radius and glow, removed icon/green effects, and added inactive segment ghosts.
+- Re-captured the page and compared source and implementation together in the focused comparison image.
+
+## Functional checks
+
+- Primary route loads successfully at desktop width.
+- Clock update behavior is covered by the frontend test.
+- Browser console showed no errors during the final capture.
+- `npm test -- --run src/App.test.js`: 72/72 passed.
+- `npm run build`: passed.
+
+## Final result
+
+passed
+
+## Admin default shuttle-brand layout addendum — 2026-09-03
+
+- Source visual truth: `C:/Users/OTAMOS/AppData/Local/Temp/codex-clipboard-eea17c0b-0beb-444a-a40d-582e25f32cc7.png`
+- Implementation: `frontend/src/pages/AdminSupervisorPage.vue` and `frontend/src/components/ProductStockCombobox.vue`
+- Implementation screenshot: Codex in-app Browser final capture in this task, tab 1, with the linked-product ComboBox expanded
+- Viewport: 678 × 727 CSS px, device scale factor 1
+- Source pixels: 873 × 293; implementation pixels: 678 × 727. The comparison focuses on the same shuttle-brand form region rather than scaling the full modal because the source is a cropped component.
+- State: light theme, Admin default settings modal open, “ค่าใช้จ่ายและลูกแบด” selected, one POS-linked brand and one Match-fallback brand
+
+### Full-view and focused comparison evidence
+
+- The source compressed five controls into one row, truncating the POS product label and making price ownership difficult to scan.
+- The final browser capture groups each brand into a card: name and actions occupy the first row; price and POS stock link occupy a labeled second row. The modal has no horizontal scrollbar at the narrower 678 px viewport.
+- The expanded ComboBox visibly contains the linked product, SKU/barcode, exact POS price, and available stock without changing the card width or hiding the Save footer.
+
+### Required fidelity surfaces
+
+- Fonts and typography: existing LiveMatch Thai font, weights, and hierarchy are preserved. Explicit field labels replace placeholder-only meaning and “active” is localized to “ใช้งาน”.
+- Spacing and layout rhythm: 11 px touch controls, 12 px card padding, 12 px internal gaps, and responsive one/two-column field rows remove crowding while staying consistent with the surrounding modal.
+- Colors and visual tokens: paper, stone, court-green, and rose semantic colors reuse the existing theme in light and dark modes.
+- Image quality and asset fidelity: this form contains no raster imagery. Delete and Add actions use the existing Lucide icon set; no custom SVG or CSS-drawn asset was introduced.
+- Copy and content: price ownership, Match fallback behavior, POS stock requirements, and enabled state are all visible in Thai.
+
+### Interaction and responsive checks
+
+- [x] Linked price is disabled and clearly states that the POS price is used.
+- [x] Unlinked price remains editable as the Match fallback.
+- [x] Existing linked product reopens by Product ID and appears in search results with price and stock.
+- [x] Add-brand controls stack safely on narrow screens.
+- [x] Delete has an accessible Thai label and the enabled checkbox remains reachable.
+- [x] Sticky Cancel/Save actions remain visible.
+- [x] Browser console warning/error log is empty.
+
+### Comparison history
+
+- Earlier finding [P1]: name, price, product ComboBox, enabled state, and delete action were compressed into one row and the selected product text was truncated.
+- Fix: changed each brand to a two-level labeled card and changed the add form to its own dashed card.
+- Earlier finding [P1]: reopening an already linked ComboBox searched using its formatted display label and returned an empty result.
+- Fix: selected ComboBoxes now query by Product ID; the final capture shows the linked product, ฿100 price, and 89 remaining units.
+- Post-fix evidence: final in-app Browser capture in this task. No actionable P0/P1/P2 findings remain.
+
+final result: passed
+
+---
+
+# Booking Dashboard — Design QA
+
+## Evidence
+
+- Source visual truth: `C:\Users\OTAMOS\.codex\generated_images\01a063b5-8142-7eb0-9891-1f082000aac1\exec-7c82aa5f-9b08-4b03-acf2-636ec012fc20.png`
+- Browser-rendered implementation: `D:\VibeStudio\LiveMatch\artifacts\design-qa\booking-dashboard-mobile.png`
+- Combined comparison: `D:\VibeStudio\LiveMatch\artifacts\design-qa\booking-dashboard-comparison.png`
+- Route: `http://localhost:5173/admin/booking`, authenticated booking admin, Dashboard tab, Day period, light theme
+- Source pixels: 1487 × 1058 at the generated desktop density.
+- Implementation pixels / viewport: 678 × 727 at the in-app browser's responsive viewport and native capture density.
+- Normalization: the source was proportionally reduced to 678 × 483 and placed beside the 678 × 727 implementation capture. Because the selected source is desktop and the available verification viewport is narrow, the comparison evaluates responsive hierarchy and visual language rather than one-to-one desktop geometry.
+
+## Full-view comparison
+
+The combined evidence confirms the selected direction is preserved: warm paper background, deep green primary color, amber financial accent, an uninterrupted KPI strip, a dominant revenue chart, and lower customer/court analytics. The implementation intentionally collapses the five desktop KPIs into a two-column mobile grid and stacks the lower analytics instead of compressing them.
+
+## Focused-region comparison
+
+The focused browser capture covers the dashboard heading, Day/Week/Month segmented control, all five KPIs, and the complete day chart at readable mobile scale. Separate live inspection covered the customer composition and court-distribution regions. A focused check was required because the labels and chart bars are too small to judge in the reduced full-source comparison.
+
+## Required fidelity surfaces
+
+- Typography: Thai display and data hierarchy remain strong and readable; uppercase English eyebrow uses restrained tracking. No clipping or broken wrapping observed.
+- Spacing/layout: sections use dividers and a single surface rather than excessive nested cards. Mobile KPI and lower-section stacking preserve scan order.
+- Colors/tokens: court green, paper white, stone dividers, and amber financial emphasis follow the source direction with sufficient contrast.
+- Image quality/assets: this data dashboard does not require photographic assets. Existing Lucide icons remain crisp and consistent; no placeholder imagery or handcrafted decorative SVG was introduced.
+- Copy/content: metric names and units are concise Thai labels; the chart legend explains both encodings.
+- Responsiveness/accessibility: controls retain practical tap sizes, the period control remains reachable, and chart overflow no longer creates a nested vertical scrollbar.
+
+## Comparison history
+
+### Iteration 1
+
+- [P2] The day chart rendered all 24 hours, pushing meaningful evening data off-screen on a narrow viewport.
+- [P2] Absolute x-axis labels combined with horizontal overflow produced an unwanted nested vertical scrollbar.
+- Fixes: added `dashboardVisibleTrend` to focus Day on the active range with one neighboring interval on each side; constrained the chart wrapper to `overflow-y-hidden`; added bottom label space and responsive minimum bar widths.
+- Post-fix evidence: `booking-dashboard-mobile.png` shows 16:00–21:00 in one readable chart, with no nested vertical scrollbar.
+
+### Final pass
+
+No actionable P0, P1, or P2 visual differences remain for the implemented responsive state. The desktop source includes comparison deltas and denser heatmap analytics that are not present in the current dashboard API; those are treated as future product scope rather than hidden or fabricated UI.
+
+## Interactions and runtime checks
+
+- Day, Week, and Month each loaded the matching date range and trend buckets.
+- Day was restored as the final visible state.
+- Browser console error check returned no errors.
+- Frontend component tests: 20 passed.
+- Production frontend build: passed.
+
+## Follow-up polish
+
+- [P3] If comparison-period and court-by-hour matrix data are added to the API later, the desktop view can gain the source's delta labels and heatmap without inventing client-side figures.
 
 final result: passed

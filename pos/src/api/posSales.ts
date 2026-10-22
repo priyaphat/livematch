@@ -1,0 +1,245 @@
+import { posRequest } from './posCatalog';
+
+export interface POSMember {
+  id: string;
+  name: string;
+  phone: string;
+  billingAccountId: string;
+}
+
+export interface POSMemberType {
+  id: string;
+  code?: string;
+  name: string;
+  active: boolean;
+}
+
+export interface POSSaleItem {
+  productId: string;
+  productName: string;
+  sku: string;
+  quantity: number;
+  unitPriceSatang: number;
+  unitCostSatang: number;
+  lineTotalSatang: number;
+  note?: string;
+  stockTracked?: boolean;
+}
+
+export interface POSSale {
+  id: string;
+  billingAccountId?: string;
+  buyerName: string;
+  status: 'open' | 'paid' | 'void';
+  paymentId?: string;
+  createdAt: string;
+  createdByName: string;
+  subtotalSatang: number;
+  discountType: 'amount' | 'percent';
+  discountRateBps: number;
+  discountSatang: number;
+  netBeforeVatSatang: number;
+  vatRateBps: number;
+  vatSatang: number;
+  pricesIncludeTax: boolean;
+  totalSatang: number;
+  items: POSSaleItem[];
+  paymentMethod?: 'cash' | 'promptpay';
+  cashReceivedSatang?: number;
+  changeSatang?: number;
+  referenceNumber?: string;
+  stockLocation: 'primary' | 'secondary';
+  splitMode?: 'none' | 'equal';
+  splitCount?: number;
+}
+
+export interface POSSettingsRecord {
+  promptPayType: string;
+  promptPayId: string;
+  promptPayReceiverName: string;
+  receiptHeader: string;
+  receiptFooter: string;
+  logoData?: string;
+  navbarTitle: string;
+  navbarIconData?: string;
+  customerDisplayTitle: string;
+  customerDisplayHighlight: string;
+  customerDisplaySubtitle: string;
+  customerDisplayCardText: string;
+  customerDisplayCtaText: string;
+  defaultLowStock: number;
+  theme: 'light' | 'dark';
+  language: 'th' | 'en';
+  taxRatePercent: number;
+  pricesIncludeTax: boolean;
+  inheritBookingPromptPay: boolean;
+  paymentQrImage?: string;
+  storeTaxId: string;
+  storePhone: string;
+  storeEmail: string;
+  storeAddress: string;
+  effectivePromptPayType?: string;
+  effectivePromptPayReceiverName?: string;
+  effectivePromptPayIdMasked?: string;
+  effectivePromptPaySource?: string;
+  effectivePromptPayAvailable?: boolean;
+  secondaryStockEnabled: boolean;
+  primaryStockName: string;
+  secondaryStockName: string;
+  saleStockLocation: 'primary' | 'secondary';
+}
+
+export interface POSBillingSummary {
+  paymentId?: string;
+  billingAccountId: string;
+  memberId: string;
+  displayName: string;
+  matchTotalSatang: number;
+  posTotalSatang: number;
+  totalSatang: number;
+  promptPayPayload?: string;
+  receiverName?: string;
+  lines?: POSBillingLine[];
+}
+
+export interface POSBillingLine {
+  sourceType: 'match' | 'pos';
+  sourceId: string;
+  label: string;
+  amountSatang: number;
+  snapshot?: Record<string, any>;
+}
+
+export interface POSReceivable {
+  billingAccountId: string;
+  memberId: string;
+  displayName: string;
+  memberName?: string;
+  matchDisplayName?: string;
+  searchAliases?: string[];
+  phone?: string;
+  matchTotalSatang: number;
+  posTotalSatang: number;
+  totalSatang: number;
+  lineCount: number;
+  lines: POSBillingLine[];
+  calculatedAt: string;
+}
+
+export interface POSPaymentHistory {
+  paymentId: string;
+  billingAccountId?: string;
+  memberId?: string;
+  displayName: string;
+  originSystem: 'match' | 'pos';
+  method: 'cash' | 'promptpay';
+  amountSatang: number;
+  matchTotalSatang: number;
+  posTotalSatang: number;
+  cashReceivedSatang?: number;
+  changeSatang?: number;
+  referenceNumber?: string;
+  receivedByType: string;
+  receivedByName: string;
+  createdAt: string;
+  lines: POSBillingLine[];
+}
+
+export interface POSPaymentHistoryPage {
+  items: POSPaymentHistory[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+export function listPOSMembers(search = '') {
+  return posRequest<{ items: POSMember[] }>(`/api/admin/pos/members?search=${encodeURIComponent(search)}`).then((result) => result.items);
+}
+
+export function listPOSMemberTypes() {
+  return posRequest<{ items: POSMemberType[] }>('/api/admin/pos/member-types').then((result) => result.items);
+}
+
+export function createPOSMember(input: { name: string; phone: string; memberTypeId: string }) {
+  return posRequest<POSMember & { memberTypeId: string }>('/api/admin/pos/members', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function listPOSSales(status = 'all') {
+  return posRequest<{ items: POSSale[]; total: number }>(`/api/admin/pos/sales?status=${encodeURIComponent(status)}`).then((result) => result.items);
+}
+
+export function createPOSSale(input: {
+  requestId: string;
+  action: 'hold' | 'pay';
+  buyerType: 'member' | 'anonymous';
+  buyerId?: string;
+  buyerIds?: string[];
+  splitMode?: 'none' | 'equal';
+  method?: 'cash' | 'promptpay';
+  discountType: 'amount' | 'percent';
+  discountAmountSatang: number;
+  discountRateBps: number;
+  expectedTotalSatang: number;
+  cashReceivedSatang?: number;
+  referenceNumber?: string;
+  replaceSaleIds?: string[];
+  items: Array<{ productId: string; quantity: number; note?: string }>;
+}) {
+  return posRequest<{ saleId: string; status: string; totalSatang: number; paymentId?: string; billingAccountId?: string }>('/api/admin/pos/sales', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function voidPOSSale(id: string, note = '') {
+  return posRequest<unknown>(`/api/admin/pos/sales/${encodeURIComponent(id)}/void`, { method: 'POST', body: JSON.stringify({ note }) });
+}
+
+export function getPOSBillingSummary(accountId: string) {
+  return posRequest<POSBillingSummary>(`/api/admin/pos/billing-summary?accountId=${encodeURIComponent(accountId)}`);
+}
+
+export function listPOSReceivables(search = '') {
+  return posRequest<{ items: POSReceivable[] }>(`/api/admin/pos/receivables?page=1&pageSize=100&search=${encodeURIComponent(search)}`).then((result) => result.items);
+}
+
+export function listPOSPaymentHistory() {
+  return posRequest<{ items: POSPaymentHistory[] }>('/api/admin/pos/payment-history?page=1&pageSize=20').then((result) => result.items);
+}
+
+export function listPOSPaymentHistoryPage(params: {
+  page: number;
+  pageSize: number;
+  search?: string;
+  status?: 'all' | 'completed' | 'refunded';
+  method?: 'all' | 'cash' | 'promptpay';
+}) {
+  const query = new URLSearchParams({
+    page: String(params.page),
+    pageSize: String(params.pageSize),
+  });
+  if (params.search?.trim()) query.set('search', params.search.trim());
+  if (params.status && params.status !== 'all') query.set('status', params.status);
+  if (params.method && params.method !== 'all') query.set('method', params.method);
+  return posRequest<POSPaymentHistoryPage>(`/api/admin/pos/payment-history?${query.toString()}`);
+}
+
+export function settlePOSAccount(input: { billingAccountId: string; method: 'cash' | 'promptpay'; expectedTotalSatang: number; cashReceivedSatang?: number; referenceNumber?: string; discountType?: 'amount' | 'percent'; discountAmountSatang?: number; discountRateBps?: number }) {
+  return posRequest<{ status: string; summary: POSBillingSummary }>('/api/admin/pos/settlements', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function getPOSSettings() {
+  return posRequest<POSSettingsRecord>('/api/admin/pos/settings');
+}
+
+export function savePOSSettings(input: Partial<POSSettingsRecord>) {
+  return posRequest<unknown>('/api/admin/pos/settings', { method: 'PUT', body: JSON.stringify(input) });
+}
+
+export function getPOSPaymentQR(amountSatang: number) {
+  return posRequest<{ promptPayPayload: string; receiverName: string; amountSatang: number; source: string; fallbackImage?: string }>(`/api/admin/pos/qr?amountSatang=${amountSatang}`);
+}

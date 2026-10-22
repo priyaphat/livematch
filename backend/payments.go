@@ -14,6 +14,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -50,10 +51,11 @@ type slipVerification struct {
 }
 
 type slipOKSettings struct {
-	Enabled    bool   `json:"enabled"`
-	BranchID   string `json:"branchId"`
-	APIKey     string `json:"-"`
-	MonthlyCap int    `json:"monthlyCap"`
+	Enabled      bool   `json:"enabled"`
+	BranchID     string `json:"branchId"`
+	APIKey       string `json:"-"`
+	MonthlyCap   int    `json:"monthlyCap"`
+	LimitEnabled bool   `json:"limitEnabled"`
 }
 
 type slipOKQuota struct {
@@ -67,8 +69,11 @@ type slipOKQuota struct {
 }
 
 type slipOKResult struct {
+	Sent       bool
 	Passed     bool
 	Definitive bool
+	Retryable  bool
+	RetryAfter time.Duration
 	Status     string
 	ErrorCode  int
 	Note       string
@@ -76,6 +81,15 @@ type slipOKResult struct {
 	AmountTHB  *int
 	PaidAt     string
 	Receiver   string
+	QRPayload  string
+}
+
+type slipOKLogMeta struct {
+	AdminID      string
+	AdminEmail   string
+	SourceSystem string
+	ReferenceID  string
+	Attempt      int
 }
 
 var slipOKAPIBaseURL = "https://api.slipok.com"
@@ -119,7 +133,77 @@ func normalizeSlipOKBranchID(value string) string {
 }
 
 func (settings slipOKSettings) ready() bool {
-	return settings.Enabled && settings.BranchID != "" && settings.APIKey != "" && settings.MonthlyCap > 0
+	return settings.Enabled && settings.BranchID != "" && settings.APIKey != ""
+}
+
+type slipOKMonthlyUsage struct {
+	Month        string       `json:"month"`
+	Used         int          `json:"used"`
+	Limit        int          `json:"limit"`
+	Remaining    *int         `json:"remaining"`
+	LimitEnabled bool         `json:"limitEnabled"`
+	CapReached   bool         `json:"capReached"`
+	Provider     *slipOKQuota `json:"provider,omitempty"`
+}
+
+func slipOKMonthStart(now time.Time) time.Time {
+	local := now.In(bangkokLocation)
+	return time.Date(local.Year(), local.Month(), 1, 0, 0, 0, 0, bangkokLocation)
+}
+
+func (a *app) slipOKUsage(ctx context.Context, adminID, source string, settings slipOKSettings, includeProvider bool) slipOKMonthlyUsage {
+	month := slipOKMonthStart(time.Now())
+	result := slipOKMonthlyUsage{Month: month.Format("2006-01"), Limit: max(0, settings.MonthlyCap), LimitEnabled: settings.LimitEnabled}
+	_ = a.db.QueryRowContext(ctx, `select coalesce((select used from slipok_monthly_usage where admin_id=$1 and source_system=$2 and month_start=$3),0)`, adminID, source, month.Format("2006-01-02")).Scan(&result.Used)
+	if result.LimitEnabled {
+		remaining := max(0, result.Limit-result.Used)
+		result.Remaining = &remaining
+		result.CapReached = result.Used >= result.Limit
+	}
+	if includeProvider {
+		provider := a.fetchSlipOKQuota(ctx, settings)
+		result.Provider = &provider
+	}
+	return result
+}
+
+func (a *app) reserveSlipOKUsage(ctx context.Context, adminID, source string, settings slipOKSettings) (bool, slipOKMonthlyUsage, error) {
+	month := slipOKMonthStart(time.Now())
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, slipOKMonthlyUsage{}, err
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `insert into slipok_monthly_usage(admin_id,source_system,month_start,used) values($1,$2,$3,0) on conflict do nothing`, adminID, source, month.Format("2006-01-02")); err != nil {
+		return false, slipOKMonthlyUsage{}, err
+	}
+	var used int
+	if err = tx.QueryRowContext(ctx, `select used from slipok_monthly_usage where admin_id=$1 and source_system=$2 and month_start=$3 for update`, adminID, source, month.Format("2006-01-02")).Scan(&used); err != nil {
+		return false, slipOKMonthlyUsage{}, err
+	}
+	usage := slipOKMonthlyUsage{Month: month.Format("2006-01"), Used: used, Limit: max(0, settings.MonthlyCap), LimitEnabled: settings.LimitEnabled}
+	if settings.LimitEnabled && (settings.MonthlyCap <= 0 || used >= settings.MonthlyCap) {
+		remaining := 0
+		usage.Remaining, usage.CapReached = &remaining, true
+		return false, usage, nil
+	}
+	if _, err = tx.ExecContext(ctx, `update slipok_monthly_usage set used=used+1,updated_at=now() where admin_id=$1 and source_system=$2 and month_start=$3`, adminID, source, month.Format("2006-01-02")); err != nil {
+		return false, usage, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, usage, err
+	}
+	usage.Used++
+	if settings.LimitEnabled {
+		remaining := max(0, settings.MonthlyCap-usage.Used)
+		usage.Remaining, usage.CapReached = &remaining, usage.Used >= settings.MonthlyCap
+	}
+	return true, usage, nil
+}
+
+func (a *app) releaseSlipOKUsage(ctx context.Context, adminID, source string) {
+	month := slipOKMonthStart(time.Now()).Format("2006-01-02")
+	_, _ = a.db.ExecContext(ctx, `update slipok_monthly_usage set used=greatest(0,used-1),updated_at=now() where admin_id=$1 and source_system=$2 and month_start=$3`, adminID, source, month)
 }
 
 func maskSecret(value string) string {
@@ -180,13 +264,78 @@ func (a *app) fetchSlipOKQuota(ctx context.Context, settings slipOKSettings) sli
 	return result
 }
 
-func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipDataURL string, expectedAmount int) slipOKResult {
-	result := slipOKResult{Status: "manual_review"}
+func (a *app) recordSlipOKLog(meta slipOKLogMeta, requestMethod, endpoint string, expectedAmount int, requestPayload string, httpStatus int, responsePayload string, result slipOKResult, startedAt time.Time) {
+	if a == nil || a.db == nil {
+		return
+	}
+	meta.AdminID = strings.TrimSpace(meta.AdminID)
+	meta.AdminEmail = strings.TrimSpace(meta.AdminEmail)
+	if meta.AdminEmail == "" && meta.AdminID != "" {
+		_ = a.db.QueryRow(`select email from admin_users where id=$1`, meta.AdminID).Scan(&meta.AdminEmail)
+	}
+	var detectedAmount any
+	if result.AmountTHB != nil {
+		detectedAmount = *result.AmountTHB
+	}
+	logStatus := result.Status
+	if !result.Passed && result.Definitive {
+		logStatus = "failed"
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	_, err := a.db.ExecContext(ctx, `insert into slipok_logs (
+		admin_id,admin_email,source_system,reference_id,request_method,request_url,expected_amount_thb,request_payload,
+		http_status,provider_code,result_status,result_note,response_payload,trans_ref,detected_amount_thb,detected_paid_at,detected_receiver,duration_ms
+	) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+		meta.AdminID, meta.AdminEmail, strings.TrimSpace(meta.SourceSystem), strings.TrimSpace(meta.ReferenceID), requestMethod, endpoint, expectedAmount, requestPayload,
+		httpStatus, result.ErrorCode, logStatus, result.Note, responsePayload, result.TransRef, detectedAmount, result.PaidAt, result.Receiver, time.Since(startedAt).Milliseconds())
+	if err != nil {
+		log.Printf("record SlipOK log: %v", err)
+	}
+}
+
+func slipOKVerificationEndpoint(settings slipOKSettings) string {
+	return strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
+}
+
+// recordSlipOKDecision records why a payment did not reach the verification
+// POST. Without these rows an intentionally disabled integration, incomplete
+// credentials, and a provider quota failure all look like a missing audit log.
+func (a *app) recordSlipOKDecision(meta slipOKLogMeta, settings slipOKSettings, expectedAmount int, status, note string, details map[string]any) {
+	requestPayload, _ := json.Marshal(map[string]any{"amount": expectedAmount, "preflight": true})
+	responsePayload, _ := json.Marshal(details)
+	requestMethod, endpoint := "PRECHECK", slipOKVerificationEndpoint(settings)
+	if status == "quota_error" || status == "cap_reached" {
+		requestMethod, endpoint = http.MethodGet, endpoint+"/quota"
+	}
+	a.recordSlipOKLog(meta, requestMethod, endpoint, expectedAmount, string(requestPayload), 0, string(responsePayload), slipOKResult{
+		Status: status,
+		Note:   note,
+	}, time.Now())
+}
+
+func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipDataURL string, expectedAmount int, logMeta ...slipOKLogMeta) (result slipOKResult) {
+	result = slipOKResult{Status: "manual_review"}
+	startedAt := time.Now()
+	endpoint := slipOKVerificationEndpoint(settings)
+	httpStatus := 0
+	requestPayload := fmt.Sprintf(`{"amount":%d,"log":true}`, expectedAmount)
+	responsePayload := ""
+	meta := slipOKLogMeta{}
+	if len(logMeta) > 0 {
+		meta = logMeta[0]
+	}
+	defer func() {
+		a.recordSlipOKLog(meta, http.MethodPost, endpoint, expectedAmount, requestPayload, httpStatus, responsePayload, result, startedAt)
+	}()
 	raw, err := decodeDataURL(slipDataURL)
 	if err != nil {
 		result.Note = "แปลงรูปสลิปเพื่อส่ง Auto Slip ไม่สำเร็จ"
 		return result
 	}
+	digest := sha256.Sum256(raw)
+	requestSummary, _ := json.Marshal(map[string]any{"amount": expectedAmount, "log": true, "fileName": "slip.png", "fileSize": len(raw), "sha256": hex.EncodeToString(digest[:]), "attempt": max(1, meta.Attempt)})
+	requestPayload = string(requestSummary)
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	_ = writer.WriteField("log", "true")
@@ -204,21 +353,35 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		result.Note = err.Error()
 		return result
 	}
-	url := strings.TrimRight(slipOKAPIBaseURL, "/") + "/api/line/apikey/" + settings.BranchID
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, &body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, &body)
 	if err != nil {
 		result.Note = err.Error()
 		return result
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("x-authorization", settings.APIKey)
+	result.Sent = true
 	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if err != nil {
-		result.Note = "เรียก Auto Slip ไม่สำเร็จ: " + err.Error()
+		result.Note = "เชื่อมต่อ Auto Slip ไม่สำเร็จชั่วคราว ระบบจะตรวจซ้ำอัตโนมัติ: " + err.Error()
+		if !errors.Is(err, context.Canceled) {
+			result.Retryable = true
+			result.RetryAfter = 30 * time.Second
+			result.Status = "pending_retry"
+		}
 		return result
 	}
 	defer resp.Body.Close()
+	httpStatus = resp.StatusCode
 	responseBody, _ := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
+	responsePayload = string(responseBody)
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooEarly || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		result.Retryable = true
+		result.RetryAfter = slipOKRetryAfter(resp.Header.Get("Retry-After"), 30*time.Second)
+		result.Status = "pending_retry"
+		result.Note = fmt.Sprintf("Auto Slip ตอบ HTTP %d ชั่วคราว ระบบจะตรวจซ้ำอัตโนมัติ", resp.StatusCode)
+		return result
+	}
 	var payload struct {
 		Success bool   `json:"success"`
 		Code    int    `json:"code"`
@@ -226,6 +389,8 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		Data    struct {
 			Success        bool    `json:"success"`
 			Message        string  `json:"message"`
+			QRPayload      string  `json:"qrcodeData"`
+			DelayMinutes   int     `json:"delay"`
 			TransRef       string  `json:"transRef"`
 			TransTimestamp string  `json:"transTimestamp"`
 			Amount         float64 `json:"amount"`
@@ -240,6 +405,28 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		return result
 	}
 	result.ErrorCode = payload.Code
+	result.QRPayload = strings.TrimSpace(payload.Data.QRPayload)
+	if payload.Code == 1010 {
+		delayMinutes := payload.Data.DelayMinutes
+		if delayMinutes < 1 {
+			delayMinutes = 2
+		}
+		if delayMinutes > 10 {
+			delayMinutes = 10
+		}
+		result.Retryable = true
+		result.RetryAfter = time.Duration(delayMinutes) * time.Minute
+		result.Definitive = false
+		result.Status = "pending_retry"
+		result.Note = strings.TrimSpace(payload.Message)
+		if result.Note == "" {
+			result.Note = strings.TrimSpace(payload.Data.Message)
+		}
+		if result.Note == "" {
+			result.Note = fmt.Sprintf("ธนาคารกำลังประมวลผลสลิป ระบบจะตรวจซ้ำใน %d นาที", delayMinutes)
+		}
+		return result
+	}
 	result.TransRef = strings.TrimSpace(payload.Data.TransRef)
 	if payload.Data.Amount > 0 {
 		amount := int(payload.Data.Amount + 0.5)
@@ -270,6 +457,19 @@ func (a *app) checkSlipOK(ctx context.Context, settings slipOKSettings, slipData
 		result.Note = fmt.Sprintf("Auto Slip ไม่ผ่าน (code %d)", payload.Code)
 	}
 	return result
+}
+
+func slipOKRetryAfter(value string, fallback time.Duration) time.Duration {
+	value = strings.TrimSpace(value)
+	if seconds, err := strconv.Atoi(value); err == nil && seconds > 0 {
+		return min(time.Duration(seconds)*time.Second, 10*time.Minute)
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		if delay := time.Until(at); delay > 0 {
+			return min(delay, 10*time.Minute)
+		}
+	}
+	return fallback
 }
 
 func (a *app) promptPaySettings(ctx context.Context) promptPaySettings {
@@ -354,7 +554,11 @@ func promptPayPayloadsForSubscriptionPackages(settings promptPaySettings, packag
 }
 
 func promptPayPayload(settings promptPaySettings, amountTHB int) (string, error) {
-	if amountTHB <= 0 {
+	return promptPayPayloadSatang(settings, int64(amountTHB)*100)
+}
+
+func promptPayPayloadSatang(settings promptPaySettings, amountSatang int64) (string, error) {
+	if amountSatang <= 0 {
 		return "", errors.New("amount must be positive")
 	}
 	target, tag, err := normalizePromptPayTarget(settings)
@@ -366,7 +570,7 @@ func promptPayPayload(settings promptPaySettings, amountTHB int) (string, error)
 		emv("01", "12") +
 		emv("29", merchantAccount) +
 		emv("53", "764") +
-		emv("54", fmt.Sprintf("%.2f", float64(amountTHB))) +
+		emv("54", fmt.Sprintf("%d.%02d", amountSatang/100, amountSatang%100)) +
 		emv("58", "TH")
 	return payload + "6304" + crc16CCITT(payload+"6304"), nil
 }
@@ -398,6 +602,15 @@ func normalizePromptPayTarget(settings promptPaySettings) (string, string, error
 		return digits, "03", nil
 	default:
 		return "", "", errors.New("invalid PromptPay type")
+	}
+}
+
+func supportedPromptPayType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "", "mobile", "national_id", "ewallet":
+		return true
+	default:
+		return false
 	}
 }
 

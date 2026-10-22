@@ -14,8 +14,8 @@ function overview(settings = {}) {
   return {
     settings: {
       openTime: '16:00', closeTime: '22:00', intervalMinutes: 60, allowOvernight: false,
-      useSamePrice: true, promptPayType: 'mobile', promptPayId: '', promptPayReceiverName: '',
-      publicToken: 'public-token', ...settings
+      useSamePrice: true, paymentQrMode: 'generated', promptPayType: 'mobile', promptPayId: '', promptPayReceiverName: '',
+      publicToken: 'public-token', showBookerName: true, ...settings
     },
     courts: [{ id: 'court-1', name: 'สนาม 1', pricePerInterval: 100, active: true }],
     bookings: [{ id: 'booking-1', courtId: 'court-1', courtName: 'สนาม 1', bookerName: 'ผู้จอง', startAt: `${testToday}T17:00:00+07:00`, endAt: `${testToday}T18:00:00+07:00`, status: 'pending_review', totalPriceThb: 100, slipData: 'data:image/png;base64,iVBORw0KGgo=' }],
@@ -27,6 +27,73 @@ function overview(settings = {}) {
 }
 
 describe('BookingAdminPage', () => {
+	it('loads booking business metrics only after opening Dashboard and switches period', async () => {
+		const apiRequest = vi.fn((url) => {
+			if (url.includes('/booking/dashboard')) return Promise.resolve({
+				period: url.includes('period=week') ? 'week' : 'day',
+				startAt: `${testToday}T00:00:00+07:00`, endAt: `${testTomorrow}T00:00:00+07:00`,
+				summary: { confirmedBookings: 4, paidRevenueThb: 800, outstandingRevenueThb: 100, newCustomers: 2, returningCustomers: 1, maxRepeatBookings: 5 },
+				courts: [{ courtId: 'court-1', courtName: 'สนาม 1', slots: 4, hours: 4, revenueThb: 800 }],
+				trend: [{ label: '18:00', bookings: 4, revenueThb: 800 }],
+			})
+			return Promise.resolve(structuredClone(overview()))
+		})
+		const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+		await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+		expect(apiRequest.mock.calls.some(([url]) => url.includes('/booking/dashboard'))).toBe(false)
+		await wrapper.findAll('nav button').find((button) => button.text().includes('Dashboard')).trigger('click')
+		await vi.waitFor(() => expect(wrapper.get('[data-testid="booking-dashboard"]').text()).toContain('฿800'))
+		const expectedBangkokDate = new Intl.DateTimeFormat('th-TH', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Bangkok' }).format(new Date(`${testToday}T00:00:00+07:00`))
+		expect(wrapper.get('[data-testid="booking-dashboard"]').text()).toContain(expectedBangkokDate)
+		expect(wrapper.text()).toContain('สมาชิกใหม่')
+		expect(wrapper.text()).toContain('จองซ้ำสูงสุด')
+		await wrapper.findAll('button').find((button) => button.text().trim() === 'Week').trigger('click')
+		await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url.includes('dashboard?period=week'))).toBe(true))
+		await wrapper.findAll('button').find((button) => button.text().trim() === 'กำหนดเอง').trigger('click')
+		await wrapper.get('[data-testid="dashboard-custom-start"]').setValue('2026-09-01')
+		await wrapper.get('[data-testid="dashboard-custom-end"]').setValue('2026-09-12')
+		await wrapper.get('[data-testid="booking-dashboard-custom-filter"]').trigger('submit')
+		await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url.includes('dashboard?period=custom&startDate=2026-09-01&endDate=2026-09-12'))).toBe(true))
+		wrapper.unmount()
+	})
+
+	it('shows only the LiveMatch usage to user admins', async () => {
+		const apiRequest = vi.fn((url) => {
+			if (url.includes('/slipok-quota')) return Promise.resolve({
+				month: '2026-09', used: 71, limit: 95, remaining: 24, limitEnabled: true,
+				provider: { available: true, remaining: 0, overQuota: 100, capReached: true }
+			})
+			return Promise.resolve(structuredClone(overview({ slipOKEnabled: true })))
+		})
+		const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+		await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+		await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+		await wrapper.findAll('button').find((button) => button.text().includes('Auto Slip')).trigger('click')
+		expect(wrapper.text()).toContain('โควตาภายใน LiveMatch')
+		expect(wrapper.text()).toContain('คงเหลือ 24 / 95')
+		expect(wrapper.text()).not.toContain('โควตา SlipOK จริง')
+		expect(wrapper.find('[data-testid="provider-quota-alert"]').exists()).toBe(false)
+		wrapper.unmount()
+	})
+
+	it('defaults to showing booker names and saves the visibility choice', async () => {
+		const apiRequest = vi.fn((url) => {
+			if (url.includes('/slipok-quota')) return Promise.resolve({})
+			return Promise.resolve(structuredClone(overview()))
+		})
+		const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+		await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+		await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+		await wrapper.findAll('button').find((button) => button.text().includes('การแสดงผล')).trigger('click')
+		const checkbox = wrapper.get('[data-testid="show-booker-name"]')
+		expect(checkbox.element.checked).toBe(true)
+		await checkbox.setValue(false)
+		await wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า')).trigger('click')
+		const saveCall = apiRequest.mock.calls.find(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')
+		expect(JSON.parse(saveCall[1].body).showBookerName).toBe(false)
+		wrapper.unmount()
+	})
+
   it('locks the settings save button and shows a completion toast', async () => {
     let resolveSave
     const pendingSave = new Promise((resolve) => { resolveSave = resolve })
@@ -82,6 +149,47 @@ describe('BookingAdminPage', () => {
     wrapper.unmount()
   })
 
+  it('hides removed bank-account and merchant QR types and clears legacy values', async () => {
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/slipok-quota')) return Promise.resolve({})
+      return Promise.resolve(structuredClone(overview({ promptPayType: 'merchant', promptPayId: '123456789012345' })))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('การรับชำระ')).trigger('click')
+
+    const options = wrapper.get('[data-testid="booking-payment-qr-type"]').findAll('option').map((option) => option.element.value)
+    expect(options).toEqual(['mobile', 'national_id', 'ewallet'])
+    expect(wrapper.get('[data-testid="booking-payment-qr-type"]').element.value).toBe('mobile')
+    expect(wrapper.get('[data-testid="booking-payment-qr-id"]').element.value).toBe('')
+    wrapper.unmount()
+  })
+
+  it('uploads and selects a bank-generated payment QR image', async () => {
+    const apiRequest = vi.fn((url) => {
+      if (url.includes('/slipok-quota')) return Promise.resolve({})
+      return Promise.resolve(structuredClone(overview()))
+    })
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.text()).toContain('ตารางการจองสนาม'))
+    await wrapper.findAll('button').find((button) => button.text().includes('ตั้งค่า')).trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('การรับชำระ')).trigger('click')
+    await wrapper.get('[data-testid="booking-payment-qr-mode"]').setValue('uploaded')
+    const input = wrapper.get('[data-testid="booking-payment-qr-upload"]')
+    const file = new File(['qr-image'], 'payment-qr.png', { type: 'image/png' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    await vi.waitFor(() => expect(wrapper.find('img[alt="ตัวอย่าง QR รับเงินที่อัปโหลด"]').exists()).toBe(true))
+    await wrapper.findAll('button').find((button) => button.text().includes('บันทึกตั้งค่า')).trigger('click')
+
+    const saveCall = apiRequest.mock.calls.find(([url, options]) => url === '/api/admin/booking/settings' && options?.method === 'PUT')
+    const payload = JSON.parse(saveCall[1].body)
+    expect(payload.paymentQrMode).toBe('uploaded')
+    expect(payload.paymentQrImage).toMatch(/^data:image\/png;base64,/)
+    wrapper.unmount()
+  })
+
   it('checks Telegram getUpdates and renders the returned JSON without saving the token', async () => {
     const apiRequest = vi.fn((url, options) => {
       if (url === '/api/admin/booking/telegram-check') {
@@ -119,7 +227,7 @@ describe('BookingAdminPage', () => {
     expect(wrapper.find('.booking-state--closed').exists()).toBe(true)
     expect(wrapper.find('.booking-state--free').exists()).toBe(true)
     expect(wrapper.text()).toContain('ประวัติการจอง')
-    expect(wrapper.findAll('nav button')).toHaveLength(5)
+    expect(wrapper.findAll('nav button')).toHaveLength(6)
 
     const detailButton = wrapper.findAll('button').find((button) => button.text().includes('ดูรายละเอียด'))
     await detailButton.trigger('click')
@@ -186,6 +294,7 @@ describe('BookingAdminPage', () => {
     const refresh = wrapper.findAll('button').find((button) => button.text().includes('รีเฟรชตาราง'))
     await refresh.trigger('click')
     await vi.waitFor(() => expect(apiRequest.mock.calls.length).toBeGreaterThan(1))
+    expect(apiRequest.mock.calls.some(([url]) => url.includes('includeConfiguration=false'))).toBe(true)
     expect(openTime.element.value).toBe('17:30')
     expect(wrapper.findAll('tbody tr')).toHaveLength(6)
 
@@ -343,7 +452,7 @@ describe('BookingAdminPage', () => {
           id: 'batch-1', batchId: 'batch-1', bookingCount: 2,
           courtName: 'สนาม 1, สนาม 2', bookerName: 'Admin', bookedBy: 'admin', phone: '',
           startAt: `${testToday}T16:00:00+07:00`, endAt: `${testToday}T18:00:00+07:00`,
-          status: 'confirmed', paymentStatus: 'unpaid', totalPriceThb: 220, createdAt: '12/08/2026 15:45',
+		  status: 'confirmed', paymentStatus: 'paid', totalPriceThb: 220, createdAt: '12/08/2026 15:45', slipUrl: '/api/admin/booking/payments/pay-1/slip',
           items: [
             { id: 'one', courtName: 'สนาม 1', startAt: `${testToday}T16:00:00+07:00`, endAt: `${testToday}T17:00:00+07:00`, totalPriceThb: 100 },
             { id: 'two', courtName: 'สนาม 2', startAt: `${testToday}T17:00:00+07:00`, endAt: `${testToday}T18:00:00+07:00`, totalPriceThb: 120 },
@@ -369,6 +478,8 @@ describe('BookingAdminPage', () => {
     expect(wrapper.get('[aria-labelledby="booking-history-detail-title"]').text()).toContain('สนาม 1')
     expect(wrapper.get('[aria-labelledby="booking-history-detail-title"]').text()).toContain('สนาม 2')
     expect(wrapper.get('[aria-labelledby="booking-history-detail-title"]').text()).toContain('฿220')
+	const slip = wrapper.get('[aria-labelledby="booking-history-detail-title"] img[alt="สลิปชำระเงินของการจอง"]')
+	expect(slip.attributes('src')).toBe('/api/admin/booking/payments/pay-1/slip')
     wrapper.unmount()
   })
 

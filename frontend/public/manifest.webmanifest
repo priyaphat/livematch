@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "LiveMatch Badminton",
+  "short_name": "LiveMatch",
+  "description": "จัดการเซสชันแบดมินตัน ผู้เล่น ทีม การแข่งขัน และค่าใช้จ่าย",
+  "lang": "th",
+  "dir": "ltr",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f7f3e8",
+  "theme_color": "#167a5b",
+  "categories": ["sports", "productivity"],
+  "icons": [
+    { "src": "/icons/livematch-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/livematch-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/livematch-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

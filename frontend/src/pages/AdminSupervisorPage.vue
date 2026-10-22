@@ -1,6 +1,7 @@
 <script setup>
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import HeroBackground from '../components/HeroBackground.vue'
+import ProductStockCombobox from '../components/ProductStockCombobox.vue'
 import {
   Activity,
   CalendarDays,
@@ -21,7 +22,6 @@ import {
   Share2,
   ShieldCheck,
   SlidersHorizontal,
-  ShoppingCart,
   Trash2,
   Upload,
   Users,
@@ -31,6 +31,7 @@ import {
 
 const props = defineProps([
   'auth',
+  'apiRequest',
   'forms',
   'ui',
   'money',
@@ -61,10 +62,17 @@ const adminDefaultSettingsTab = ref('costs')
 const adminDefaultSettingsSaving = ref(false)
 const announcementBellSaving = ref(false)
 const announcementBellPlaying = ref(false)
+const dashboardFilter = ref(['week', 'month', 'custom'].includes(props.auth.dashboardPeriod) ? props.auth.dashboardPeriod : 'week')
+const dashboardFilterLoading = ref(false)
+const dashboardFilterError = ref('')
+const bangkokToday = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Bangkok', year: 'numeric', month: '2-digit', day: '2-digit'
+}).format(new Date())
+const dashboardCustomRange = reactive({ startDate: bangkokToday, endDate: bangkokToday })
 const sessionPageSize = 6
 const adminDefaultSettingsTabs = [
   { id: 'system', label: 'ตั้งค่าระบบ', hint: 'ชื่อ โลโก้ ผู้ดูแล', icon: ShieldCheck },
-  { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาเริ่มต้น', icon: CreditCard },
+  { id: 'costs', label: 'ค่าใช้จ่ายและลูกแบด', hint: 'ราคาและสต็อก POS เริ่มต้น', icon: CreditCard },
   { id: 'courts', label: 'สนาม', hint: 'รายชื่อสนาม', icon: Database },
   { id: 'match', label: 'LiveMatch', hint: 'ระดับมือและเสียง', icon: SlidersHorizontal },
   { id: 'announcements', label: 'ประกาศ', hint: 'ข้อความอ่านออกเสียง', icon: Volume2 }
@@ -83,6 +91,13 @@ const liveShareQuote = computed(() => priceQuote('liveShare', props.auth.liveSha
 const liveMatchCost = computed(() => liveMatchQuote.value?.finalCost ?? null)
 const liveShareCost = computed(() => liveShareQuote.value?.finalCost ?? null)
 const sessions = computed(() => props.auth.sessions || [])
+const dashboardRangeLabel = computed(() => {
+  if (!props.auth.dashboardStartAt || !props.auth.dashboardEndAt) return ''
+  const options = { timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', year: 'numeric' }
+  const start = new Date(props.auth.dashboardStartAt).toLocaleDateString('th-TH', options)
+  const end = new Date(new Date(props.auth.dashboardEndAt).getTime() - 1).toLocaleDateString('th-TH', options)
+  return start === end ? start : `${start} – ${end}`
+})
 const canCreateLiveMatch = computed(() => liveMatchCost.value !== null && (canUseSubscription.value || Number(props.auth.user?.coins || 0) >= Number(liveMatchCost.value || 0)))
 const canCreateLiveShare = computed(() => liveShareCost.value !== null && (canUseSubscription.value || Number(props.auth.user?.coins || 0) >= Number(liveShareCost.value || 0)))
 const createBlockedText = computed(() => {
@@ -124,6 +139,16 @@ const totals = computed(() => sessions.value.reduce((sum, session) => ({
 
 const numberValue = (value) => Number(value || 0).toLocaleString('th-TH')
 const moneyValue = (value) => props.money ? props.money(value || 0) : `${numberValue(value)} บาท`
+function applyLinkedShuttleProduct(brand, product) {
+  if (!product) return
+  brand.priceSatang = Math.max(0, Number(product.priceSatang || 0))
+  brand.price = brand.priceSatang / 100
+}
+function updateShuttleBrandPrice(brand, event) {
+  const price = Math.max(0, Number(event.target.value || 0))
+  brand.price = price
+  brand.priceSatang = Math.round(price * 100)
+}
 const percent = (value, total) => {
   if (!total) return 0
   return Math.min(100, Math.round((Number(value || 0) / Number(total || 0)) * 100))
@@ -142,8 +167,7 @@ const primaryStats = computed(() => [
 const visiblePrimaryStats = computed(() => primaryStats.value.filter((stat) => stat.label !== 'Coin ที่เหลือ'))
 const visibleFeatureCardCount = computed(() => [
   props.auth.features?.memberEnabled,
-  props.auth.features?.bookingEnabled,
-  props.auth.features?.posEnabled || props.auth.posSaleCount
+  props.auth.features?.bookingEnabled
 ].filter(Boolean).length)
 
 const detailStats = computed(() => [
@@ -161,6 +185,35 @@ const openAdminDefaultSettingsModal = () => {
   adminDefaultSettingsTab.value = 'system'
   props.ui.showAdminDefaultSettingsModal = true
 }
+
+async function applyDashboardFilter(period) {
+  if (dashboardFilterLoading.value) return
+  if (period === 'custom' && (!dashboardCustomRange.startDate || !dashboardCustomRange.endDate || dashboardCustomRange.endDate < dashboardCustomRange.startDate)) {
+    dashboardFilterError.value = 'กรุณาเลือกช่วงวันที่ให้ถูกต้อง'
+    return
+  }
+  dashboardFilter.value = period
+  dashboardFilterError.value = ''
+  dashboardFilterLoading.value = true
+  try {
+    const refreshed = await props.refreshAdminSupervisor({ period, ...dashboardCustomRange })
+    if (refreshed === false) {
+      dashboardFilterError.value = 'โหลดข้อมูลไม่สำเร็จ กรุณาลองใหม่'
+      return
+    }
+    sessionPage.value = 1
+  } catch (error) {
+    dashboardFilterError.value = error.message || 'โหลดข้อมูลไม่สำเร็จ'
+  } finally {
+    dashboardFilterLoading.value = false
+  }
+}
+
+onMounted(() => {
+  if (props.auth.dashboardPeriod && (props.auth.dashboardPeriod !== 'week' || !props.auth.dashboardStartAt || !props.auth.dashboardEndAt)) {
+    applyDashboardFilter('week')
+  }
+})
 
 function handleBrandLogo(event) {
   const file = event.target.files?.[0]
@@ -268,7 +321,7 @@ function updateDashboardAnnouncement(index, value) {
         <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">ภาพรวม session, รายรับ และสถานะเกมของบัญชี admin นี้</p>
       </div>
       <div class="flex flex-wrap gap-2">
-        <button class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-4 text-sm font-bold transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 sm:flex-none" @click="refreshAdminSupervisor">
+        <button type="button" class="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-stone-200 bg-paper-50 px-4 text-sm font-bold transition hover:bg-paper-100 dark:border-stone-700 dark:bg-stone-800 sm:flex-none" @click="applyDashboardFilter(dashboardFilter)">
           <RefreshCw class="h-4 w-4" />
           รีเฟรช
         </button>
@@ -288,14 +341,30 @@ function updateDashboardAnnouncement(index, value) {
       </div>
   </header>
 
+    <section data-testid="admin-dashboard-filter" class="rounded-lg border border-stone-200 bg-white p-3 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:flex sm:items-center sm:justify-between sm:gap-4">
+      <div class="min-w-0">
+        <p class="text-xs font-black uppercase tracking-wider text-stone-500 dark:text-stone-400">ช่วงเวลาภาพรวม</p>
+        <p class="mt-1 truncate text-sm font-bold">{{ dashboardRangeLabel || 'เลือกช่วงเวลาที่ต้องการ' }}</p>
+      </div>
+      <div class="mt-3 grid grid-cols-3 overflow-hidden rounded-md border border-stone-200 dark:border-stone-700 sm:mt-0 sm:min-w-[20rem]">
+        <button v-for="option in [{ id: 'week', label: 'Week' }, { id: 'month', label: 'Month' }, { id: 'custom', label: 'กำหนดเอง' }]" :key="option.id" type="button" class="h-10 border-r border-stone-200 px-2 text-xs font-black transition last:border-r-0 dark:border-stone-700 sm:text-sm" :class="dashboardFilter === option.id ? 'bg-court-600 text-white' : 'bg-paper-50 text-stone-600 hover:bg-paper-100 dark:bg-stone-800 dark:text-stone-300'" :disabled="dashboardFilterLoading" @click="option.id === 'custom' ? dashboardFilter = 'custom' : applyDashboardFilter(option.id)">{{ option.label }}</button>
+      </div>
+    </section>
+
+    <form v-if="dashboardFilter === 'custom'" data-testid="admin-dashboard-custom-filter" class="grid gap-3 rounded-lg border border-stone-200 bg-white p-3 shadow-soft dark:border-stone-700 dark:bg-stone-900 sm:grid-cols-[1fr_1fr_auto] sm:items-end" @submit.prevent="applyDashboardFilter('custom')">
+      <label class="grid gap-1 text-sm font-black"><span>วันเริ่มต้น</span><input v-model="dashboardCustomRange.startDate" data-testid="admin-dashboard-custom-start" type="date" :max="dashboardCustomRange.endDate" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" required /></label>
+      <label class="grid gap-1 text-sm font-black"><span>วันสิ้นสุด</span><input v-model="dashboardCustomRange.endDate" data-testid="admin-dashboard-custom-end" type="date" :min="dashboardCustomRange.startDate" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" required /></label>
+      <button type="submit" class="h-11 rounded-md bg-court-600 px-5 text-sm font-black text-white disabled:opacity-50" :disabled="dashboardFilterLoading">{{ dashboardFilterLoading ? 'กำลังโหลด...' : 'แสดงผล' }}</button>
+    </form>
+    <p v-if="dashboardFilterError" class="rounded-md bg-rose-50 p-3 text-sm font-bold text-rose-700 dark:bg-rose-950/30 dark:text-rose-300">{{ dashboardFilterError }}</p>
+
     <section
       v-if="visibleFeatureCardCount"
       data-testid="admin-feature-grid"
       class="grid gap-3"
       :class="{
         'grid-cols-1': visibleFeatureCardCount === 1,
-        'sm:grid-cols-2': visibleFeatureCardCount === 2,
-        'sm:grid-cols-2 lg:grid-cols-3': visibleFeatureCardCount >= 3
+        'sm:grid-cols-2': visibleFeatureCardCount === 2
       }"
     >
       <button v-if="auth.features?.memberEnabled" class="group rounded-xl border border-court-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-court-500 dark:border-court-900 dark:bg-stone-900" @click="navigateAdminFeature('members')">
@@ -309,12 +378,6 @@ function updateDashboardAnnouncement(index, value) {
         <h2 class="mt-4 text-xl font-black">ระบบจองสนาม</h2>
         <p class="mt-1 text-sm font-semibold text-stone-500">ตารางสนาม การชำระเงิน และอนุมัติการจอง</p>
         <p class="mt-3 text-sm font-black text-sky-700 dark:text-sky-300">{{ Number(auth.bookingCount || 0).toLocaleString('th-TH') }} รายการ →</p>
-      </button>
-      <button v-if="auth.features?.posEnabled || auth.posSaleCount" class="group rounded-xl border border-amber-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-amber-500 dark:border-amber-900 dark:bg-stone-900" @click="navigateAdminFeature('pos')">
-        <span class="grid h-12 w-12 place-items-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><ShoppingCart class="h-6 w-6" /></span>
-        <h2 class="mt-4 text-xl font-black">ระบบ POS</h2>
-        <p class="mt-1 text-sm font-semibold text-stone-500">ขายสินค้า สต็อก บิลรวม และรายงานหน้าร้าน</p>
-        <p class="mt-3 text-sm font-black text-amber-700 dark:text-amber-300">{{ auth.features?.posEnabled ? `${Number(auth.posSaleCount || 0).toLocaleString('th-TH')} บิล →` : 'ปิดใช้งาน · ดูย้อนหลัง →' }}</p>
       </button>
     </section>
 
@@ -364,7 +427,7 @@ function updateDashboardAnnouncement(index, value) {
         <div class="grid content-start gap-3">
           <label class="grid gap-2 text-sm font-black">ชื่อระบบ<input v-model="auth.branding.systemName" maxlength="100" class="h-11 rounded-md border bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="LiveMatch" /><small class="font-semibold text-stone-500">หากเว้นว่าง ระบบจะแสดง LiveMatch</small></label>
           <label class="grid gap-2 text-sm font-black">ชื่อผู้ดูแล Admin<input v-model="auth.user.name" required maxlength="100" class="h-11 rounded-md border bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" /></label>
-          <p class="rounded-lg bg-court-500/10 p-3 text-sm font-bold text-court-700 dark:text-court-300">ใช้บน Navbar, Admin dashboard, ระบบสมาชิก ระบบจองสนาม และ POS</p>
+          <p class="rounded-lg bg-court-500/10 p-3 text-sm font-bold text-court-700 dark:text-court-300">ใช้บน Navbar, Admin dashboard, ระบบสมาชิก และระบบจองสนาม</p>
         </div>
       </div>
 
@@ -405,27 +468,56 @@ function updateDashboardAnnouncement(index, value) {
       </div>
 
       <div class="grid gap-4 lg:grid-cols-2" :class="adminDefaultSettingsTab === 'match' ? 'lg:grid-cols-1' : ''">
-        <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700 lg:col-span-2">
+        <div v-show="adminDefaultSettingsTab === 'costs'" class="grid gap-4 rounded-xl border border-stone-200 p-3 dark:border-stone-700 lg:col-span-2 sm:p-4">
           <div>
             <p class="font-black">ยี่ห้อลูกแบด</p>
-            <p class="mt-1 text-xs font-semibold text-stone-500 dark:text-stone-400">กำหนดยี่ห้อ ราคา และสถานะที่ใช้กับ Session ใหม่</p>
+            <p class="mt-1 text-xs font-semibold leading-5 text-stone-500 dark:text-stone-400">กำหนดชื่อ ราคาสำรอง และสินค้าสต็อก POS สำหรับ Session ใหม่</p>
           </div>
-          <div v-for="(brand, index) in auth.defaultSettings.shuttleBrands" :key="brand.id" class="grid gap-2 rounded-md bg-paper-100 p-2 dark:bg-stone-800 sm:grid-cols-[1fr_7rem_auto_auto] sm:items-center">
-            <input v-model="brand.name" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ชื่อยี่ห้อ" />
-            <input v-model.number="brand.price" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-white px-3 dark:border-stone-700 dark:bg-stone-900" placeholder="ราคา" />
-            <label class="flex items-center gap-2 text-sm font-bold">
-              <input v-model="brand.active" type="checkbox" />
-              active
+
+          <div class="grid gap-3">
+            <article v-for="(brand, index) in auth.defaultSettings.shuttleBrands" :key="brand.id" class="grid gap-3 rounded-xl border border-stone-200 bg-paper-100 p-3 dark:border-stone-700 dark:bg-stone-800/70">
+              <div class="flex min-w-0 items-end gap-2">
+                <label class="grid min-w-0 flex-1 gap-1.5">
+                  <span class="text-xs font-black text-stone-500 dark:text-stone-400">ชื่อยี่ห้อลูกแบด</span>
+                  <input v-model="brand.name" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold dark:border-stone-700 dark:bg-stone-900" placeholder="ชื่อยี่ห้อ" />
+                </label>
+                <label class="flex h-11 shrink-0 items-center gap-2 rounded-lg border border-stone-200 bg-white px-3 text-sm font-bold dark:border-stone-700 dark:bg-stone-900">
+                  <input v-model="brand.active" type="checkbox" class="h-4 w-4 accent-court-600" />
+                  ใช้งาน
+                </label>
+                <button type="button" class="grid h-11 w-11 shrink-0 place-items-center rounded-lg border border-rose-200 text-rose-700 transition hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-35 dark:border-rose-900/60 dark:text-rose-300 dark:hover:bg-rose-950/30" :disabled="auth.defaultSettings.shuttleBrands.length <= 1" aria-label="ลบยี่ห้อลูกแบด" @click="removeAdminDefaultShuttleBrand(index)">
+                  <Trash2 class="h-4 w-4" />
+                </button>
+              </div>
+
+              <div class="grid min-w-0 gap-3 md:grid-cols-[10rem_minmax(0,1fr)]">
+                <label class="grid min-w-0 gap-1.5">
+                  <span class="text-xs font-black text-stone-500 dark:text-stone-400">ราคาต่อลูก</span>
+                  <input :value="Number(brand.priceSatang ?? Math.round(Number(brand.price || 0) * 100)) / 100" type="number" min="0" step="0.01" :disabled="Boolean(brand.posProductId)" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-white px-3 font-bold tabular-nums disabled:cursor-not-allowed disabled:bg-stone-100 disabled:text-stone-500 dark:border-stone-700 dark:bg-stone-900 dark:disabled:bg-stone-900/50" placeholder="0.00" @input="updateShuttleBrandPrice(brand, $event)" />
+                  <small v-if="brand.posProductId" class="font-bold text-court-700 dark:text-court-300">ใช้ราคา POS {{ moneyValue(Number(brand.priceSatang || 0) / 100) }}</small>
+                  <small v-else class="font-semibold text-stone-500">ราคาสำรองของ Match</small>
+                </label>
+                <label class="grid min-w-0 gap-1.5">
+                  <span class="text-xs font-black text-stone-500 dark:text-stone-400">เชื่อมสินค้าสต็อก POS</span>
+                  <ProductStockCombobox v-model="brand.posProductId" :api-request="apiRequest" @selected-product="applyLinkedShuttleProduct(brand, $event)" />
+                  <small class="font-semibold text-stone-500">เลือกเฉพาะสินค้าที่เปิดติดตามสต็อก</small>
+                </label>
+              </div>
+            </article>
+          </div>
+
+          <div class="grid gap-3 rounded-xl border border-dashed border-stone-300 bg-white p-3 dark:border-stone-700 dark:bg-stone-900/50 sm:grid-cols-[minmax(0,1fr)_9rem_auto] sm:items-end">
+            <label class="grid min-w-0 gap-1.5">
+              <span class="text-xs font-black text-stone-500 dark:text-stone-400">เพิ่มยี่ห้อใหม่</span>
+              <input v-model="forms.adminDefaultNewShuttleBrandName" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-paper-50 px-3 font-bold dark:border-stone-700 dark:bg-stone-800" placeholder="ชื่อยี่ห้อลูกแบด" />
             </label>
-            <button class="h-10 rounded-md border border-rose-200 px-3 text-sm font-black text-rose-700 disabled:opacity-40 dark:border-rose-900/60 dark:text-rose-300" :disabled="auth.defaultSettings.shuttleBrands.length <= 1" @click="removeAdminDefaultShuttleBrand(index)">
-              ลบ
-            </button>
+            <label class="grid min-w-0 gap-1.5">
+              <span class="text-xs font-black text-stone-500 dark:text-stone-400">ราคาเริ่มต้น</span>
+              <input v-model.number="forms.adminDefaultNewShuttleBrandPrice" type="number" min="0" step="0.01" class="h-11 min-w-0 rounded-lg border border-stone-200 bg-paper-50 px-3 font-bold tabular-nums dark:border-stone-700 dark:bg-stone-800" placeholder="0.00" />
+            </label>
+            <button type="button" class="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-stone-900 px-4 text-sm font-black text-white transition hover:bg-stone-800 dark:bg-white dark:text-stone-900 dark:hover:bg-stone-100" @click="addAdminDefaultShuttleBrand"><Plus class="h-4 w-4" />เพิ่ม</button>
           </div>
-          <div class="grid gap-2 sm:grid-cols-[1fr_7rem_auto]">
-            <input v-model="forms.adminDefaultNewShuttleBrandName" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="เพิ่มยี่ห้อ" />
-            <input v-model.number="forms.adminDefaultNewShuttleBrandPrice" type="number" min="0" class="h-10 rounded-md border border-stone-200 bg-paper-50 px-3 dark:border-stone-700 dark:bg-stone-800" placeholder="ราคา" />
-            <button class="h-10 rounded-md bg-stone-900 px-3 text-sm font-black text-white dark:bg-white dark:text-stone-900" @click="addAdminDefaultShuttleBrand">เพิ่ม</button>
-          </div>
+          <p class="rounded-lg bg-court-500/10 px-3 py-2.5 text-xs font-semibold leading-5 text-court-700 dark:text-court-300">สินค้า POS ต้องเปิดติดตามสต็อก เมื่อสร้าง Session ใหม่ การใช้ลูกแบด 1 ลูกจะตัดสินค้าที่เชื่อมไว้ 1 หน่วย</p>
         </div>
 
         <div v-show="adminDefaultSettingsTab === 'match'" class="grid gap-2 rounded-lg border border-stone-200 p-3 dark:border-stone-700">
@@ -446,7 +538,6 @@ function updateDashboardAnnouncement(index, value) {
               {{ auth.defaultSettings.announcementBellKey ? 'กำหนดเอง' : 'ค่าเริ่มต้น' }}
             </span>
           </div>
-
           <div class="mx-3 flex min-w-0 items-center gap-3 rounded-lg border border-stone-200 bg-white p-3 dark:border-stone-700 dark:bg-stone-900">
             <span class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-court-500 text-white shadow-sm"><Volume2 class="h-5 w-5" /></span>
             <div class="min-w-0 flex-1">

@@ -5,3 +5,11 @@ import { applyStoredTheme } from './theme'
 
 applyStoredTheme()
 createApp(App).mount('#app')
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((error) => {
+      console.warn('LiveMatch service worker registration failed', error)
+    })
+  })
+}
