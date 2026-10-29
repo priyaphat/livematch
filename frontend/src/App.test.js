@@ -2271,9 +2271,9 @@ describe('LiveMatch app', () => {
       }
     })
 
-    expect(wrapper.text()).not.toContain('อ่านออกเสียง')
+    expect(wrapper.text()).not.toContain('ประกาศชื่อ')
     await wrapper.get('select').setValue('สนาม 1')
-    const button = wrapper.findAll('button').find((item) => item.text().includes('อ่านออกเสียง'))
+    const button = wrapper.findAll('button').find((item) => item.text().includes('ประกาศชื่อ'))
     await button.trigger('click')
     expect(announce).toHaveBeenCalledWith(expect.objectContaining({ id: 9 }), 'สนาม 1')
   })

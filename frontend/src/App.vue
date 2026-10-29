@@ -460,6 +460,16 @@ const auth = reactive({
   posSaleCount: 0,
   branding: { systemName: '', logoData: '' }
 })
+const adminFeatureAuthChecking = ref(Boolean(adminFeaturePage))
+let adminFeatureAuthFallbackTimer = null
+
+function finishAdminFeatureAuthCheck() {
+  adminFeatureAuthChecking.value = false
+  if (adminFeatureAuthFallbackTimer) {
+    window.clearTimeout(adminFeatureAuthFallbackTimer)
+    adminFeatureAuthFallbackTimer = null
+  }
+}
 
 watch(
   () => auth.branding?.systemName,
@@ -904,6 +914,9 @@ onMounted(() => {
 	}, 1000)
   state.theme = persistTheme(readStoredTheme())
   installDomTranslator(() => document.body)
+  if (adminFeaturePage) {
+    adminFeatureAuthFallbackTimer = window.setTimeout(finishAdminFeatureAuthCheck, 8000)
+  }
   const params = new URLSearchParams(window.location.search)
   if (params.get('mode')) {
     forms.authMode = params.get('mode')
@@ -952,6 +965,7 @@ onUnmounted(() => {
 	if (billingSyncTimer) window.clearInterval(billingSyncTimer)
 	if (idleWaitAlertTimer) window.clearInterval(idleWaitAlertTimer)
 	if (bookingBlockTimer) window.clearInterval(bookingBlockTimer)
+  if (adminFeatureAuthFallbackTimer) window.clearTimeout(adminFeatureAuthFallbackTimer)
   stopSharedRefresh()
   stopAnnouncementAudio()
   announcementAudioCache.dispose()
@@ -1870,6 +1884,7 @@ async function restoreAdminAccount(restoreNavigation = false) {
     }
   } finally {
     auth.ready = true
+    if (adminFeaturePage) finishAdminFeatureAuthCheck()
   }
 }
 
@@ -4249,6 +4264,15 @@ const pageProps = computed(() => ({
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
     <PublicBookingPage v-else-if="publicBookingToken" :api-request="api" :token="publicBookingToken" :theme="state.theme" @toggle-theme="toggleTheme" />
     <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />
+    <section v-else-if="adminFeaturePage && adminFeatureAuthChecking" data-testid="admin-feature-auth-spinner" class="fixed inset-0 z-[190] grid min-h-screen place-items-center bg-paper-50 px-5 text-center text-stone-950 dark:bg-paper-900 dark:text-white">
+      <div class="flex flex-col items-center">
+        <div class="grid h-16 w-16 place-items-center rounded-2xl border border-court-200 bg-white shadow-soft dark:border-court-900 dark:bg-stone-900">
+          <RefreshCw class="h-8 w-8 animate-spin text-court-600 dark:text-court-300" />
+        </div>
+        <p class="mt-5 text-lg font-black">กำลังตรวจสอบสิทธิ์ผู้ดูแล</p>
+        <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">กำลังเปิด{{ adminFeaturePage === 'members' ? 'ระบบสมาชิก' : 'ระบบจองสนาม' }}...</p>
+      </div>
+    </section>
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />
     <BookingAdminPage v-else-if="adminFeaturePage === 'booking' && auth.user" :api-request="api" :auth="auth" />
     <AuthPage v-else-if="adminFeaturePage" v-bind="pageProps" />
