@@ -2866,6 +2866,8 @@ describe('LiveMatch app', () => {
     expect(board.findAll('.shared-flight-row')).toHaveLength(2)
     expect(board.get('.shared-next-fight-row').text()).toContain('คู่ถัดไป')
     expect(board.findAll('.shared-fighter-name')).toHaveLength(2)
+    expect(board.get('.shared-fighter-name--a').attributes('title')).toBe('Player 1 + Player 2')
+    expect(board.get('.shared-fighter-name--b').attributes('title')).toBe('Player 3 + Player 4')
     expect(wrapper.find('.shared-next-fight-card').exists()).toBe(false)
     expect(wrapper.find('.shared-next-bout').exists()).toBe(false)
     expect(board.text()).toContain('รอเลือกสนาม')

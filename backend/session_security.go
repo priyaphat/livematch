@@ -176,7 +176,7 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 		return result
 	}
 	usingPrevious := hash == previousHash && hash != currentHash
-	if usingPrevious && (!previousUntil.Valid || !previousUntil.Time.After(now)) {
+	if usingPrevious && kind != adminSessionKind && (!previousUntil.Valid || !previousUntil.Time.After(now)) {
 		// A delayed request from another browser tab can legitimately carry the
 		// previous cookie. Never revoke the current session based on that request.
 		result.failure = "session_token_stale"
@@ -186,7 +186,12 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 	if absoluteExpiry.Valid && newIdle.After(absoluteExpiry.Time) {
 		newIdle = absoluteExpiry.Time
 	}
-	if !usingPrevious && (!rotateAfter.Valid || !rotateAfter.Time.After(now)) {
+	// Admin pages are commonly kept open on several courts/tabs for the whole
+	// event. Rotating their shared cookie can strand a tab on the previous token
+	// when a Set-Cookie response is missed, causing a later match mutation to fail
+	// with session_token_stale. Keep the strong random admin token stable while
+	// preserving the existing idle and absolute expiry checks above.
+	if kind != adminSessionKind && !usingPrevious && (!rotateAfter.Valid || !rotateAfter.Time.After(now)) {
 		result.newToken = randHex(24)
 		newRotate := now.Add(sessionRotateAfter)
 		if absoluteExpiry.Valid && newRotate.After(absoluteExpiry.Time) {

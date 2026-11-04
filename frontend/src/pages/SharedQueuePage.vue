@@ -326,8 +326,8 @@ function tvContentStyle() {
             <article v-for="match in desktopLiveMatches" :key="`match-${match.id}`" class="shared-flight-row shared-flight-row--live grid items-center border-b border-white/10 px-4 py-1.5">
               <span class="shared-flight-status bg-court-400/15 text-court-200"><span class="h-2 w-2 rounded-full bg-court-300"></span>เริ่ม {{ match.startedAt || '-' }}</span>
               <span class="text-center text-sm font-black text-white/30">–</span>
-              <p class="shared-flight-team">{{ teamText(match, 'A') }}</p>
-              <p class="shared-flight-team">{{ teamText(match, 'B') }}</p>
+              <p class="shared-flight-team" :title="teamText(match, 'A')">{{ teamText(match, 'A') }}</p>
+              <p class="shared-flight-team" :title="teamText(match, 'B')">{{ teamText(match, 'B') }}</p>
               <p class="font-black text-court-200">{{ matchCourt(match) }}</p>
               <p class="text-xs font-bold text-white/50">เล่นมาแล้ว {{ elapsedTime(match) }}</p>
             </article>
@@ -346,8 +346,8 @@ function tvContentStyle() {
             >
               <span class="shared-flight-status bg-amber-300/15 text-amber-200"><span class="h-2 w-2 rounded-full bg-amber-300"></span>{{ index === 0 ? 'คู่ถัดไป' : 'รอคิว' }}</span>
               <p class="text-center text-base font-black text-amber-200">#{{ index + 1 }}</p>
-              <p class="shared-flight-team shared-fighter-name shared-fighter-name--a">{{ teamText(match, 'A') }}</p>
-              <p class="shared-flight-team shared-fighter-name shared-fighter-name--b">{{ teamText(match, 'B') }}</p>
+              <p class="shared-flight-team shared-fighter-name shared-fighter-name--a" :title="teamText(match, 'A')">{{ teamText(match, 'A') }}</p>
+              <p class="shared-flight-team shared-fighter-name shared-fighter-name--b" :title="teamText(match, 'B')">{{ teamText(match, 'B') }}</p>
               <p class="font-black" :class="match.court && match.court !== '-' ? 'text-white' : 'text-white/45'">{{ matchCourt(match) }}</p>
               <p class="text-sm font-bold text-white/45">รอเรียกลงสนาม</p>
             </article>
@@ -1140,15 +1140,14 @@ function tvContentStyle() {
 }
 
 .shared-flight-team {
-  display: -webkit-box;
+  display: block;
   min-width: 0;
   overflow: hidden;
   font-size: clamp(0.75rem, 1vw, 0.92rem);
   font-weight: 500;
   line-height: 1.25;
-  overflow-wrap: anywhere;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shared-flight-scroll {

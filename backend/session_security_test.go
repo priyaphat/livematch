@@ -125,7 +125,7 @@ func TestBackofficeRollingDeploymentContractsIntegration(t *testing.T) {
 	}
 }
 
-func TestRotatingSessionIntegration(t *testing.T) {
+func TestAdminSessionStaysStableIntegration(t *testing.T) {
 	dsn := strings.TrimSpace(os.Getenv("LIVEMATCH_TEST_DATABASE_URL"))
 	if dsn == "" {
 		t.Skip("set LIVEMATCH_TEST_DATABASE_URL to run PostgreSQL session integration tests")
@@ -157,24 +157,25 @@ func TestRotatingSessionIntegration(t *testing.T) {
 	if _, err = db.Exec(`update admin_sessions set rotate_after=now()-interval '1 second' where admin_id=$1`, adminID); err != nil {
 		t.Fatal(err)
 	}
-	rotated := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
-	if rotated.failure != "" || rotated.newToken == "" {
-		t.Fatalf("rotation failed: %#v", rotated)
+	stable := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
+	if stable.failure != "" || stable.newToken != "" {
+		t.Fatalf("admin token must remain stable after rotate_after: %#v", stable)
 	}
-	grace := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
-	if grace.failure != "" {
-		t.Fatalf("previous token should work during grace: %#v", grace)
-	}
-	if _, err = db.Exec(`update admin_sessions set previous_valid_until=now()-interval '1 second' where admin_id=$1`, adminID); err != nil {
+
+	// Sessions created before admin rotation was disabled may still have the
+	// browser's token in previous_token_hash. Keep those tabs usable after the
+	// old grace period so deploying this change does not force an immediate login.
+	currentRaw := randHex(24)
+	if _, err = db.Exec(`update admin_sessions set token_hash=$2,previous_token_hash=$3,previous_valid_until=now()-interval '1 second' where admin_id=$1`, adminID, tokenDigest(currentRaw), tokenDigest(raw)); err != nil {
 		t.Fatal(err)
 	}
-	reused := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
-	if reused.failure != "session_token_stale" {
-		t.Fatalf("expected stale-token response, got %#v", reused)
+	recovered := a.rotateAuthSession(t.Context(), adminSessionKind, raw)
+	if recovered.failure != "" || recovered.newToken != "" {
+		t.Fatalf("legacy previous admin token should remain usable: %#v", recovered)
 	}
 	var revoked, detected bool
 	if err = db.QueryRow(`select revoked_at is not null,reuse_detected_at is not null from admin_sessions where admin_id=$1`, adminID).Scan(&revoked, &detected); err != nil || revoked || detected {
-		t.Fatalf("a delayed tab must not revoke the current session: revoked=%v detected=%v err=%v", revoked, detected, err)
+		t.Fatalf("a legacy admin tab must not revoke the current session: revoked=%v detected=%v err=%v", revoked, detected, err)
 	}
 
 	idleToken := randHex(24)
