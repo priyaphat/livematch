@@ -270,8 +270,15 @@ const isPOSEditing = () => {
   return active instanceof HTMLElement && active.matches('input, textarea, select, [contenteditable="true"]');
 };
 
+type POSMainTab = 'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display';
+const POS_ACTIVE_TAB_KEY = 'livematch_pos_active_tab';
+const POS_MAIN_TABS = new Set<POSMainTab>(['dashboard', 'pos', 'bills', 'products', 'stock', 'reports', 'settings', 'customer-display']);
+
 export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'pos' | 'bills' | 'products' | 'stock' | 'reports' | 'settings' | 'customer-display'>('pos');
+  const [activeTab, setActiveTab] = useState<POSMainTab>(() => {
+    const saved = localStorage.getItem(POS_ACTIVE_TAB_KEY) as POSMainTab | null;
+    return saved && POS_MAIN_TABS.has(saved) ? saved : 'pos';
+  });
   const [permissions, setPermissions] = useState<POSPermissions>(() => ({ discounts: true } as POSPermissions));
   
   // Local storage synced states with fallback
@@ -296,6 +303,10 @@ export const PosProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (saved === 'dark' || saved === 'light') return saved;
     return 'light';
   });
+
+  useEffect(() => {
+    localStorage.setItem(POS_ACTIVE_TAB_KEY, activeTab);
+  }, [activeTab]);
 
   // Catalog data is server-owned. Starting empty prevents demo or stale browser data
   // from being sold when the catalog API is unavailable.

@@ -46,6 +46,7 @@ const activeTab = ref("pending");
 const settingsTab = ref("booking");
 const editor = ref(null);
 const review = ref(null);
+const reschedule = ref(null);
 const historyDetail = ref(null);
 const qrModal = ref(false);
 const qrDataUrl = ref("");
@@ -99,7 +100,7 @@ const exportLoading = ref(false);
 const exportStatus = ref("");
 const incidents = reactive({ items: [], page: 1, pageSize: 20, total: 0, totalPages: 1, search: "", type: "", loading: false });
 const slipOKQuota = reactive({ month: "", used: 0, remaining: null, limit: 0, limitEnabled: false, capReached: false, error: "" });
-const actionBusy = reactive({ entry: false, reopen: false, review: false, settings: false, addCourt: false });
+const actionBusy = reactive({ entry: false, reopen: false, review: false, reschedule: false, settings: false, addCourt: false });
 const courtBusy = reactive(new Set());
 const blockBusy = reactive(new Set());
 const adminToast = reactive({ message: "", tone: "success" });
@@ -348,6 +349,7 @@ const slots = computed(() => {
 });
 
 function goBack() {
+  sessionStorage.setItem("livematch_admin_return_loading", "1");
   window.location.assign("/");
 }
 
@@ -720,6 +722,49 @@ async function openCell(court, minute) {
 
 function openHistoryDetail(booking) {
   historyDetail.value = booking;
+}
+
+function localDateTimeInput(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).reduce((result, part) => ({ ...result, [part.type]: part.value }), {});
+  return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
+}
+
+function openReschedule(booking) {
+  reschedule.value = {
+    id: booking.id,
+    bookerName: booking.bookerName || "Admin",
+    oldCourtName: booking.courtName,
+    oldStartAt: booking.startAt,
+    oldEndAt: booking.endAt,
+    courtId: booking.courtId,
+    startAt: localDateTimeInput(booking.startAt),
+  };
+  review.value = null;
+}
+
+async function submitReschedule() {
+  if (!reschedule.value || actionBusy.reschedule) return;
+  actionBusy.reschedule = true;
+  try {
+    await props.apiRequest(`/api/admin/booking/bookings/${reschedule.value.id}/reschedule`, {
+      method: "PATCH",
+      body: JSON.stringify({ courtId: reschedule.value.courtId, startAt: reschedule.value.startAt }),
+    });
+    reschedule.value = null;
+    await loadOverview();
+    if (activeTab.value === "history") await loadHistory(historyPage.value);
+    showAdminToast("ย้ายเวลาและสนามเรียบร้อยแล้ว");
+  } catch (error) {
+    state.error = error.message;
+    showAdminToast(error.message || "ย้ายการจองไม่สำเร็จ", "error");
+  } finally {
+    actionBusy.reschedule = false;
+  }
 }
 
 async function searchMember() {
@@ -2163,6 +2208,14 @@ onUnmounted(() => {
           <span>เหตุผล / หมายเหตุ</span>
           <textarea v-model="review.note" rows="3" :required="review.action !== 'approve'"></textarea>
         </label>
+        <button
+          v-if="review.status === 'confirmed'"
+          type="button"
+          class="booking-secondary-button mt-4 h-11 w-full justify-center"
+          @click="openReschedule(review)"
+        >
+          <CalendarDays class="h-4 w-4" />ย้ายเวลา / สนาม
+        </button>
         <div class="mt-4 grid grid-cols-2 gap-2">
           <button
             type="button"
@@ -2172,6 +2225,49 @@ onUnmounted(() => {
             กลับ</button
           ><button class="booking-primary-button h-11 justify-center" :disabled="actionBusy.review">
             <RefreshCw v-if="actionBusy.review" class="h-4 w-4 animate-spin" />{{ actionBusy.review ? "กำลังบันทึก..." : `ยืนยัน${review.action === "approve" ? "อนุมัติ" : review.action === "cancel" ? "ยกเลิก" : "ไม่อนุมัติ"}` }}
+          </button>
+        </div>
+      </form>
+    </div>
+
+    <div
+      v-if="reschedule"
+      class="fixed inset-0 z-[75] grid place-items-end bg-black/60 p-3 sm:place-items-center"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="booking-reschedule-title"
+      @click.self="reschedule = null"
+      @keydown.esc="reschedule = null"
+    >
+      <form class="w-full max-w-lg rounded-xl bg-white p-4 shadow-2xl dark:bg-stone-900" @submit.prevent="submitReschedule">
+        <div class="flex items-start justify-between gap-3">
+          <div>
+            <p class="text-xs font-black uppercase tracking-[0.14em] text-court-700">Reschedule</p>
+            <h2 id="booking-reschedule-title" class="mt-1 text-xl font-black">ย้ายเวลาและสนาม</h2>
+            <p class="mt-1 text-sm font-semibold text-stone-500">{{ reschedule.bookerName }}</p>
+          </div>
+          <button type="button" class="booking-icon-button" aria-label="ปิด" @click="reschedule = null"><X class="h-4 w-4" /></button>
+        </div>
+        <div class="mt-4 rounded-xl bg-paper-100 p-3 text-sm font-semibold dark:bg-stone-800">
+          <p class="font-black">รายการเดิม · {{ reschedule.oldCourtName }}</p>
+          <p class="mt-1 text-stone-500">{{ new Date(reschedule.oldStartAt).toLocaleString('th-TH') }}–{{ new Date(reschedule.oldEndAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) }} น.</p>
+          <p class="mt-2 text-xs text-court-700 dark:text-court-300">ยอดชำระเดิมจะไม่เปลี่ยน</p>
+        </div>
+        <label class="booking-field mt-4">
+          <span>สนามใหม่</span>
+          <select v-model="reschedule.courtId" required>
+            <option v-for="court in activeCourts" :key="court.id" :value="court.id">{{ court.name }}</option>
+          </select>
+        </label>
+        <label class="booking-field mt-4">
+          <span>วันและเวลาเริ่มใหม่</span>
+          <input v-model="reschedule.startAt" type="datetime-local" required />
+        </label>
+        <p class="mt-3 text-xs font-semibold text-stone-500">ระบบจะคงระยะเวลาเดิม และตรวจว่าสนามว่างอีกครั้งก่อนบันทึก</p>
+        <div class="mt-5 grid grid-cols-2 gap-2">
+          <button type="button" class="booking-secondary-button h-11 justify-center" @click="reschedule = null">ไม่ย้าย</button>
+          <button class="booking-primary-button h-11 justify-center" :disabled="actionBusy.reschedule">
+            <RefreshCw v-if="actionBusy.reschedule" class="h-4 w-4 animate-spin" />{{ actionBusy.reschedule ? 'กำลังย้าย...' : 'ยืนยันย้าย' }}
           </button>
         </div>
       </form>

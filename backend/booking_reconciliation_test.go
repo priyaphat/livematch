@@ -115,6 +115,33 @@ func TestBookingLedgerReconciliationIntegration(t *testing.T) {
 		t.Fatalf("rolled back batch leaked booking count=%d err=%v", bookingCount, err)
 	}
 
+	// Moving one line preserves the batch, duration and original paid price even
+	// when the destination court has a different configured price.
+	moveBody, _ := json.Marshal(map[string]string{"courtId": courtB, "startAt": at(19, 0).Format("2006-01-02T15:04")})
+	moveRecorder := httptest.NewRecorder()
+	a.rescheduleAdminBooking(moveRecorder, httptest.NewRequest(http.MethodPatch, "/api/admin/booking/bookings/"+payload.Bookings[0].ID+"/reschedule", bytes.NewReader(moveBody)), owner, payload.Bookings[0].ID)
+	if moveRecorder.Code != http.StatusOK {
+		t.Fatalf("reschedule status=%d body=%s", moveRecorder.Code, moveRecorder.Body.String())
+	}
+	var movedCourt, movedBatch string
+	var movedStart, movedEnd time.Time
+	var movedPrice int
+	if err = db.QueryRow(`select court_id,booking_batch_id,start_at,end_at,total_price_thb from bookings where id=$1`, payload.Bookings[0].ID).Scan(&movedCourt, &movedBatch, &movedStart, &movedEnd, &movedPrice); err != nil {
+		t.Fatal(err)
+	}
+	if movedCourt != courtB || movedBatch != payload.BatchID || !movedStart.Equal(at(19, 0)) || !movedEnd.Equal(at(20, 0)) || movedPrice != 240 {
+		t.Fatalf("moved booking court=%s batch=%s start=%s end=%s price=%d", movedCourt, movedBatch, movedStart, movedEnd, movedPrice)
+	}
+	conflictMove, _ := json.Marshal(map[string]string{"courtId": courtB, "startAt": at(18, 0).Format("2006-01-02T15:04")})
+	conflictRecorder := httptest.NewRecorder()
+	a.rescheduleAdminBooking(conflictRecorder, httptest.NewRequest(http.MethodPatch, "/api/admin/booking/bookings/"+payload.Bookings[0].ID+"/reschedule", bytes.NewReader(conflictMove)), owner, payload.Bookings[0].ID)
+	if conflictRecorder.Code != http.StatusConflict || !strings.Contains(conflictRecorder.Body.String(), "BOOKING_SLOT_OCCUPIED") {
+		t.Fatalf("reschedule conflict status=%d body=%s", conflictRecorder.Code, conflictRecorder.Body.String())
+	}
+	if err = db.QueryRow(`select court_id,start_at from bookings where id=$1`, payload.Bookings[0].ID).Scan(&movedCourt, &movedStart); err != nil || movedCourt != courtB || !movedStart.Equal(at(19, 0)) {
+		t.Fatalf("failed reschedule changed booking court=%s start=%s err=%v", movedCourt, movedStart, err)
+	}
+
 	// Two simultaneous requests for the same range: exactly one may own the slot.
 	start := make(chan struct{})
 	errorsByRequest := make(chan error, 2)

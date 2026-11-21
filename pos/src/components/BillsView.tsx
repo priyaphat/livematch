@@ -6,6 +6,7 @@ import {
   listPOSPaymentHistoryPage,
   POSBillingSummary,
   POSPaymentHistory,
+  voidPOSPayment,
 } from '../api/posSales';
 import { usePos } from '../context/PosContext';
 import { formatCurrency, formatThaiDateTime } from '../utils/formatters';
@@ -108,7 +109,7 @@ const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
     paymentMethod: payment.method,
     cashReceived: (payment.cashReceivedSatang || 0) / 100,
     change: (payment.changeSatang || 0) / 100,
-    status: 'completed',
+    status: payment.status === 'void' ? 'refunded' : 'completed',
     createdAt: payment.createdAt,
     cashierName: payment.receivedByName || 'Admin',
     customerNote: payment.displayName,
@@ -118,6 +119,9 @@ const paymentHistoryToOrder = (payment: POSPaymentHistory): Order => {
     matchTotal: payment.matchTotalSatang / 100,
     posTotal: payment.posTotalSatang / 100,
     billingLines: payment.lines,
+    canCancel: payment.canCancel,
+    voidedAt: payment.voidedAt,
+    voidedBy: payment.voidedBy,
   };
 };
 
@@ -129,7 +133,6 @@ export const BillsView: React.FC = () => {
     deleteHeldOrder,
     processBatchHeldPayment,
     orders,
-    refundOrder,
     cancelOrder,
     setSelectedOrderForReceipt,
     settings,
@@ -146,6 +149,7 @@ export const BillsView: React.FC = () => {
   const [selectedOrderForRefund, setSelectedOrderForRefund] = useState<string | null>(null);
   const [selectedHistoryDetail, setSelectedHistoryDetail] = useState<Order | null>(null);
   const [refundReason, setRefundReason] = useState<string>('');
+  const [isRefunding, setIsRefunding] = useState(false);
   const [historyOrders, setHistoryOrders] = useState<Order[]>([]);
   const [historyPage, setHistoryPage] = useState(1);
   const [historyTotal, setHistoryTotal] = useState(0);
@@ -363,11 +367,20 @@ export const BillsView: React.FC = () => {
     setSelectedHeldIds([]);
   };
 
-  const handleConfirmRefund = () => {
-    if (selectedOrderForRefund) {
-      refundOrder(selectedOrderForRefund, refundReason);
+  const handleConfirmRefund = async () => {
+    if (!selectedOrderForRefund || isRefunding) return;
+    setIsRefunding(true);
+    try {
+      await voidPOSPayment(selectedOrderForRefund, refundReason);
+      setHistoryOrders((current) => current.map((order) => order.paymentId === selectedOrderForRefund ? { ...order, status: 'refunded', canCancel: false } : order));
+      setSelectedHistoryDetail(null);
       setSelectedOrderForRefund(null);
       setRefundReason('');
+      showToast('ยกเลิกการขายและคืนสต็อกเรียบร้อยแล้ว', 'success');
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ยกเลิกการขายไม่สำเร็จ', 'error');
+    } finally {
+      setIsRefunding(false);
     }
   };
 
@@ -1192,6 +1205,16 @@ export const BillsView: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-end gap-2 border-t border-slate-200 bg-slate-50 px-5 py-3 dark:border-slate-800 dark:bg-slate-950/50 sm:px-6">
+              {selectedHistoryDetail.status === 'completed' && selectedHistoryDetail.canCancel && permissions.void_sales && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedOrderForRefund(selectedHistoryDetail.paymentId || selectedHistoryDetail.id)}
+                  className="mr-auto inline-flex items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-xs font-black text-white transition-colors hover:bg-rose-500"
+                >
+                  <RotateCcw className="h-4 w-4" />
+                  ยกเลิกการขาย
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setSelectedHistoryDetail(null)}
@@ -1539,12 +1562,12 @@ export const BillsView: React.FC = () => {
 
       {/* REFUND MODAL */}
       {selectedOrderForRefund && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-xs flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[90] bg-black/70 backdrop-blur-xs flex items-center justify-center p-4" role="dialog" aria-modal="true" aria-labelledby="cancel-sale-title">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl max-w-md w-full p-6 shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400">
                 <RotateCcw className="w-5 h-5" />
-                <h3 className="text-base font-bold text-slate-900 dark:text-white">ยืนยันการคืนเงิน / ยกเลิกบิล</h3>
+                <h3 id="cancel-sale-title" className="text-base font-bold text-slate-900 dark:text-white">ยืนยันยกเลิกการขาย?</h3>
               </div>
               <button
                 onClick={() => setSelectedOrderForRefund(null)}
@@ -1556,12 +1579,12 @@ export const BillsView: React.FC = () => {
 
             <div className="bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/40 p-3.5 rounded-2xl text-xs text-rose-800 dark:text-rose-300 space-y-1">
               <p className="font-semibold">⚠️ ข้อควรทราบ:</p>
-              <p>ระบบจะปรับสถานะบิลเป็น &quot;คืนเงินแล้ว&quot; และทำการคืนจำนวนสินค้ากลับเข้าสต็อกคงคลังอัตโนมัติ</p>
+              <p>ระบบจะยกเลิกรายรับและคืนสินค้าเข้าสต็อกอัตโนมัติ แต่จะไม่โอนเงินคืนธนาคารหรือคืนเงินสดให้ลูกค้าแทนผู้ใช้งาน</p>
             </div>
 
             <div>
               <label className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1">
-                เหตุผลการคืนเงิน (Refund Reason)
+                เหตุผลการยกเลิก (ไม่บังคับ)
               </label>
               <input
                 type="text"
@@ -1578,14 +1601,15 @@ export const BillsView: React.FC = () => {
                 onClick={() => setSelectedOrderForRefund(null)}
                 className="px-4 py-2 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300"
               >
-                ยกเลิก
+                ไม่ยกเลิก
               </button>
               <button
                 type="button"
                 onClick={handleConfirmRefund}
+                disabled={isRefunding}
                 className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20"
               >
-                ยืนยันการคืนเงิน
+                {isRefunding ? 'กำลังยกเลิก...' : 'ใช่, ยกเลิกการขาย'}
               </button>
             </div>
           </div>

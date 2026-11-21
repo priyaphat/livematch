@@ -71,6 +71,7 @@ const PublicProfilePage = defineAsyncComponent(() => import('./pages/PublicProfi
 const apiUrl = import.meta.env.VITE_API_URL || ''
 const routePath = window.location.pathname
 const adminFeaturePage = routePath === '/admin/members' ? 'members' : routePath === '/admin/booking' ? 'booking' : ''
+const adminReturnLoadingKey = 'livematch_admin_return_loading'
 const publicBookingToken = routePath.startsWith('/booking/') ? routePath.slice('/booking/'.length).split('/')[0] : ''
 const publicProfileToken = routePath.startsWith('/p/') ? routePath.slice('/p/'.length).split('/')[0] : ''
 const isPublicBookingSurface = Boolean(publicBookingToken || publicProfileToken)
@@ -461,14 +462,25 @@ const auth = reactive({
   branding: { systemName: '', logoData: '' }
 })
 const adminFeatureAuthChecking = ref(Boolean(adminFeaturePage))
+const adminReturnAuthChecking = ref(!adminFeaturePage && sessionStorage.getItem(adminReturnLoadingKey) === '1')
 let adminFeatureAuthFallbackTimer = null
 
 function finishAdminFeatureAuthCheck() {
   adminFeatureAuthChecking.value = false
+  adminReturnAuthChecking.value = false
+  if (!adminFeaturePage) sessionStorage.removeItem(adminReturnLoadingKey)
   if (adminFeatureAuthFallbackTimer) {
     window.clearTimeout(adminFeatureAuthFallbackTimer)
     adminFeatureAuthFallbackTimer = null
   }
+}
+
+function handleAdminReturnPageShow() {
+  if (adminFeaturePage || sessionStorage.getItem(adminReturnLoadingKey) !== '1') return
+  adminReturnAuthChecking.value = true
+  if (adminFeatureAuthFallbackTimer) window.clearTimeout(adminFeatureAuthFallbackTimer)
+  adminFeatureAuthFallbackTimer = window.setTimeout(finishAdminFeatureAuthCheck, 8000)
+  void restoreAdminAccount(true)
 }
 
 watch(
@@ -536,6 +548,7 @@ function handleSessionEnded(event) {
   state.session.unlocked = false
   state.tab = 'home'
   clearAdminNavigation()
+  sessionStorage.removeItem(adminReturnLoadingKey)
   showToast(sessionEndedMessage(code))
 }
 
@@ -916,7 +929,10 @@ onMounted(() => {
   installDomTranslator(() => document.body)
   if (adminFeaturePage) {
     adminFeatureAuthFallbackTimer = window.setTimeout(finishAdminFeatureAuthCheck, 8000)
+  } else if (adminReturnAuthChecking.value) {
+    adminFeatureAuthFallbackTimer = window.setTimeout(finishAdminFeatureAuthCheck, 8000)
   }
+  window.addEventListener('pageshow', handleAdminReturnPageShow)
   const params = new URLSearchParams(window.location.search)
   if (params.get('mode')) {
     forms.authMode = params.get('mode')
@@ -957,6 +973,7 @@ async function confirmVerifyEmail(token) {
 }
 
 onUnmounted(() => {
+  window.removeEventListener('pageshow', handleAdminReturnPageShow)
   window.removeEventListener('keydown', handleDashboardAnnouncementKeydown)
 	window.removeEventListener('livematch:session-ended', handleSessionEnded)
 	window.removeEventListener('livematch:booking-blocked', handleBookingBlocked)
@@ -1779,7 +1796,10 @@ function applyAdminPayload(payload) {
 
 function navigateAdminFeature(feature) {
   const paths = { members: '/admin/members', booking: '/admin/booking' }
-  if (paths[feature]) window.location.href = paths[feature]
+  if (paths[feature]) {
+    sessionStorage.setItem(adminReturnLoadingKey, '1')
+    window.location.href = paths[feature]
+  }
 }
 
 async function saveBackofficeAdminFeatures(features) {
@@ -1884,7 +1904,7 @@ async function restoreAdminAccount(restoreNavigation = false) {
     }
   } finally {
     auth.ready = true
-    if (adminFeaturePage) finishAdminFeatureAuthCheck()
+    if (adminFeaturePage || adminReturnAuthChecking.value) finishAdminFeatureAuthCheck()
   }
 }
 
@@ -1900,6 +1920,7 @@ async function logout() {
   state.session.unlocked = false
   state.tab = 'home'
   clearAdminNavigation()
+  sessionStorage.removeItem(adminReturnLoadingKey)
   forms.authPassword = ''
   forms.loginError = ''
 }
@@ -4264,13 +4285,13 @@ const pageProps = computed(() => ({
     <BackofficePage v-else-if="backoffice.isPage" v-bind="pageProps" />
     <PublicBookingPage v-else-if="publicBookingToken" :api-request="api" :token="publicBookingToken" :theme="state.theme" @toggle-theme="toggleTheme" />
     <PublicProfilePage v-else-if="publicProfileToken" :api-request="api" :token="publicProfileToken" :theme="state.theme" @toggle-theme="toggleTheme" />
-    <section v-else-if="adminFeaturePage && adminFeatureAuthChecking" data-testid="admin-feature-auth-spinner" class="fixed inset-0 z-[190] grid min-h-screen place-items-center bg-paper-50 px-5 text-center text-stone-950 dark:bg-paper-900 dark:text-white">
+    <section v-else-if="adminFeatureAuthChecking || adminReturnAuthChecking" data-testid="admin-feature-auth-spinner" class="fixed inset-0 z-[190] grid min-h-screen place-items-center bg-paper-50 px-5 text-center text-stone-950 dark:bg-paper-900 dark:text-white">
       <div class="flex flex-col items-center">
         <div class="grid h-16 w-16 place-items-center rounded-2xl border border-court-200 bg-white shadow-soft dark:border-court-900 dark:bg-stone-900">
           <RefreshCw class="h-8 w-8 animate-spin text-court-600 dark:text-court-300" />
         </div>
         <p class="mt-5 text-lg font-black">กำลังตรวจสอบสิทธิ์ผู้ดูแล</p>
-        <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">กำลังเปิด{{ adminFeaturePage === 'members' ? 'ระบบสมาชิก' : 'ระบบจองสนาม' }}...</p>
+        <p class="mt-1 text-sm font-semibold text-stone-500 dark:text-stone-400">{{ adminFeaturePage ? `กำลังเปิด${adminFeaturePage === 'members' ? 'ระบบสมาชิก' : 'ระบบจองสนาม'}...` : 'กำลังกลับเข้าสู่ Admin Dashboard...' }}</p>
       </div>
     </section>
     <MemberAdminPage v-else-if="adminFeaturePage === 'members' && auth.user" :api-request="api" :auth="auth" :show-toast="showToast" />

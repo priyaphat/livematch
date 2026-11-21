@@ -1334,6 +1334,9 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 		a.changeBookingCourt(w, r, user, strings.TrimPrefix(path, "/courts/"))
 	case r.Method == http.MethodPost && path == "/bookings":
 		a.createAdminBooking(w, r, user)
+	case r.Method == http.MethodPatch && strings.HasPrefix(path, "/bookings/") && strings.HasSuffix(path, "/reschedule"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/bookings/"), "/reschedule")
+		a.rescheduleAdminBooking(w, r, user, id)
 	case r.Method == http.MethodPost && path == "/closures":
 		a.createClosure(w, r, user)
 	case r.Method == http.MethodDelete && strings.HasPrefix(path, "/closures/"):
@@ -1344,6 +1347,97 @@ func (a *app) handleAdminBooking(w http.ResponseWriter, r *http.Request, user ad
 	default:
 		writeJSON(w, 404, map[string]string{"error": "not found"})
 	}
+}
+
+func (a *app) rescheduleAdminBooking(w http.ResponseWriter, r *http.Request, user adminUser, bookingID string) {
+	var body struct {
+		CourtID string `json:"courtId"`
+		StartAt string `json:"startAt"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&body) != nil || strings.TrimSpace(body.CourtID) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ข้อมูลสนามหรือเวลาใหม่ไม่ถูกต้อง", "code": "BOOKING_RESCHEDULE_INVALID"})
+		return
+	}
+	newStart, err := parseBookingTime(body.StartAt)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "วันหรือเวลาใหม่ไม่ถูกต้อง", "code": "BOOKING_RESCHEDULE_INVALID"})
+		return
+	}
+	settings, err := a.ensureBookingSettings(r.Context(), user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ไม่สามารถโหลดการตั้งค่าการจองได้"})
+		return
+	}
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ไม่สามารถเริ่มย้ายการจองได้"})
+		return
+	}
+	defer tx.Rollback()
+	var oldCourtID, oldCourtName, status string
+	var oldStart, oldEnd time.Time
+	err = tx.QueryRowContext(r.Context(), `
+		select b.court_id,c.name,b.start_at,b.end_at,b.status
+		from bookings b join booking_courts c on c.id=b.court_id
+		where b.id=$1 and b.admin_id=$2 for update of b
+	`, bookingID, user.ID).Scan(&oldCourtID, &oldCourtName, &oldStart, &oldEnd, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ไม่พบรายการจอง", "code": "BOOKING_NOT_FOUND"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "โหลดรายการจองไม่สำเร็จ"})
+		return
+	}
+	if status != "confirmed" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "ย้ายได้เฉพาะรายการที่ยืนยันแล้ว", "code": "BOOKING_NOT_CONFIRMED"})
+		return
+	}
+	duration := oldEnd.Sub(oldStart)
+	newEnd := newStart.Add(duration)
+	if err = validateAdminBookingWindow(settings, newStart, newEnd); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error(), "code": "BOOKING_RESCHEDULE_INVALID"})
+		return
+	}
+	var newCourtName string
+	if err = tx.QueryRowContext(r.Context(), `select name from booking_courts where id=$1 and admin_id=$2 and active and deleted_at is null`, body.CourtID, user.ID).Scan(&newCourtName); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "ไม่พบสนามที่เลือก", "code": "BOOKING_COURT_NOT_FOUND"})
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `
+		update booking_occupancies set court_id=$3,occupied_range=tstzrange($4,$5,'[)')
+		where booking_id=$1 and admin_id=$2 and kind='booking' and active
+	`, bookingID, user.ID, body.CourtID, newStart, newEnd)
+	if err != nil {
+		if strings.Contains(err.Error(), "booking_occupancies_no_overlap") {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "ช่วงเวลาหรือสนามที่เลือกไม่ว่างแล้ว", "code": "BOOKING_SLOT_OCCUPIED"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ย้ายช่วงเวลาจองไม่สำเร็จ"})
+		return
+	}
+	if affected, _ := result.RowsAffected(); affected != 1 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "รายการจองนี้ไม่มีช่วงเวลาที่ใช้งานอยู่", "code": "BOOKING_OCCUPANCY_INACTIVE"})
+		return
+	}
+	if _, err = tx.ExecContext(r.Context(), `update bookings set court_id=$3,start_at=$4,end_at=$5,updated_at=now() where id=$1 and admin_id=$2`, bookingID, user.ID, body.CourtID, newStart, newEnd); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "บันทึกเวลาใหม่ไม่สำเร็จ"})
+		return
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "reschedule_booking", "booking", bookingID, map[string]any{
+		"adminId":        user.ID,
+		"from":           map[string]any{"courtId": oldCourtID, "courtName": oldCourtName, "startAt": oldStart, "endAt": oldEnd},
+		"to":             map[string]any{"courtId": body.CourtID, "courtName": newCourtName, "startAt": newStart, "endAt": newEnd},
+		"pricePreserved": true,
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "บันทึกประวัติการย้ายไม่สำเร็จ"})
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "ย้ายการจองไม่สำเร็จ"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "rescheduled", "bookingId": bookingID, "courtId": body.CourtID, "courtName": newCourtName, "startAt": newStart.Format(time.RFC3339), "endAt": newEnd.Format(time.RFC3339)})
 }
 
 func bookingDashboardRange(now time.Time, period string) (time.Time, time.Time, string) {

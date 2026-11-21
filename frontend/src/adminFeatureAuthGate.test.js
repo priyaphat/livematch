@@ -17,6 +17,7 @@ describe('admin feature authentication transition', () => {
     vi.useRealTimers()
     globalThis.fetch = originalFetch
     window.history.replaceState({}, '', '/')
+    sessionStorage.removeItem('livematch_admin_return_loading')
   })
 
   it('shows a spinner instead of flashing the login page while checking the existing session', async () => {
@@ -48,6 +49,26 @@ describe('admin feature authentication transition', () => {
 
     expect(wrapper.find('[data-testid="admin-feature-auth-spinner"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('เข้าสู่ระบบ')
+    wrapper.unmount()
+  })
+
+  it('shows the same auth spinner when returning to the dashboard from an admin feature', async () => {
+    window.history.replaceState({}, '', '/')
+    sessionStorage.setItem('livematch_admin_return_loading', '1')
+    let resolveAuth
+    globalThis.fetch = vi.fn(() => new Promise((resolve) => { resolveAuth = resolve }))
+    const { default: App } = await import('./App.vue')
+    const wrapper = mount(App)
+
+    expect(wrapper.find('[data-testid="admin-feature-auth-spinner"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('กำลังกลับเข้าสู่ Admin Dashboard')
+
+    resolveAuth({ ok: false, status: 401, headers: { get: () => null }, json: () => Promise.resolve({ error: 'login required' }) })
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="admin-feature-auth-spinner"]').exists()).toBe(false)
+    expect(wrapper.text()).toContain('เข้าสู่ระบบ')
+    expect(sessionStorage.getItem('livematch_admin_return_loading')).toBeNull()
     wrapper.unmount()
   })
 })

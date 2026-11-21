@@ -610,4 +610,27 @@ describe('BookingAdminPage', () => {
     expect(JSON.parse(request[1].body).memberId).toBe('member-1')
     wrapper.unmount()
   })
+
+  it('moves one confirmed booking while keeping the operation on its original booking id', async () => {
+    const payload = overview()
+    payload.bookings[0].status = 'confirmed'
+    payload.bookings[0].paymentStatus = 'paid'
+    const apiRequest = vi.fn((url) => Promise.resolve(
+      url.includes('/reschedule') ? { status: 'rescheduled' } : structuredClone(payload)
+    ))
+    const wrapper = mount(BookingAdminPage, { props: { apiRequest } })
+    await vi.waitFor(() => expect(wrapper.find('.booking-state--busy').exists()).toBe(true))
+    await wrapper.find('.booking-state--busy').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('ย้ายเวลา / สนาม')).trigger('click')
+
+    const form = wrapper.get('[aria-labelledby="booking-reschedule-title"] form')
+    await form.get('input[type="datetime-local"]').setValue(`${testTomorrow}T19:00`)
+    await form.trigger('submit')
+
+    await vi.waitFor(() => expect(apiRequest.mock.calls.some(([url]) => url === '/api/admin/booking/bookings/booking-1/reschedule')).toBe(true))
+    const request = apiRequest.mock.calls.find(([url]) => url.endsWith('/booking-1/reschedule'))
+    expect(request[1].method).toBe('PATCH')
+    expect(JSON.parse(request[1].body)).toEqual({ courtId: 'court-1', startAt: `${testTomorrow}T19:00` })
+    wrapper.unmount()
+  })
 })

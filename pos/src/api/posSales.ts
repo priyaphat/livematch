@@ -142,6 +142,10 @@ export interface POSPaymentHistory {
   receivedByType: string;
   receivedByName: string;
   createdAt: string;
+  status: 'paid' | 'void';
+  canCancel: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
   lines: POSBillingLine[];
 }
 
@@ -197,6 +201,10 @@ export function createPOSSale(input: {
 
 export function voidPOSSale(id: string, note = '') {
   return posRequest<unknown>(`/api/admin/pos/sales/${encodeURIComponent(id)}/void`, { method: 'POST', body: JSON.stringify({ note }) });
+}
+
+export function voidPOSPayment(id: string, note = '') {
+  return posRequest<{ status: string; paymentId: string; saleIds: string[] }>(`/api/admin/pos/payments/${encodeURIComponent(id)}/void`, { method: 'POST', body: JSON.stringify({ note }) });
 }
 
 export function getPOSBillingSummary(accountId: string) {

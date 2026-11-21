@@ -356,6 +356,10 @@ type billingPaymentHistory struct {
 	ReceivedByType     string        `json:"receivedByType"`
 	ReceivedByName     string        `json:"receivedByName"`
 	CreatedAt          string        `json:"createdAt"`
+	Status             string        `json:"status"`
+	CanCancel          bool          `json:"canCancel"`
+	VoidedAt           string        `json:"voidedAt,omitempty"`
+	VoidedBy           string        `json:"voidedBy,omitempty"`
 	Lines              []billingLine `json:"lines"`
 }
 
@@ -620,6 +624,9 @@ func (a *app) handleAdminPOS(w http.ResponseWriter, r *http.Request, user adminU
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "sales/") && strings.HasSuffix(path, "/void"):
 		id := strings.TrimSuffix(strings.TrimPrefix(path, "sales/"), "/void")
 		a.voidPOSSale(w, r, user, id)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "payments/") && strings.HasSuffix(path, "/void"):
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "payments/"), "/void")
+		a.voidPOSPayment(w, r, user, id)
 	case r.Method == http.MethodGet && path == "billing-summary":
 		a.writePOSBillingSummary(w, r, user)
 	case r.Method == http.MethodPost && path == "settlements":
@@ -3892,6 +3899,148 @@ func (a *app) voidPOSSale(w http.ResponseWriter, r *http.Request, user adminUser
 	writeJSON(w, http.StatusOK, map[string]string{"status": "sale_voided"})
 }
 
+func (a *app) voidPOSPayment(w http.ResponseWriter, r *http.Request, user adminUser, paymentID string) {
+	var body struct {
+		Note string `json:"note"`
+	}
+	_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&body)
+	note := strings.TrimSpace(body.Note)
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	defer tx.Rollback()
+	conflict := func(code, message string) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": message, "code": code})
+	}
+	var paymentStatus string
+	if err = tx.QueryRowContext(r.Context(), `select status from billing_payments where id=$1 and admin_id=$2 for update`, paymentID, user.ID).Scan(&paymentStatus); errors.Is(err, sql.ErrNoRows) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "ไม่พบรายการชำระเงิน", "code": "POS_PAYMENT_NOT_FOUND"})
+		return
+	} else if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if paymentStatus != "paid" {
+		conflict("POS_PAYMENT_ALREADY_VOID", "รายการชำระเงินนี้ถูกยกเลิกไปแล้ว")
+		return
+	}
+	rows, err := tx.QueryContext(r.Context(), `select source_type,source_id from billing_payment_allocations where payment_id=$1 order by id for update`, paymentID)
+	if err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	saleSet := map[string]bool{}
+	for rows.Next() {
+		var sourceType, sourceID string
+		if err = rows.Scan(&sourceType, &sourceID); err != nil {
+			rows.Close()
+			writePOSInternalError(w, r, err)
+			return
+		}
+		if sourceType != "pos" {
+			rows.Close()
+			conflict("POS_PAYMENT_CONTAINS_MATCH", "ยกเลิกไม่ได้ เนื่องจากรายการชำระนี้มียอด Match รวมอยู่")
+			return
+		}
+		if strings.HasPrefix(sourceID, "split:") {
+			rows.Close()
+			conflict("POS_PAYMENT_SPLIT_NOT_CANCELLABLE", "บิลหารต้องจัดการการชำระของทุกส่วนก่อน จึงยังยกเลิกจากหน้านี้ไม่ได้")
+			return
+		}
+		saleSet[sourceID] = true
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		writePOSInternalError(w, r, err)
+		return
+	}
+	rows.Close()
+	if len(saleSet) == 0 {
+		conflict("POS_PAYMENT_HAS_NO_SALES", "ไม่พบรายการขาย POS ในการชำระนี้")
+		return
+	}
+	saleIDs := make([]string, 0, len(saleSet))
+	for saleID := range saleSet {
+		saleIDs = append(saleIDs, saleID)
+	}
+	sort.Strings(saleIDs)
+	returnedItems := []map[string]any{}
+	for _, saleID := range saleIDs {
+		var saleStatus, salePaymentID, stockLocation string
+		if err = tx.QueryRowContext(r.Context(), `select status,coalesce(payment_id,''),stock_location from pos_sales where id=$1 and admin_id=$2 for update`, saleID, user.ID).Scan(&saleStatus, &salePaymentID, &stockLocation); err != nil {
+			conflict("POS_PAYMENT_SALE_CHANGED", "ข้อมูลบิลขายเปลี่ยนไปแล้ว กรุณารีเฟรชและลองใหม่")
+			return
+		}
+		if saleStatus != "paid" || salePaymentID != paymentID {
+			conflict("POS_PAYMENT_SALE_CHANGED", "บิลขายไม่ได้ผูกกับการชำระนี้เพียงรายการเดียว")
+			return
+		}
+		itemRows, queryErr := tx.QueryContext(r.Context(), `select product_id,quantity,unit_cost_satang,stock_tracked from pos_sale_items where sale_id=$1 and product_id is not null order by id for update`, saleID)
+		if queryErr != nil {
+			writePOSInternalError(w, r, queryErr)
+			return
+		}
+		type returnItem struct {
+			ProductID      string
+			Quantity       int
+			UnitCostSatang int64
+			StockTracked   bool
+		}
+		items := []returnItem{}
+		for itemRows.Next() {
+			var item returnItem
+			if err = itemRows.Scan(&item.ProductID, &item.Quantity, &item.UnitCostSatang, &item.StockTracked); err != nil {
+				itemRows.Close()
+				writePOSInternalError(w, r, err)
+				return
+			}
+			items = append(items, item)
+		}
+		itemRows.Close()
+		for _, item := range items {
+			if !item.StockTracked {
+				continue
+			}
+			var balance int
+			if stockLocation == "secondary" {
+				err = tx.QueryRowContext(r.Context(), `update pos_products set secondary_stock_quantity=secondary_stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 returning secondary_stock_quantity`, item.ProductID, user.ID, item.Quantity).Scan(&balance)
+			} else {
+				err = tx.QueryRowContext(r.Context(), `update pos_products set stock_quantity=stock_quantity+$3,updated_at=now() where id=$1 and admin_id=$2 returning stock_quantity`, item.ProductID, user.ID, item.Quantity).Scan(&balance)
+			}
+			if err != nil {
+				writePOSInternalError(w, r, err)
+				return
+			}
+			lineCostSatang := item.UnitCostSatang * int64(item.Quantity)
+			_, err = tx.ExecContext(r.Context(), `insert into pos_stock_movements (admin_id,product_id,sale_id,delta,balance,reason,note,actor_id,actor_type,actor_name,unit_cost_thb,total_cost_thb,previous_cost_thb,resulting_cost_thb,unit_cost_satang,gross_total_satang,net_total_satang,previous_cost_satang,resulting_cost_satang,stock_location) values ($1,$2,$3,$4,$5,'void',$6,$7,$8,$9,$10,$11,$10,$10,$12,$13,$13,$12,$12,$14)`, user.ID, item.ProductID, saleID, item.Quantity, balance, note, posActorID(user), posActorType(user), posActorName(user), roundedBaht(item.UnitCostSatang), roundedBaht(lineCostSatang), item.UnitCostSatang, lineCostSatang, stockLocation)
+			if err != nil {
+				writePOSInternalError(w, r, err)
+				return
+			}
+			returnedItems = append(returnedItems, map[string]any{"saleId": saleID, "productId": item.ProductID, "quantityReturned": item.Quantity, "unitCostSatang": item.UnitCostSatang, "stockLocation": stockLocation})
+		}
+		if _, err = tx.ExecContext(r.Context(), `update pos_sales set status='void',note=case when $3='' then note else $3 end,voided_at=now(),updated_at=now() where id=$1 and admin_id=$2`, saleID, user.ID, note); err != nil {
+			writePOSInternalError(w, r, err)
+			return
+		}
+	}
+	if _, err = tx.ExecContext(r.Context(), `update billing_payments set status='void',voided_at=now(),voided_by=$3 where id=$1 and admin_id=$2`, paymentID, user.ID, posActorID(user)); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = a.insertActivityLogTx(r.Context(), tx, posActorType(user), posActorID(user), "void_pos_payment", "billing_payment", paymentID, map[string]any{"adminId": user.ID, "saleIds": saleIDs, "note": note, "returnedItems": returnedItems}); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	if err = tx.Commit(); err != nil {
+		writePOSInternalError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "payment_voided", "paymentId": paymentID, "saleIds": saleIDs})
+}
+
 func (a *app) billingAccountIdentity(ctx context.Context, adminID, accountID string) (string, string, string, error) {
 	var memberID, name string
 	err := a.db.QueryRowContext(ctx, `select coalesce(member_id,''),display_name from billing_accounts where id=$1 and admin_id=$2 and active`, accountID, adminID).Scan(&memberID, &name)
@@ -4168,10 +4317,10 @@ func (a *app) writePOSReceivables(w http.ResponseWriter, r *http.Request, adminI
 }
 
 func (a *app) listBillingPaymentHistory(ctx context.Context, adminID, sessionID string, page, pageSize int) ([]billingPaymentHistory, int, error) {
-	return a.listBillingPaymentHistoryFiltered(ctx, adminID, sessionID, "", "", page, pageSize)
+	return a.listBillingPaymentHistoryFiltered(ctx, adminID, sessionID, "", "", "paid", page, pageSize)
 }
 
-func (a *app) listBillingPaymentHistoryFiltered(ctx context.Context, adminID, sessionID, search, method string, page, pageSize int) ([]billingPaymentHistory, int, error) {
+func (a *app) listBillingPaymentHistoryFiltered(ctx context.Context, adminID, sessionID, search, method, status string, page, pageSize int) ([]billingPaymentHistory, int, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -4183,12 +4332,15 @@ func (a *app) listBillingPaymentHistoryFiltered(ctx context.Context, adminID, se
 	if method != "cash" && method != "promptpay" {
 		method = ""
 	}
-	filter := `bp.admin_id=$1 and bp.status='paid' and ($2='' or exists(select 1 from billing_payment_allocations session_allocation where session_allocation.payment_id=bp.id and session_allocation.source_type='match' and split_part(session_allocation.source_id,':',1)=$2)) and ($3='' or lower(bp.id) like $4 or lower(coalesce(ba.display_name,'')) like $4 or lower(coalesce(bp.received_by_name,'')) like $4 or lower(coalesce(bp.reference_number,'')) like $4 or exists(select 1 from billing_payment_allocations bpa where bpa.payment_id=bp.id and lower(coalesce(bpa.label,'')) like $4)) and ($5='' or bp.method=$5)`
+	if status != "paid" && status != "void" {
+		status = ""
+	}
+	filter := `bp.admin_id=$1 and ($6='' or bp.status=$6) and ($2='' or exists(select 1 from billing_payment_allocations session_allocation where session_allocation.payment_id=bp.id and session_allocation.source_type='match' and split_part(session_allocation.source_id,':',1)=$2)) and ($3='' or lower(bp.id) like $4 or lower(coalesce(ba.display_name,'')) like $4 or lower(coalesce(bp.received_by_name,'')) like $4 or lower(coalesce(bp.reference_number,'')) like $4 or exists(select 1 from billing_payment_allocations bpa where bpa.payment_id=bp.id and lower(coalesce(bpa.label,'')) like $4)) and ($5='' or bp.method=$5)`
 	var total int
-	if err := a.db.QueryRowContext(ctx, `select count(*) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id where `+filter, adminID, sessionID, search, searchLike, method).Scan(&total); err != nil {
+	if err := a.db.QueryRowContext(ctx, `select count(*) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id where `+filter, adminID, sessionID, search, searchLike, method, status).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := a.db.QueryContext(ctx, `select bp.id,coalesce(bp.billing_account_id,''),coalesce(ba.member_id,''),coalesce(ba.display_name,'ลูกค้าหน้าร้าน'),bp.origin_system,bp.method,bp.amount_satang,bp.cash_received_satang,bp.change_satang,bp.reference_number,bp.received_by_type,bp.received_by_name,to_char(bp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),coalesce(sum(a.amount_satang) filter(where a.source_type='match'),0),coalesce(sum(a.amount_satang) filter(where a.source_type='pos'),0) from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id left join billing_payment_allocations a on a.payment_id=bp.id where `+filter+` group by bp.id,ba.member_id,ba.display_name order by bp.created_at desc,bp.id desc limit $6 offset $7`, adminID, sessionID, search, searchLike, method, pageSize, (page-1)*pageSize)
+	rows, err := a.db.QueryContext(ctx, `select bp.id,coalesce(bp.billing_account_id,''),coalesce(ba.member_id,''),coalesce(ba.display_name,'ลูกค้าหน้าร้าน'),bp.origin_system,bp.method,bp.amount_satang,bp.cash_received_satang,bp.change_satang,bp.reference_number,bp.received_by_type,bp.received_by_name,to_char(bp.created_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),coalesce(sum(a.amount_satang) filter(where a.source_type='match'),0),coalesce(sum(a.amount_satang) filter(where a.source_type='pos'),0),bp.status,coalesce(to_char(bp.voided_at at time zone 'Asia/Bangkok','YYYY-MM-DD HH24:MI'),''),coalesce(bp.voided_by,'') from billing_payments bp left join billing_accounts ba on ba.id=bp.billing_account_id left join billing_payment_allocations a on a.payment_id=bp.id where `+filter+` group by bp.id,ba.member_id,ba.display_name order by bp.created_at desc,bp.id desc limit $7 offset $8`, adminID, sessionID, search, searchLike, method, status, pageSize, (page-1)*pageSize)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -4196,7 +4348,7 @@ func (a *app) listBillingPaymentHistoryFiltered(ctx context.Context, adminID, se
 	items := []billingPaymentHistory{}
 	for rows.Next() {
 		var item billingPaymentHistory
-		if err = rows.Scan(&item.PaymentID, &item.BillingAccountID, &item.MemberID, &item.DisplayName, &item.OriginSystem, &item.Method, &item.AmountSatang, &item.CashReceivedSatang, &item.ChangeSatang, &item.ReferenceNumber, &item.ReceivedByType, &item.ReceivedByName, &item.CreatedAt, &item.MatchTotalSatang, &item.POSTotalSatang); err != nil {
+		if err = rows.Scan(&item.PaymentID, &item.BillingAccountID, &item.MemberID, &item.DisplayName, &item.OriginSystem, &item.Method, &item.AmountSatang, &item.CashReceivedSatang, &item.ChangeSatang, &item.ReferenceNumber, &item.ReceivedByType, &item.ReceivedByName, &item.CreatedAt, &item.MatchTotalSatang, &item.POSTotalSatang, &item.Status, &item.VoidedAt, &item.VoidedBy); err != nil {
 			return nil, 0, err
 		}
 		item.Lines = []billingLine{}
@@ -4219,6 +4371,18 @@ func (a *app) listBillingPaymentHistoryFiltered(ctx context.Context, adminID, se
 			}
 		}
 		lineRows.Close()
+		items[index].CanCancel = items[index].Status == "paid" && len(items[index].Lines) > 0
+		for _, line := range items[index].Lines {
+			if line.SourceType != "pos" || strings.HasPrefix(line.SourceID, "split:") {
+				items[index].CanCancel = false
+				break
+			}
+			var eligible bool
+			if err := a.db.QueryRowContext(ctx, `select exists(select 1 from pos_sales where id=$1 and admin_id=$2 and status='paid' and payment_id=$3)`, line.SourceID, adminID, items[index].PaymentID).Scan(&eligible); err != nil || !eligible {
+				items[index].CanCancel = false
+				break
+			}
+		}
 	}
 	return items, total, nil
 }
@@ -4233,11 +4397,13 @@ func (a *app) writePOSPaymentHistory(w http.ResponseWriter, r *http.Request, adm
 		pageSize = 50
 	}
 	status := strings.TrimSpace(strings.ToLower(r.URL.Query().Get("status")))
-	if status == "refunded" {
-		writeJSON(w, 200, map[string]any{"items": []billingPaymentHistory{}, "page": page, "pageSize": pageSize, "total": 0, "totalPages": 1})
-		return
+	if status == "completed" {
+		status = "paid"
 	}
-	items, total, err := a.listBillingPaymentHistoryFiltered(r.Context(), adminID, "", r.URL.Query().Get("search"), r.URL.Query().Get("method"), page, pageSize)
+	if status == "refunded" {
+		status = "void"
+	}
+	items, total, err := a.listBillingPaymentHistoryFiltered(r.Context(), adminID, "", r.URL.Query().Get("search"), r.URL.Query().Get("method"), status, page, pageSize)
 	if err != nil {
 		writePOSInternalError(w, r, err)
 		return

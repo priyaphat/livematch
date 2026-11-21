@@ -940,6 +940,9 @@ func authorizePOSPath(w http.ResponseWriter, user adminUser, method, path string
 	if strings.HasPrefix(path, "sales/") && strings.HasSuffix(path, "/void") {
 		return requirePOSPermission(w, user, "bills") && requirePOSPermission(w, user, "void_sales")
 	}
+	if strings.HasPrefix(path, "payments/") && strings.HasSuffix(path, "/void") {
+		return requirePOSPermission(w, user, "bills") && requirePOSPermission(w, user, "void_sales")
+	}
 	if method == http.MethodPost && path == "members" {
 		return requirePOSPermission(w, user, "sales") && requirePOSPermission(w, user, "member_create")
 	}

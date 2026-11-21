@@ -660,11 +660,11 @@ func TestPOSSaleIntegration(t *testing.T) {
 	if err != nil || sessionHistoryTotal != 0 || len(sessionHistory) != 0 {
 		t.Fatalf("session payment history leaked unrelated POS payment: total=%d items=%#v err=%v", sessionHistoryTotal, sessionHistory, err)
 	}
-	filteredHistory, filteredTotal, err := a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "cash", 1, 20)
+	filteredHistory, filteredTotal, err := a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "cash", "paid", 1, 20)
 	if err != nil || filteredTotal != 1 || len(filteredHistory) != 1 || filteredHistory[0].PaymentID != paymentID {
 		t.Fatalf("filtered history total=%d items=%#v err=%v", filteredTotal, filteredHistory, err)
 	}
-	filteredHistory, filteredTotal, err = a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "promptpay", 1, 20)
+	filteredHistory, filteredTotal, err = a.listBillingPaymentHistoryFiltered(t.Context(), adminID, "", "cash-test", "promptpay", "paid", 1, 20)
 	if err != nil || filteredTotal != 0 || len(filteredHistory) != 0 {
 		t.Fatalf("payment method filter total=%d items=%#v err=%v", filteredTotal, filteredHistory, err)
 	}
@@ -792,6 +792,39 @@ func TestPOSSaleIntegration(t *testing.T) {
 	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
 	if stock != 5 {
 		t.Fatalf("failed sale changed stock: %d", stock)
+	}
+
+	// A paid POS-only payment can be voided atomically. The sale and payment
+	// disappear from paid reports while the original audit rows remain.
+	voidPaid := requestSale(map[string]any{"requestId": "paid-void-" + randHex(8), "action": "pay", "buyerType": "anonymous", "method": "cash", "discountType": "amount", "expectedTotalSatang": 1070, "cashReceivedSatang": 1100, "items": []map[string]any{{"productId": productID, "quantity": 1}}})
+	if voidPaid.Code != http.StatusCreated {
+		t.Fatalf("paid void fixture status=%d body=%s", voidPaid.Code, voidPaid.Body.String())
+	}
+	var paidVoidPayload struct{ SaleID, PaymentID string }
+	if err = json.NewDecoder(voidPaid.Body).Decode(&paidVoidPayload); err != nil {
+		t.Fatal(err)
+	}
+	voidPaymentRecorder := httptest.NewRecorder()
+	a.voidPOSPayment(voidPaymentRecorder, httptest.NewRequest(http.MethodPost, "/api/admin/pos/payments/"+paidVoidPayload.PaymentID+"/void", strings.NewReader(`{"note":"ลูกค้ายกเลิก"}`)), owner, paidVoidPayload.PaymentID)
+	if voidPaymentRecorder.Code != http.StatusOK {
+		t.Fatalf("void paid payment status=%d body=%s", voidPaymentRecorder.Code, voidPaymentRecorder.Body.String())
+	}
+	var voidedPaymentStatus, voidedSaleStatus string
+	if err = db.QueryRow(`select p.status,s.status from billing_payments p join pos_sales s on s.payment_id=p.id where p.id=$1`, paidVoidPayload.PaymentID).Scan(&voidedPaymentStatus, &voidedSaleStatus); err != nil || voidedPaymentStatus != "void" || voidedSaleStatus != "void" {
+		t.Fatalf("void statuses payment=%q sale=%q err=%v", voidedPaymentStatus, voidedSaleStatus, err)
+	}
+	_ = db.QueryRow(`select stock_quantity from pos_products where id=$1`, productID).Scan(&stock)
+	if stock != 5 {
+		t.Fatalf("void paid payment restored stock=%d want=5", stock)
+	}
+	duplicateVoid := httptest.NewRecorder()
+	a.voidPOSPayment(duplicateVoid, httptest.NewRequest(http.MethodPost, "/api/admin/pos/payments/"+paidVoidPayload.PaymentID+"/void", nil), owner, paidVoidPayload.PaymentID)
+	if duplicateVoid.Code != http.StatusConflict {
+		t.Fatalf("duplicate payment void status=%d body=%s", duplicateVoid.Code, duplicateVoid.Body.String())
+	}
+	var voidMovementCount int
+	if err = db.QueryRow(`select count(*) from pos_stock_movements where sale_id=$1 and reason='void'`, paidVoidPayload.SaleID).Scan(&voidMovementCount); err != nil || voidMovementCount != 1 {
+		t.Fatalf("void movement count=%d err=%v", voidMovementCount, err)
 	}
 }
 

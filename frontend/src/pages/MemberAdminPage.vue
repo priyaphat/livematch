@@ -69,7 +69,10 @@ async function saveManager() {
 const defaultMemberTypeId = () => memberTypes.value.find((item) => item.code === 'general')?.id || memberTypes.value.find((item) => item.active)?.id || ''
 function openCreate() { modal.value = { id: '', name: '', phone: '', memberTypeId: defaultMemberTypeId(), active: true } }
 function openEdit(item) { modal.value = { ...item } }
-function goBack() { window.location.assign('/') }
+function goBack() {
+  sessionStorage.setItem('livematch_admin_return_loading', '1')
+  window.location.assign('/')
+}
 async function openDetail(item) {
   Object.assign(detailPages, { bookings: 1, payments: 1, matches: 1 })
   state.error = ''

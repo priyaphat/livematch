@@ -85,6 +85,9 @@ export interface Order {
   matchTotal?: number;
   posTotal?: number;
   billingLines?: Array<{ sourceType: 'match' | 'pos'; sourceId: string; label: string; amountSatang: number; snapshot?: Record<string, any> }>;
+  canCancel?: boolean;
+  voidedAt?: string;
+  voidedBy?: string;
 }
 
 export interface HeldOrder {
