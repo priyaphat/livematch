@@ -3,6 +3,8 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile.prod
+      args:
+        VITE_TOURNAMENT_BASE_URL: ${TOURNAMENT_BASE_URL:-https://tournament.badmintonphrae.club}
     ports:
       - "5173:80"
     restart: unless-stopped
@@ -16,6 +18,19 @@ services:
       dockerfile: Dockerfile.prod
     ports:
       - "5175:80"
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  tournament:
+    build:
+      context: ./tournament
+      dockerfile: Dockerfile.prod
+      args:
+        VITE_MAIN_APP_URL: ${APP_BASE_URL:-https://badmintonphrae.club}
+    ports:
+      - "${TOURNAMENT_PORT:-5181}:80"
     restart: unless-stopped
     depends_on:
       backend:
@@ -39,7 +54,9 @@ services:
       - DATABASE_URL=postgres://livematch:${POSTGRES_PASSWORD:-livematch}@postgres:5432/livematch?sslmode=disable
       - APP_BASE_URL=${APP_BASE_URL:-https://badmintonphrae.club}
       - POS_BASE_URL=${POS_BASE_URL:-https://pos.badmintonphrae.club}
-      - APP_ALLOWED_ORIGINS=${APP_ALLOWED_ORIGINS:-https://badmintonphrae.club,https://pos.badmintonphrae.club}
+      - TOURNAMENT_BASE_URL=${TOURNAMENT_BASE_URL:-https://tournament.badmintonphrae.club}
+      - APP_ALLOWED_ORIGINS=${APP_ALLOWED_ORIGINS:-https://badmintonphrae.club,https://pos.badmintonphrae.club,https://tournament.badmintonphrae.club}
+      - TOURNAMENT_FILE_STORAGE_DIR=/var/lib/livematch/tournament-files
       - APP_TRUSTED_PROXY_CIDRS=${APP_TRUSTED_PROXY_CIDRS:-172.16.0.0/12,127.0.0.0/8,::1/128}
       - COOKIE_SECURE=true
       - SMTP_HOST=${SMTP_HOST:-}
@@ -73,6 +90,7 @@ services:
       - tts_cache:/var/cache/livematch-tts
       - booking_slips:/var/lib/livematch/booking-slips
       - announcement_bells:/var/lib/livematch/announcement-bells
+      - tournament_files:/var/lib/livematch/tournament-files
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,3 +127,4 @@ volumes:
   tts_cache:
   booking_slips:
   announcement_bells:
+  tournament_files:

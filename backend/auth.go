@@ -24,9 +24,11 @@ import (
 )
 
 const (
-	adminCookieName      = "livematch_admin_session"
-	backofficeCookieName = "livematch_backoffice_session"
-	posStaffCookieName   = "livematch_pos_staff_session"
+	adminCookieName              = "livematch_admin_session"
+	backofficeCookieName         = "livematch_backoffice_session"
+	posStaffCookieName           = "livematch_pos_staff_session"
+	tournamentStaffCookieName    = "livematch_tournament_staff_session"
+	tournamentDirectorCookieName = "livematch_tournament_director_session"
 )
 
 var (
@@ -167,6 +169,24 @@ func (a *app) handleAuthRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleAdminLogin(w, r)
 	case r.Method == http.MethodPost && action == "pos/login":
 		a.handlePOSAdminLogin(w, r)
+	case r.Method == http.MethodPost && action == "tournament/login":
+		a.handleTournamentLogin(w, r)
+	case r.Method == http.MethodPost && action == "tournament/logout":
+		a.handleTournamentLogout(w, r)
+	case r.Method == http.MethodGet && action == "tournament/me":
+		a.handleTournamentMe(w, r)
+	case r.Method == http.MethodPost && action == "tournament/director/login":
+		a.handleTournamentDirectorLogin(w, r)
+	case r.Method == http.MethodPost && action == "tournament/director/logout":
+		a.handleTournamentDirectorLogout(w, r)
+	case r.Method == http.MethodGet && action == "tournament/director/bootstrap":
+		a.handleTournamentDirectorBootstrap(w, r)
+	case r.Method == http.MethodGet && action == "tournament/director/me":
+		a.handleTournamentDirectorMe(w, r)
+	case r.Method == http.MethodGet && action == "tournament/director/events":
+		a.tournamentEvents(w, r)
+	case strings.HasPrefix(action, "tournament/director/matches/"):
+		a.tournamentMatchRoutes(w, r, strings.TrimPrefix(action, "tournament/director/"))
 	case r.Method == http.MethodPost && action == "pos/logout":
 		a.handlePOSLogout(w, r)
 	case r.Method == http.MethodPost && action == "logout":
@@ -1732,6 +1752,7 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 	ledger, _ := a.coinLedger(r.Context(), "", 30)
 	liveMatchCost, hasLiveMatchCost, _ := a.liveMatchCost(r.Context())
 	liveShareCost, hasLiveShareCost, _ := a.liveShareCost(r.Context())
+	tournamentFreeParticipants, tournamentCoinPerParticipant := a.tournamentPricing(r.Context())
 	packages, _ := a.coinPackages(r.Context(), false)
 	subscriptionPackages, _ := a.subscriptionPackages(r.Context(), false)
 	orders, _ := a.coinPurchaseOrders(r.Context(), "", true, 50)
@@ -1750,6 +1771,8 @@ func (a *app) handleBackofficeSummary(w http.ResponseWriter, r *http.Request) {
 		"coinLedger":                    ledger,
 		"liveMatchSessionCost":          nullableCost(liveMatchCost, hasLiveMatchCost),
 		"liveShareSessionCost":          nullableCost(liveShareCost, hasLiveShareCost),
+		"tournamentFreeParticipants":    tournamentFreeParticipants,
+		"tournamentCoinPerParticipant":  tournamentCoinPerParticipant,
 		"coinPackages":                  packages,
 		"subscriptionPackages":          subscriptionPackages,
 		"coinPaymentQrImage":            qrImage,
@@ -1785,12 +1808,15 @@ func (a *app) handleBackofficeBootstrap(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	tournamentFreeParticipants, tournamentCoinPerParticipant := a.tournamentPricing(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"liveMatchSessionCost": liveMatchCost,
-		"liveShareSessionCost": liveShareCost,
-		"hasLiveMatchCost":     hasLiveMatchCost,
-		"hasLiveShareCost":     hasLiveShareCost,
-		"ttsUsage":             a.tts.usageSnapshot(r.Context()),
+		"liveMatchSessionCost":         liveMatchCost,
+		"liveShareSessionCost":         liveShareCost,
+		"hasLiveMatchCost":             hasLiveMatchCost,
+		"hasLiveShareCost":             hasLiveShareCost,
+		"tournamentFreeParticipants":   tournamentFreeParticipants,
+		"tournamentCoinPerParticipant": tournamentCoinPerParticipant,
+		"ttsUsage":                     a.tts.usageSnapshot(r.Context()),
 	})
 }
 
@@ -1944,12 +1970,25 @@ func (a *app) handleBackofficeAdminOptions(w http.ResponseWriter, r *http.Reques
 
 func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, actor string) {
 	var body struct {
-		LiveMatchSessionCost *int `json:"liveMatchSessionCost"`
-		LiveShareSessionCost *int `json:"liveShareSessionCost"`
+		LiveMatchSessionCost         *int `json:"liveMatchSessionCost"`
+		LiveShareSessionCost         *int `json:"liveShareSessionCost"`
+		TournamentFreeParticipants   *int `json:"tournamentFreeParticipants"`
+		TournamentCoinPerParticipant *int `json:"tournamentCoinPerParticipant"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if body.LiveMatchSessionCost == nil || *body.LiveMatchSessionCost < 0 || body.LiveShareSessionCost == nil || *body.LiveShareSessionCost < 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid coin price"})
+		return
+	}
+	currentFree, currentPer := a.tournamentPricing(r.Context())
+	if body.TournamentFreeParticipants == nil {
+		body.TournamentFreeParticipants = &currentFree
+	}
+	if body.TournamentCoinPerParticipant == nil {
+		body.TournamentCoinPerParticipant = &currentPer
+	}
+	if *body.TournamentFreeParticipants < 0 || *body.TournamentCoinPerParticipant < 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tournament price"})
 		return
 	}
 	tx, err := a.db.BeginTx(r.Context(), nil)
@@ -1966,6 +2005,10 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if _, err := tx.ExecContext(r.Context(), `insert into system_settings(key,value) values ('tournamentFreeParticipants',$1),('tournamentCoinPerParticipant',$2) on conflict(key) do update set value=excluded.value,updated_at=now()`, strconv.Itoa(*body.TournamentFreeParticipants), strconv.Itoa(*body.TournamentCoinPerParticipant)); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	if _, err := tx.ExecContext(r.Context(), `
 		insert into system_settings (key, value)
 		values ('liveShareSessionCoinCost', $1)
@@ -1974,7 +2017,7 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if err := a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_session_coin_cost", "system_settings", "sessionCoinCost", map[string]any{"liveMatchCost": *body.LiveMatchSessionCost, "liveShareCost": *body.LiveShareSessionCost}); err != nil {
+	if err := a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_session_coin_cost", "system_settings", "sessionCoinCost", map[string]any{"liveMatchCost": *body.LiveMatchSessionCost, "liveShareCost": *body.LiveShareSessionCost, "tournamentFreeParticipants": *body.TournamentFreeParticipants, "tournamentCoinPerParticipant": *body.TournamentCoinPerParticipant}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1982,7 +2025,7 @@ func (a *app) handleBackofficeSettings(w http.ResponseWriter, r *http.Request, a
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "liveMatchSessionCost": *body.LiveMatchSessionCost, "liveShareSessionCost": *body.LiveShareSessionCost})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "liveMatchSessionCost": *body.LiveMatchSessionCost, "liveShareSessionCost": *body.LiveShareSessionCost, "tournamentFreeParticipants": *body.TournamentFreeParticipants, "tournamentCoinPerParticipant": *body.TournamentCoinPerParticipant})
 }
 
 func (a *app) handleBackofficeCoinShop(w http.ResponseWriter, r *http.Request, actor string) {

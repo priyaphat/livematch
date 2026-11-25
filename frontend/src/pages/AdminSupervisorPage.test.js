@@ -80,10 +80,20 @@ describe('AdminSupervisorPage feature cards', () => {
 	  expect(combobox.element.value).toContain('Yonex AS-30')
 	})
 
-  it('hides member and booking cards when both flags are disabled', () => {
-    const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false })
+  it('hides all optional cards when every flag is disabled', () => {
+    const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false, tournamentEnabled: false })
     expect(wrapper.text()).not.toContain('ระบบสมาชิก')
     expect(wrapper.text()).not.toContain('ระบบจองสนาม')
+    expect(wrapper.text()).not.toContain('ระบบจัดแข่ง')
+  })
+
+  it('shows an enabled tournament launch card only when the feature is enabled', () => {
+    const wrapper = mountDashboard({ memberEnabled: false, bookingEnabled: false, tournamentEnabled: true })
+    const card = wrapper.get('[data-testid="tournament-feature-card"]')
+    expect(card.text()).toContain('ระบบจัดแข่ง')
+    expect(card.text()).toContain('เปิดระบบ')
+    expect(card.attributes('disabled')).toBeUndefined()
+    expect(wrapper.props('navigateAdminFeature')).not.toHaveBeenCalled()
   })
 
   it('shows only enabled cards and routes through the feature callback', async () => {
@@ -98,7 +108,7 @@ describe('AdminSupervisorPage feature cards', () => {
   it.each([
     [{ memberEnabled: true, bookingEnabled: false, posEnabled: false }, ['grid-cols-1'], ['sm:grid-cols-2']],
     [{ memberEnabled: true, bookingEnabled: true, posEnabled: false }, ['sm:grid-cols-2'], ['grid-cols-1']],
-    [{ memberEnabled: true, bookingEnabled: true, posEnabled: true }, ['sm:grid-cols-2'], ['grid-cols-1']]
+    [{ memberEnabled: true, bookingEnabled: true, tournamentEnabled: true, posEnabled: true }, ['sm:grid-cols-3'], ['grid-cols-1']]
   ])('fills the feature grid for every visible-card count', (features, includedClasses, excludedClasses) => {
     const wrapper = mountDashboard(features)
     const gridClasses = wrapper.get('[data-testid="admin-feature-grid"]').classes()

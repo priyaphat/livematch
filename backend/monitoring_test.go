@@ -44,6 +44,21 @@ func TestPOSMON001MonitoringCapturesStatusLatencyAndRequestID(t *testing.T) {
 	}
 }
 
+func TestMonitoringResponseWriterPreservesSSEFlusher(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	wrapped := &monitoringResponseWriter{ResponseWriter: recorder}
+	var writer http.ResponseWriter = wrapped
+	flusher, ok := writer.(http.Flusher)
+	if !ok {
+		t.Fatal("monitoring middleware must preserve http.Flusher for SSE")
+	}
+	_, _ = writer.Write([]byte("event: connected\n\n"))
+	flusher.Flush()
+	if !recorder.Flushed {
+		t.Fatal("flush was not forwarded to the underlying response")
+	}
+}
+
 func TestPOSAUDIT002SanitizesSecretsRecursively(t *testing.T) {
 	safe := sanitizeActivityDetails(map[string]any{"pin": "123456", "password": "secret", "promptPayId": "0812345678", "imageData": "data:image/png;base64,secret", "nested": map[string]any{"token": "abc"}, "amountSatang": int64(1250)})
 	raw, err := json.Marshal(safe)

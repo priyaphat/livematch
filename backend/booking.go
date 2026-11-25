@@ -127,9 +127,10 @@ func (a *app) runRateLimitCleanup(ctx context.Context) {
 }
 
 type adminFeatures struct {
-	MemberEnabled  bool `json:"memberEnabled"`
-	BookingEnabled bool `json:"bookingEnabled"`
-	POSEnabled     bool `json:"posEnabled"`
+	MemberEnabled     bool `json:"memberEnabled"`
+	BookingEnabled    bool `json:"bookingEnabled"`
+	POSEnabled        bool `json:"posEnabled"`
+	TournamentEnabled bool `json:"tournamentEnabled"`
 }
 
 func randUUID() string {
@@ -491,7 +492,7 @@ type publicBookingQueue struct {
 
 func (a *app) features(ctx context.Context, adminID string) adminFeatures {
 	var f adminFeatures
-	_ = a.db.QueryRowContext(ctx, `select member_enabled, booking_enabled, pos_enabled from admin_features where admin_id = $1`, adminID).Scan(&f.MemberEnabled, &f.BookingEnabled, &f.POSEnabled)
+	_ = a.db.QueryRowContext(ctx, `select member_enabled, booking_enabled, pos_enabled, tournament_enabled from admin_features where admin_id = $1`, adminID).Scan(&f.MemberEnabled, &f.BookingEnabled, &f.POSEnabled, &f.TournamentEnabled)
 	return f
 }
 
@@ -502,6 +503,8 @@ func (a *app) requireFeature(w http.ResponseWriter, r *http.Request, adminID, fe
 		enabled = f.BookingEnabled
 	} else if feature == "pos" {
 		enabled = f.POSEnabled
+	} else if feature == "tournament" {
+		enabled = f.TournamentEnabled
 	}
 	if !enabled {
 		if feature == "pos" {
@@ -530,7 +533,7 @@ func (a *app) handleBackofficeAdminFeatures(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback()
-	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, pos_enabled, updated_by) values ($1,$2,$3,$4,$5) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, pos_enabled=excluded.pos_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, body.POSEnabled, actor); err != nil {
+	if _, err = tx.ExecContext(r.Context(), `insert into admin_features (admin_id, member_enabled, booking_enabled, pos_enabled, tournament_enabled, updated_by) values ($1,$2,$3,$4,$5,$6) on conflict (admin_id) do update set member_enabled=excluded.member_enabled, booking_enabled=excluded.booking_enabled, pos_enabled=excluded.pos_enabled, tournament_enabled=excluded.tournament_enabled, updated_by=excluded.updated_by, updated_at=now()`, adminID, body.MemberEnabled, body.BookingEnabled, body.POSEnabled, body.TournamentEnabled, actor); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
 	}
@@ -540,7 +543,17 @@ func (a *app) handleBackofficeAdminFeatures(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled, "posEnabled": body.POSEnabled})
+	if !body.TournamentEnabled {
+		if _, err = tx.ExecContext(r.Context(), `update tournament_staff_sessions s set revoked_at=coalesce(s.revoked_at,now()) from tournament_staff ts where ts.id=s.staff_id and ts.admin_id=$1`, adminID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		if _, err = tx.ExecContext(r.Context(), `update tournament_director_sessions s set revoked_at=coalesce(s.revoked_at,now()) from tournament_officials o where o.id=s.official_id and o.admin_id=$1`, adminID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	_ = a.insertActivityLogTx(r.Context(), tx, "backoffice", actor, "update_admin_features", "admin_user", adminID, map[string]any{"memberEnabled": body.MemberEnabled, "bookingEnabled": body.BookingEnabled, "posEnabled": body.POSEnabled, "tournamentEnabled": body.TournamentEnabled})
 	if err = tx.Commit(); err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return

@@ -13,12 +13,14 @@ import (
 type authSessionKind string
 
 const (
-	adminSessionKind      authSessionKind = "admin"
-	backofficeSessionKind authSessionKind = "backoffice"
-	publicSessionKind     authSessionKind = "public"
-	posStaffSessionKind   authSessionKind = "pos_staff"
-	sessionRotateAfter                    = 30 * time.Minute
-	sessionPreviousGrace                  = 5 * time.Minute
+	adminSessionKind              authSessionKind = "admin"
+	backofficeSessionKind         authSessionKind = "backoffice"
+	publicSessionKind             authSessionKind = "public"
+	posStaffSessionKind           authSessionKind = "pos_staff"
+	tournamentStaffSessionKind    authSessionKind = "tournament_staff"
+	tournamentDirectorSessionKind authSessionKind = "tournament_director"
+	sessionRotateAfter                            = 30 * time.Minute
+	sessionPreviousGrace                          = 5 * time.Minute
 )
 
 type authSessionConfig struct {
@@ -39,6 +41,10 @@ func sessionConfig(kind authSessionKind) authSessionConfig {
 		return authSessionConfig{"public_user_sessions", "public_user_id", publicCookieName, "__Host-livematch_public_session", 3 * 24 * time.Hour, 7 * 24 * time.Hour, http.SameSiteLaxMode}
 	case posStaffSessionKind:
 		return authSessionConfig{"pos_staff_sessions", "staff_id", posStaffCookieName, "__Host-livematch_pos_staff_session", 2 * time.Hour, 24 * time.Hour, http.SameSiteStrictMode}
+	case tournamentStaffSessionKind:
+		return authSessionConfig{"tournament_staff_sessions", "staff_id", tournamentStaffCookieName, "__Host-livematch_tournament_staff_session", 2 * time.Hour, 24 * time.Hour, http.SameSiteStrictMode}
+	case tournamentDirectorSessionKind:
+		return authSessionConfig{"tournament_director_sessions", "official_id", tournamentDirectorCookieName, "__Host-livematch_tournament_director_session", 8 * time.Hour, 24 * time.Hour, http.SameSiteStrictMode}
 	default:
 		return authSessionConfig{"admin_sessions", "admin_id", adminCookieName, "__Host-livematch_admin_session", 2 * time.Hour, 24 * time.Hour, http.SameSiteStrictMode}
 	}
@@ -163,6 +169,24 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 			return result
 		}
 	}
+	if kind == tournamentStaffSessionKind {
+		var enabled bool
+		if err = tx.QueryRowContext(ctx, `select ts.active and coalesce(af.tournament_enabled,false) from tournament_staff ts left join admin_features af on af.admin_id=ts.admin_id where ts.id=$1`, ownerID).Scan(&enabled); err != nil || !enabled {
+			result.failure = "tournament_not_enabled"
+			_, _ = tx.ExecContext(ctx, `update tournament_staff_sessions set revoked_at=coalesce(revoked_at,now()) where staff_id=$1`, ownerID)
+			_ = tx.Commit()
+			return result
+		}
+	}
+	if kind == tournamentDirectorSessionKind {
+		var enabled bool
+		if err = tx.QueryRowContext(ctx, `select o.active and coalesce(af.tournament_enabled,false) from tournament_officials o left join admin_features af on af.admin_id=o.admin_id where o.id=$1`, ownerID).Scan(&enabled); err != nil || !enabled {
+			result.failure = "tournament_not_enabled"
+			_, _ = tx.ExecContext(ctx, `update tournament_director_sessions set revoked_at=coalesce(revoked_at,now()) where official_id=$1`, ownerID)
+			_ = tx.Commit()
+			return result
+		}
+	}
 	if absoluteExpiry.Valid && !absoluteExpiry.Time.After(now) {
 		result.failure = "session_absolute_expired"
 		_, _ = tx.ExecContext(ctx, fmt.Sprintf(`update %s set revoked_at=coalesce(revoked_at,now()) where session_id=$1`, cfg.table), sessionID)
@@ -209,7 +233,7 @@ func (a *app) rotateAuthSession(ctx context.Context, kind authSessionKind, rawTo
 
 func (a *app) refreshRequestSessions(w http.ResponseWriter, r *http.Request) *http.Request {
 	failures := authFailureMap{}
-	for _, kind := range []authSessionKind{adminSessionKind, backofficeSessionKind, publicSessionKind, posStaffSessionKind} {
+	for _, kind := range []authSessionKind{adminSessionKind, backofficeSessionKind, publicSessionKind, posStaffSessionKind, tournamentStaffSessionKind, tournamentDirectorSessionKind} {
 		token, ok := readSessionCookie(r, kind)
 		if !ok {
 			continue

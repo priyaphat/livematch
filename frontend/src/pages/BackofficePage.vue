@@ -70,7 +70,7 @@ const adminDetailLedgerPagination = computed(() => adminDetail.value.ledgerPagin
 const adminSlipOKUsage = computed(() => props.forms.backofficeAdminSlipOKUsage || {})
 const adminSlipOKProvider = computed(() => adminSlipOKUsage.value.provider || {})
 const adminBenefits = computed(() => adminDetail.value.benefits || { discountPercent: 0, pricing: {}, subscription: null, subscriptionHistory: [] })
-const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false, posEnabled: false }))
+const adminFeatures = computed(() => adminDetail.value.features || (adminDetail.value.features = { memberEnabled: false, bookingEnabled: false, posEnabled: false, tournamentEnabled: false }))
 const adminSubscription = computed(() => adminBenefits.value.subscription || null)
 const adminSubscriptionHistory = computed(() => adminBenefits.value.subscriptionHistory || [])
 const sessionDeleteTarget = ref(null)
@@ -410,7 +410,13 @@ function closeSlipPreview() {
               <label class="mt-3 grid gap-2 text-sm font-bold">
                 liveShare session cost
 				<input v-model.number="forms.backofficeLiveShareCost" type="number" min="0" :disabled="forms.backofficeSettingsSaving" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" />
-              </label>
+			</label>
+				<label class="mt-3 grid gap-1 text-sm font-bold">Tournament ฟรีกี่คน
+					<input v-model.number="forms.backofficeTournamentFreeParticipants" type="number" min="0" :disabled="forms.backofficeSettingsSaving" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" />
+				</label>
+				<label class="mt-3 grid gap-1 text-sm font-bold">Coin ต่อคนที่เกิน
+					<input v-model.number="forms.backofficeTournamentCoinPerParticipant" type="number" min="0" :disabled="forms.backofficeSettingsSaving" class="h-11 rounded-md border border-stone-200 bg-paper-50 px-3 disabled:opacity-60 dark:border-stone-700 dark:bg-stone-800" />
+				</label>
 			  <button class="mt-3 inline-flex h-11 items-center justify-center gap-2 rounded-md bg-court-500 px-4 font-bold text-white disabled:cursor-wait disabled:opacity-60" :disabled="forms.backofficeSettingsSaving" @click="saveBackofficeSettings">
 				<RefreshCw v-if="forms.backofficeSettingsSaving" class="h-4 w-4 animate-spin" /><Save v-else class="h-4 w-4" />
 				{{ forms.backofficeSettingsSaving ? 'กำลังบันทึก...' : 'บันทึกราคา' }}
@@ -1185,6 +1191,7 @@ function closeSlipPreview() {
               <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบสมาชิก <small class="block font-semibold text-stone-500">{{ Number(adminDetail.memberCount || 0).toLocaleString('th-TH') }} คน</small></span><input v-model="adminFeatures.memberEnabled" type="checkbox" class="h-5 w-5" /></label>
               <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบจองสนาม <small class="block font-semibold text-stone-500">{{ Number(adminDetail.bookingCount || 0).toLocaleString('th-TH') }} รายการ</small></span><input v-model="adminFeatures.bookingEnabled" type="checkbox" class="h-5 w-5" /></label>
               <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบ POS <small class="block font-semibold text-stone-500">{{ Number(adminDetail.posSaleCount || 0).toLocaleString('th-TH') }} บิล</small></span><input v-model="adminFeatures.posEnabled" type="checkbox" class="h-5 w-5" /></label>
+              <label class="flex items-center justify-between rounded-lg bg-white p-3 font-black dark:bg-stone-800"><span>ระบบจัดแข่ง <small class="block font-semibold text-stone-500">แยกจากระบบ Match</small></span><input v-model="adminFeatures.tournamentEnabled" type="checkbox" class="h-5 w-5" /></label>
             </div>
           </section>
 

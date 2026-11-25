@@ -37,6 +37,18 @@ func (w *monitoringResponseWriter) Write(body []byte) (int, error) {
 	return n, err
 }
 
+// Flush preserves streaming support (SSE) through the monitoring middleware.
+// Without this forwarding method the wrapper hides http.Flusher even when the
+// underlying server response supports it.
+func (w *monitoringResponseWriter) Flush() {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 type apiRouteMetric struct {
 	Count       int64
 	Errors      int64

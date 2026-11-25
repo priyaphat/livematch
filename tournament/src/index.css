@@ -1,0 +1,259 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  --lm-primary: #156143;
+  --lm-primary-hover: #104d35;
+  --lm-secondary: #142642;
+  --lm-accent: #eab308;
+  --lm-accent-text: #142642;
+  --lm-success: #15803d;
+  --lm-warning: #b45309;
+  --lm-danger: #b91c1c;
+  --lm-bg: #f7f6f2;
+  --lm-surface: #ffffff;
+  --lm-subtle: #efece4;
+  --lm-border: #e2dfd5;
+  --lm-control-border: #c2bcac;
+  --lm-control-bg: #ffffff;
+  --lm-control-hover: #f7f6f2;
+  --lm-text-primary: #141d2b;
+  --lm-text-secondary: #525c6b;
+  --lm-radius-sm: 0.375rem;
+  --lm-radius-md: 0.625rem;
+  --lm-radius-lg: 0.875rem;
+  --lm-shadow-sm: 0 1px 2px rgba(20, 38, 66, 0.05);
+  --lm-shadow-md: 0 4px 12px rgba(20, 38, 66, 0.07);
+}
+
+.dark {
+  --lm-primary: #229a6b;
+  --lm-primary-hover: #29b47d;
+  --lm-secondary: #1e3a5f;
+  --lm-accent: #facc15;
+  --lm-accent-text: #0b121c;
+  --lm-success: #22c55e;
+  --lm-warning: #f59e0b;
+  --lm-danger: #ef4444;
+  --lm-bg: #0b121c;
+  --lm-surface: #131e2e;
+  --lm-subtle: #1b293d;
+  --lm-border: #25354c;
+  --lm-control-border: #3d5270;
+  --lm-control-bg: #0b121c;
+  --lm-control-hover: #172436;
+  --lm-text-primary: #f3f5f8;
+  --lm-text-secondary: #9aa8bc;
+  --lm-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --lm-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+@layer base {
+  html {
+    font-family: 'Sarabun', -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: 'Prompt', 'Sarabun', sans-serif;
+  }
+
+  .font-mono, .tabular-nums {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  button, a, select, input, textarea {
+    outline-color: var(--lm-primary);
+  }
+
+  /* Hide number input spinner arrows across all browsers */
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
+  /* Custom Checkbox & Radio controls */
+  input[type='checkbox']:not(.sr-only),
+  input[type='radio']:not(.sr-only) {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 1.125rem;
+    height: 1.125rem;
+    min-width: 1.125rem;
+    min-height: 1.125rem;
+    border: 1.5px solid var(--lm-control-border);
+    background-color: var(--lm-control-bg);
+    display: inline-grid;
+    place-content: center;
+    flex-shrink: 0;
+    vertical-align: middle;
+    cursor: pointer;
+    transition:
+      background-color 140ms ease,
+      border-color 140ms ease,
+      border-width 120ms ease,
+      box-shadow 140ms ease,
+      transform 100ms ease;
+  }
+
+  input[type='checkbox']:not(.sr-only) {
+    border-radius: 0.3125rem;
+  }
+
+  input[type='radio']:not(.sr-only) {
+    border-radius: 9999px;
+  }
+
+  input[type='checkbox']:not(.sr-only):hover:not(:disabled):not(:checked),
+  input[type='radio']:not(.sr-only):hover:not(:disabled):not(:checked) {
+    border-color: var(--lm-primary);
+    background-color: var(--lm-control-hover);
+  }
+
+  input[type='checkbox']:not(.sr-only):checked {
+    border-color: var(--lm-primary);
+    background-color: var(--lm-primary);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 8.2L6.5 11.2L12.5 4.8' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 78% 78%;
+  }
+
+  input[type='checkbox']:not(.sr-only):indeterminate {
+    border-color: var(--lm-primary);
+    background-color: var(--lm-primary);
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none'%3E%3Cpath d='M3.5 8H12.5' stroke='%23ffffff' stroke-width='2.2' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 75% 75%;
+  }
+
+  input[type='radio']:not(.sr-only):checked {
+    border-color: var(--lm-primary);
+    border-width: 5px;
+    background-color: #ffffff;
+  }
+
+  input[type='checkbox']:not(.sr-only):focus-visible,
+  input[type='radio']:not(.sr-only):focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--lm-primary) 26%, transparent);
+  }
+
+  input[type='checkbox']:not(.sr-only):active:not(:disabled),
+  input[type='radio']:not(.sr-only):active:not(:disabled) {
+    transform: scale(0.92);
+  }
+
+  input[type='checkbox']:not(.sr-only):disabled,
+  input[type='radio']:not(.sr-only):disabled {
+    opacity: 0.48;
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  .topbar-menu-item {
+    @apply w-full min-h-10 px-3 rounded-lg text-xs font-semibold flex items-center gap-2 text-left hover:bg-[#EFECE4] dark:hover:bg-[#1B293D] disabled:opacity-50;
+  }
+}
+
+/* Smooth compositor-only broadcast animations */
+@keyframes lmScoreTick {
+  0% {
+    opacity: 0.45;
+    transform: translateY(8px) scale(0.96);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes lmBroadcastEnter {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes lmSlideCrossfade {
+  0% {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes lmProgressSweep {
+  0% {
+    transform: scaleX(0);
+  }
+  100% {
+    transform: scaleX(1);
+  }
+}
+
+@keyframes lmServeBreath {
+  0%, 100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.lm-score-pop {
+  animation: lmScoreTick 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.lm-card-enter {
+  animation: lmBroadcastEnter 400ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.lm-slide-crossfade {
+  animation: lmSlideCrossfade 460ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.lm-progress-sweep {
+  transform-origin: left center;
+  animation: lmProgressSweep 8000ms linear both;
+}
+
+.lm-serve-breath {
+  animation: lmServeBreath 2600ms ease-in-out infinite;
+}
+
+/* Smooth reduced motion respect */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Print friendly helpers */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: #ffffff !important;
+    color: #000000 !important;
+  }
+}
+

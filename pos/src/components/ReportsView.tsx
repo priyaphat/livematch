@@ -22,6 +22,7 @@ import {
   Search,
   X,
   ChevronDown,
+  RefreshCw,
 } from 'lucide-react';
 
 type ReportType = 'overview' | 'top_sellers' | 'vat' | 'payments' | 'sold_products' | 'purchases' | 'inventory' | 'transfers' | 'special';
@@ -73,6 +74,8 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   const [printLines, setPrintLines] = useState<string[] | null>(null);
   const [inventoryFilters, setInventoryFilters] = useState<POSInventoryFilters>({ status: 'all', stockStatus: 'all', packStatus: 'all' });
   const [extraLoading, setExtraLoading] = useState(false);
+  const [refreshRevision, setRefreshRevision] = useState(0);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
 
   const quickDays = Array.from({ length: 7 }, (_, index) => {
     const value = new Date(new Date(`${today}T12:00:00+07:00`).getTime() - (index * 24 * 60 * 60 * 1000));
@@ -110,6 +113,23 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
   }, [isQuickDayMenuOpen]);
 
   useEffect(() => {
+    let lastRefreshAt = 0;
+    const refreshWhenVisible = () => {
+      if (document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now-lastRefreshAt < 1000) return;
+      lastRefreshAt = now;
+      setRefreshRevision((current) => current + 1);
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
+    return () => {
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
+    };
+  }, []);
+
+  useEffect(() => {
     if (permissions[REPORT_PERMISSION_BY_TYPE[reportType]]) return;
     const firstAllowed = (Object.keys(REPORT_PERMISSION_BY_TYPE) as ReportType[]).find((type) => permissions[REPORT_PERMISSION_BY_TYPE[type]] && (type !== 'transfers' || settings.secondaryStockEnabled));
     if (firstAllowed) setReportType(firstAllowed);
@@ -125,19 +145,19 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
       try {
         if (reportType === 'sold_products') {
           const result = await getPOSSoldProductsReport(dateRange, startDate, endDate, soldPage, false, stockLocation, soldSearch);
-          if (!cancelled) setSoldReport(result);
+          if (!cancelled) { setSoldReport(result); setLastUpdatedAt(new Date()); }
         } else if (reportType === 'purchases') {
           const result = await getPOSPurchasesReport(dateRange, startDate, endDate, purchasesPage, false, { search: purchaseSearch, supplierId: purchaseSupplierId }, stockLocation);
-          if (!cancelled) setPurchasesReport(result);
+          if (!cancelled) { setPurchasesReport(result); setLastUpdatedAt(new Date()); }
         } else if (reportType === 'inventory') {
           const result = await getPOSInventoryReport(inventoryFilters, inventoryPage, false, stockLocation);
-          if (!cancelled) setInventoryReport(result);
+          if (!cancelled) { setInventoryReport(result); setLastUpdatedAt(new Date()); }
         } else if (reportType === 'special') {
           const result = await getPOSSpecialReport(dateRange, startDate, endDate, specialPOSPage, specialSessionPage, false, stockLocation, specialSearch);
-          if (!cancelled) setSpecialReport(result);
+          if (!cancelled) { setSpecialReport(result); setLastUpdatedAt(new Date()); }
         } else if (reportType === 'transfers') {
           const result = await getPOSTransfersReport(dateRange, startDate, endDate, transfersPage, false, stockLocation, transferSearch);
-          if (!cancelled) setTransfersReport(result);
+          if (!cancelled) { setTransfersReport(result); setLastUpdatedAt(new Date()); }
         }
       } catch (error) {
         if (!cancelled) setLoadError(error instanceof Error ? error.message : 'โหลดรายงานไม่สำเร็จ');
@@ -147,7 +167,7 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
     };
     void load();
     return () => { cancelled = true; };
-  }, [reportType, dateRange, startDate, endDate, soldPage, soldSearch, purchasesPage, purchaseSearch, purchaseSupplierId, inventoryPage, inventoryFilters, specialPOSPage, specialSessionPage, specialSearch, transfersPage, transferSearch, stockLocation]);
+  }, [reportType, dateRange, startDate, endDate, soldPage, soldSearch, purchasesPage, purchaseSearch, purchaseSupplierId, inventoryPage, inventoryFilters, specialPOSPage, specialSessionPage, specialSearch, transfersPage, transferSearch, stockLocation, refreshRevision]);
 
   useEffect(() => {
     if (dateRange === 'custom' && (!startDate || !endDate || startDate > endDate)) {
@@ -159,14 +179,22 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
     setIsLoading(true);
     setLoadError('');
     void getPOSReports(dateRange, startDate, endDate, topPage, vatPage, false, stockLocation, reportType, { topSearch, vatSearch }).then((result) => {
-      if (!cancelled) setReport(result);
+      if (!cancelled) { setReport(result); setLastUpdatedAt(new Date()); }
     }).catch((error) => {
       if (!cancelled) setLoadError(error instanceof Error ? error.message : 'โหลดรายงานไม่สำเร็จ');
     }).finally(() => {
       if (!cancelled) setIsLoading(false);
     });
     return () => { cancelled = true; };
-  }, [dateRange, startDate, endDate, topPage, vatPage, stockLocation, reportType, topSearch, vatSearch]);
+  }, [dateRange, startDate, endDate, topPage, vatPage, stockLocation, reportType, topSearch, vatSearch, refreshRevision]);
+
+  const lastUpdatedLabel = lastUpdatedAt
+    ? new Intl.DateTimeFormat('th-TH', {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+        timeZone: 'Asia/Bangkok',
+      }).format(lastUpdatedAt)
+    : 'ยังไม่ได้อัปเดต';
 
   const summary = report?.summary;
   const totalSales = (summary?.totalSalesSatang || 0) / 100;
@@ -545,6 +573,10 @@ export const ReportsView: React.FC<{ permissions: POSPermissions }> = ({ permiss
           </h1>
           <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
             สรุปผลประกอบการ กำไรขั้นต้น ภาษี และสินค้าขายดี
+          </p>
+          <p className="mt-1 flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400" aria-live="polite">
+            <RefreshCw className={`h-3.5 w-3.5 ${(isLoading || extraLoading) ? 'animate-spin' : ''}`} />
+            <span>{isLoading || extraLoading ? 'กำลังอัปเดตข้อมูลล่าสุด...' : `อัปเดตล่าสุด ${lastUpdatedLabel}`}</span>
           </p>
         </div>
 

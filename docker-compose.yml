@@ -7,6 +7,7 @@ services:
     environment:
       - VITE_API_URL=
       - VITE_DEV_API_PROXY=http://backend:8080
+      - VITE_TOURNAMENT_BASE_URL=${TOURNAMENT_BASE_URL:-http://localhost:5181}
     volumes:
       - ./frontend:/app
       - frontend_node_modules:/app/node_modules
@@ -30,6 +31,21 @@ services:
     depends_on:
       - backend
 
+  tournament:
+    build:
+      context: ./tournament
+    ports:
+      - "${TOURNAMENT_PORT:-5181}:5181"
+    environment:
+      - VITE_DEV_API_PROXY=http://backend:8080
+      - VITE_MAIN_APP_URL=${APP_BASE_URL:-http://localhost:5173}
+    volumes:
+      - ./tournament:/app
+      - tournament_node_modules:/app/node_modules
+    command: sh -c "npm install && npm run dev -- --port 5181 --host 0.0.0.0"
+    depends_on:
+      - backend
+
   backend:
     build:
       context: ./backend
@@ -41,6 +57,7 @@ services:
       - DATABASE_URL=postgres://livematch:livematch@postgres:5432/livematch?sslmode=disable
       - APP_BASE_URL=${APP_BASE_URL:-http://localhost:5173}
       - POS_BASE_URL=${POS_BASE_URL:-http://localhost:5175}
+      - TOURNAMENT_BASE_URL=${TOURNAMENT_BASE_URL:-http://localhost:5181}
       - SMTP_HOST=${SMTP_HOST:-}
       - SMTP_PORT=${SMTP_PORT:-}
       - SMTP_USERNAME=${SMTP_USERNAME:-}
@@ -60,11 +77,12 @@ services:
       - GOOGLE_TTS_SPEAKING_RATE=${GOOGLE_TTS_SPEAKING_RATE:-0.82}
       - GOOGLE_TTS_CACHE_DIR=/var/cache/livematch-tts
       - GOOGLE_APPLICATION_CREDENTIALS=/run/secrets/google-tts.json
-      - APP_ALLOWED_ORIGINS=${APP_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:5175}
+      - APP_ALLOWED_ORIGINS=${APP_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:5175,http://localhost:5181}
+      - TOURNAMENT_FILE_STORAGE_DIR=${TOURNAMENT_FILE_STORAGE_DIR:-/var/lib/livematch/tournament-files}
       - APP_TRUSTED_PROXY_CIDRS=${APP_TRUSTED_PROXY_CIDRS:-172.16.0.0/12,127.0.0.0/8,::1/128}
       # Docker Compose ชุดนี้ใช้สำหรับ local development ผ่าน http://localhost
       - COOKIE_SECURE=false
-      - APP_ENCRYPTION_KEY=${APP_ENCRYPTION_KEY:-}
+      - APP_ENCRYPTION_KEY=${APP_ENCRYPTION_KEY:-development-only-livematch-key-change-me}
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
       - GOOGLE_REDIRECT_URL=${GOOGLE_REDIRECT_URL:-http://localhost:5173/api/public-auth/google/callback}
@@ -76,6 +94,7 @@ services:
       - tts_cache:/var/cache/livematch-tts
       - booking_slips:/var/lib/livematch/booking-slips
       - announcement_bells:/var/lib/livematch/announcement-bells
+      - tournament_files:/var/lib/livematch/tournament-files
     depends_on:
       postgres:
         condition: service_healthy
@@ -109,7 +128,9 @@ services:
 volumes:
   frontend_node_modules:
   pos_node_modules:
+  tournament_node_modules:
   postgres_data:
   tts_cache:
   booking_slips:
   announcement_bells:
+  tournament_files:

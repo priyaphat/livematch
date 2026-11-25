@@ -31,10 +31,10 @@ Target users:
 
 ## Tech Stack
 
-- Docker services: frontend, backend, pgAdmin, PostgreSQL
+- Docker services: frontend, pos, tournament, backend, pgAdmin, PostgreSQL
 - Backend language: Go
 - Database: PostgreSQL
-- Frontend: Vue
+- Frontend: Vue (main), React (POS and Tournament)
 - Styling: Tailwind CSS
 - Frontend test framework: Vitest
 - Backend test framework: Go test
@@ -45,10 +45,22 @@ Target users:
 - Required services:
   - `frontend`: Vue + Tailwind CSS app
   - `backend`: Go API service
+  - `tournament`: React + Tailwind + PWA app on port 5181
   - `postgres`: PostgreSQL database
   - `pgadmin`: database admin UI for local development
 - Keep service names consistent across Docker Compose, environment variables, and documentation.
 - Backend should connect to PostgreSQL through the Docker network using the `postgres` service name.
+
+## Tournament Domain
+
+- Tournament is separate from LiveMatch Match/POS, but shares the Go backend, PostgreSQL, Owner identity, Coin ledger, Backoffice and deployment infrastructure.
+- All Tournament tables and authenticated queries must be tenant-scoped by `admin_id`.
+- Owner authenticates with the main Admin account. Tournament Staff use `{AdminNo}-T01` through `T05` plus a six-digit PIN. Directors use a generated 12-digit code. These sessions are separate and HttpOnly.
+- Never trust role/name headers from clients. Resolve tenant, role and permissions exclusively from server sessions.
+- When `tournamentEnabled` is disabled, hide the dashboard card, deny Tournament APIs/login and revoke Staff and Director sessions.
+- Tournament API prefixes are `/api/tournament/*`, `/api/public-tournament/*`, and `/api/auth/tournament/*`.
+- Monetary values in Tournament persistence are integer satang. Timestamps are `timestamptz`; user-facing times use `Asia/Bangkok`.
+- Production Tournament data starts empty. Mock data is permitted only in test fixtures.
 
 ## Theme
 

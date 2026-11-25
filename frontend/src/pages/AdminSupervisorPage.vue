@@ -23,6 +23,7 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Trash2,
+  Trophy,
   Upload,
   Users,
   X,
@@ -167,8 +168,13 @@ const primaryStats = computed(() => [
 const visiblePrimaryStats = computed(() => primaryStats.value.filter((stat) => stat.label !== 'Coin ที่เหลือ'))
 const visibleFeatureCardCount = computed(() => [
   props.auth.features?.memberEnabled,
-  props.auth.features?.bookingEnabled
+  props.auth.features?.bookingEnabled,
+  props.auth.features?.tournamentEnabled
 ].filter(Boolean).length)
+const tournamentBaseUrl = import.meta.env.VITE_TOURNAMENT_BASE_URL || 'http://localhost:5181'
+function openTournament() {
+  window.location.assign(tournamentBaseUrl)
+}
 
 const detailStats = computed(() => [
   { label: 'เกมจริงทั้งหมด', value: numberValue(totals.value.matches), caption: `จบแล้ว ${numberValue(totals.value.historyMatches)} เกม`, icon: Activity },
@@ -364,7 +370,8 @@ function updateDashboardAnnouncement(index, value) {
       class="grid gap-3"
       :class="{
         'grid-cols-1': visibleFeatureCardCount === 1,
-        'sm:grid-cols-2': visibleFeatureCardCount === 2
+        'sm:grid-cols-2': visibleFeatureCardCount === 2,
+        'sm:grid-cols-3': visibleFeatureCardCount >= 3
       }"
     >
       <button v-if="auth.features?.memberEnabled" class="group rounded-xl border border-court-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-court-500 dark:border-court-900 dark:bg-stone-900" @click="navigateAdminFeature('members')">
@@ -378,6 +385,14 @@ function updateDashboardAnnouncement(index, value) {
         <h2 class="mt-4 text-xl font-black">ระบบจองสนาม</h2>
         <p class="mt-1 text-sm font-semibold text-stone-500">ตารางสนาม การชำระเงิน และอนุมัติการจอง</p>
         <p class="mt-3 text-sm font-black text-sky-700 dark:text-sky-300">{{ Number(auth.bookingCount || 0).toLocaleString('th-TH') }} รายการ →</p>
+      </button>
+      <button v-if="auth.features?.tournamentEnabled" type="button" data-testid="tournament-feature-card" class="group rounded-xl border border-amber-200 bg-white p-5 text-left shadow-soft transition hover:-translate-y-0.5 hover:border-amber-500 dark:border-amber-900 dark:bg-stone-900" aria-label="เปิดระบบจัดแข่ง" @click="openTournament">
+        <div class="flex items-start justify-between gap-3">
+          <span class="grid h-12 w-12 place-items-center rounded-xl bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"><Trophy class="h-6 w-6" /></span>
+          <span class="rounded-full bg-amber-100 px-3 py-1 text-xs font-black text-amber-800 dark:bg-amber-950 dark:text-amber-200">เปิดระบบ →</span>
+        </div>
+        <h2 class="mt-4 text-xl font-black">ระบบจัดแข่ง</h2>
+        <p class="mt-1 text-sm font-semibold text-stone-500">รับสมัคร จัดสาย และบริหารการแข่งขันแยกจาก Match</p>
       </button>
     </section>
 

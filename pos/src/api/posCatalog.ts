@@ -65,6 +65,7 @@ export async function posRequest<T>(path: string, init: RequestInit = {}): Promi
   const token = csrfToken();
   const response = await fetch(path, {
     ...init,
+    cache: init.cache || 'no-store',
     credentials: 'include',
     headers: {
       Accept: 'application/json',

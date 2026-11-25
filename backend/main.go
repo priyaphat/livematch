@@ -21,9 +21,10 @@ import (
 )
 
 type app struct {
-	db         *sql.DB
-	tts        *ttsService
-	monitoring *apiMonitoring
+	db            *sql.DB
+	tts           *ttsService
+	monitoring    *apiMonitoring
+	tournamentHub *tournamentRealtimeHub
 }
 
 const defaultAnnouncementTemplate = "บุฟเฟ่ต์สนามที่ {court}\n{pause}\nคุณ{a} คุณ{b} คุณ{c} คุณ{d}"
@@ -319,18 +320,22 @@ func validateProductionConfig() error {
 	if !strings.EqualFold(strings.TrimSpace(os.Getenv("APP_ENV")), "production") {
 		return nil
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/")
-	if !strings.HasPrefix(strings.ToLower(baseURL), "https://") {
-		return errors.New("APP_BASE_URL must use HTTPS when APP_ENV=production")
-	}
 	missing := []string{}
-	for _, key := range []string{"APP_ALLOWED_ORIGINS", "APP_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"} {
+	for _, key := range []string{"APP_ALLOWED_ORIGINS", "APP_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "TOURNAMENT_BASE_URL"} {
 		if strings.TrimSpace(os.Getenv(key)) == "" {
 			missing = append(missing, key)
 		}
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("production configuration missing: %s", strings.Join(missing, ", "))
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_BASE_URL")), "/")
+	if !strings.HasPrefix(strings.ToLower(baseURL), "https://") {
+		return errors.New("APP_BASE_URL must use HTTPS when APP_ENV=production")
+	}
+	tournamentURL := strings.TrimRight(strings.TrimSpace(os.Getenv("TOURNAMENT_BASE_URL")), "/")
+	if !strings.HasPrefix(strings.ToLower(tournamentURL), "https://") {
+		return errors.New("TOURNAMENT_BASE_URL must use HTTPS when APP_ENV=production")
 	}
 	if len(configuredGoogleRedirectURLs()) == 0 {
 		return errors.New("production configuration missing: GOOGLE_REDIRECT_URLS or GOOGLE_REDIRECT_URL")
@@ -363,6 +368,11 @@ func main() {
 	if err := a.migrate(context.Background()); err != nil {
 		log.Fatal(err)
 	}
+	if err := a.migrateTournament(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+	a.tournamentHub = newTournamentRealtimeHub(db)
+	go a.tournamentHub.run(context.Background())
 	if err := os.MkdirAll(bookingSlipStorageDir(), 0o750); err != nil {
 		log.Fatal(err)
 	}
@@ -391,6 +401,8 @@ func main() {
 	mux.HandleFunc("/api/booking-telegram/webhook/", a.handleBookingTelegramWebhook)
 	mux.HandleFunc("/api/public-auth/", a.handlePublicAuth)
 	mux.HandleFunc("/api/public-booking/", a.handlePublicBooking)
+	mux.HandleFunc("/api/tournament/", a.handleTournamentRoutes)
+	mux.HandleFunc("/api/public-tournament/", a.handlePublicTournamentRoutes)
 	mux.HandleFunc("/api/profile/", a.handleProfile)
 	mux.HandleFunc("/api/member-avatar/", a.serveMemberAvatar)
 	mux.HandleFunc("/api/supervisor/summary", a.handleSupervisorSummary)
@@ -863,10 +875,12 @@ func (a *app) migrate(ctx context.Context) error {
 			member_enabled boolean not null default false,
 			booking_enabled boolean not null default false,
 			pos_enabled boolean not null default false,
+			tournament_enabled boolean not null default false,
 			updated_by text not null default '',
 			updated_at timestamptz not null default now()
 		);
 		alter table admin_features add column if not exists pos_enabled boolean not null default false;
+		alter table admin_features add column if not exists tournament_enabled boolean not null default false;
 		create table if not exists public_users (
 			id text primary key,
 			google_sub text not null unique,
@@ -6379,7 +6393,7 @@ func (a *app) withCORS(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", requestID)
 		origin := r.Header.Get("Origin")
 		allowed := origin == ""
-		for _, candidate := range strings.Split(os.Getenv("APP_ALLOWED_ORIGINS")+","+os.Getenv("APP_BASE_URL")+","+os.Getenv("POS_BASE_URL"), ",") {
+		for _, candidate := range strings.Split(os.Getenv("APP_ALLOWED_ORIGINS")+","+os.Getenv("APP_BASE_URL")+","+os.Getenv("POS_BASE_URL")+","+os.Getenv("TOURNAMENT_BASE_URL"), ",") {
 			if strings.TrimSpace(candidate) != "" && strings.EqualFold(strings.TrimRight(origin, "/"), strings.TrimRight(strings.TrimSpace(candidate), "/")) {
 				allowed = true
 				break
@@ -6422,7 +6436,9 @@ func (a *app) withCORS(next http.Handler) http.Handler {
 		_, hasBackofficeSession := readSessionCookie(r, backofficeSessionKind)
 		_, hasPublicSession := readSessionCookie(r, publicSessionKind)
 		_, hasPOSStaffSession := readSessionCookie(r, posStaffSessionKind)
-		if unsafe && (hasAdminSession || hasBackofficeSession || hasPublicSession || hasPOSStaffSession) && r.Header.Get("X-CSRF-Token") != csrfToken {
+		_, hasTournamentStaffSession := readSessionCookie(r, tournamentStaffSessionKind)
+		_, hasTournamentDirectorSession := readSessionCookie(r, tournamentDirectorSessionKind)
+		if unsafe && (hasAdminSession || hasBackofficeSession || hasPublicSession || hasPOSStaffSession || hasTournamentStaffSession || hasTournamentDirectorSession) && r.Header.Get("X-CSRF-Token") != csrfToken {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "invalid csrf token"})
 			return
 		}

@@ -309,6 +309,8 @@ const forms = reactive({
   backofficeCoinNote: '',
 	backofficeLiveMatchCost: null,
 	backofficeLiveShareCost: null,
+	backofficeTournamentFreeParticipants: 20,
+	backofficeTournamentCoinPerParticipant: 10,
 	backofficeSettingsSaving: false,
   backofficeCoinPackages: [],
   backofficeSubscriptionPackages: [],
@@ -455,7 +457,7 @@ const auth = reactive({
   promptPayAvailable: false,
   subscriptionEligibility: { canPurchase: true, reason: '', renewal: false, estimatedStartDate: '' },
   coinOrders: [],
-  features: { memberEnabled: false, bookingEnabled: false, posEnabled: false },
+  features: { memberEnabled: false, bookingEnabled: false, posEnabled: false, tournamentEnabled: false },
   memberCount: 0,
   bookingCount: 0,
   posSaleCount: 0,
@@ -1192,6 +1194,8 @@ async function restoreBackoffice() {
     forms.backofficeSummary = await loadBackofficeBootstrap()
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
+    forms.backofficeTournamentFreeParticipants = forms.backofficeSummary.tournamentFreeParticipants ?? 20
+    forms.backofficeTournamentCoinPerParticipant = forms.backofficeSummary.tournamentCoinPerParticipant ?? 10
     backoffice.loaded = { system: true }
     backoffice.unlocked = true
   } catch (error) {
@@ -1211,6 +1215,8 @@ async function loadBackoffice() {
     })
     forms.backofficeLiveMatchCost = forms.backofficeSummary.liveMatchSessionCost
     forms.backofficeLiveShareCost = forms.backofficeSummary.liveShareSessionCost
+    forms.backofficeTournamentFreeParticipants = forms.backofficeSummary.tournamentFreeParticipants ?? 20
+    forms.backofficeTournamentCoinPerParticipant = forms.backofficeSummary.tournamentCoinPerParticipant ?? 10
     backoffice.loaded = { system: true }
     backoffice.unlocked = true
     forms.backofficePassword = ''
@@ -1508,7 +1514,9 @@ async function saveBackofficeSettings() {
       headers: backofficeAuthHeaders(),
       body: JSON.stringify({
         liveMatchSessionCost: Number(forms.backofficeLiveMatchCost),
-        liveShareSessionCost: Number(forms.backofficeLiveShareCost)
+        liveShareSessionCost: Number(forms.backofficeLiveShareCost),
+        tournamentFreeParticipants: Number(forms.backofficeTournamentFreeParticipants),
+        tournamentCoinPerParticipant: Number(forms.backofficeTournamentCoinPerParticipant)
       })
 		})
     mergeBackofficeSummary(payload)
@@ -1783,7 +1791,7 @@ function applyAdminPayload(payload) {
   auth.liveMatchSessionCost = payload.liveMatchSessionCost ?? null
   auth.liveShareSessionCost = payload.liveShareSessionCost ?? null
   auth.benefits = payload.benefits || { discountPercent: 0, pricing: {}, subscription: null }
-  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false, posEnabled: false }
+  auth.features = payload.features || { memberEnabled: false, bookingEnabled: false, posEnabled: false, tournamentEnabled: false }
   auth.memberCount = Number(payload.memberCount || 0)
   auth.bookingCount = Number(payload.bookingCount || 0)
   auth.posSaleCount = Number(payload.posSaleCount || 0)

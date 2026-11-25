@@ -1,0 +1,6 @@
+{
+  "name": "LiveMatch Tournament — ระบบจัดการแข่งขันแบดมินตัน",
+  "description": "ระบบบริหารจัดการแข่งขันแบดมินตันครบวงจร แยกออกจากระบบ Match เดิม พร้อมระบบสายการแข่งขัน กรรมการ และผลคะแนนสด",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
