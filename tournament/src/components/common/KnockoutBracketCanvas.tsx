@@ -3,7 +3,7 @@ import { Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import { MatchRecord, MatchStage } from '../../types/tournament';
 import { StatusIndicator, TeamLogoBadge } from './UIPrimitives';
 
-const WINNER_STAGE_ORDER: MatchStage[] = ['R64', 'R32', 'R16', 'QF', 'SF', 'F'];
+const WINNER_STAGE_ORDER: MatchStage[] = ['R64', 'R32', 'R16', 'QF', 'SF', 'F', 'P3'];
 const STAGE_LABELS: Partial<Record<MatchStage, string>> = {
   group: 'รอบแบ่งกลุ่ม',
   R64: 'รอบ 64',
@@ -12,6 +12,7 @@ const STAGE_LABELS: Partial<Record<MatchStage, string>> = {
   QF: 'รอบ 8 ทีม (QF)',
   SF: 'รอบรองชนะเลิศ (SF)',
   F: 'รอบชิงชนะเลิศ (Final)',
+  P3: 'ชิงอันดับ 3–4',
   GF: 'Grand Final',
   GF_RESET: 'Grand Final Reset',
 };
@@ -435,6 +436,40 @@ export const KnockoutBracketCanvas: React.FC<{
             })}
           </div>
         </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * Public/share views can receive either a legacy combined bracket or the two
+ * placement brackets created after group play. Keep them as separate canvases
+ * so rounds with the same stage (SF/F) never overlap visually.
+ */
+export const PlacementAwareKnockoutBrackets: React.FC<
+  React.ComponentProps<typeof KnockoutBracketCanvas>
+> = (props) => {
+  const championship = props.matches.filter((match) => match.placementBracket === 'championship');
+  const thirdPlace = props.matches.filter((match) => match.placementBracket === 'third_place');
+  if (championship.length === 0 && thirdPlace.length === 0) {
+    return <KnockoutBracketCanvas {...props} />;
+  }
+  const baseTitle = props.title ? `${props.title} · ` : '';
+  return (
+    <div className="space-y-4">
+      {championship.length > 0 && (
+        <KnockoutBracketCanvas
+          {...props}
+          matches={championship}
+          title={`${baseTitle}สายอันดับ 1 ของกลุ่ม · ชิงอันดับ 1–2`}
+        />
+      )}
+      {thirdPlace.length > 0 && (
+        <KnockoutBracketCanvas
+          {...props}
+          matches={thirdPlace}
+          title={`${baseTitle}สายอันดับ 2 ของกลุ่ม · ชิงอันดับ 3–4`}
+        />
       )}
     </div>
   );

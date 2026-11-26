@@ -313,6 +313,10 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
   const [overrideReason, setOverrideReason] = useState('');
   const [modalCourtId, setModalCourtId] = useState<string>('');
   const [modalUmpireId, setModalUmpireId] = useState<string>('');
+  const [knockoutModeOpen, setKnockoutModeOpen] = useState(false);
+  const [knockoutMode, setKnockoutMode] = useState<'combined' | 'split_rank_brackets'>('combined');
+  const [includeThirdPlacePlayoff, setIncludeThirdPlacePlayoff] = useState(false);
+  const [creatingKnockout, setCreatingKnockout] = useState(false);
 
   // Pagination states across Draw tabs
   const [applicantsPage, setApplicantsPage] = useState(1);
@@ -342,6 +346,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
             p.tournamentId === tournament.id &&
             p.divisionId === activeDivision?.id &&
             p.format === effectiveFormat &&
+            p.documentStatus === 'approved' &&
             !p.withdrawn &&
             !p.waitingList
         )
@@ -369,6 +374,16 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
     () => divisionMatches.filter((m) => m.stage !== 'group'),
     [divisionMatches]
   );
+
+  const championshipMatches = useMemo(
+    () => koMatches.filter((m) => m.placementBracket === 'championship'),
+    [koMatches]
+  );
+  const thirdPlaceMatches = useMemo(
+    () => koMatches.filter((m) => m.placementBracket === 'third_place'),
+    [koMatches]
+  );
+  const hasSplitRankBrackets = championshipMatches.length > 0 || thirdPlaceMatches.length > 0;
 
   const tournamentUmpires = useMemo(
     () => state.umpires.filter((u) => u.tournamentId === tournament.id && u.active),
@@ -615,7 +630,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       content = `<table><thead><tr><th>วัน/เวลา</th><th>สนาม</th><th>คู่ที่</th><th>ทีม A</th><th>ทีม B</th><th>กรรมการ</th><th>สถานะ</th></tr></thead><tbody>${sorted.map((match) => `<tr><td>${escapeHtml(match.scheduledDate || '')} ${escapeHtml(match.scheduledTime || match.estimatedStart || '')}</td><td>${escapeHtml(courtName(match.courtId))}</td><td>${escapeHtml(match.matchCode)}</td><td>${escapeHtml(match.teamAName)}</td><td>${escapeHtml(match.teamBName)}</td><td>${escapeHtml(match.umpireName || '—')}</td><td>${escapeHtml(match.status)}</td></tr>`).join('')}</tbody></table>`;
     } else {
       title = `สายการแข่งขัน · ${divisionName}`;
-      const stageOrder = ['group', 'R64', 'R32', 'R16', 'QF', 'SF', 'F', 'LB1', 'GF', 'GF_RESET'];
+      const stageOrder = ['group', 'R64', 'R32', 'R16', 'QF', 'SF', 'F', 'P3', 'LB1', 'GF', 'GF_RESET'];
       const stages = [...new Set(divisionMatches.map((match) => match.stage))].sort((a, b) => stageOrder.indexOf(a) - stageOrder.indexOf(b));
       content = stages.map((stage) => `<section class="stage"><h2>${escapeHtml(stage === 'group' ? 'รอบแบ่งกลุ่ม' : stage)}</h2>${divisionMatches.filter((match) => match.stage === stage).map((match) => `<div class="bracket-match"><strong>${escapeHtml(match.matchCode)}</strong><span>${escapeHtml(match.teamAName)}</span><b>${escapeHtml(match.sets.map((set) => `${set.scoreA}-${set.scoreB}`).join(' · ') || '—')}</b><span>${escapeHtml(match.teamBName)}</span></div>`).join('')}</section>`).join('') || '<p>ยังไม่มีสายการแข่งขัน</p>';
     }
@@ -667,6 +682,15 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
     }
     return ordered;
   }, [groupStandings, qualifiersPerGroup, divisionPlayers]);
+
+  const rankOneTeams = useMemo(
+    () => qualifiedSeededTeams.filter((team) => team.rank === 1),
+    [qualifiedSeededTeams]
+  );
+  const rankTwoTeams = useMemo(
+    () => qualifiedSeededTeams.filter((team) => team.rank === 2),
+    [qualifiedSeededTeams]
+  );
 
   // Draw Preview / Random Generator (Before vs After)
   const buildRandomGroups = async () => {
@@ -810,39 +834,45 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       return;
     }
 
-    const generatedKo = generateKnockoutMatchesFromTeams(
-      qualifiedSeededTeams,
-      tournament,
-      activeDivision.id,
-      activeDivision.code,
-      effectiveFormat
-    );
+    setKnockoutMode('combined');
+    setIncludeThirdPlacePlayoff(false);
+    setKnockoutModeOpen(true);
+  };
 
-    const firstRoundLabel = generatedKo[0]?.stage || 'SF';
-    const impact: string[] = [
-      `คัดทีมเข้ารอบ ${qualifiedSeededTeams.length} ทีม (จาก ${groupStandings.length} กลุ่ม · กลุ่มละ ${qualifiersPerGroup} อันดับแรก)`,
-      `จัดประกบไขว้สายอัตโนมัติเริ่มที่รอบ ${firstRoundLabel} (รวมสาย Knockout ${generatedKo.length} คู่)`,
-    ];
-
-    requestConfirm({
-      title: `สร้างสาย Knockout และไปแข่งต่อในขั้นตอนที่ 4?`,
-      description: `นำรายชื่อทีมที่ผ่านเข้ารอบจากตารางคะแนนรอบวนแข่ง ไปสร้างสาย Knockout (${activeDivision.nameTh})`,
-      confirmLabel: 'สร้างสาย Knockout & ไปขั้นตอนต่อไป',
-      impactLines: impact,
-      onConfirm: async () => {
-        await apiFetch('/api/draw/advance-knockout', {
-          method: 'POST',
-          body: JSON.stringify({
-            tournamentId: tournament.id,
-            divisionId: activeDivision.id,
-            teamIds: qualifiedSeededTeams.map((team) => team.id),
-          }),
-        });
-        await refreshState();
-        setSubTab('knockout');
-        notify('success', `สร้างสาย Knockout ${generatedKo.length} คู่ และเข้าสู่ขั้นตอนที่ 4 แล้ว`);
-      },
-    });
+  const createKnockout = async () => {
+    if (!activeDivision || creatingKnockout) return;
+    if (knockoutMode === 'split_rank_brackets' && (rankOneTeams.length < 2 || rankTwoTeams.length < 2)) {
+      notify('error', 'การแยกสายต้องมีอย่างน้อย 2 กลุ่ม และกำหนดให้เข้ารอบอย่างน้อยกลุ่มละ 2 ทีม');
+      return;
+    }
+    setCreatingKnockout(true);
+    try {
+      const result = await apiFetch<{ matchCount: number; mode: string }>('/api/draw/advance-knockout', {
+        method: 'POST',
+        body: JSON.stringify({
+          tournamentId: tournament.id,
+          divisionId: activeDivision.id,
+          mode: knockoutMode,
+          teamIds: qualifiedSeededTeams.map((team) => team.id),
+          rankOneTeamIds: rankOneTeams.map((team) => team.id),
+          rankTwoTeamIds: rankTwoTeams.map((team) => team.id),
+          thirdPlacePlayoff: knockoutMode === 'combined' && includeThirdPlacePlayoff,
+        }),
+      });
+      await refreshState();
+      setKnockoutModeOpen(false);
+      setSubTab('knockout');
+      notify(
+        'success',
+        knockoutMode === 'split_rank_brackets'
+          ? `สร้าง 2 สายแล้ว ${result.matchCount} คู่: สายชิงอันดับ 1–2 และสายชิงอันดับ 3–4`
+          : `สร้างสาย Knockout รวม ${result.matchCount} คู่${includeThirdPlacePlayoff ? ' พร้อมคู่ชิงอันดับ 3–4' : ''} และเข้าสู่ขั้นตอนที่ 5 แล้ว`
+      );
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'สร้างสาย Knockout ไม่สำเร็จ');
+    } finally {
+      setCreatingKnockout(false);
+    }
   };
 
   const openMatchModal = (m: MatchRecord) => {
@@ -2152,6 +2182,31 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
               actionLabel="ไปขั้นตอนที่ 4 (ตารางคะแนนรอบแรก)"
               onAction={() => setSubTab('groups')}
             />
+          ) : hasSplitRankBrackets ? (
+            <div className="space-y-5">
+              <div className="rounded-xl border border-[#156143]/30 bg-[#ECFDF3] p-4 text-sm dark:border-[#229A6B]/30 dark:bg-[#0E2E1D]/40">
+                <div className="font-bold text-[#156143] dark:text-[#4ADE80]">แยกสายตามอันดับรอบแบ่งกลุ่ม</div>
+                <p className="mt-1 text-xs text-[#525C6B] dark:text-[#9AA8BC]">
+                  สายอันดับ 1 ใช้หาแชมป์และรองแชมป์ ส่วน Final ของสายอันดับ 2 ใช้ตัดสินอันดับ 3–4
+                </p>
+              </div>
+              {championshipMatches.length > 0 && (
+                <KnockoutBracketCanvas
+                  matches={championshipMatches}
+                  teamLogos={teamLogos}
+                  onSelectMatch={openMatchModal}
+                  title={`สายอันดับ 1 ของกลุ่ม — ชิงอันดับ 1–2 (${activeDivision?.nameTh})`}
+                />
+              )}
+              {thirdPlaceMatches.length > 0 && (
+                <KnockoutBracketCanvas
+                  matches={thirdPlaceMatches}
+                  teamLogos={teamLogos}
+                  onSelectMatch={openMatchModal}
+                  title={`สายอันดับ 2 ของกลุ่ม — ชิงอันดับ 3–4 (${activeDivision?.nameTh})`}
+                />
+              )}
+            </div>
           ) : (
             <KnockoutBracketCanvas
               matches={divisionMatches}
@@ -2333,6 +2388,91 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       )}
 
       {/* Match Detail / Quick Score / Admin Override Modal */}
+      {knockoutModeOpen && activeDivision && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-[#E2DFD5] bg-white shadow-2xl dark:border-[#25354C] dark:bg-[#131E2E]">
+            <div className="flex items-start justify-between gap-4 border-b border-[#E2DFD5] p-5 dark:border-[#25354C]">
+              <div>
+                <h3 className="text-base font-bold">เลือกวิธีสร้างสาย Knockout</h3>
+                <p className="mt-1 text-xs text-[#525C6B] dark:text-[#9AA8BC]">
+                  {activeDivision.nameTh} · รอบแบ่งกลุ่มจบครบ {groupMatchStats.finished}/{groupMatchStats.total} คู่
+                </p>
+              </div>
+              <button type="button" disabled={creatingKnockout} onClick={() => setKnockoutModeOpen(false)} className="rounded-lg p-2 hover:bg-[#F7F6F2] disabled:opacity-40 dark:hover:bg-[#1B293D]">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="space-y-3 p-5">
+              <button
+                type="button"
+                onClick={() => setKnockoutMode('combined')}
+                className={`w-full rounded-xl border p-4 text-left transition ${knockoutMode === 'combined' ? 'border-[#156143] bg-[#ECFDF3] ring-1 ring-[#156143] dark:bg-[#0E2E1D]/40' : 'border-[#E2DFD5] hover:border-[#156143]/50 dark:border-[#25354C]'}`}
+              >
+                <div className="flex items-start gap-3">
+                  <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${knockoutMode === 'combined' ? 'border-[#156143] bg-[#156143] text-white' : 'border-[#98A2B3]'}`}>{knockoutMode === 'combined' ? '✓' : ''}</span>
+                  <div>
+                    <div className="text-sm font-bold">สาย Knockout รวมทีมที่เข้ารอบทั้งหมด</div>
+                    <p className="mt-1 text-xs text-[#525C6B] dark:text-[#9AA8BC]">
+                      รวมอันดับที่ผ่านเข้ารอบ {qualifiedSeededTeams.length} ทีมไว้ในสายเดียว เพื่อหาอันดับ 1–2 ตามปกติ
+                    </p>
+                  </div>
+                </div>
+              </button>
+              <button
+                type="button"
+                disabled={rankOneTeams.length < 2 || rankTwoTeams.length < 2}
+                onClick={() => {
+                  setKnockoutMode('split_rank_brackets');
+                  setIncludeThirdPlacePlayoff(false);
+                }}
+                className={`w-full rounded-xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${knockoutMode === 'split_rank_brackets' ? 'border-[#156143] bg-[#ECFDF3] ring-1 ring-[#156143] dark:bg-[#0E2E1D]/40' : 'border-[#E2DFD5] hover:border-[#156143]/50 dark:border-[#25354C]'}`}
+              >
+                <div className="flex items-start gap-3">
+                  <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${knockoutMode === 'split_rank_brackets' ? 'border-[#156143] bg-[#156143] text-white' : 'border-[#98A2B3]'}`}>{knockoutMode === 'split_rank_brackets' ? '✓' : ''}</span>
+                  <div>
+                    <div className="text-sm font-bold">แยกสายอันดับ 1 และอันดับ 2 ของแต่ละกลุ่ม</div>
+                    <p className="mt-1 text-xs text-[#525C6B] dark:text-[#9AA8BC]">
+                      อันดับ 1 จำนวน {rankOneTeams.length} ทีม แข่งหาแชมป์–รองแชมป์ และอันดับ 2 จำนวน {rankTwoTeams.length} ทีม แข่งตัดสินอันดับ 3–4
+                    </p>
+                    {(rankOneTeams.length < 2 || rankTwoTeams.length < 2) && (
+                      <p className="mt-2 text-xs font-semibold text-amber-700 dark:text-amber-400">ต้องมีอย่างน้อย 2 กลุ่ม และรับเข้ารอบอย่างน้อยกลุ่มละ 2 ทีม</p>
+                    )}
+                  </div>
+                </div>
+              </button>
+              <label className={`flex items-start gap-3 rounded-xl border p-4 ${knockoutMode === 'combined' ? 'cursor-pointer border-[#E2DFD5] dark:border-[#25354C]' : 'cursor-not-allowed border-[#E2DFD5] opacity-55 dark:border-[#25354C]'}`}>
+                <input
+                  type="checkbox"
+                  checked={knockoutMode === 'combined' && includeThirdPlacePlayoff}
+                  disabled={knockoutMode !== 'combined' || qualifiedSeededTeams.length < 4}
+                  onChange={(event) => setIncludeThirdPlacePlayoff(event.target.checked)}
+                  className="mt-0.5 h-4 w-4 accent-[#156143]"
+                />
+                <span>
+                  <strong className="block text-sm">จัดคู่ชิงอันดับ 3–4 เพิ่ม</strong>
+                  <span className="mt-1 block text-xs text-[#525C6B] dark:text-[#9AA8BC]">
+                    {knockoutMode === 'split_rank_brackets'
+                      ? 'โหมดแยกสายใช้ Final ของสายอันดับ 2 ตัดสินอันดับ 3–4 อยู่แล้ว'
+                      : qualifiedSeededTeams.length < 4
+                      ? 'ต้องมีทีมเข้ารอบอย่างน้อย 4 ทีม'
+                      : 'นำผู้แพ้จากรอบรองชนะเลิศทั้ง 2 คู่มาแข่งกัน ผู้ชนะได้อันดับ 3 และผู้แพ้ได้อันดับ 4'}
+                  </span>
+                </span>
+              </label>
+              <div className="rounded-lg bg-[#F7F6F2] px-3 py-2 text-[11px] text-[#525C6B] dark:bg-[#0B121C] dark:text-[#9AA8BC]">
+                เมื่อยืนยัน ระบบจะสร้าง Revision ใหม่และแทนสาย Knockout เดิม หากสายเดิมเริ่มแข่งขันแล้วระบบจะไม่อนุญาตให้สร้างทับ
+              </div>
+            </div>
+            <div className="flex flex-col-reverse gap-2 border-t border-[#E2DFD5] bg-[#F7F6F2] p-4 sm:flex-row sm:justify-end dark:border-[#25354C] dark:bg-[#0B121C]">
+              <button type="button" disabled={creatingKnockout} onClick={() => setKnockoutModeOpen(false)} className="min-h-11 rounded-lg border border-[#E2DFD5] bg-white px-5 text-xs font-semibold disabled:opacity-40 dark:border-[#25354C] dark:bg-[#131E2E]">ยกเลิก</button>
+              <button type="button" disabled={creatingKnockout} onClick={createKnockout} className="min-h-11 rounded-lg bg-[#156143] px-5 text-xs font-bold text-white disabled:opacity-50">
+                {creatingKnockout ? 'กำลังสร้างสาย…' : 'ยืนยันสร้างสายและไปขั้นตอนที่ 5'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {selectedTeam && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4" role="dialog" aria-modal="true">
           <div className="w-full max-w-2xl overflow-hidden rounded-2xl border border-[#E2DFD5] bg-white shadow-2xl dark:border-[#25354C] dark:bg-[#131E2E]">

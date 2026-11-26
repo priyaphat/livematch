@@ -335,7 +335,7 @@ export interface DirectorUmpire {
   history: { matchId: string; matchCode: string; date: string; note: string }[];
 }
 
-export type MatchStage = 'group' | 'R64' | 'R32' | 'R16' | 'QF' | 'SF' | 'F' | `LB${number}` | 'GF' | 'GF_RESET';
+export type MatchStage = 'group' | 'R64' | 'R32' | 'R16' | 'QF' | 'SF' | 'F' | 'P3' | `LB${number}` | 'GF' | 'GF_RESET';
 export type MatchStatus =
   | 'scheduled'
   | 'calling'
@@ -412,6 +412,8 @@ export interface MatchRecord {
   resetMatchId?: string;
   conditional?: boolean;
   bracketSide?: 'winners' | 'losers' | 'final';
+  placementBracket?: 'championship' | 'third_place';
+  placementLabel?: string;
   courtId?: string;
   scheduledTime: string;
   scheduledDate?: string;

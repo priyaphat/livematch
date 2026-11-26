@@ -251,21 +251,34 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
 
   const handleUpdatePlayer = async (id: string, patch: Partial<PlayerRecord>, msg: string) => {
     try {
-      const res = await apiFetch<{ promotedPlayer?: PlayerRecord | null }>(`/api/players/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(patch),
+      const withdrawing = patch.withdrawn === true;
+      const res = await apiFetch<{ promotedPlayer?: PlayerRecord | null; promotedPlayerId?: string }>(`/api/players/${id}`, {
+        method: withdrawing ? 'DELETE' : 'PATCH',
+        body: withdrawing ? undefined : JSON.stringify(patch),
       });
       await refreshState();
-      if (res.promotedPlayer) {
+      if (res.promotedPlayer || res.promotedPlayerId) {
         notify(
           'success',
-          `${msg} · เลื่อนสิทธิ์ "${res.promotedPlayer.teamName}" จาก Waiting List อัตโนมัติแล้ว!`
+          res.promotedPlayer
+            ? `${msg} · เลื่อนสิทธิ์ "${res.promotedPlayer.teamName}" จาก Waiting List อัตโนมัติแล้ว!`
+            : `${msg} · เลื่อนผู้สมัครลำดับแรกจาก Waiting List อัตโนมัติแล้ว`
         );
       } else {
         notify('success', msg);
       }
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'อัปเดตไม่สำเร็จ');
+    }
+  };
+
+  const handlePromoteWaitingPlayer = async (player: PlayerRecord) => {
+    try {
+      await apiFetch(`/api/players/${player.id}/promote-waiting`, { method: 'POST' });
+      await refreshState();
+      notify('success', `เลื่อน ${player.teamName} เป็นผู้สมัครปกติแล้ว`);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'เลื่อนสถานะ Waiting List ไม่สำเร็จ');
     }
   };
 
@@ -1089,6 +1102,14 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                                 className="min-h-[34px] px-2.5 rounded-lg bg-[#156143] text-white font-semibold"
                               >
                                 Check-in
+                              </button>
+                            )}
+                            {p.waitingList && !p.withdrawn && hasPermission('approveRegistration') && (
+                              <button
+                                onClick={() => void handlePromoteWaitingPlayer(p)}
+                                className="min-h-[34px] px-2.5 rounded-lg border border-[#156143] text-[#156143] dark:text-[#4ADE80] font-semibold"
+                              >
+                                เลื่อนเป็นสถานะปกติ
                               </button>
                             )}
                             {hasPermission('approveRegistration') && (

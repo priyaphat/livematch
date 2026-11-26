@@ -20,7 +20,7 @@ import {
   PaymentStatus,
   VerifyStatus,
 } from '../../types/tournament';
-import { KnockoutBracketCanvas } from '../common/KnockoutBracketCanvas';
+import { PlacementAwareKnockoutBrackets } from '../common/KnockoutBracketCanvas';
 import { EmptyStateCard, StatusIndicator, TeamLogoBadge, buildTeamLogoMap } from '../common/UIPrimitives';
 import { formatThaiDateTime } from '../../utils/registration';
 
@@ -368,14 +368,18 @@ export const PublicPlayerStatusPage: React.FC = () => {
                   <div className="text-[11px] text-[#525C6B] dark:text-[#9AA8BC]">1. อนุมัติใบสมัคร / ระดับมือ</div>
                   <StatusIndicator
                     tone={
-                      data.player.documentStatus === 'approved'
+                      data.player.withdrawn
+                        ? 'danger'
+                        : data.player.documentStatus === 'approved'
                         ? 'success'
                         : data.player.documentStatus === 'rejected'
                         ? 'danger'
                         : 'warning'
                     }
                     label={
-                      data.player.documentStatus === 'approved'
+                      data.player.withdrawn
+                        ? 'ถอนตัวจากการแข่งขันแล้ว'
+                        : data.player.documentStatus === 'approved'
                         ? 'อนุมัติแล้ว'
                         : data.player.documentStatus === 'rejected'
                         ? 'ไม่ผ่านการอนุมัติ'
@@ -414,7 +418,28 @@ export const PublicPlayerStatusPage: React.FC = () => {
                       เหตุผล: {data.player.paymentRejectReason}
                     </div>
                   )}
-                  {data.player.paymentStatus !== 'paid' && (
+                  {!data.player.withdrawn && data.player.documentStatus === 'pending' && (
+                    <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-[11px] text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                      รอเจ้าหน้าที่อนุมัติใบสมัครก่อน ระบบจึงจะเปิดข้อมูลชำระเงินและปุ่มแนบสลิป
+                    </div>
+                  )}
+                  {!data.player.withdrawn &&
+                    data.player.documentStatus === 'approved' &&
+                    data.player.paymentStatus !== 'paid' && (
+                    <div className="mt-2 rounded-lg border border-[#E2DFD5] bg-white p-3 text-[11px] leading-5 dark:border-[#25354C] dark:bg-[#131E2E]">
+                      <div className="font-bold text-[#156143] dark:text-[#4ADE80]">ข้อมูลชำระค่าสมัคร</div>
+                      <div>ยอดชำระ: <strong>฿{data.player.amountDue.toLocaleString()}</strong></div>
+                      <div>ธนาคาร: {data.tournament.paymentConfig.bankName || 'กรุณาติดต่อผู้จัด'}</div>
+                      <div>เลขบัญชี: <span className="font-mono font-semibold">{data.tournament.paymentConfig.bankAccountNo || '-'}</span></div>
+                      <div>ชื่อบัญชี: {data.tournament.paymentConfig.bankAccountName || '-'}</div>
+                      {data.tournament.paymentConfig.promptPayId && (
+                        <div>PromptPay: <span className="font-mono font-semibold">{data.tournament.paymentConfig.promptPayId}</span></div>
+                      )}
+                    </div>
+                  )}
+                  {!data.player.withdrawn &&
+                    data.player.documentStatus === 'approved' &&
+                    data.player.paymentStatus !== 'paid' && (
                     <label className="mt-2 w-full min-h-[38px] px-3 rounded-lg border border-dashed border-[#156143] text-[#156143] dark:text-[#4ADE80] font-semibold inline-flex items-center justify-center gap-1.5 cursor-pointer">
                       <Upload className="w-3.5 h-3.5" />
                       <span>อัปโหลดสลิปโอนเงินใหม่</span>
@@ -527,7 +552,7 @@ export const PublicPlayerStatusPage: React.FC = () => {
                   <CheckCircle2 className="w-4 h-4 text-[#156143]" />
                   <span>สายการแข่งขันรุ่น {division?.nameTh}</span>
                 </h3>
-                <KnockoutBracketCanvas
+                <PlacementAwareKnockoutBrackets
                   matches={data.divisionMatches}
                   teamLogos={teamLogos}
                   title={`สายการแข่งขัน — ${division?.nameTh || ''}`}

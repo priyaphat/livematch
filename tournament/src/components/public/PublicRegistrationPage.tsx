@@ -14,7 +14,7 @@ import {
   Video,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { apiFetch, dataUrlToBlob, stageTournamentFile } from '../../services/api';
+import { apiFetch } from '../../services/api';
 import { PlayerRecord, Tournament } from '../../types/tournament';
 import {
   formatThaiDateTimeRange,
@@ -92,7 +92,7 @@ export const PublicRegistrationPage: React.FC = () => {
       ? selectedDivision?.entryFeeDoubles || 800
       : selectedDivision?.entryFeeSingles || 500;
 
-  const [step, setStep] = useState<'form' | 'payment' | 'done'>('form');
+  const [step, setStep] = useState<'form' | 'done'>('form');
   const [submitting, setSubmitting] = useState(false);
 
   const [form, setForm] = useState({
@@ -136,9 +136,6 @@ export const PublicRegistrationPage: React.FC = () => {
     pdpaConsent: false,
   });
 
-  const [slipImage, setSlipImage] = useState('');
-  const [slipBank, setSlipBank] = useState('พร้อมเพย์ (PromptPay QR)');
-  const [slipRef, setSlipRef] = useState('');
   const [createdPlayer, setCreatedPlayer] = useState<PlayerRecord | null>(null);
 
   if (!tournament && publicLoading) {
@@ -204,10 +201,6 @@ export const PublicRegistrationPage: React.FC = () => {
       notify('error', 'ระดับมือและประเภทนี้มีผู้สมัครครบแล้ว กรุณาติดต่อผู้จัดรายการ');
       return;
     }
-    if (!slipImage) {
-      notify('error', 'กรุณาแนบหลักฐานสลิปโอนเงินก่อนส่งใบสมัคร');
-      return;
-    }
     if (!isVideoUrlValid) {
       notify('error', 'ลิงก์วิดีโอประเมินมือต้องขึ้นต้นด้วย http:// หรือ https://');
       return;
@@ -221,11 +214,6 @@ export const PublicRegistrationPage: React.FC = () => {
 
     setSubmitting(true);
     try {
-      const stagedSlip = await stageTournamentFile(
-        `/api/public/files/stage?token=${encodeURIComponent(tournament.publicToken || selectedTournamentId || '')}`,
-        dataUrlToBlob(slipImage),
-        'payment_slip'
-      );
       const created = await apiFetch<PlayerRecord>(`/api/public-tournament/register?token=${encodeURIComponent(tournament.publicToken || selectedTournamentId || '')}`, {
         method: 'POST',
         body: JSON.stringify({
@@ -279,14 +267,8 @@ export const PublicRegistrationPage: React.FC = () => {
           ],
           registrationSource: 'online',
           documentStatus: 'pending',
-          paymentStatus: 'pending_verify',
-          slipStatus: 'pending',
-          paymentChannel: 'PromptPay',
-          slipFileId: stagedSlip.fileId,
-          slipTransferBank: slipBank,
-          slipTransferRef: slipRef.trim() || `PP-${Date.now().toString().slice(-8)}`,
-          slipTransferAmount: fee,
-          slipUploadedAt: new Date().toISOString().slice(0, 16).replace('T', ' '),
+          paymentStatus: 'unpaid',
+          slipStatus: 'not_uploaded',
           amountPaid: 0,
           amountDue: fee,
           checkedIn: false,
@@ -297,7 +279,7 @@ export const PublicRegistrationPage: React.FC = () => {
       await refreshState();
       setCreatedPlayer(created);
       setStep('done');
-      notify('success', 'ส่งใบสมัครและสลิปโอนเงินสำเร็จ');
+      notify('success', 'ส่งใบสมัครสำเร็จ กรุณารออนุมัติก่อนชำระเงิน');
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'ส่งใบสมัครไม่สำเร็จ');
     } finally {
@@ -699,7 +681,9 @@ export const PublicRegistrationPage: React.FC = () => {
 
             <button
               type="button"
+              onClick={handleSubmit}
               disabled={
+                submitting ||
                 !selectedDivision ||
                 !form.firstName.trim() ||
                 !form.lastName.trim() ||
@@ -722,89 +706,13 @@ export const PublicRegistrationPage: React.FC = () => {
                     !form.partnerPdpaConsent ||
                     !form.partnerPhotoUrl))
               }
-              onClick={() => setStep('payment')}
               className="w-full min-h-[48px] rounded-xl bg-[#156143] hover:bg-[#104D35] text-white text-sm font-bold disabled:opacity-40"
             >
-              ถัดไป: ชำระเงิน & แนบสลิป (฿{fee.toLocaleString()}) →
+              {submitting ? 'กำลังส่งใบสมัคร...' : 'ส่งใบสมัครเพื่อรออนุมัติ'}
             </button>
-          </div>
-        ) : step === 'payment' ? (
-          <div className="rounded-2xl bg-white dark:bg-[#131E2E] border border-[#E2DFD5] dark:border-[#25354C] p-4 space-y-4 text-xs">
-            <div className="flex items-center justify-between border-b border-[#E2DFD5] dark:border-[#25354C] pb-3">
-              <div>
-                <div className="font-bold text-sm">ชำระค่าสมัคร & แนบหลักฐานโอนเงิน</div>
-                <div className="text-[11px] text-[#525C6B] dark:text-[#9AA8BC]">
-                  รุ่น {selectedDivision?.nameTh} ({effectiveFormat === 'doubles' ? 'คู่' : 'เดี่ยว'})
-                </div>
-              </div>
-              <div className="text-xl font-extrabold font-mono tabular-nums text-[#156143] dark:text-[#4ADE80]">
-                ฿{fee.toLocaleString()}
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-xl bg-[#F7F6F2] dark:bg-[#0B121C] border border-[#E2DFD5] dark:border-[#25354C] space-y-1.5">
-              <div className="font-bold">ข้อมูลการโอนเงิน / พร้อมเพย์</div>
-              <div>ธนาคาร: {tournament.paymentConfig.bankName || 'ธนาคารกสิกรไทย'}</div>
-              <div className="font-mono font-bold text-sm">
-                เลขบัญชี: {tournament.paymentConfig.bankAccountNo}
-              </div>
-              <div>ชื่อบัญชี: {tournament.paymentConfig.bankAccountName}</div>
-              {tournament.paymentConfig.promptPayId && (
-                <div className="font-mono">
-                  PromptPay ID: {tournament.paymentConfig.promptPayId}
-                </div>
-              )}
-            </div>
-
-            <div className="space-y-2">
-              <input
-                value={slipBank}
-                onChange={(e) => setSlipBank(e.target.value)}
-                placeholder="ธนาคารที่โอน (เช่น K PLUS / SCB / PromptPay)"
-                className="w-full min-h-[42px] px-3 rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
-              />
-              <input
-                value={slipRef}
-                onChange={(e) => setSlipRef(e.target.value)}
-                placeholder="เลขอ้างอิงสลิป (ถ้ามี)"
-                className="w-full min-h-[42px] px-3 rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
-              />
-              {slipImage && (
-                <img
-                  src={slipImage}
-                  alt="สลิปที่แนบ"
-                  className="w-full max-h-56 object-contain rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-white"
-                />
-              )}
-              <label className="w-full min-h-[46px] px-3 rounded-xl border-2 border-dashed border-[#156143] text-[#156143] dark:text-[#4ADE80] font-bold inline-flex items-center justify-center gap-2 cursor-pointer">
-                <Upload className="w-4 h-4" />
-                <span>{slipImage ? 'เปลี่ยนรูปสลิปโอนเงิน' : 'อัปโหลดรูปสลิปโอนเงิน (บังคับ) *'}</span>
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  className="sr-only"
-                  onChange={(e) => compressImageUpload(e, 720, (url) => setSlipImage(url))}
-                />
-              </label>
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setStep('form')}
-                className="flex-1 min-h-[46px] rounded-xl border border-[#E2DFD5] dark:border-[#25354C] font-semibold"
-              >
-                ← ย้อนแก้ไขข้อมูล
-              </button>
-              <button
-                type="button"
-                disabled={!slipImage || submitting}
-                onClick={handleSubmit}
-                className="flex-1 min-h-[46px] rounded-xl bg-[#156143] hover:bg-[#104D35] text-white font-bold disabled:opacity-40"
-              >
-                {submitting ? 'กำลังบันทึก...' : 'ยืนยันชำระเงิน & ส่งใบสมัคร'}
-              </button>
-            </div>
+            <p className="text-center text-[11px] text-[#525C6B] dark:text-[#9AA8BC]">
+              หลังเจ้าหน้าที่อนุมัติแล้ว ระบบจะแสดงช่องทางชำระเงินและปุ่มแนบสลิปในหน้าตรวจสอบสถานะ
+            </p>
           </div>
         ) : (
           <div className="rounded-2xl bg-white dark:bg-[#131E2E] border border-[#E2DFD5] dark:border-[#25354C] p-6 text-center space-y-4">
@@ -813,10 +721,10 @@ export const PublicRegistrationPage: React.FC = () => {
               <h2 className="text-lg font-bold">
                 {createdPlayer?.waitingList
                   ? 'บันทึกเข้าคิว Waiting List แล้ว'
-                  : 'ลงทะเบียนและแนบสลิปสำเร็จ!'}
+                  : 'ส่งใบสมัครสำเร็จ!'}
               </h2>
               <p className="text-xs text-[#525C6B] dark:text-[#9AA8BC] mt-1">
-                กรุณาบันทึกรหัสตรวจสอบหรือ QR Code ด้านล่างไว้ เพื่อใช้ติดตามสถานะอนุมัติ ผลตรวจสลิป และสายการแข่งขันของทีมคุณ
+                กรุณาบันทึกรหัสตรวจสอบหรือ QR Code ด้านล่างไว้ เมื่อใบสมัครได้รับอนุมัติแล้วให้กลับเข้าหน้าสถานะเพื่อชำระเงินและแนบสลิป
               </p>
             </div>
 

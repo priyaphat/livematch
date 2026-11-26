@@ -383,6 +383,57 @@ func TestTournamentSingleEliminationOnlyFirstRoundCanBeBye(t *testing.T) {
 	}
 }
 
+func TestTournamentSingleEliminationDistributesFiveTeamByes(t *testing.T) {
+	teams := []tournamentDrawTeam{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}, {ID: "5"}}
+	matches := buildEliminationMatches("t", "d-five", teams, false)
+	firstRound, byes := 0, 0
+	for _, raw := range matches {
+		match := raw.(map[string]any)
+		if stringValue(match["stage"], "") != "QF" {
+			continue
+		}
+		firstRound++
+		aID, bID := stringValue(match["teamAId"], ""), stringValue(match["teamBId"], "")
+		if aID == "" && bID == "" {
+			t.Fatalf("first round contains an empty-vs-empty branch: %#v", match)
+		}
+		if aID == "" || bID == "" {
+			byes++
+		}
+	}
+	if firstRound != 4 || byes != 3 {
+		t.Fatalf("first round/byes = %d/%d, want 4/3", firstRound, byes)
+	}
+}
+
+func TestTournamentThirdPlaceMatchRoutesSemifinalLosers(t *testing.T) {
+	teams := []tournamentDrawTeam{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}}
+	matches, added := addTournamentThirdPlaceMatch("t", "d-bronze", buildEliminationMatches("t", "d-bronze", teams, false))
+	if !added {
+		t.Fatal("expected third-place match to be added")
+	}
+	bronzeID := ""
+	for _, raw := range matches {
+		match := raw.(map[string]any)
+		if stringValue(match["stage"], "") == "P3" {
+			bronzeID = stringValue(match["id"], "")
+		}
+	}
+	if bronzeID == "" {
+		t.Fatal("third-place match missing")
+	}
+	semifinalRoutes := 0
+	for _, raw := range matches {
+		match := raw.(map[string]any)
+		if stringValue(match["stage"], "") == "SF" && stringValue(match["nextLoserMatchId"], "") == bronzeID {
+			semifinalRoutes++
+		}
+	}
+	if semifinalRoutes != 2 {
+		t.Fatalf("semifinal loser routes = %d, want 2", semifinalRoutes)
+	}
+}
+
 func TestTournamentDoubleEliminationHasWinnerLoserAndResetRoutes(t *testing.T) {
 	teams := []tournamentDrawTeam{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}, {ID: "5"}, {ID: "6"}, {ID: "7"}, {ID: "8"}}
 	matches := buildEliminationMatches("t", "d", teams, true)

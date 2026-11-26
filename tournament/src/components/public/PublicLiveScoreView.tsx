@@ -16,7 +16,7 @@ import { useApp } from '../../context/AppContext';
 import { PWAInstallButton } from '../../hooks/usePWAInstall';
 import { apiFetch } from '../../services/api';
 import { MatchRecord, Tournament } from '../../types/tournament';
-import { KnockoutBracketCanvas } from '../common/KnockoutBracketCanvas';
+import { PlacementAwareKnockoutBrackets } from '../common/KnockoutBracketCanvas';
 import {
   buildTeamLogoMap,
   EmergencyPauseBanner,
@@ -724,7 +724,7 @@ export const PublicLiveScoreView: React.FC = () => {
                 </select>
               </label>
             </div>
-            <KnockoutBracketCanvas
+            <PlacementAwareKnockoutBrackets
               kioskMode
               matches={kioskBracketMatches}
               teamLogos={teamLogos}
@@ -1312,7 +1312,7 @@ export const PublicLiveScoreView: React.FC = () => {
               <span>แชร์ลิงก์สาย</span>
             </button>
           </div>
-          <KnockoutBracketCanvas
+          <PlacementAwareKnockoutBrackets
             matches={bracketMatches}
             teamLogos={teamLogos}
             title={`สายการแข่งขันสาธารณะ — ${

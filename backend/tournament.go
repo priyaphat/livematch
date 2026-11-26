@@ -986,7 +986,13 @@ func (a *app) tournamentItemRoutes(w http.ResponseWriter, r *http.Request, path 
 			writeJSON(w, 409, map[string]string{"error": "ข้อมูลถูกแก้ไขจากอุปกรณ์อื่น", "code": "version_conflict"})
 			return
 		}
+		promoted, promoteErr := a.promoteTournamentWaitingLists(r.Context(), p.AdminID, id, out)
+		if promoteErr != nil {
+			writeJSON(w, 500, map[string]string{"error": "บันทึกการตั้งค่าแล้ว แต่ปรับ Waiting List ไม่สำเร็จ"})
+			return
+		}
 		out["version"] = version + 1
+		out["promotedWaitingList"] = promoted
 		a.tournamentAudit(r.Context(), p, id, "UPDATE_TOURNAMENT", "tournament", id, stringValue(patch["_auditReason"], ""), nil)
 		writeJSON(w, 200, out)
 		return
@@ -1131,7 +1137,11 @@ func (a *app) tournamentLegacyState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, _ := a.tournamentSummaries(r.Context(), p.AdminID)
-	players, _ := a.tournamentPayloadRows(r.Context(), `select id,payload from tournament_entries where admin_id=$1 and withdrawn_at is null order by created_at`, p.AdminID)
+	players, _ := a.tournamentPayloadRows(r.Context(), `select id,payload||jsonb_build_object(
+		'documentStatus',document_status,'paymentStatus',payment_status,'waitingList',waiting_list,
+		'withdrawn',false,'amountPaid',amount_paid_satang::numeric/100,
+		'amountDue',greatest(amount_due_satang-amount_paid_satang,0)::numeric/100
+	) from tournament_entries where admin_id=$1 and withdrawn_at is null order by created_at`, p.AdminID)
 	a.attachTournamentSlipURLs(r.Context(), p.AdminID, players)
 	umpires, _ := a.tournamentPayloadRows(r.Context(), `select id,payload from tournament_officials where admin_id=$1 order by created_at`, p.AdminID)
 	matchQuery := `select id,payload||jsonb_build_object('version',version) from tournament_matches where admin_id=$1 order by created_at`
@@ -1467,10 +1477,14 @@ func (a *app) tournamentRegistrationList(w http.ResponseWriter, r *http.Request)
 			and ($7='all' or document_status=$7)
 			and ($8='all' or ($8='online' and source in ('online','public')) or source=$8)`
 		if kind == "payments" {
-			base += ` and source in ('online','public')`
+			base += ` and source in ('online','public') and (payment_status<>'pending_verify' or coalesce(payload->>'slipFileId','')<>'')`
 		}
 		if err = a.db.QueryRowContext(r.Context(), `select count(*)`+base, p.AdminID, tournamentID, search, division, payment, checkIn, status, source).Scan(&total); err == nil {
-			rows, err = a.db.QueryContext(r.Context(), `select id,payload`+base+` order by created_at desc,id desc limit $9 offset $10`, p.AdminID, tournamentID, search, division, payment, checkIn, status, source, pageSize, offset)
+			rows, err = a.db.QueryContext(r.Context(), `select id,payload||jsonb_build_object(
+				'documentStatus',document_status,'paymentStatus',payment_status,'waitingList',waiting_list,
+				'withdrawn',withdrawn_at is not null,'amountPaid',amount_paid_satang::numeric/100,
+				'amountDue',greatest(amount_due_satang-amount_paid_satang,0)::numeric/100
+			)`+base+` order by created_at desc,id desc limit $9 offset $10`, p.AdminID, tournamentID, search, division, payment, checkIn, status, source, pageSize, offset)
 		}
 	}
 	if err != nil {
@@ -1578,6 +1592,60 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 		writeJSON(w, 200, map[string]string{"status": "ok"})
 		return
 	}
+	if len(parts) == 3 && r.Method == http.MethodPost && parts[2] == "promote-waiting" {
+		id := parts[1]
+		tx, err := a.db.BeginTx(r.Context(), nil)
+		if err != nil {
+			writeJSON(w, 500, map[string]string{"error": err.Error()})
+			return
+		}
+		defer tx.Rollback()
+		var tournamentID, divisionID, format string
+		var waiting, withdrawn bool
+		var settingsRaw []byte
+		if err = tx.QueryRowContext(r.Context(), `select e.tournament_id,coalesce(e.division_id,''),e.format,e.waiting_list,e.withdrawn_at is not null,t.settings from tournament_entries e join tournaments t on t.id=e.tournament_id and t.admin_id=e.admin_id where e.id=$1 and e.admin_id=$2 for update of e,t`, id, p.AdminID).Scan(&tournamentID, &divisionID, &format, &waiting, &withdrawn, &settingsRaw); err != nil {
+			writeJSON(w, 404, map[string]string{"error": "ไม่พบผู้สมัคร"})
+			return
+		}
+		if withdrawn {
+			writeJSON(w, 409, map[string]string{"error": "ใบสมัครนี้ถอนตัวแล้ว", "code": "registration_withdrawn"})
+			return
+		}
+		if !waiting {
+			writeJSON(w, 409, map[string]string{"error": "รายการนี้เป็นผู้สมัครปกติอยู่แล้ว", "code": "not_waiting_list"})
+			return
+		}
+		settings := map[string]any{}
+		_ = json.Unmarshal(settingsRaw, &settings)
+		quota, unlimited, quotaErr := tournamentDivisionQuota(settings, divisionID, format)
+		if quotaErr != nil {
+			writeJSON(w, 409, map[string]string{"error": quotaErr.Error(), "code": "invalid_division_quota"})
+			return
+		}
+		var active int
+		if err = tx.QueryRowContext(r.Context(), `select count(*) from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and not waiting_list and withdrawn_at is null`, p.AdminID, tournamentID, divisionID, format).Scan(&active); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "ตรวจสอบโควตาไม่สำเร็จ"})
+			return
+		}
+		if !unlimited && active >= quota {
+			writeJSON(w, 409, map[string]any{"error": "ระดับมือและประเภทนี้เต็มแล้ว ไม่สามารถเลื่อนจาก Waiting List ได้", "code": "division_full", "quota": quota, "registered": active})
+			return
+		}
+		if _, err = tx.ExecContext(r.Context(), `update tournament_entries set waiting_list=false,waiting_position=null,payload=payload||jsonb_build_object('waitingList',false),version=version+1,updated_at=now() where id=$1 and admin_id=$2`, id, p.AdminID); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "เลื่อนสถานะไม่สำเร็จ"})
+			return
+		}
+		_, err = tx.ExecContext(r.Context(), `with ranked as (
+			select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null
+		) update tournament_entries e set waiting_position=r.new_position,payload=jsonb_set(e.payload,'{waitingPosition}',to_jsonb(r.new_position),true) from ranked r where e.id=r.id`, p.AdminID, tournamentID, divisionID, format)
+		if err != nil || tx.Commit() != nil {
+			writeJSON(w, 500, map[string]string{"error": "เลื่อนสถานะไม่สำเร็จ"})
+			return
+		}
+		a.tournamentAudit(r.Context(), p, tournamentID, "PROMOTE_WAITING_ENTRY", "entry", id, "", map[string]any{"divisionId": divisionID, "format": format})
+		writeJSON(w, 200, map[string]any{"status": "active", "waitingList": false})
+		return
+	}
 	if len(parts) == 3 && r.Method == http.MethodPost && parts[2] == "upload-slip" {
 		if !p.Permissions["verifyPayment"] {
 			writeJSON(w, 403, map[string]string{"error": "ไม่มีสิทธิ์แนบสลิป", "code": "permission_denied"})
@@ -1595,10 +1663,14 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 			return
 		}
 		defer tx.Rollback()
-		var tid string
+		var tid, documentStatus string
 		var raw []byte
-		if err = tx.QueryRowContext(r.Context(), `select tournament_id,payload from tournament_entries where id=$1 and admin_id=$2 for update`, id, p.AdminID).Scan(&tid, &raw); err != nil {
+		if err = tx.QueryRowContext(r.Context(), `select tournament_id,payload,document_status from tournament_entries where id=$1 and admin_id=$2 for update`, id, p.AdminID).Scan(&tid, &raw, &documentStatus); err != nil {
 			writeJSON(w, 404, map[string]string{"error": "ไม่พบผู้สมัคร"})
+			return
+		}
+		if documentStatus != "approved" {
+			writeJSON(w, 409, map[string]string{"error": "ต้องอนุมัติใบสมัครก่อนแนบสลิปชำระเงิน", "code": "registration_not_approved"})
 			return
 		}
 		fileID := strings.TrimSpace(stringValue(b["slipFileId"], ""))
@@ -1676,6 +1748,14 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 		_ = json.Unmarshal(raw, &item)
 		if parts[2] == "review-payment" {
 			decision := stringValue(b["decision"], "pending")
+			if stringValue(item["documentStatus"], "pending") != "approved" {
+				writeJSON(w, 409, map[string]string{"error": "ต้องอนุมัติใบสมัครก่อนตรวจสอบการชำระเงิน", "code": "registration_not_approved"})
+				return
+			}
+			if decision == "approved" && stringValue(item["registrationSource"], "staff") == "online" && strings.TrimSpace(stringValue(item["slipFileId"], "")) == "" {
+				writeJSON(w, 409, map[string]string{"error": "ไม่พบไฟล์สลิป จึงยังอนุมัติการชำระเงินไม่ได้", "code": "payment_slip_required"})
+				return
+			}
 			status := map[string]string{"approved": "paid", "rejected": "unpaid", "partial": "partial"}[decision]
 			if status == "" {
 				status = stringValue(b["paymentStatus"], stringValue(b["status"], "pending_verify"))
@@ -1748,7 +1828,11 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 				_, _ = a.db.ExecContext(r.Context(), `update tournament_entries set team_name=$3,version=version+1,updated_at=now() where id=$1 and admin_id=$2`, id, p.AdminID, teamName)
 			}
 			if paymentStatus := strings.TrimSpace(stringValue(patch["paymentStatus"], "")); paymentStatus != "" {
-				_, _ = a.db.ExecContext(r.Context(), `update tournament_entries set payment_status=$3,version=version+1,updated_at=now() where id=$1 and admin_id=$2`, id, p.AdminID, paymentStatus)
+				if paymentStatus == "paid" {
+					_, _ = a.db.ExecContext(r.Context(), `update tournament_entries set payment_status='paid',amount_paid_satang=amount_due_satang,payload=jsonb_set(jsonb_set(payload,'{paymentStatus}','"paid"'::jsonb,true),'{amountDue}','0'::jsonb,true),version=version+1,updated_at=now() where id=$1 and admin_id=$2`, id, p.AdminID)
+				} else {
+					_, _ = a.db.ExecContext(r.Context(), `update tournament_entries set payment_status=$3,version=version+1,updated_at=now() where id=$1 and admin_id=$2`, id, p.AdminID, paymentStatus)
+				}
 			}
 			if rawMembers, ok := patch["members"].([]any); ok {
 				for index, rawMember := range rawMembers {
@@ -1771,13 +1855,13 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 				return
 			}
 			defer tx.Rollback()
-			var tid string
-			if err = tx.QueryRowContext(r.Context(), `update tournament_entries set withdrawn_at=now(),version=version+1 where id=$1 and admin_id=$2 and withdrawn_at is null returning tournament_id`, id, p.AdminID).Scan(&tid); err != nil {
+			var tid, divisionID, format string
+			if err = tx.QueryRowContext(r.Context(), `update tournament_entries set withdrawn_at=now(),payload=payload||jsonb_build_object('withdrawn',true,'withdrawnAt',now()),version=version+1,updated_at=now() where id=$1 and admin_id=$2 and withdrawn_at is null returning tournament_id,coalesce(division_id,''),format`, id, p.AdminID).Scan(&tid, &divisionID, &format); err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
 			}
 			var promoted string
-			_ = tx.QueryRowContext(r.Context(), `update tournament_entries set waiting_list=false,waiting_position=null,version=version+1,updated_at=now() where id=(select id from tournament_entries where tournament_id=$1 and waiting_list and withdrawn_at is null order by waiting_position,created_at for update skip locked limit 1) returning id`, tid).Scan(&promoted)
+			_ = tx.QueryRowContext(r.Context(), `update tournament_entries set waiting_list=false,waiting_position=null,payload=payload||jsonb_build_object('waitingList',false),version=version+1,updated_at=now() where id=(select id from tournament_entries where tournament_id=$1 and coalesce(division_id,'')=$2 and format=$3 and waiting_list and withdrawn_at is null order by waiting_position,created_at for update skip locked limit 1) returning id`, tid, divisionID, format).Scan(&promoted)
 			if err = tx.Commit(); err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
@@ -2092,6 +2176,64 @@ func tournamentDivisionQuota(settings map[string]any, divisionID, format string)
 		return quota, false, nil
 	}
 	return 0, false, fmt.Errorf("ไม่พบระดับมือที่เลือก")
+}
+
+// promoteTournamentWaitingLists fills newly available quota after a division
+// capacity is increased. Registrations stay ordered by their original waiting
+// position and are promoted only within the same division and format.
+func (a *app) promoteTournamentWaitingLists(ctx context.Context, adminID, tournamentID string, settings map[string]any) (int, error) {
+	tx, err := a.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	promotedTotal := 0
+	divisions, _ := settings["divisions"].([]any)
+	for _, rawDivision := range divisions {
+		division, _ := rawDivision.(map[string]any)
+		divisionID := stringValue(division["id"], "")
+		enabled, _ := division["enabled"].(bool)
+		if divisionID == "" || !enabled {
+			continue
+		}
+		formats, _ := division["formats"].([]any)
+		for _, rawFormat := range formats {
+			format := stringValue(rawFormat, "")
+			quota, unlimited, quotaErr := tournamentDivisionQuota(settings, divisionID, format)
+			if quotaErr != nil {
+				continue
+			}
+			var active, waiting int
+			if err = tx.QueryRowContext(ctx, `select count(*) filter(where not waiting_list),count(*) filter(where waiting_list) from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and withdrawn_at is null`, adminID, tournamentID, divisionID, format).Scan(&active, &waiting); err != nil {
+				return 0, err
+			}
+			slots := max(0, quota-active)
+			if unlimited {
+				slots = waiting
+			}
+			if slots == 0 || waiting == 0 {
+				continue
+			}
+			result, execErr := tx.ExecContext(ctx, `with candidates as (
+				select id from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null order by waiting_position,created_at for update skip locked limit $5
+			) update tournament_entries e set waiting_list=false,waiting_position=null,payload=e.payload||jsonb_build_object('waitingList',false),version=e.version+1,updated_at=now() from candidates c where e.id=c.id`, adminID, tournamentID, divisionID, format, min(slots, waiting))
+			if execErr != nil {
+				return 0, execErr
+			}
+			count, _ := result.RowsAffected()
+			promotedTotal += int(count)
+			_, err = tx.ExecContext(ctx, `with ranked as (
+				select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null
+			) update tournament_entries e set waiting_position=r.new_position,payload=jsonb_set(e.payload,'{waitingPosition}',to_jsonb(r.new_position),true) from ranked r where e.id=r.id`, adminID, tournamentID, divisionID, format)
+			if err != nil {
+				return 0, err
+			}
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return 0, err
+	}
+	return promotedTotal, nil
 }
 
 func (a *app) tournamentRegistrationAvailability(ctx context.Context, adminID, tournamentID string, settings map[string]any) map[string]any {
@@ -3127,7 +3269,11 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		var id string
 		var raw []byte
 		var hash string
-		err := a.db.QueryRowContext(r.Context(), `select id,payload,verification_code_hash from tournament_entries where tournament_id=$1 and registration_code=$2`, tid, code).Scan(&id, &raw, &hash)
+		err := a.db.QueryRowContext(r.Context(), `select id,payload||jsonb_build_object(
+			'documentStatus',document_status,'paymentStatus',payment_status,'waitingList',waiting_list,
+			'withdrawn',withdrawn_at is not null,'amountPaid',amount_paid_satang::numeric/100,
+			'amountDue',greatest(amount_due_satang-amount_paid_satang,0)::numeric/100
+		),verification_code_hash from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3`, adminID, tid, code).Scan(&id, &raw, &hash)
 		if err != nil || hash != tournamentSecretDigest(verify) {
 			writeJSON(w, 404, map[string]string{"error": "ไม่พบข้อมูลหรือรหัสยืนยันไม่ถูกต้อง"})
 			return
@@ -3192,11 +3338,24 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		defer tx.Rollback()
-		var entryID, verificationHash string
+		var entryID, verificationHash, documentStatus, paymentStatus string
 		var raw []byte
-		err = tx.QueryRowContext(r.Context(), `select id,payload,verification_code_hash from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3 for update`, adminID, tid, code).Scan(&entryID, &raw, &verificationHash)
+		var withdrawnAt sql.NullTime
+		err = tx.QueryRowContext(r.Context(), `select id,payload,verification_code_hash,document_status,payment_status,withdrawn_at from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3 for update`, adminID, tid, code).Scan(&entryID, &raw, &verificationHash, &documentStatus, &paymentStatus, &withdrawnAt)
 		if err != nil || verificationHash != tournamentSecretDigest(verify) {
 			writeJSON(w, 404, map[string]string{"error": "ไม่พบข้อมูลหรือรหัสยืนยันไม่ถูกต้อง"})
+			return
+		}
+		if withdrawnAt.Valid {
+			writeJSON(w, 409, map[string]string{"error": "ใบสมัครนี้ถอนตัวแล้ว ไม่สามารถชำระเงินได้", "code": "registration_withdrawn"})
+			return
+		}
+		if documentStatus != "approved" {
+			writeJSON(w, 409, map[string]string{"error": "ต้องรอเจ้าหน้าที่อนุมัติใบสมัครก่อนอัปโหลดการชำระเงิน", "code": "registration_not_approved"})
+			return
+		}
+		if paymentStatus == "paid" {
+			writeJSON(w, 409, map[string]string{"error": "รายการนี้ชำระเงินครบแล้ว", "code": "payment_already_paid"})
 			return
 		}
 		res, err := tx.ExecContext(r.Context(), `update tournament_files set staged=false,expires_at=null where id=$1 and admin_id=$2 and tournament_id=$3 and staged and kind='payment_slip'`, fileID, adminID, tid)
