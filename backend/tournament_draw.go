@@ -48,8 +48,9 @@ func (a *app) tournamentDrawPreview(w http.ResponseWriter, r *http.Request) {
 	settings := map[string]any{}
 	_ = json.Unmarshal(settingsRaw, &settings)
 	drawSystem := stringValue(body["drawSystem"], stringValue(settings["drawSystem"], "group_then_knockout"))
+	drawFormat := stringValue(body["format"], "")
 	seed := stringValue(body["seed"], randHex(16))
-	teams, fingerprint, err := a.tournamentEligibleDrawTeams(r.Context(), p.AdminID, tournamentID, divisionID)
+	teams, fingerprint, err := a.tournamentEligibleDrawTeams(r.Context(), p.AdminID, tournamentID, divisionID, drawFormat)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
 		return
@@ -92,19 +93,27 @@ func (a *app) tournamentDrawPublishPreview(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, 409, map[string]string{"error": "ตัวอย่างสายหมดอายุหรือไม่พบ", "code": "preview_expired"})
 		return
 	}
-	_, currentFingerprint, _ := a.tournamentEligibleDrawTeams(r.Context(), p.AdminID, tournamentID, divisionID)
+	snapshot := map[string]any{}
+	_ = json.Unmarshal(snapshotRaw, &snapshot)
+	drawFormat := stringValue(snapshot["format"], "")
+	if drawFormat == "" {
+		if matches, ok := snapshot["matches"].([]any); ok && len(matches) > 0 {
+			if first, ok := matches[0].(map[string]any); ok {
+				drawFormat = stringValue(first["format"], "")
+			}
+		}
+	}
+	_, currentFingerprint, _ := a.tournamentEligibleDrawTeams(r.Context(), p.AdminID, tournamentID, divisionID, drawFormat)
 	if currentFingerprint != fingerprint {
 		writeJSON(w, 409, map[string]string{"error": "รายชื่อผู้สมัครเปลี่ยนหลังจาก Preview กรุณาสุ่มใหม่", "code": "entrants_changed"})
 		return
 	}
 	var started bool
-	_ = tx.QueryRowContext(r.Context(), `select exists(select 1 from tournament_matches where tournament_id=$1 and admin_id=$2 and division_id=$3 and status in ('live','finished','walkover','retired'))`, tournamentID, p.AdminID, divisionID).Scan(&started)
+	_ = tx.QueryRowContext(r.Context(), `select exists(select 1 from tournament_matches where tournament_id=$1 and admin_id=$2 and division_id=$3 and ($4='' or payload->>'format'=$4) and status in ('live','finished','walkover','retired'))`, tournamentID, p.AdminID, divisionID, drawFormat).Scan(&started)
 	if started {
 		writeJSON(w, 409, map[string]string{"error": "มีการแข่งขันเริ่มแล้ว ไม่สามารถ Publish สายใหม่", "code": "match_already_started"})
 		return
 	}
-	snapshot := map[string]any{}
-	_ = json.Unmarshal(snapshotRaw, &snapshot)
 	var version int
 	_ = tx.QueryRowContext(r.Context(), `select coalesce(max(version),0)+1 from tournament_draw_revisions where tournament_id=$1 and admin_id=$2 and coalesce(division_id,'')=$3`, tournamentID, p.AdminID, divisionID).Scan(&version)
 	locked, _ := body["lockAfterPublish"].(bool)
@@ -112,7 +121,7 @@ func (a *app) tournamentDrawPublishPreview(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, 409, map[string]string{"error": err.Error()})
 		return
 	}
-	if _, err = tx.ExecContext(r.Context(), `delete from tournament_matches where tournament_id=$1 and admin_id=$2 and division_id=$3`, tournamentID, p.AdminID, divisionID); err != nil {
+	if _, err = tx.ExecContext(r.Context(), `delete from tournament_matches where tournament_id=$1 and admin_id=$2 and division_id=$3 and ($4='' or payload->>'format'=$4)`, tournamentID, p.AdminID, divisionID, drawFormat); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "ล้างสายเดิมไม่สำเร็จ"})
 		return
 	}
@@ -189,13 +198,15 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var body struct {
-		TournamentID      string   `json:"tournamentId"`
-		DivisionID        string   `json:"divisionId"`
-		Mode              string   `json:"mode"`
-		TeamIDs           []string `json:"teamIds"`
-		RankOneTeamIDs    []string `json:"rankOneTeamIds"`
-		RankTwoTeamIDs    []string `json:"rankTwoTeamIds"`
-		ThirdPlacePlayoff bool     `json:"thirdPlacePlayoff"`
+		TournamentID       string   `json:"tournamentId"`
+		DivisionID         string   `json:"divisionId"`
+		Format             string   `json:"format"`
+		Mode               string   `json:"mode"`
+		TeamIDs            []string `json:"teamIds"`
+		RankOneTeamIDs     []string `json:"rankOneTeamIds"`
+		RankTwoTeamIDs     []string `json:"rankTwoTeamIds"`
+		QualifiersPerGroup int      `json:"qualifiersPerGroup"`
+		ThirdPlacePlayoff  bool     `json:"thirdPlacePlayoff"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&body) != nil || body.TournamentID == "" || body.DivisionID == "" {
 		writeJSON(w, 400, map[string]string{"error": "ข้อมูลสร้างสาย Knockout ไม่ถูกต้อง"})
@@ -243,13 +254,28 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(r.Context(), `select payload,status from tournament_matches where admin_id=$1 and tournament_id=$2 and division_id=$3 and stage='group' for update`, p.AdminID, body.TournamentID, body.DivisionID)
+	if body.QualifiersPerGroup <= 0 {
+		_ = tx.QueryRowContext(r.Context(), `select coalesce(nullif(settings->>'qualifiersPerGroup','')::int,2) from tournaments where id=$1 and admin_id=$2`, body.TournamentID, p.AdminID).Scan(&body.QualifiersPerGroup)
+	}
+	if body.QualifiersPerGroup <= 0 {
+		body.QualifiersPerGroup = 2
+	}
+	var expectedGroupMatches int
+	_ = tx.QueryRowContext(r.Context(), `select coalesce(sum(team_count*(team_count-1)/2),0)::int from (
+		select group_name,count(*)::int team_count from tournament_entries
+		where admin_id=$1 and tournament_id=$2 and division_id=$3 and ($4='' or format=$4)
+			and document_status='approved' and withdrawn_at is null and not waiting_list and group_name<>''
+		group by group_name
+	) grouped`, p.AdminID, body.TournamentID, body.DivisionID, body.Format).Scan(&expectedGroupMatches)
+	rows, err := tx.QueryContext(r.Context(), `select payload,status from tournament_matches where admin_id=$1 and tournament_id=$2 and division_id=$3 and ($4='' or payload->>'format'=$4) and stage='group' for update`, p.AdminID, body.TournamentID, body.DivisionID, body.Format)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": "อ่านผลรอบแบ่งกลุ่มไม่สำเร็จ"})
 		return
 	}
 	available := map[string]tournamentDrawTeam{}
+	groupTeamIDs := map[string]map[string]bool{}
 	unfinished := 0
+	actualGroupMatches := 0
 	for rows.Next() {
 		var raw []byte
 		var status string
@@ -258,6 +284,7 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 		}
 		match := map[string]any{}
 		_ = json.Unmarshal(raw, &match)
+		actualGroupMatches++
 		// payload is the API source of truth. Older score writes could update the
 		// JSON state before the indexed status column, which made Step 4 look
 		// complete while this endpoint still rejected the transition.
@@ -278,14 +305,38 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 				}
 			}
 			available[id] = tournamentDrawTeam{ID: id, Name: stringValue(match[prefix+"Name"], id), Club: stringValue(match[prefix+"Club"], "อิสระ"), Format: stringValue(match["format"], "doubles"), Players: players}
+			groupName := strings.TrimSpace(stringValue(match["groupName"], ""))
+			if groupName != "" {
+				if groupTeamIDs[groupName] == nil {
+					groupTeamIDs[groupName] = map[string]bool{}
+				}
+				groupTeamIDs[groupName][id] = true
+			}
 		}
 	}
 	rows.Close()
+	if expectedGroupMatches == 0 || actualGroupMatches != expectedGroupMatches {
+		writeJSON(w, 409, map[string]any{
+			"error": "สายรอบแบ่งกลุ่มไม่ครบ กรุณา Publish สายใหม่ก่อนสร้าง Knockout",
+			"code":  "group_draw_incomplete", "expectedMatches": expectedGroupMatches,
+			"actualMatches": actualGroupMatches, "missingMatches": max(0, expectedGroupMatches-actualGroupMatches),
+		})
+		return
+	}
 	// Reconcile the indexed column in the same transaction so scheduling,
 	// reports and subsequent transitions all observe the canonical result.
-	_, _ = tx.ExecContext(r.Context(), `update tournament_matches set status=payload->>'status',updated_at=now() where admin_id=$1 and tournament_id=$2 and division_id=$3 and stage='group' and payload->>'status' in ('finished','walkover','retired','disqualified') and status is distinct from payload->>'status'`, p.AdminID, body.TournamentID, body.DivisionID)
+	_, _ = tx.ExecContext(r.Context(), `update tournament_matches set status=payload->>'status',updated_at=now() where admin_id=$1 and tournament_id=$2 and division_id=$3 and ($4='' or payload->>'format'=$4) and stage='group' and payload->>'status' in ('finished','walkover','retired','disqualified') and status is distinct from payload->>'status'`, p.AdminID, body.TournamentID, body.DivisionID, body.Format)
 	if unfinished > 0 {
 		writeJSON(w, 409, map[string]any{"error": "รอบแบ่งกลุ่มยังแข่งขันไม่ครบ", "code": "group_matches_incomplete", "unfinishedMatches": unfinished})
+		return
+	}
+	expectedQualifierCount := tournamentExpectedQualifierCount(groupTeamIDs, body.QualifiersPerGroup)
+	if len(requested) != expectedQualifierCount {
+		writeJSON(w, 409, map[string]any{
+			"error": "จำนวนทีมผ่านเข้ารอบไม่ตรงกับตารางคะแนน กรุณากลับไปตรวจขั้นตอนที่ 4",
+			"code":  "qualifier_count_mismatch", "expectedTeams": expectedQualifierCount,
+			"receivedTeams": len(requested), "qualifiersPerGroup": body.QualifiersPerGroup,
+		})
 		return
 	}
 	qualified := make([]tournamentDrawTeam, 0, len(requested))
@@ -298,7 +349,7 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 		qualified = append(qualified, team)
 	}
 	var knockoutStarted bool
-	_ = tx.QueryRowContext(r.Context(), `select exists(select 1 from tournament_matches where admin_id=$1 and tournament_id=$2 and division_id=$3 and stage<>'group' and (status in ('live','finished','retired','disqualified') or (status='walkover' and coalesce((payload->>'isBye')::boolean,false)=false)))`, p.AdminID, body.TournamentID, body.DivisionID).Scan(&knockoutStarted)
+	_ = tx.QueryRowContext(r.Context(), `select exists(select 1 from tournament_matches where admin_id=$1 and tournament_id=$2 and division_id=$3 and ($4='' or payload->>'format'=$4) and stage<>'group' and (status in ('live','finished','retired','disqualified') or (status='walkover' and coalesce((payload->>'isBye')::boolean,false)=false)))`, p.AdminID, body.TournamentID, body.DivisionID, body.Format).Scan(&knockoutStarted)
 	if knockoutStarted {
 		writeJSON(w, 409, map[string]string{"error": "สาย Knockout เริ่มแข่งขันแล้ว ไม่สามารถสร้างใหม่", "code": "knockout_already_started"})
 		return
@@ -338,7 +389,7 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
-	snapshot := map[string]any{"tournamentId": body.TournamentID, "divisionId": body.DivisionID, "drawSystem": "group_then_knockout", "stageType": "knockout", "knockoutMode": body.Mode, "thirdPlacePlayoff": body.ThirdPlacePlayoff, "seed": seed, "qualifiedTeamIds": requested, "rankOneTeamIds": rankOneRequested, "rankTwoTeamIds": rankTwoRequested, "matches": matches}
+	snapshot := map[string]any{"tournamentId": body.TournamentID, "divisionId": body.DivisionID, "format": body.Format, "drawSystem": "group_then_knockout", "stageType": "knockout", "knockoutMode": body.Mode, "thirdPlacePlayoff": body.ThirdPlacePlayoff, "seed": seed, "qualifiedTeamIds": requested, "rankOneTeamIds": rankOneRequested, "rankTwoTeamIds": rankTwoRequested, "matches": matches}
 	snapshotRaw, _ := json.Marshal(snapshot)
 	var version int
 	_ = tx.QueryRowContext(r.Context(), `select coalesce(max(version),0)+1 from tournament_draw_revisions where tournament_id=$1 and admin_id=$2 and coalesce(division_id,'')=$3`, body.TournamentID, p.AdminID, body.DivisionID).Scan(&version)
@@ -346,7 +397,7 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, 409, map[string]string{"error": "บันทึก Revision ไม่สำเร็จ"})
 		return
 	}
-	if _, err = tx.ExecContext(r.Context(), `delete from tournament_matches where admin_id=$1 and tournament_id=$2 and division_id=$3 and stage<>'group'`, p.AdminID, body.TournamentID, body.DivisionID); err != nil {
+	if _, err = tx.ExecContext(r.Context(), `delete from tournament_matches where admin_id=$1 and tournament_id=$2 and division_id=$3 and ($4='' or payload->>'format'=$4) and stage<>'group'`, p.AdminID, body.TournamentID, body.DivisionID, body.Format); err != nil {
 		writeJSON(w, 500, map[string]string{"error": "ล้างสาย Knockout เดิมไม่สำเร็จ"})
 		return
 	}
@@ -391,8 +442,23 @@ func (a *app) tournamentDrawAdvanceKnockout(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, 201, map[string]any{"version": version, "seed": seed, "mode": body.Mode, "thirdPlacePlayoff": body.ThirdPlacePlayoff, "matchCount": len(matches)})
 }
 
-func (a *app) tournamentEligibleDrawTeams(ctx context.Context, adminID, tournamentID, divisionID string) ([]tournamentDrawTeam, string, error) {
-	rows, err := a.db.QueryContext(ctx, `select id,payload,format from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and document_status='approved' and withdrawn_at is null and not waiting_list order by created_at,id`, adminID, tournamentID, divisionID)
+func tournamentExpectedQualifierCount(groupTeamIDs map[string]map[string]bool, qualifiersPerGroup int) int {
+	if qualifiersPerGroup <= 0 {
+		return 0
+	}
+	total := 0
+	for _, teams := range groupTeamIDs {
+		if len(teams) < qualifiersPerGroup {
+			total += len(teams)
+		} else {
+			total += qualifiersPerGroup
+		}
+	}
+	return total
+}
+
+func (a *app) tournamentEligibleDrawTeams(ctx context.Context, adminID, tournamentID, divisionID, formatFilter string) ([]tournamentDrawTeam, string, error) {
+	rows, err := a.db.QueryContext(ctx, `select id,payload,format from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and ($4='' or format=$4) and document_status='approved' and withdrawn_at is null and not waiting_list order by created_at,id`, adminID, tournamentID, divisionID, formatFilter)
 	if err != nil {
 		return nil, "", err
 	}
@@ -479,7 +545,11 @@ func buildTournamentDrawSnapshot(tournamentID, divisionID, system, seed string, 
 		}()})
 		matches = buildEliminationMatches(tournamentID, divisionID, ordered, system == "double_elimination")
 	}
-	return map[string]any{"tournamentId": tournamentID, "divisionId": divisionID, "drawSystem": system, "seed": seed, "groups": groupPayload, "groupAssignments": assignments, "matches": matches, "warnings": []any{}}
+	drawFormat := ""
+	if len(ordered) > 0 {
+		drawFormat = ordered[0].Format
+	}
+	return map[string]any{"tournamentId": tournamentID, "divisionId": divisionID, "format": drawFormat, "drawSystem": system, "seed": seed, "groups": groupPayload, "groupAssignments": assignments, "matches": matches, "warnings": []any{}}
 }
 
 func tournamentDrawMatch(tournamentID, divisionID, code, stage, group string, a, b tournamentDrawTeam) map[string]any {
@@ -499,6 +569,14 @@ func drawStableMatchID(tournamentID, divisionID, code string) string {
 }
 
 func buildEliminationMatches(tournamentID, divisionID string, teams []tournamentDrawTeam, double bool) []any {
+	drawFormat := "doubles"
+	for _, team := range teams {
+		if team.Format == "singles" {
+			drawFormat = "singles"
+			break
+		}
+	}
+	emptyTeam := tournamentDrawTeam{Format: drawFormat}
 	size := 2
 	for size < len(teams) {
 		size *= 2
@@ -544,8 +622,7 @@ func buildEliminationMatches(tournamentID, divisionID string, teams []tournament
 			stage = "QF"
 		}
 		for i, id := range roundIDs[round] {
-			empty := tournamentDrawTeam{}
-			a, b := empty, empty
+			a, b := emptyTeam, emptyTeam
 			if round == 0 {
 				a = seedSlots[i*2]
 				b = seedSlots[i*2+1]
@@ -564,9 +641,9 @@ func buildEliminationMatches(tournamentID, divisionID string, teams []tournament
 	}
 	if double {
 		if rounds == 1 {
-			gf := tournamentDrawMatch(tournamentID, divisionID, "GF-01", "GF", "", tournamentDrawTeam{}, tournamentDrawTeam{})
+			gf := tournamentDrawMatch(tournamentID, divisionID, "GF-01", "GF", "", emptyTeam, emptyTeam)
 			gf["id"], gf["bracketSide"] = drawStableMatchID(tournamentID, divisionID, "GF-01"), "final"
-			reset := tournamentDrawMatch(tournamentID, divisionID, "GF-RESET", "GF_RESET", "", tournamentDrawTeam{}, tournamentDrawTeam{})
+			reset := tournamentDrawMatch(tournamentID, divisionID, "GF-RESET", "GF_RESET", "", emptyTeam, emptyTeam)
 			reset["id"], reset["bracketSide"], reset["conditional"] = drawStableMatchID(tournamentID, divisionID, "GF-RESET"), "final", true
 			gf["resetMatchId"], gf["resetRequiredWhenWinner"] = reset["id"], "B"
 			final := byID[roundIDs[0][0]]
@@ -582,7 +659,7 @@ func buildEliminationMatches(tournamentID, divisionID string, teams []tournament
 			for i := 0; i < count; i++ {
 				id := drawStableMatchID(tournamentID, divisionID, fmt.Sprintf("LB-%d-%d", round, i))
 				current[i] = id
-				m := tournamentDrawMatch(tournamentID, divisionID, fmt.Sprintf("LB-R%d-%02d", round, i+1), fmt.Sprintf("LB%d", round), "", tournamentDrawTeam{}, tournamentDrawTeam{})
+				m := tournamentDrawMatch(tournamentID, divisionID, fmt.Sprintf("LB-R%d-%02d", round, i+1), fmt.Sprintf("LB%d", round), "", emptyTeam, emptyTeam)
 				m["id"], m["bracketSide"], m["bracketOrder"] = id, "losers", i+1
 				result = append(result, m)
 				byID[id] = m
@@ -623,9 +700,9 @@ func buildEliminationMatches(tournamentID, divisionID string, teams []tournament
 				}
 			}
 		}
-		gf := tournamentDrawMatch(tournamentID, divisionID, "GF-01", "GF", "", tournamentDrawTeam{}, tournamentDrawTeam{})
+		gf := tournamentDrawMatch(tournamentID, divisionID, "GF-01", "GF", "", emptyTeam, emptyTeam)
 		gf["id"], gf["bracketSide"] = drawStableMatchID(tournamentID, divisionID, "GF-01"), "final"
-		reset := tournamentDrawMatch(tournamentID, divisionID, "GF-RESET", "GF_RESET", "", tournamentDrawTeam{}, tournamentDrawTeam{})
+		reset := tournamentDrawMatch(tournamentID, divisionID, "GF-RESET", "GF_RESET", "", emptyTeam, emptyTeam)
 		reset["id"], reset["bracketSide"], reset["conditional"] = drawStableMatchID(tournamentID, divisionID, "GF-RESET"), "final", true
 		gf["resetMatchId"] = reset["id"]
 		gf["resetRequiredWhenWinner"] = "B"

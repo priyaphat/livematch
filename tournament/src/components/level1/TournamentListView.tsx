@@ -18,8 +18,6 @@ import { INITIAL_TOURNAMENTS } from '../../data/mockData';
 import { apiFetch } from '../../services/api';
 import { Tournament, TournamentStatus } from '../../types/tournament';
 import {
-  EXTRA_PARTICIPANT_COST,
-  FREE_PARTICIPANTS_LIMIT,
   calculateParticipantExtraCost,
 } from '../../utils/registration';
 import {
@@ -130,9 +128,18 @@ export const TournamentListView: React.FC = () => {
   const [newMaxParticipants, setNewMaxParticipants] = useState<number | ''>(20);
   const [creating, setCreating] = useState(false);
 
+  const freeParticipantsLimit = Math.max(0, state.pricing?.freeParticipants ?? 20);
+  const coinPerExtraParticipant = Math.max(0, state.pricing?.coinPerParticipant ?? 10);
   const safeMaxParticipants = Math.max(1, Math.floor(Number(newMaxParticipants) || 0));
-  const extraParticipantsCount = Math.max(0, safeMaxParticipants - FREE_PARTICIPANTS_LIMIT);
-  const createCostCoins = calculateParticipantExtraCost(safeMaxParticipants);
+  const extraParticipantsCount = Math.max(0, safeMaxParticipants - freeParticipantsLimit);
+  const createCostCoins = calculateParticipantExtraCost(
+    safeMaxParticipants,
+    freeParticipantsLimit,
+    coinPerExtraParticipant
+  );
+  const participantPresets = Array.from(
+    new Set([freeParticipantsLimit, freeParticipantsLimit + 20, freeParticipantsLimit + 50, freeParticipantsLimit + 100])
+  ).filter((value) => value > 0 && value <= 2000);
   const availableCoins = state.coinBalance ?? 0;
   const hasEnoughCoinsForCreate = availableCoins >= createCostCoins;
 
@@ -270,7 +277,7 @@ export const TournamentListView: React.FC = () => {
       setShowCreateModal(false);
       setNewName('');
       setNewDesc('');
-      setNewMaxParticipants(20);
+      setNewMaxParticipants(freeParticipantsLimit || 1);
       notify(
         'success',
         createCostCoins > 0
@@ -330,7 +337,10 @@ export const TournamentListView: React.FC = () => {
 
               <button
                 type="button"
-                onClick={() => setShowCreateModal(true)}
+                onClick={() => {
+                  setNewMaxParticipants(freeParticipantsLimit || 1);
+                  setShowCreateModal(true);
+                }}
                 disabled={!hasPermission('createTournament')}
                 title={!hasPermission('createTournament') ? 'เฉพาะ Owner เท่านั้นที่สร้างรายการแข่งขันได้' : undefined}
                 className="flex-1 sm:flex-none min-h-[42px] px-4 py-2 rounded-lg bg-[#156143] hover:bg-[#104D35] disabled:opacity-45 disabled:cursor-not-allowed text-white text-xs sm:text-sm font-semibold inline-flex items-center justify-center gap-1.5 whitespace-nowrap"
@@ -704,7 +714,7 @@ export const TournamentListView: React.FC = () => {
                     จำนวนคนที่ต้องลงสมัคร <span className="text-[#B91C1C]">*</span>
                   </label>
                   <span className="text-[11px] font-medium text-[#156143] dark:text-[#4ADE80]">
-                    ฟรี {FREE_PARTICIPANTS_LIMIT} คนแรก · คนที่ 21+ คนละ {EXTRA_PARTICIPANT_COST} บาท (Coin)
+                    ฟรี {freeParticipantsLimit.toLocaleString()} คนแรก · คนที่ {(freeParticipantsLimit + 1).toLocaleString()}+ คนละ {coinPerExtraParticipant.toLocaleString()} Coin
                   </span>
                 </div>
 
@@ -721,7 +731,7 @@ export const TournamentListView: React.FC = () => {
                   />
                   <span className="text-xs text-[#525C6B] dark:text-[#9AA8BC]">คน</span>
                   <div className="flex flex-wrap items-center gap-1.5 ml-auto">
-                    {[20, 40, 60, 100].map((preset) => (
+                    {participantPresets.map((preset) => (
                       <button
                         key={preset}
                         type="button"
@@ -743,7 +753,7 @@ export const TournamentListView: React.FC = () => {
                     <div>
                       สิทธิ์ฟรี:{' '}
                       <strong className="font-mono tabular-nums text-[#141D2B] dark:text-[#F3F5F8]">
-                        {Math.min(safeMaxParticipants, FREE_PARTICIPANTS_LIMIT)}
+                        {Math.min(safeMaxParticipants, freeParticipantsLimit)}
                       </strong>{' '}
                       คน · ส่วนเกิน:{' '}
                       <strong className="font-mono tabular-nums text-[#141D2B] dark:text-[#F3F5F8]">
@@ -772,7 +782,7 @@ export const TournamentListView: React.FC = () => {
                     >
                       {createCostCoins === 0
                         ? 'ฟรี (0 บาท / 0 Coin)'
-                        : `${createCostCoins.toLocaleString()} บาท (${createCostCoins.toLocaleString()} Coin)`}
+                        : `${createCostCoins.toLocaleString()} Coin`}
                     </div>
                   </div>
                 </div>

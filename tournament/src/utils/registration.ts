@@ -105,21 +105,29 @@ export function getDivisionFormat(division?: DivisionConfig): 'singles' | 'doubl
 export const FREE_PARTICIPANTS_LIMIT = 20;
 export const EXTRA_PARTICIPANT_COST = 10;
 
-export function calculateParticipantExtraCost(totalParticipants: number): number {
+export function calculateParticipantExtraCost(
+  totalParticipants: number,
+  freeParticipants = FREE_PARTICIPANTS_LIMIT,
+  coinPerParticipant = EXTRA_PARTICIPANT_COST
+): number {
   const safe = Math.max(0, Math.floor(Number(totalParticipants) || 0));
-  return Math.max(0, safe - FREE_PARTICIPANTS_LIMIT) * EXTRA_PARTICIPANT_COST;
+  const safeFree = Math.max(0, Math.floor(Number(freeParticipants) || 0));
+  const safeCoin = Math.max(0, Math.floor(Number(coinPerParticipant) || 0));
+  return Math.max(0, safe - safeFree) * safeCoin;
 }
 
 export function calculateExpandParticipantsCost(
   currentMaxParticipants: number,
-  addParticipants: number
+  addParticipants: number,
+  freeParticipants = FREE_PARTICIPANTS_LIMIT,
+  coinPerParticipant = EXTRA_PARTICIPANT_COST
 ): number {
   const safeCurrent = Math.max(0, Math.floor(Number(currentMaxParticipants) || 0));
   const safeAdd = Math.max(0, Math.floor(Number(addParticipants) || 0));
   if (safeAdd <= 0) return 0;
   return (
-    calculateParticipantExtraCost(safeCurrent + safeAdd) -
-    calculateParticipantExtraCost(safeCurrent)
+    calculateParticipantExtraCost(safeCurrent + safeAdd, freeParticipants, coinPerParticipant) -
+    calculateParticipantExtraCost(safeCurrent, freeParticipants, coinPerParticipant)
   );
 }
 

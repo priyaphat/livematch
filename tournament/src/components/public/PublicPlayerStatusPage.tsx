@@ -21,12 +21,13 @@ import {
   VerifyStatus,
 } from '../../types/tournament';
 import { PlacementAwareKnockoutBrackets } from '../common/KnockoutBracketCanvas';
-import { EmptyStateCard, StatusIndicator, TeamLogoBadge, buildTeamLogoMap } from '../common/UIPrimitives';
+import { EmptyStateCard, QRCodeMatrix, StatusIndicator, TeamLogoBadge, buildTeamLogoMap } from '../common/UIPrimitives';
 import { formatThaiDateTime } from '../../utils/registration';
 
 interface PublicPlayerStatusPayload {
   tournament: {
     id: string;
+    publicToken?: string;
     name: string;
     venue: string;
     startDate: string;
@@ -76,6 +77,11 @@ interface PublicPlayerStatusPayload {
     groupName?: string;
     registeredAt: string;
   };
+  payment?: {
+    amountLocked: boolean;
+    amountSatang: number;
+    promptPayPayload?: string;
+  };
   teamMatches: MatchRecord[];
   divisionMatches: MatchRecord[];
 }
@@ -120,6 +126,9 @@ export const PublicPlayerStatusPage: React.FC = () => {
         const visibleParams = new URLSearchParams(window.location.search);
         visibleParams.delete('code');
         visibleParams.delete('verification');
+		if (res.tournament.publicToken) {
+			visibleParams.set('tournament', res.tournament.publicToken);
+		}
         window.history.replaceState(
           null,
           '',
@@ -201,7 +210,7 @@ export const PublicPlayerStatusPage: React.FC = () => {
                 <p className="text-xs text-[#525C6B] dark:text-[#9AA8BC]">
                   {data
                     ? 'ยืนยันข้อมูลสำเร็จแล้ว ระบบซ่อนรหัสที่ใช้ตรวจสอบเพื่อความเป็นส่วนตัว'
-                    : 'กรอกรหัสตรวจสอบ (Verify Code) หรือเลขที่ใบสมัคร (เช่น PHR-2601)'}
+                    : 'กรอกเลขที่ใบสมัครและรหัสยืนยันของทีมเพื่อดูสถานะ'}
                 </p>
               </div>
             </div>
@@ -428,12 +437,19 @@ export const PublicPlayerStatusPage: React.FC = () => {
                     data.player.paymentStatus !== 'paid' && (
                     <div className="mt-2 rounded-lg border border-[#E2DFD5] bg-white p-3 text-[11px] leading-5 dark:border-[#25354C] dark:bg-[#131E2E]">
                       <div className="font-bold text-[#156143] dark:text-[#4ADE80]">ข้อมูลชำระค่าสมัคร</div>
-                      <div>ยอดชำระ: <strong>฿{data.player.amountDue.toLocaleString()}</strong></div>
+                      <div>ยอดชำระ: <strong>฿{data.player.amountDue.toLocaleString()}</strong> <span className="ml-1 rounded bg-[#FFF8E7] px-1.5 py-0.5 font-bold text-[#8A5B00] dark:bg-[#2B210E] dark:text-[#F8D37B]">ล็อกยอดแล้ว</span></div>
                       <div>ธนาคาร: {data.tournament.paymentConfig.bankName || 'กรุณาติดต่อผู้จัด'}</div>
                       <div>เลขบัญชี: <span className="font-mono font-semibold">{data.tournament.paymentConfig.bankAccountNo || '-'}</span></div>
                       <div>ชื่อบัญชี: {data.tournament.paymentConfig.bankAccountName || '-'}</div>
                       {data.tournament.paymentConfig.promptPayId && (
                         <div>PromptPay: <span className="font-mono font-semibold">{data.tournament.paymentConfig.promptPayId}</span></div>
+                      )}
+                      {data.payment?.promptPayPayload && (
+                        <div className="mt-3 flex flex-col items-center rounded-xl bg-[#F7F6F2] p-3 text-center dark:bg-[#0B121C]">
+                          <QRCodeMatrix value={data.payment.promptPayPayload} size={188} />
+                          <div className="mt-2 font-bold">QR PromptPay ยอด ฿{(data.payment.amountSatang / 100).toLocaleString()}</div>
+                          <div className="text-[10px] text-[#667085] dark:text-[#9AA8BC]">ยอดถูกฝังและล็อกอยู่ใน QR กรุณาตรวจชื่อผู้รับในแอปธนาคารก่อนยืนยัน</div>
+                        </div>
                       )}
                     </div>
                   )}

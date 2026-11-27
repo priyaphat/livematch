@@ -182,6 +182,7 @@ export interface Tournament {
   emblemUrl: string;
   sponsors: string[];
   rulesText: string;
+  competitionCasesText?: string;
   divisions: DivisionConfig[];
   drawSystem: DrawSystemType;
   teamsPerGroup: number;
@@ -198,8 +199,23 @@ export interface Tournament {
   publicViewConfig: PublicViewConfig;
   notificationConfig: NotificationConfig;
   maxParticipants: number;
+  pricingFreeParticipants?: number;
+  pricingCoinPerParticipant?: number;
+  chargedCoin?: number;
   emergencyPaused: boolean;
   emergencyReason?: string;
+  directorApplicationAvailability?: {
+    isOpen: boolean;
+    reason: string;
+    asOf: string;
+  };
+  registrationAvailability?: Record<string, {
+    quota: number;
+    registered: number;
+    remaining: number;
+    unlimited: boolean;
+    full: boolean;
+  }>;
 }
 
 export type PaymentStatus = 'paid' | 'pending_verify' | 'unpaid' | 'partial' | 'refunded';
@@ -318,6 +334,22 @@ export interface DirectorUmpire {
   completedMatches: number;
   hoursWorked: number;
   clubAffiliation?: string;
+  photoFileId?: string;
+  photoName?: string;
+  officialRoles?: string[];
+  certificationLevel?: string;
+  certificationBody?: string;
+  licenseNumber?: string;
+  certificationExpiry?: string;
+  yearsExperience?: number;
+  matchesOfficiated?: number;
+  scoringSkills?: string[];
+  province?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  shirtSize?: string;
+  logisticsNote?: string;
+  codeOfConductConsent?: boolean;
   photoUrl?: string;
   approvalStatus?: VerifyStatus;
   applicationSource?: 'online' | 'staff';
@@ -332,7 +364,19 @@ export interface DirectorUmpire {
   approvalNote?: string;
   approvedBy?: string;
   approvedAt?: string;
-  history: { matchId: string; matchCode: string; date: string; note: string }[];
+  history: {
+    matchId: string;
+    matchCode: string;
+    date: string;
+    note: string;
+    status?: MatchStatus;
+    stage?: string;
+    teamAName?: string;
+    teamBName?: string;
+    score?: string;
+    winner?: 'A' | 'B' | 'draw';
+    courtId?: string;
+  }[];
 }
 
 export type MatchStage = 'group' | 'R64' | 'R32' | 'R16' | 'QF' | 'SF' | 'F' | 'P3' | `LB${number}` | 'GF' | 'GF_RESET';
@@ -507,6 +551,10 @@ export interface SystemStatePayload {
   activeUserRole: UserRole;
   activeUserName: string;
   coinBalance: number;
+  pricing: {
+    freeParticipants: number;
+    coinPerParticipant: number;
+  };
   tournaments: Tournament[];
   players: PlayerRecord[];
   umpires: DirectorUmpire[];

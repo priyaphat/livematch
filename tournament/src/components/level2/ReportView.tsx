@@ -162,6 +162,7 @@ export const ReportView: React.FC<{ tournament: Tournament }> = ({ tournament })
     const finished = tMatches.filter((m) => terminalMatchStatuses.has(m.status)).length;
     const completionPct = tMatches.length > 0 ? Math.round((finished / tMatches.length) * 100) : 0;
     const noShows = tPlayers.filter((p) => p.noShow).length;
+    const withdrawn = tPlayers.filter((p) => p.withdrawn).length;
     const noShowPct = activeP.length > 0 ? Math.round((noShows / activeP.length) * 100) : 0;
 
     const durations = tMatches.flatMap((match) => {
@@ -178,6 +179,7 @@ export const ReportView: React.FC<{ tournament: Tournament }> = ({ tournament })
       totalRevenue,
       completionPct,
       noShowPct,
+      withdrawn,
       avgDurationMin: durations.length
         ? Math.round(durations.reduce((sum, minutes) => sum + minutes, 0) / durations.length)
         : 0,
@@ -197,12 +199,13 @@ export const ReportView: React.FC<{ tournament: Tournament }> = ({ tournament })
             สร้างรายงานเมื่อ: {generatedAt} (Asia/Bangkok)
           </span>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2.5">
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-9 gap-2.5">
           {[
             { label: 'ผู้สมัครทั้งหมด', value: `${execSummary.totalApplicants}` },
             { label: 'รายได้ชำระแล้ว', value: `฿${execSummary.totalRevenue.toLocaleString()}` },
             { label: 'Completion Rate', value: `${execSummary.completionPct}%` },
             { label: 'No-show Rate', value: `${execSummary.noShowPct}%` },
+            { label: 'ถอนตัว', value: `${execSummary.withdrawn}` },
             { label: 'เวลาเฉลี่ยจริง', value: execSummary.avgDurationMin ? `${execSummary.avgDurationMin} น.` : '—' },
             { label: 'จัดสนามแล้ว', value: `${execSummary.courtUtilPct}%` },
             { label: 'Payment Done', value: `${execSummary.paymentPct}%` },

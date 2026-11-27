@@ -87,13 +87,12 @@ func (a *app) migrateTournament(ctx context.Context) error {
 			payload jsonb not null default '{}'::jsonb, locked boolean not null default false, version bigint not null default 1,
 			started_at timestamptz, ended_at timestamptz, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), unique(tournament_id,match_code)
 		);
-		-- Match codes such as G1-01 are intentionally reused by each division.
-		-- Keep them unique inside a division, not across the whole tournament.
+		-- Match codes such as G1-01 are intentionally reused by each division and
+		-- by singles/doubles inside a division. Scope uniqueness to that draw.
 		alter table tournament_matches drop constraint if exists tournament_matches_tournament_id_match_code_key;
-		do $$ begin
-			alter table tournament_matches add constraint tournament_matches_tournament_division_match_code_key unique(tournament_id,division_id,match_code);
-		exception when duplicate_object then null;
-		end $$;
+		alter table tournament_matches drop constraint if exists tournament_matches_tournament_division_match_code_key;
+		create unique index if not exists idx_tournament_matches_draw_match_code
+			on tournament_matches(tournament_id,division_id,(coalesce(payload->>'format','')),match_code);
 		create index if not exists idx_tournament_matches_status on tournament_matches(tournament_id,status,updated_at);
 		create table if not exists tournament_match_events (
 			id bigserial primary key, match_id text not null references tournament_matches(id) on delete cascade, tournament_id text not null references tournaments(id) on delete cascade,

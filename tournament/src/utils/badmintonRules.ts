@@ -7,6 +7,12 @@ export interface CourtPositions {
 
 export type ManualSwapBySet = Record<string, { A: boolean; B: boolean }>;
 
+export function getEffectiveTeamPlayers(match: MatchRecord, team: 'A' | 'B'): string[] {
+  const players = team === 'A' ? match.teamAPlayers : match.teamBPlayers;
+  if (match.format === 'singles') return players.slice(0, 1);
+  return players;
+}
+
 export function getInitialCourtPositions(match: MatchRecord): CourtPositions {
   if (match.courtPositions) {
     return {
@@ -21,11 +27,11 @@ export function getInitialCourtPositions(match: MatchRecord): CourtPositions {
   let posA: [0 | 1, 0 | 1] = [0, 1];
   let posB: [0 | 1, 0 | 1] = [0, 1];
 
-  if (match.servingTeam === 'A' && match.teamAPlayers.length > 1) {
+  if (match.servingTeam === 'A' && getEffectiveTeamPlayers(match, 'A').length > 1) {
     const idx = match.servingPlayerIndex === 1 ? 1 : 0;
     const other: 0 | 1 = idx === 0 ? 1 : 0;
     posA = isEvenA ? [idx, other] : [other, idx];
-  } else if (match.servingTeam === 'B' && match.teamBPlayers.length > 1) {
+  } else if (match.servingTeam === 'B' && getEffectiveTeamPlayers(match, 'B').length > 1) {
     const idx = match.servingPlayerIndex === 1 ? 1 : 0;
     const other: 0 | 1 = idx === 0 ? 1 : 0;
     posB = isEvenB ? [idx, other] : [other, idx];
@@ -62,8 +68,8 @@ export function getActiveCourtState(match: MatchRecord) {
   const servingScore = servingTeam === 'A' ? activeSet.scoreA : activeSet.scoreB;
   const serviceBox: 'right' | 'left' = servingScore % 2 === 0 ? 'right' : 'left';
 
-  const servingPlayers = servingTeam === 'A' ? match.teamAPlayers : match.teamBPlayers;
-  const receivingPlayers = receivingTeam === 'A' ? match.teamAPlayers : match.teamBPlayers;
+  const servingPlayers = getEffectiveTeamPlayers(match, servingTeam);
+  const receivingPlayers = getEffectiveTeamPlayers(match, receivingTeam);
 
   const activeServerIndex: 0 | 1 =
     servingPlayers.length > 1
@@ -91,6 +97,45 @@ export function getActiveCourtState(match: MatchRecord) {
   };
 }
 
+export interface SinglesCourtPresentation {
+  team: 'A' | 'B';
+  role: 'server' | 'receiver';
+  playerName: string;
+  serviceBox: 'right' | 'left';
+  boxLabel: 'ขวา · คู่' | 'ซ้าย · คี่';
+  roleLabel: 'เสิร์ฟ' | 'รับเสิร์ฟ';
+}
+
+export function getSinglesCourtPresentation(
+  match: MatchRecord,
+  team: 'A' | 'B'
+): SinglesCourtPresentation {
+  const court = getActiveCourtState(match);
+  const role = court.servingTeam === team ? 'server' : 'receiver';
+  const playerName = getEffectiveTeamPlayers(match, team)[0] ||
+    (team === 'A' ? match.teamAName : match.teamBName);
+  return {
+    team,
+    role,
+    playerName,
+    serviceBox: court.serviceBox,
+    boxLabel: court.serviceBox === 'right' ? 'ขวา · คู่' : 'ซ้าย · คี่',
+    roleLabel: role === 'server' ? 'เสิร์ฟ' : 'รับเสิร์ฟ',
+  };
+}
+
+export function getServeLogDetail(match: MatchRecord): string {
+  const court = getActiveCourtState(match);
+  const serverPlayers = getEffectiveTeamPlayers(match, court.servingTeam);
+  const receiverPlayers = getEffectiveTeamPlayers(match, court.receivingTeam);
+  const serverName = serverPlayers[court.activeServerIndex] || serverPlayers[0] ||
+    (court.servingTeam === 'A' ? match.teamAName : match.teamBName);
+  const receiverName = receiverPlayers[court.expectedReceiverIndex] || receiverPlayers[0] ||
+    (court.receivingTeam === 'A' ? match.teamAName : match.teamBName);
+  const boxLabel = court.serviceBox === 'right' ? 'ขวา · คู่' : 'ซ้าย · คี่';
+  return `ผู้เสิร์ฟ: ${serverName} (ทีม ${court.servingTeam} · ${boxLabel}) · ผู้รับ: ${receiverName} (ทีม ${court.receivingTeam} · ${boxLabel})`;
+}
+
 export function createSnapshotForUndo(match: MatchRecord) {
   const activeSet = match.sets[match.currentSet - 1] || { scoreA: 0, scoreB: 0 };
   const pos = getInitialCourtPositions(match);
@@ -104,6 +149,27 @@ export function createSnapshotForUndo(match: MatchRecord) {
     courtPositions: pos,
     manualServerSwaps: swaps,
   };
+}
+
+export function restoreSnapshotForUndo(
+  match: MatchRecord,
+  snapshot: ReturnType<typeof createSnapshotForUndo>
+) {
+  const activeSet = match.sets[match.currentSet - 1] || match.sets[0];
+  if (activeSet) {
+    activeSet.scoreA = snapshot.scoreA;
+    activeSet.scoreB = snapshot.scoreB;
+  }
+  match.status = snapshot.status;
+  match.servingTeam = snapshot.servingTeam;
+  match.servingPlayerIndex = match.format === 'singles' ? 0 : snapshot.servingPlayerIndex;
+  match.courtPositions = match.format === 'singles'
+    ? { A: [0, 1], B: [0, 1] }
+    : {
+        A: [...snapshot.courtPositions.A] as [0 | 1, 0 | 1],
+        B: [...snapshot.courtPositions.B] as [0 | 1, 0 | 1],
+      };
+  match.manualServerSwaps = structuredClone(snapshot.manualServerSwaps);
 }
 
 export function applyBadmintonPoint(match: MatchRecord, scoringTeam: 'A' | 'B') {
@@ -121,7 +187,7 @@ export function applyBadmintonPoint(match: MatchRecord, scoringTeam: 'A' | 'B') 
     activeSet.scoreB += 1;
   }
 
-  const players = scoringTeam === 'A' ? match.teamAPlayers : match.teamBPlayers;
+  const players = getEffectiveTeamPlayers(match, scoringTeam);
   if (wasServing && players.length > 1) {
     pos[scoringTeam] = [pos[scoringTeam][1], pos[scoringTeam][0]];
   }
@@ -147,7 +213,7 @@ export function applyManualTeamServeToggle(match: MatchRecord) {
   const nextTeam: 'A' | 'B' = match.servingTeam === 'A' ? 'B' : 'A';
   const activeSet = match.sets[match.currentSet - 1] || { scoreA: 0, scoreB: 0 };
   const nextScore = nextTeam === 'A' ? activeSet.scoreA : activeSet.scoreB;
-  const players = nextTeam === 'A' ? match.teamAPlayers : match.teamBPlayers;
+  const players = getEffectiveTeamPlayers(match, nextTeam);
 
   match.servingTeam = nextTeam;
   match.courtPositions = pos;
@@ -160,7 +226,7 @@ export function applyManualServerPlayerSwap(
   targetTeam?: 'A' | 'B'
 ): { ok: true; swappedTeam: 'A' | 'B'; serverName: string } | { ok: false; error: string } {
   const team = targetTeam || match.servingTeam;
-  const players = team === 'A' ? match.teamAPlayers : match.teamBPlayers;
+  const players = getEffectiveTeamPlayers(match, team);
   if (players.length < 2) {
     return {
       ok: false,
@@ -238,7 +304,7 @@ export function getMatchOutcomeByRules(
 
   if (bestOfSets === 2) {
     if (winners.length < 2) return null;
-    if (winsA === winsB) return stage === 'group' ? 'draw' : null;
+    if (winsA === winsB) return stage.toLowerCase() === 'group' ? 'draw' : null;
     return winsA > winsB ? 'A' : 'B';
   }
 

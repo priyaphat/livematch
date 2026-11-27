@@ -205,6 +205,14 @@ export const PublicRegistrationPage: React.FC = () => {
       notify('error', 'ลิงก์วิดีโอประเมินมือต้องขึ้นต้นด้วย http:// หรือ https://');
       return;
     }
+    if (!/^[0-9]{10}$/.test(form.phone)) {
+      notify('error', 'กรุณากรอกเบอร์โทรนักกีฬาคนที่ 1 เป็นตัวเลข 10 หลัก');
+      return;
+    }
+    if (effectiveFormat === 'doubles' && !/^[0-9]{10}$/.test(form.partnerPhone)) {
+      notify('error', 'กรุณากรอกเบอร์โทรนักกีฬาคนที่ 2 เป็นตัวเลข 10 หลัก');
+      return;
+    }
     const partnerFullName = `${form.partnerFirstName} ${form.partnerLastName}`.trim();
     const defaultTeamName =
       effectiveFormat === 'doubles'
@@ -297,11 +305,11 @@ export const PublicRegistrationPage: React.FC = () => {
       : `/?mode=public_status&tournament=${tournament.publicToken || tournament.id}&code=${registrationCode}&verification=${verificationCode}`;
 
   return (
-    <div className="min-h-[100dvh] bg-[#F7F6F2] dark:bg-[#0B121C] text-[#141D2B] dark:text-[#F3F5F8] py-5 px-4">
-      <div className="max-w-lg mx-auto space-y-4">
+    <div className="min-h-[100dvh] bg-[#F7F6F2] dark:bg-[#0B121C] text-[#141D2B] dark:text-[#F3F5F8] px-3 py-4 sm:px-5 sm:py-5 lg:px-8 lg:py-7">
+      <div className="mx-auto max-w-7xl space-y-4 lg:space-y-5">
         {/* Tournament Card Banner */}
         <div className="rounded-2xl overflow-hidden border border-[#E2DFD5] dark:border-[#25354C] bg-white dark:bg-[#131E2E] shadow-sm">
-          <div className="relative h-32 bg-[#142642]">
+          <div className="relative h-32 bg-[#142642] sm:h-40 lg:h-48">
             <img
               src={tournament.bannerUrl}
               alt={tournament.name}
@@ -338,7 +346,7 @@ export const PublicRegistrationPage: React.FC = () => {
         </div>
 
         {!regWindow.isOpen ? (
-          <div className="rounded-2xl bg-white dark:bg-[#131E2E] border border-[#FECACA] dark:border-[#5E2025] p-6 text-center space-y-3">
+          <div className="mx-auto max-w-xl rounded-2xl bg-white dark:bg-[#131E2E] border border-[#FECACA] dark:border-[#5E2025] p-6 text-center space-y-3">
             <CalendarClock className="w-10 h-10 text-[#B91C1C] dark:text-[#F87171] mx-auto" />
             <h2 className="text-base font-bold text-[#B91C1C] dark:text-[#F87171]">
               ปิดรับสมัครออนไลน์แล้ว
@@ -454,40 +462,42 @@ export const PublicRegistrationPage: React.FC = () => {
               </div>
             </div>
 
-            <AthleteRegistrationFields
-              athleteNumber={1}
-              pdpaText={tournament.registrationConfig.pdpaConsentText}
-              values={{
-                firstName: form.firstName, lastName: form.lastName, nickname: form.nickname,
-                gender: form.gender, birthDate: form.birthDate, nationality: form.nationality,
-                idDocumentNo: form.idDocumentNo, phone: form.phone, email: form.email,
-                club: form.club, province: form.province, shirtSize: form.shirtSize || 'L',
-                address: form.address, emergencyContact: form.emergencyContact,
-                healthInfo: form.healthInfo, photoUrl: form.photoUrl, pdpaConsent: form.pdpaConsent,
-              }}
-              onChange={(field, value) => setForm((prev) => ({ ...prev, [field]: value }))}
-              onPhotoChange={(event) => compressImageUpload(event, 320, (url) => setForm((prev) => ({ ...prev, photoUrl: url })))}
-            />
-
-            {effectiveFormat === 'doubles' && (
+            <div className={`grid gap-4 ${effectiveFormat === 'doubles' ? 'xl:grid-cols-2' : ''}`}>
               <AthleteRegistrationFields
-                athleteNumber={2}
+                athleteNumber={1}
                 pdpaText={tournament.registrationConfig.pdpaConsentText}
                 values={{
-                  firstName: form.partnerFirstName, lastName: form.partnerLastName, nickname: form.partnerNickname,
-                  gender: form.partnerGender, birthDate: form.partnerBirthDate, nationality: form.partnerNationality,
-                  idDocumentNo: form.partnerIdDocumentNo, phone: form.partnerPhone, email: form.partnerEmail,
-                  club: form.partnerClub, province: form.partnerProvince, shirtSize: form.partnerShirtSize || 'L',
-                  address: form.partnerAddress, emergencyContact: form.partnerEmergencyContact,
-                  healthInfo: form.partnerHealthInfo, photoUrl: form.partnerPhotoUrl, pdpaConsent: form.partnerPdpaConsent,
+                  firstName: form.firstName, lastName: form.lastName, nickname: form.nickname,
+                  gender: form.gender, birthDate: form.birthDate, nationality: form.nationality,
+                  idDocumentNo: form.idDocumentNo, phone: form.phone, email: form.email,
+                  club: form.club, province: form.province, shirtSize: form.shirtSize || 'L',
+                  address: form.address, emergencyContact: form.emergencyContact,
+                  healthInfo: form.healthInfo, photoUrl: form.photoUrl, pdpaConsent: form.pdpaConsent,
                 }}
-                onChange={(field, value) => {
-                  const partnerField = `partner${field.charAt(0).toUpperCase()}${field.slice(1)}`;
-                  setForm((prev) => ({ ...prev, [partnerField]: value }));
-                }}
-                onPhotoChange={(event) => compressImageUpload(event, 320, (url) => setForm((prev) => ({ ...prev, partnerPhotoUrl: url })))}
+                onChange={(field, value) => setForm((prev) => ({ ...prev, [field]: value }))}
+                onPhotoChange={(event) => compressImageUpload(event, 320, (url) => setForm((prev) => ({ ...prev, photoUrl: url })))}
               />
-            )}
+
+              {effectiveFormat === 'doubles' && (
+                <AthleteRegistrationFields
+                  athleteNumber={2}
+                  pdpaText={tournament.registrationConfig.pdpaConsentText}
+                  values={{
+                    firstName: form.partnerFirstName, lastName: form.partnerLastName, nickname: form.partnerNickname,
+                    gender: form.partnerGender, birthDate: form.partnerBirthDate, nationality: form.partnerNationality,
+                    idDocumentNo: form.partnerIdDocumentNo, phone: form.partnerPhone, email: form.partnerEmail,
+                    club: form.partnerClub, province: form.partnerProvince, shirtSize: form.partnerShirtSize || 'L',
+                    address: form.partnerAddress, emergencyContact: form.partnerEmergencyContact,
+                    healthInfo: form.partnerHealthInfo, photoUrl: form.partnerPhotoUrl, pdpaConsent: form.partnerPdpaConsent,
+                  }}
+                  onChange={(field, value) => {
+                    const partnerField = `partner${field.charAt(0).toUpperCase()}${field.slice(1)}`;
+                    setForm((prev) => ({ ...prev, [partnerField]: value }));
+                  }}
+                  onPhotoChange={(event) => compressImageUpload(event, 320, (url) => setForm((prev) => ({ ...prev, partnerPhotoUrl: url })))}
+                />
+              )}
+            </div>
 
             {/* Player 1 */}
             {false && <>
@@ -687,7 +697,7 @@ export const PublicRegistrationPage: React.FC = () => {
                 !selectedDivision ||
                 !form.firstName.trim() ||
                 !form.lastName.trim() ||
-                !form.phone.trim() ||
+                !/^[0-9]{10}$/.test(form.phone) ||
                 !form.birthDate ||
                 !form.nationality.trim() ||
                 !form.address.trim() ||
@@ -698,7 +708,7 @@ export const PublicRegistrationPage: React.FC = () => {
                 (effectiveFormat === 'doubles' &&
                   (!form.partnerFirstName.trim() ||
                     !form.partnerLastName.trim() ||
-                    !form.partnerPhone.trim() ||
+                    !/^[0-9]{10}$/.test(form.partnerPhone) ||
                     !form.partnerBirthDate ||
                     !form.partnerNationality.trim() ||
                     !form.partnerAddress.trim() ||
@@ -715,7 +725,7 @@ export const PublicRegistrationPage: React.FC = () => {
             </p>
           </div>
         ) : (
-          <div className="rounded-2xl bg-white dark:bg-[#131E2E] border border-[#E2DFD5] dark:border-[#25354C] p-6 text-center space-y-4">
+          <div className="mx-auto max-w-2xl rounded-2xl bg-white dark:bg-[#131E2E] border border-[#E2DFD5] dark:border-[#25354C] p-6 text-center space-y-4">
             <CheckCircle2 className="w-12 h-12 text-[#156143] dark:text-[#4ADE80] mx-auto" />
             <div>
               <h2 className="text-lg font-bold">

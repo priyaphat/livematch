@@ -2677,6 +2677,10 @@ export function createInitialSystemState(): SystemStatePayload {
     activeUserRole: 'owner',
     activeUserName: '',
     coinBalance: 0,
+    pricing: {
+      freeParticipants: 20,
+      coinPerParticipant: 10,
+    },
     tournaments: [],
     players: [],
     umpires: [],

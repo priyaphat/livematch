@@ -37,6 +37,7 @@ export async function apiFetch<T>(url: string, options: RequestInit = {}): Promi
 	const hasBody = options.body !== undefined && !(options.body instanceof FormData);
 	const res = await fetch(scopedUrl(url), {
     ...options,
+		cache: options.cache ?? 'no-store',
 		credentials: 'include',
     headers: {
 			...(hasBody ? { 'Content-Type': 'application/json' } : {}),

@@ -29,9 +29,16 @@ import {
   Tournament,
 } from '../../types/tournament';
 import { KnockoutBracketCanvas } from '../common/KnockoutBracketCanvas';
+import {
+  countUniqueKnockoutEntrants,
+  getPointDifferenceSource,
+  getPublishedRoundRobinSummary,
+  getStandingPointsSource,
+} from '../../utils/tournamentDraw';
 import { EmptyStateCard, PaginationBar, QRCodeMatrix, StatusIndicator, TeamLogoBadge, buildTeamLogoMap } from '../common/UIPrimitives';
 import { formatThaiDateTime } from '../../utils/registration';
 import { getMatchOutcomeByRules, getSetWinnerByRules } from '../../utils/badmintonRules';
+import { buildScoreSheetRallies } from '../../utils/scoreSheet';
 
 type DrawSubTab =
   | 'applicants'
@@ -252,6 +259,12 @@ function generateKnockoutMatchesFromTeams(
 export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tournament }) => {
   const { state, refreshState, applyOptimisticMatch, hasPermission, notify, requestConfirm } = useApp();
 
+  useEffect(() => {
+    // Draw counts must always come from the current server snapshot. A missed
+    // SSE event or a restored PWA tab must not keep an older partial bracket.
+    void refreshState();
+  }, [tournament.id, refreshState]);
+
   const enabledDivisions = useMemo(
     () => tournament.divisions.filter((d) => d.enabled),
     [tournament.divisions]
@@ -318,6 +331,19 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
   const [includeThirdPlacePlayoff, setIncludeThirdPlacePlayoff] = useState(false);
   const [creatingKnockout, setCreatingKnockout] = useState(false);
 
+  useEffect(() => {
+    // A preview is scoped to one division/format. Keeping it while switching
+    // division made Step 2 show teams from the previous division while Steps
+    // 3-5 correctly showed the newly selected division.
+    setPreviewGroups(null);
+    setServerPreviewId(null);
+    setPreviewLoading(false);
+    setGroupFilter('all');
+    setSelectedTeam(null);
+    setSelectedMatch(null);
+    setKnockoutModeOpen(false);
+  }, [activeDivision?.id, effectiveFormat]);
+
   // Pagination states across Draw tabs
   const [applicantsPage, setApplicantsPage] = useState(1);
   const [applicantsPageSize, setApplicantsPageSize] = useState(10);
@@ -375,6 +401,10 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
     [divisionMatches]
   );
 
+  const knockoutEntrantCount = useMemo(() => {
+    return countUniqueKnockoutEntrants(koMatches, divisionPlayers.map((team) => team.id));
+  }, [divisionPlayers, koMatches]);
+
   const championshipMatches = useMemo(
     () => koMatches.filter((m) => m.placementBracket === 'championship'),
     [koMatches]
@@ -402,6 +432,25 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
     () => predictedGroupSizes.reduce((sum, n) => sum + (n * (n - 1)) / 2, 0),
     [predictedGroupSizes]
   );
+
+  // Once a draw is published, validation must follow its persisted group assignments.
+  // Recalculating from the current teamsPerGroup setting can turn 4x3 groups (12 matches)
+  // into a false 3x4 expectation (18 matches) when settings change after publishing.
+  const publishedRoundRobinSummary = useMemo(
+    () => getPublishedRoundRobinSummary(divisionPlayers),
+    [divisionPlayers]
+  );
+  const expectedPublishedRoundRobinMatches = publishedRoundRobinSummary.expectedMatches;
+
+  useEffect(() => {
+    if (
+      (drawSystem === 'group_then_knockout' || drawSystem === 'round_robin') &&
+      groupMatches.length > 0 &&
+      groupMatches.length !== expectedPublishedRoundRobinMatches
+    ) {
+      void refreshState();
+    }
+  }, [drawSystem, groupMatches.length, expectedPublishedRoundRobinMatches, refreshState]);
 
   // Compute Group Standings with Tie-Break rules
   const groupStandings = useMemo(() => {
@@ -436,18 +485,20 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       const rowA = gRows.find((r) => r.teamId === m.teamAId);
       const rowB = gRows.find((r) => r.teamId === m.teamBId);
       if (!rowA || !rowB) return;
+      const outcome =
+        m.winner || getMatchOutcomeByRules(m.sets, tournament.scoringRules, m.stage);
 
       rowA.played += 1;
       rowB.played += 1;
-      if (m.winner === 'A') {
+      if (outcome === 'A') {
         rowA.won += 1;
         rowB.lost += 1;
         rowA.standingPoints += 2;
-      } else if (m.winner === 'B') {
+      } else if (outcome === 'B') {
         rowB.won += 1;
         rowA.lost += 1;
         rowB.standingPoints += 2;
-      } else if (m.winner === 'draw') {
+      } else if (outcome === 'draw') {
         rowA.drawn += 1;
         rowB.drawn += 1;
         rowA.standingPoints += 1;
@@ -458,10 +509,11 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
         rowA.pointsAgainst += s.scoreB;
         rowB.pointsFor += s.scoreB;
         rowB.pointsAgainst += s.scoreA;
-        if (s.winner === 'A') {
+        const setWinner = s.winner || getSetWinnerByRules(s.scoreA, s.scoreB, tournament.scoringRules);
+        if (setWinner === 'A') {
           rowA.setsFor += 1;
           rowB.setsAgainst += 1;
-        } else if (s.winner === 'B') {
+        } else if (setWinner === 'B') {
           rowB.setsFor += 1;
           rowA.setsAgainst += 1;
         }
@@ -504,14 +556,17 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
         const matchesInGroup = groupMatches.filter(
           (match) => (match.groupName || 'กลุ่ม A') === r.groupName
         );
+        const expectedMatches = (rows.length * (rows.length - 1)) / 2;
         const groupCompleted =
-          matchesInGroup.length > 0 && matchesInGroup.every(isCompletedMatch);
+          expectedMatches > 0 &&
+          matchesInGroup.length === expectedMatches &&
+          matchesInGroup.every(isCompletedMatch);
         r.qualified = groupCompleted && idx < qualifiersPerGroup;
       });
     }
 
     return Array.from(byGroup.entries()).sort(([a], [b]) => a.localeCompare(b));
-  }, [groupMatches, divisionPlayers, qualifiersPerGroup, tournament.tieBreakOrder]);
+  }, [groupMatches, divisionPlayers, qualifiersPerGroup, tournament.tieBreakOrder, tournament.scoringRules]);
 
   const groupNames = useMemo(() => {
     const names = new Set<string>();
@@ -570,16 +625,16 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
 
   const umpireAssignTotalPages = Math.max(
     1,
-    Math.ceil(divisionMatches.length / umpireAssignPageSize)
+    Math.ceil(koMatches.length / umpireAssignPageSize)
   );
   const safeUmpireAssignPage = Math.min(Math.max(1, umpireAssignPage), umpireAssignTotalPages);
-  const paginatedDivisionMatches = useMemo(
+  const paginatedKnockoutMatches = useMemo(
     () =>
-      divisionMatches.slice(
+      koMatches.slice(
         (safeUmpireAssignPage - 1) * umpireAssignPageSize,
         safeUmpireAssignPage * umpireAssignPageSize
       ),
-    [divisionMatches, safeUmpireAssignPage, umpireAssignPageSize]
+    [koMatches, safeUmpireAssignPage, umpireAssignPageSize]
   );
 
   const revTotalPages = Math.max(1, Math.ceil(state.drawRevisions.length / revPageSize));
@@ -617,13 +672,94 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
     let content = '';
     if (kind === 'score_sheets') {
       title = `ใบบันทึกคะแนน · ${divisionName}`;
-      content = divisionMatches.map((match) => `
-        <section class="score-sheet">
-          <div class="meta"><strong>${escapeHtml(match.matchCode)}</strong><span>${escapeHtml(match.groupName || match.stage)}</span><span>${escapeHtml(courtName(match.courtId))}</span><span>${escapeHtml(match.scheduledDate || '')} ${escapeHtml(match.scheduledTime || match.estimatedStart || '')}</span></div>
-          <div class="teams"><div><b>ทีม A</b><h2>${escapeHtml(match.teamAName)}</h2><p>${escapeHtml(match.teamAPlayers.join(' / '))}</p></div><div class="vs">VS</div><div><b>ทีม B</b><h2>${escapeHtml(match.teamBName)}</h2><p>${escapeHtml(match.teamBPlayers.join(' / '))}</p></div></div>
-          <table><thead><tr><th>เซต</th><th>ทีม A</th><th>ทีม B</th><th>ผู้ชนะ</th></tr></thead><tbody>${[1, 2, 3].map((setNo) => `<tr><td>${setNo}</td><td></td><td></td><td></td></tr>`).join('')}</tbody></table>
-          <div class="signatures"><span>กรรมการ: ${escapeHtml(match.umpireName || '________________________')}</span><span>ลงชื่อ: ________________________</span></div>
-        </section>`).join('') || '<p>ยังไม่มีคู่แข่งขันในระดับมือนี้</p>';
+      const pointHeadings = Array.from({ length: 31 }, (_, point) => `<th>${point}</th>`).join('');
+      content = divisionMatches.map((match) => {
+        const setByNumber = new Map(match.sets.map((set) => [set.setNumber, set]));
+        const scoreRallies = buildScoreSheetRallies(match.timeline || [], match.format);
+        const playerCode = (team: 'A' | 'B', playerIndex: 0 | 1) => `${team}${playerIndex + 1}`;
+        const teamPlayers = (players: string[]) =>
+          players.length > 0
+            ? players.map((player, index) => `<div>${index + 1}. ${escapeHtml(player)}</div>`).join('')
+            : '<div class="blank-line">&nbsp;</div><div class="blank-line">&nbsp;</div>';
+        const summaryRows = [1, 2, 3].map((setNo) => {
+          const set = setByNumber.get(setNo);
+          const setCompleted = set?.winner === 'A' || set?.winner === 'B';
+          const winner = set?.winner === 'A' ? 'A' : set?.winner === 'B' ? 'B' : '';
+          return `<tr><td>${setNo}</td><td>${setCompleted ? set.scoreA : ''}</td><td>${setCompleted ? set.scoreB : ''}</td><td>${winner}</td></tr>`;
+        }).join('');
+        const scoreSet = (setNo: number) => {
+          const set = setByNumber.get(setNo);
+          const setCompleted = set?.winner === 'A' || set?.winner === 'B';
+          const setLabel = setNo === 3 ? 'เซต 3 (ตัดสิน)' : `เซต ${setNo}`;
+          const setRallies = scoreRallies.filter((rally) => rally.setNumber === setNo);
+          const pointCells = (team: 'A' | 'B') => Array.from({ length: 31 }, (_, ownScore) => {
+            if (ownScore === 0) {
+              return `<td class="point-cell start-cell"><span>เริ่ม</span></td>`;
+            }
+            const rally = setRallies.find((item) =>
+              item.winner === team && (team === 'A' ? item.scoreA : item.scoreB) === ownScore
+            );
+            if (!rally) return '<td class="point-cell"></td>';
+            const opponentScore = team === 'A' ? rally.scoreB : rally.scoreA;
+            return `<td class="point-cell scored-point">
+              <b>${opponentScore}</b>
+              <span>#${rally.sequence} · ${team} ได้</span>
+              <small>S ${playerCode(rally.serverTeam, rally.serverPlayerIndex)} › R ${playerCode(rally.receiverTeam, rally.receiverPlayerIndex)}</small>
+              <em>${rally.serviceSide}</em>
+            </td>`;
+          }).join('');
+          const firstRally = setRallies[0];
+          const initialRole = (team: 'A' | 'B') => {
+            if (!firstRally) return '';
+            if (firstRally.serverTeam === team) return `S ${playerCode(team, firstRally.serverPlayerIndex)}`;
+            return `R ${playerCode(team, firstRally.receiverPlayerIndex)}`;
+          };
+          return `<table class="score-grid" aria-label="${setLabel}">
+            <thead>
+              <tr><th class="set-label" rowspan="2">${setLabel}</th><th class="team-col" rowspan="2">ทีม</th><th class="role-col" rowspan="2">S/R</th><th class="point-title" colspan="31">ลำดับแต้ม (ทำเครื่องหมายทุกครั้งที่ได้แต้ม)</th><th class="final-col" rowspan="2">ผล</th></tr>
+              <tr class="point-headings">${pointHeadings}</tr>
+            </thead>
+            <tbody>
+              <tr><th class="team-letter">A</th><td class="role-box">${initialRole('A')}</td>${pointCells('A')}<td class="final-score">${setCompleted ? set.scoreA : ''}</td></tr>
+              <tr class="team-b-row"><th class="team-letter">B</th><td class="role-box">${initialRole('B')}</td>${pointCells('B')}<td class="final-score">${setCompleted ? set.scoreB : ''}</td></tr>
+            </tbody>
+          </table>`;
+        };
+        return `
+          <section class="score-sheet">
+            <div class="sheet-heading">
+              <div><div class="eyebrow">ใบบันทึกคะแนนการแข่งขันแบดมินตัน</div><h1>${escapeHtml(tournament.name)}</h1></div>
+              <div class="sheet-code"><span>คู่ที่</span><strong>${escapeHtml(match.matchCode)}</strong></div>
+            </div>
+            <div class="score-meta">
+              <div><span>ประเภท / ระดับมือ</span><b>${escapeHtml(divisionName)} · ${match.format === 'singles' ? 'เดี่ยว' : 'คู่'}</b></div>
+              <div><span>รอบการแข่งขัน</span><b>${escapeHtml(match.groupName || match.stage)}</b></div>
+              <div><span>วันที่ / เวลา</span><b>${escapeHtml(match.scheduledDate || '________________')} · ${escapeHtml(match.scheduledTime || match.estimatedStart || '________')}</b></div>
+              <div><span>สนาม</span><b>${escapeHtml(courtName(match.courtId))}</b></div>
+            </div>
+            <div class="match-summary">
+              <div class="team-box"><div class="team-tag">ทีม A</div><h2>${escapeHtml(match.teamAName || 'รอผู้ชนะ')}</h2><div class="player-list">${teamPlayers(match.teamAPlayers)}</div></div>
+              <table class="set-summary"><thead><tr><th>เซต</th><th>A</th><th>B</th><th>ชนะ</th></tr></thead><tbody>${summaryRows}</tbody><tfoot><tr><th colspan="2">ผลแมตช์</th><td colspan="2">${match.winner === 'A' ? 'ทีม A ชนะ' : match.winner === 'B' ? 'ทีม B ชนะ' : match.winner === 'draw' ? 'เสมอ' : ''}</td></tr></tfoot></table>
+              <div class="team-box"><div class="team-tag">ทีม B</div><h2>${escapeHtml(match.teamBName || 'รอผู้ชนะ')}</h2><div class="player-list">${teamPlayers(match.teamBPlayers)}</div></div>
+              <div class="official-box">
+                <div><span>ผู้ตัดสิน</span><b>${escapeHtml(match.umpireName || '________________________')}</b></div>
+                <div><span>เวลาเริ่ม</span><b>${escapeHtml(match.actualStart || '________')}</b></div>
+                <div><span>เวลาจบ</span><b>${escapeHtml(match.actualEnd || '________')}</b></div>
+                <div><span>จำนวนลูกแบด</span><b>${match.shuttlesUsed ?? '______'} ลูก</b></div>
+              </div>
+            </div>
+            <div class="score-legend">
+              <b>วิธีอ่าน:</b> หัวคอลัมน์ = คะแนนของทีมในแถวนั้น · ตัวเลขใหญ่ในช่อง = คะแนนคู่แข่ง ณ ลูกนั้น · # = ลำดับลูก · A/B ได้ = ทีมที่ได้แต้ม · S/R = ผู้เสิร์ฟ/ผู้รับก่อนตีลูก
+              ${scoreRallies.length === 0 ? '<strong> · แมตช์นี้ไม่มี Timeline รายลูก (เช่น บันทึกผ่าน Quick Score) จึงแสดงได้เฉพาะผลสรุป</strong>' : ''}
+            </div>
+            <div class="score-grids">${scoreSet(1)}${scoreSet(2)}${scoreSet(3)}</div>
+            <div class="sheet-footer">
+              <div class="notes"><b>เหตุการณ์ / หมายเหตุกรรมการ</b><span></span></div>
+              <div class="sign-box"><span>ลงชื่อผู้ตัดสิน</span><b>________________________________</b></div>
+              <div class="sign-box"><span>ลงชื่อผู้ควบคุมการแข่งขัน</span><b>________________________________</b></div>
+            </div>
+          </section>`;
+      }).join('') || '<p>ยังไม่มีคู่แข่งขันในระดับมือนี้</p>';
     } else if (kind === 'court_schedule') {
       title = `ตารางการใช้สนาม · ${divisionName}`;
       const sorted = [...divisionMatches].sort((a, b) => `${a.scheduledDate || ''} ${a.scheduledTime || a.estimatedStart || ''}`.localeCompare(`${b.scheduledDate || ''} ${b.scheduledTime || b.estimatedStart || ''}`));
@@ -635,9 +771,12 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       content = stages.map((stage) => `<section class="stage"><h2>${escapeHtml(stage === 'group' ? 'รอบแบ่งกลุ่ม' : stage)}</h2>${divisionMatches.filter((match) => match.stage === stage).map((match) => `<div class="bracket-match"><strong>${escapeHtml(match.matchCode)}</strong><span>${escapeHtml(match.teamAName)}</span><b>${escapeHtml(match.sets.map((set) => `${set.scoreA}-${set.scoreB}`).join(' · ') || '—')}</b><span>${escapeHtml(match.teamBName)}</span></div>`).join('')}</section>`).join('') || '<p>ยังไม่มีสายการแข่งขัน</p>';
     }
 
+    const pageSize = kind === 'score_sheets' ? 'A4 landscape' : 'A4';
+    const documentHeader = kind === 'score_sheets' ? '' : `<header class="document-header"><div><h1>${escapeHtml(tournament.name)}</h1><p>${escapeHtml(title)}</p></div><div>พิมพ์เมื่อ ${escapeHtml(generatedAt)}<br>เวลา Asia/Bangkok</div></header>`;
     const html = `<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-      @page{size:A4;margin:12mm}*{box-sizing:border-box}body{font-family:Arial,'Sarabun',sans-serif;color:#111;margin:0;font-size:12px}header{border-bottom:2px solid #156143;padding-bottom:8px;margin-bottom:14px;display:flex;justify-content:space-between;gap:16px}h1{font-size:20px;margin:0}h2{font-size:15px;margin:4px 0}p{margin:4px 0}table{width:100%;border-collapse:collapse;margin:8px 0 16px}th,td{border:1px solid #777;padding:7px;text-align:left}th{background:#eef7f2}.score-sheet{break-after:page;page-break-after:always;border:1px solid #777;padding:12px;min-height:255mm}.score-sheet:last-child{break-after:auto;page-break-after:auto}.meta,.signatures{display:flex;justify-content:space-between;gap:10px}.teams{display:grid;grid-template-columns:1fr 50px 1fr;gap:10px;align-items:center;text-align:center;margin:28px 0}.vs{font-weight:bold}.score-sheet td{height:42px}.signatures{margin-top:28px}.stage{break-inside:avoid;margin-bottom:18px}.bracket-match{display:grid;grid-template-columns:70px 1fr 100px 1fr;border:1px solid #777;margin:5px 0;padding:8px;gap:8px;align-items:center}.bracket-match b{text-align:center}@media print{button{display:none}}
-    </style></head><body><header><div><h1>${escapeHtml(tournament.name)}</h1><p>${escapeHtml(title)}</p></div><div>พิมพ์เมื่อ ${escapeHtml(generatedAt)}<br>เวลา Asia/Bangkok</div></header>${content}<script>window.addEventListener('load',()=>window.print())<\/script></body></html>`;
+      @page{size:${pageSize};margin:8mm}*{box-sizing:border-box}body{font-family:Arial,'Sarabun',sans-serif;color:#111;margin:0;font-size:12px}.document-header{border-bottom:2px solid #156143;padding-bottom:8px;margin-bottom:14px;display:flex;justify-content:space-between;gap:16px}h1{font-size:20px;margin:0}h2{font-size:15px;margin:4px 0}p{margin:4px 0}table{width:100%;border-collapse:collapse;margin:8px 0 16px}th,td{border:1px solid #777;padding:7px;text-align:left}th{background:#eef7f2}.stage{break-inside:avoid;margin-bottom:18px}.bracket-match{display:grid;grid-template-columns:70px 1fr 100px 1fr;border:1px solid #777;margin:5px 0;padding:8px;gap:8px;align-items:center}.bracket-match b{text-align:center}
+      .score-sheet{break-after:page;page-break-after:always;min-height:190mm;padding:2mm}.score-sheet:last-child{break-after:auto;page-break-after:auto}.sheet-heading{display:flex;align-items:flex-start;justify-content:space-between;border-bottom:2px solid #111;padding-bottom:5px}.sheet-heading h1{font-size:18px}.eyebrow{font-size:10px;font-weight:700;letter-spacing:.08em}.sheet-code{display:flex;align-items:center;gap:8px;border:2px solid #111;padding:5px 10px}.sheet-code strong{font-size:15px}.score-meta{display:grid;grid-template-columns:1.5fr 1fr 1.35fr .8fr;border:1px solid #222;border-top:0}.score-meta>div{padding:5px 7px;border-right:1px solid #777}.score-meta>div:last-child{border-right:0}.score-meta span,.official-box span,.sign-box span{display:block;font-size:8px;color:#444;margin-bottom:2px}.score-meta b{font-size:10px}.match-summary{display:grid;grid-template-columns:1.25fr .8fr 1.25fr 1fr;gap:6px;margin-top:7px;align-items:stretch}.team-box,.official-box{border:1.5px solid #222;padding:6px;min-height:75px}.team-box{position:relative;text-align:center}.team-tag{position:absolute;top:0;left:0;background:#111;color:#fff;padding:3px 8px;font-weight:700}.team-box h2{font-size:14px;margin:0 0 4px;padding-left:35px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.player-list{font-size:9px;line-height:1.5;border-top:1px solid #aaa;padding-top:3px}.blank-line{border-bottom:1px dotted #999}.official-box{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px}.official-box b{font-size:9px}.set-summary{margin:0;font-size:9px}.set-summary th,.set-summary td{padding:2px 4px;text-align:center;height:15px}.set-summary tfoot th,.set-summary tfoot td{font-size:8px}.score-legend{margin-top:6px;border:1px solid #999;background:#f6f6f6;padding:3px 6px;font-size:6.5px}.score-legend strong{color:#a33}.score-grids{margin-top:4px}.score-grid{table-layout:fixed;margin:0 0 5px;font-size:7px}.score-grid th,.score-grid td{padding:0;text-align:center;border:1px solid #555}.score-grid .set-label{width:52px;font-size:8px;background:#e7eee9}.score-grid .team-col{width:27px}.score-grid .role-col{width:29px}.score-grid .final-col{width:28px;background:#e7eee9}.score-grid .point-title{height:13px;font-size:7px;letter-spacing:.03em}.score-grid .point-headings th{height:11px;font-size:6px;font-weight:400;background:#fafafa}.score-grid tbody th,.score-grid tbody td{height:30px}.score-grid .team-letter{font-size:10px;background:#fff}.score-grid .role-box{background:#fff;font-size:6px;font-weight:700}.score-grid .point-cell{background:#fff;overflow:hidden;line-height:1}.score-grid .team-b-row .point-cell,.score-grid .team-b-row .role-box{background:#e4e4e4}.score-grid .point-cell span,.score-grid .point-cell small,.score-grid .point-cell em{display:block;white-space:nowrap;font-size:4.5px;font-style:normal}.score-grid .point-cell b{display:block;font-size:7px}.score-grid .scored-point{box-shadow:inset 0 0 0 1px #111}.score-grid .start-cell span{font-size:5px;color:#666}.score-grid .final-score{font-size:12px;font-weight:700;background:#fff}.sheet-footer{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:8px;margin-top:6px}.notes,.sign-box{border:1px solid #555;min-height:28px;padding:4px 6px}.notes b{font-size:8px}.notes span{display:block;border-bottom:1px dotted #777;margin-top:8px}.sign-box{text-align:center}.sign-box b{display:block;font-size:9px;margin-top:7px}@media print{button{display:none}.score-sheet{break-inside:avoid}}
+    </style></head><body>${documentHeader}${content}<script>window.addEventListener('load',()=>window.print())<\/script></body></html>`;
     const url = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
     const printWindow = window.open(url, '_blank');
     if (!printWindow) {
@@ -706,6 +845,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
         body: JSON.stringify({
           tournamentId: tournament.id,
           divisionId: activeDivision.id,
+          format: effectiveFormat,
           drawSystem,
           teamsPerGroup,
           qualifiersPerGroup,
@@ -828,6 +968,15 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       return;
     }
 
+    if (publishedRoundRobinSummary.unassignedTeams > 0) {
+      notify('error', `มี ${publishedRoundRobinSummary.unassignedTeams} ทีมที่ยังไม่อยู่ในกลุ่ม กรุณา Publish สายใหม่ก่อนสร้าง Knockout`);
+      return;
+    }
+    if (groupMatchStats.total !== expectedPublishedRoundRobinMatches) {
+      const difference = Math.abs(expectedPublishedRoundRobinMatches - groupMatchStats.total);
+      notify('error', `สายรอบแบ่งกลุ่มไม่ครบ จำนวนแมตช์ต่างจากสายที่ Publish ${difference} คู่ (พบ ${groupMatchStats.total}/${expectedPublishedRoundRobinMatches} คู่) กรุณา Publish สายใหม่ก่อนสร้าง Knockout`);
+      return;
+    }
     const unfinishedCount = groupMatchStats.total - groupMatchStats.finished;
     if (unfinishedCount > 0) {
       notify('error', `ยังมีแมตช์รอบแบ่งกลุ่มค้างอยู่ ${unfinishedCount} คู่ ต้องบันทึกผลให้ครบก่อนสร้างสาย Knockout`);
@@ -852,10 +1001,12 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
         body: JSON.stringify({
           tournamentId: tournament.id,
           divisionId: activeDivision.id,
+          format: effectiveFormat,
           mode: knockoutMode,
           teamIds: qualifiedSeededTeams.map((team) => team.id),
           rankOneTeamIds: rankOneTeams.map((team) => team.id),
           rankTwoTeamIds: rankTwoTeams.map((team) => team.id),
+          qualifiersPerGroup,
           thirdPlacePlayoff: knockoutMode === 'combined' && includeThirdPlacePlayoff,
         }),
       });
@@ -983,9 +1134,12 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
   );
 
   const hasApplicants = divisionPlayers.length >= 2;
+  const canDrawBracket = hasPermission('drawBracket');
   const hasGroupDraw = groupMatches.length > 0;
   const allGroupFinished =
-    groupMatches.length > 0 &&
+    expectedPublishedRoundRobinMatches > 0 &&
+    publishedRoundRobinSummary.unassignedTeams === 0 &&
+    groupMatches.length === expectedPublishedRoundRobinMatches &&
     groupMatches.every(isCompletedMatch);
   const hasAnyDraw = divisionMatches.length > 0;
   const hasKoDraw = koMatches.length > 0;
@@ -1070,11 +1224,11 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
       {
         id: 'umpires' as const,
         stepNum: 6,
-        label: 'มอบหมายกรรมการ',
-        statusText: hasAnyDraw ? `${divisionMatches.filter((m) => m.umpireId).length}/${divisionMatches.length} คู่` : 'รอสร้างสาย',
-        completed: hasAnyDraw && divisionMatches.every((m) => Boolean(m.umpireId) || Boolean(m.isBye)),
-        disabled: !hasAnyDraw,
-        disabledReason: 'กรุณาสร้างสายในขั้นที่ 2 ก่อน',
+        label: 'กรรมการ Knockout',
+        statusText: hasKoDraw ? `${koMatches.filter((m) => m.umpireId).length}/${koMatches.length} คู่` : 'รอขั้นที่ 5',
+        completed: hasKoDraw && koMatches.every((m) => Boolean(m.umpireId) || Boolean(m.isBye)),
+        disabled: !hasKoDraw,
+        disabledReason: 'กรุณาสร้างสาย Knockout ในขั้นที่ 5 ก่อน',
       },
       {
         id: 'share' as const,
@@ -1475,8 +1629,15 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
 
             <div className="flex flex-wrap gap-2 pt-2">
               <button
-                disabled={previewLoading || !hasPermission('drawBracket') || divisionPlayers.length < 2}
+                disabled={previewLoading || !canDrawBracket || divisionPlayers.length < 2}
                 onClick={buildRandomGroups}
+                title={
+                  !canDrawBracket
+                    ? 'บัญชีนี้ไม่มีสิทธิ์จัดสาย กรุณาเข้าสู่ระบบด้วย Owner หรือ Tournament Admin'
+                    : divisionPlayers.length < 2
+                    ? 'ต้องมีทีมที่อนุมัติและไม่อยู่ Waiting List อย่างน้อย 2 ทีม'
+                    : undefined
+                }
                 className="min-h-[44px] px-4 py-2 rounded-lg bg-[#142642] hover:bg-[#1E355C] text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Shuffle className="w-4 h-4" />
@@ -1516,6 +1677,12 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                 </button>
               )}
             </div>
+
+            {!canDrawBracket && (
+              <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs font-medium text-amber-900 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-200">
+                บัญชีปัจจุบันไม่มีสิทธิ์จัดหรือ Publish สายการแข่งขัน กรุณาออกจากระบบกรรมการ แล้วเข้าสู่ระบบด้วย Owner หรือ Tournament Admin
+              </div>
+            )}
           </div>
 
           {/* Before vs After Comparison */}
@@ -1826,6 +1993,14 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                         ? m.sets.map((s) => `${s.scoreA}-${s.scoreB}`).join(' / ')
                         : '0-0';
                     const isFinished = isCompletedMatch(m);
+                    const displayOutcome =
+                      m.winner || getMatchOutcomeByRules(m.sets, tournament.scoringRules, m.stage);
+                    const setWinsA = m.sets.filter(
+                      (set) => (set.winner || getSetWinnerByRules(set.scoreA, set.scoreB, tournament.scoringRules)) === 'A'
+                    ).length;
+                    const setWinsB = m.sets.filter(
+                      (set) => (set.winner || getSetWinnerByRules(set.scoreA, set.scoreB, tournament.scoringRules)) === 'B'
+                    ).length;
 
                     return (
                       <div
@@ -1847,7 +2022,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                           </div>
 
                           <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">
-                            <span className={`inline-flex items-center gap-1.5 ${m.winner === 'A' ? 'text-[#156143] dark:text-[#4ADE80]' : ''}`}>
+                            <span className={`inline-flex items-center gap-1.5 ${displayOutcome === 'A' ? 'text-[#156143] dark:text-[#4ADE80]' : ''}`}>
                               <TeamLogoBadge
                                 teamName={m.teamAName}
                                 logoUrl={teamLogos[m.teamAId] || teamLogos[m.teamAName]}
@@ -1856,7 +2031,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                               <span>{m.teamAName}</span>
                             </span>
                             <span className="text-xs text-[#525C6B] font-normal">vs</span>
-                            <span className={`inline-flex items-center gap-1.5 ${m.winner === 'B' ? 'text-[#156143] dark:text-[#4ADE80]' : ''}`}>
+                            <span className={`inline-flex items-center gap-1.5 ${displayOutcome === 'B' ? 'text-[#156143] dark:text-[#4ADE80]' : ''}`}>
                               <TeamLogoBadge
                                 teamName={m.teamBName}
                                 logoUrl={teamLogos[m.teamBId] || teamLogos[m.teamBName]}
@@ -1867,8 +2042,8 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                             <span className="font-mono text-xs px-2 py-0.5 rounded bg-[#F7F6F2] dark:bg-[#0B121C] border border-[#E2DFD5] dark:border-[#25354C]">
                               {scoreText}
                             </span>
-                            {m.winner === 'draw' && (
-                              <StatusIndicator tone="neutral" label="เสมอ" compact />
+                            {displayOutcome === 'draw' && (
+                              <StatusIndicator tone="neutral" label={`เสมอ ${setWinsA}–${setWinsB} เซต`} compact />
                             )}
                           </div>
 
@@ -1975,6 +2150,19 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
             />
           ) : (
             <>
+              {(groupMatches.length !== expectedPublishedRoundRobinMatches ||
+                publishedRoundRobinSummary.unassignedTeams > 0) && (
+                <div className="rounded-xl border border-[#F59E0B] bg-[#FFFBEB] p-4 text-xs text-[#92400E] dark:border-[#B45309] dark:bg-[#261B07] dark:text-[#FACC15] flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <strong>ข้อมูลแมตช์วนแข่งไม่ครบ:</strong> พบ {groupMatches.length}/{expectedPublishedRoundRobinMatches} คู่
+                    · สายที่ Publish มี {publishedRoundRobinSummary.assignedTeams} ทีมใน {publishedRoundRobinSummary.groupCount} กลุ่ม
+                    {publishedRoundRobinSummary.unassignedTeams > 0
+                      ? ` · มี ${publishedRoundRobinSummary.unassignedTeams} ทีมยังไม่อยู่ในกลุ่ม`
+                      : ''}
+                  </div>
+                  <button type="button" onClick={() => void refreshState()} className="min-h-9 rounded-lg border border-current px-3 font-semibold">โหลดข้อมูลใหม่</button>
+                </div>
+              )}
               {/* Tie-Break & Navigation Header */}
               <div className="rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-white dark:bg-[#131E2E] p-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <div className="space-y-1">
@@ -2015,8 +2203,11 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                 {paginatedGroupStandings.map(([groupName, rows]) => {
                   const grpMatches = groupMatches.filter((m) => (m.groupName || 'กลุ่ม A') === groupName);
                   const grpDone = grpMatches.filter(isCompletedMatch).length;
+                  const expectedGroupMatches = (rows.length * (rows.length - 1)) / 2;
                   const groupCompleted =
-                    grpMatches.length > 0 && grpMatches.every(isCompletedMatch);
+                    expectedGroupMatches > 0 &&
+                    grpMatches.length === expectedGroupMatches &&
+                    grpMatches.every(isCompletedMatch);
                   return (
                     <div
                       key={groupName}
@@ -2026,7 +2217,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-bold">{groupName}</span>
                           <span className="text-[11px] font-mono text-[#525C6B] dark:text-[#9AA8BC]">
-                            ({grpDone}/{grpMatches.length} แมตช์)
+                            ({grpDone}/{expectedGroupMatches} แมตช์)
                           </span>
                         </div>
                         <span className="text-xs text-[#525C6B] dark:text-[#9AA8BC]">
@@ -2045,14 +2236,30 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                               <th className="py-2.5 px-2 text-right">ชนะ</th>
                               <th className="py-2.5 px-2 text-right">เสมอ</th>
                               <th className="py-2.5 px-2 text-right">แพ้</th>
-                              <th className="py-2.5 px-2 text-right">คะแนน</th>
+                              <th className="py-2.5 px-2 text-right">
+                                <span className="block">คะแนนสะสม</span>
+                                <span className="block whitespace-nowrap text-[9px] font-normal opacity-80">
+                                  ชนะ 2 · เสมอ 1 · แพ้ 0
+                                </span>
+                              </th>
                               <th className="py-2.5 px-2 text-right">เซต</th>
-                              <th className="py-2.5 px-2 text-right">แต้ม +/-</th>
+                              <th className="py-2.5 px-2 text-right">
+                                <span className="block">ผลต่างแต้ม</span>
+                                <span className="block whitespace-nowrap text-[9px] font-normal opacity-80">
+                                  แต้มได้ − แต้มเสีย
+                                </span>
+                              </th>
                               <th className="py-2.5 px-3 text-right">สิทธิ์</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-[#E2DFD5] dark:divide-[#25354C] font-mono tabular-nums">
-                            {rows.map((r) => (
+                            {rows.map((r) => {
+                              const pointsSource = getStandingPointsSource(r);
+                              const pointDifferenceSource = getPointDifferenceSource(
+                                r.pointsFor,
+                                r.pointsAgainst
+                              );
+                              return (
                               <tr key={r.teamId}>
                                 <td className="py-2.5 px-3 font-bold">{r.rank}</td>
                                 <td className="py-2.5 px-3 font-sans font-medium">
@@ -2071,13 +2278,28 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                                 </td>
                                 <td className="py-2.5 px-2 text-right">{r.drawn}</td>
                                 <td className="py-2.5 px-2 text-right">{r.lost}</td>
-                                <td className="py-2.5 px-2 text-right font-bold">{r.standingPoints}</td>
+                                <td
+                                  className="py-2.5 px-2 text-right"
+                                  title={pointsSource.description}
+                                  aria-label={`ที่มาคะแนน ${r.teamName}: ${pointsSource.description}`}
+                                >
+                                  <div className="font-bold text-sm">{r.standingPoints}</div>
+                                  <div className="mt-0.5 whitespace-nowrap text-[9px] font-normal text-[#687386] dark:text-[#9AA8BC]">
+                                    {pointsSource.compact}
+                                  </div>
+                                </td>
                                 <td className="py-2.5 px-2 text-right">
                                   {r.setsFor}-{r.setsAgainst}
                                 </td>
-                                <td className="py-2.5 px-2 text-right">
-                                  {r.pointsFor - r.pointsAgainst >= 0 ? '+' : ''}
-                                  {r.pointsFor - r.pointsAgainst}
+                                <td
+                                  className="py-2.5 px-2 text-right"
+                                  title={pointDifferenceSource.description}
+                                  aria-label={`ที่มาผลต่างแต้ม ${r.teamName}: ${pointDifferenceSource.description}`}
+                                >
+                                  <div className="font-bold">{pointDifferenceSource.display}</div>
+                                  <div className="mt-0.5 whitespace-nowrap text-[9px] font-normal text-[#687386] dark:text-[#9AA8BC]">
+                                    {pointDifferenceSource.compact}
+                                  </div>
                                 </td>
                                 <td className="py-2.5 px-3 text-right font-sans">
                                   {groupCompleted && r.qualified ? (
@@ -2087,7 +2309,8 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
                                   ) : null}
                                 </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -2208,30 +2431,38 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
               )}
             </div>
           ) : (
-            <KnockoutBracketCanvas
-              matches={divisionMatches}
-              teamLogos={teamLogos}
-              onSelectMatch={openMatchModal}
-              title={`สาย Knockout — ${activeDivision?.nameTh} (คลิกที่คู่เพื่อดูรายละเอียด บันทึกผล หรือแก้ไขผล)`}
-            />
+            <>
+              <div className="rounded-xl border border-[#D8E7DF] bg-[#F2FBF6] px-4 py-3 text-sm dark:border-[#214B39] dark:bg-[#0E2E1D]/40">
+                <span className="font-bold text-[#156143] dark:text-[#4ADE80]">ทีมผ่านเข้ารอบ {knockoutEntrantCount} ทีม</span>
+                <span className="ml-2 text-xs text-[#525C6B] dark:text-[#9AA8BC]">
+                  นับ Team ID ไม่ซ้ำ และไม่นับ BYE หรือช่องรอผลรอบก่อนหน้า
+                </span>
+              </div>
+              <KnockoutBracketCanvas
+                matches={divisionMatches}
+                teamLogos={teamLogos}
+                onSelectMatch={openMatchModal}
+                title={`สาย Knockout — ${activeDivision?.nameTh} (คลิกที่คู่เพื่อดูรายละเอียด บันทึกผล หรือแก้ไขผล)`}
+              />
+            </>
           )}
         </div>
       )}
 
-      {/* 6. Umpire Assignment (All Division Matches) */}
+      {/* 6. Umpire Assignment (Knockout matches only; group matches belong to step 3) */}
       {subTab === 'umpires' && (
         <div className="space-y-3">
           <div className="rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-white dark:bg-[#131E2E] overflow-hidden">
             <div className="p-4 border-b border-[#E2DFD5] dark:border-[#25354C] flex flex-wrap items-center justify-between gap-2">
               <div>
-                <h3 className="text-sm font-bold">การมอบหมายกรรมการประจำคู่แข่งขันทั้งหมด ({divisionMatches.length} คู่)</h3>
+                <h3 className="text-sm font-bold">การมอบหมายกรรมการรอบ Knockout ({koMatches.length} คู่)</h3>
                 <p className="text-xs text-[#525C6B] dark:text-[#9AA8BC]">
-                  ระบบป้องกันไม่ให้กรรมการตัดสินคู่ที่มาจากสโมสรเดียวกับตนเองโดยอัตโนมัติ
+                  ขั้นตอนนี้แสดงเฉพาะคู่ Knockout ส่วนคู่รอบแบ่งกลุ่มมอบหมายได้ในขั้นตอนที่ 3
                 </p>
               </div>
               <button
                 disabled={!hasPermission('assignUmpire')}
-                onClick={() => handleRandomUmpires(divisionMatches)}
+                onClick={() => handleRandomUmpires(koMatches)}
                 className="min-h-[40px] px-3.5 rounded-lg bg-[#156143] text-white text-xs font-semibold inline-flex items-center gap-1.5 disabled:opacity-40"
               >
                 <Shuffle className="w-3.5 h-3.5" />
@@ -2240,7 +2471,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
             </div>
 
             <div className="divide-y divide-[#E2DFD5] dark:divide-[#25354C]">
-              {paginatedDivisionMatches.map((m) => (
+              {paginatedKnockoutMatches.map((m) => (
                 <div
                   key={m.id}
                   className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
@@ -2327,7 +2558,7 @@ export const TournamentDrawView: React.FC<{ tournament: Tournament }> = ({ tourn
           <PaginationBar
             page={safeUmpireAssignPage}
             pageSize={umpireAssignPageSize}
-            totalItems={divisionMatches.length}
+            totalItems={koMatches.length}
             onPageChange={setUmpireAssignPage}
             onPageSizeChange={setUmpireAssignPageSize}
           />

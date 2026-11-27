@@ -229,9 +229,10 @@ func (a *app) handleTournamentDirectorBootstrap(w http.ResponseWriter, r *http.R
 	_ = json.Unmarshal(officialRaw, &official)
 	official["id"] = p.ActorID
 	delete(official, "loginCode12")
+	freeParticipants, coinPerParticipant := a.tournamentPricing(r.Context())
 	writeJSON(w, 200, map[string]any{
 		"liveMatchFeatureEnabled": true, "activeUserRole": "director", "activeUserName": p.Name,
-		"coinBalance": 0, "tournaments": tournaments, "players": []any{}, "umpires": []any{official},
+		"coinBalance": 0, "pricing": map[string]int{"freeParticipants": freeParticipants, "coinPerParticipant": coinPerParticipant}, "tournaments": tournaments, "players": []any{}, "umpires": []any{official},
 		"matches": matches, "drawRevisions": []any{}, "subAccounts": []any{},
 		"rolePermissions": tournamentPermissionDefaults, "auditLogs": []any{}, "incidents": []any{},
 	})
@@ -538,7 +539,7 @@ func (a *app) tournamentDashboard(w http.ResponseWriter, r *http.Request) {
 		coalesce(to_char(t.start_at at time zone 'Asia/Bangkok','YYYY-MM-DD'),t.settings->>'startDate',''),
 		coalesce(to_char(t.end_at at time zone 'Asia/Bangkok','YYYY-MM-DD'),t.settings->>'endDate',''),
 		t.max_participants,t.version,t.public_token,t.settings,
-		(select count(*) from tournament_entries e where e.admin_id=t.admin_id and e.tournament_id=t.id and e.withdrawn_at is null) applicant_count,
+		(select count(*) from tournament_entries e where e.admin_id=t.admin_id and e.tournament_id=t.id and e.withdrawn_at is null and e.document_status<>'rejected') applicant_count,
 		(select count(*) from tournament_matches m where m.admin_id=t.admin_id and m.tournament_id=t.id) match_count,
 		(select count(*) from tournament_matches m where m.admin_id=t.admin_id and m.tournament_id=t.id and coalesce(m.payload->>'status',m.status) in ('finished','walkover','retired','disqualified')) finished_match_count
 		`+filterSQL+`
@@ -588,8 +589,8 @@ func (a *app) tournamentDashboard(w http.ResponseWriter, r *http.Request) {
 		count(*) filter(where status='เปิดรับสมัคร'),
 		count(*) filter(where status='กำลังแข่งขัน'),
 		count(*) filter(where status='แข่งขันเสร็จแล้ว'),
-		coalesce((select sum(case when e.format='doubles' then 2 else 1 end) from tournament_entries e where e.admin_id=$1 and e.withdrawn_at is null),0),
-		coalesce((select sum(greatest(e.amount_due_satang-e.amount_paid_satang,0)) from tournament_entries e where e.admin_id=$1 and e.withdrawn_at is null),0)
+		coalesce((select sum(case when e.format='doubles' then 2 else 1 end) from tournament_entries e where e.admin_id=$1 and e.withdrawn_at is null and e.document_status<>'rejected'),0),
+		coalesce((select sum(greatest(e.amount_due_satang-e.amount_paid_satang,0)) from tournament_entries e where e.admin_id=$1 and e.withdrawn_at is null and e.document_status<>'rejected'),0)
 		from tournaments t where t.admin_id=$1 and t.archived_at is null`, p.AdminID).Scan(&summaryTotal, &openRegistration, &ongoing, &finished, &participantCount, &pendingAmountSatang)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -759,7 +760,7 @@ func (a *app) tournamentGlobalSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *app) tournamentSummaries(ctx context.Context, adminID string) ([]map[string]any, error) {
-	rows, err := a.db.QueryContext(ctx, `select id,name,status,description,organizer,venue,coalesce(to_char(start_at at time zone 'Asia/Bangkok','YYYY-MM-DD'),settings->>'startDate',''),coalesce(to_char(end_at at time zone 'Asia/Bangkok','YYYY-MM-DD'),settings->>'endDate',''),max_participants,version,public_token,settings from tournaments where admin_id=$1 and archived_at is null order by updated_at desc`, adminID)
+	rows, err := a.db.QueryContext(ctx, `select id,name,status,description,organizer,venue,coalesce(to_char(start_at at time zone 'Asia/Bangkok','YYYY-MM-DD'),settings->>'startDate',''),coalesce(to_char(end_at at time zone 'Asia/Bangkok','YYYY-MM-DD'),settings->>'endDate',''),max_participants,pricing_free_snapshot,pricing_per_participant_snapshot,charged_coin,version,public_token,settings from tournaments where admin_id=$1 and archived_at is null order by updated_at desc`, adminID)
 	if err != nil {
 		return nil, err
 	}
@@ -768,9 +769,9 @@ func (a *app) tournamentSummaries(ctx context.Context, adminID string) ([]map[st
 	for rows.Next() {
 		var id, name, status, desc, org, venue, start, end, token string
 		var raw []byte
-		var max int
+		var max, pricingFree, pricingPerParticipant, chargedCoin int
 		var version int64
-		if err = rows.Scan(&id, &name, &status, &desc, &org, &venue, &start, &end, &max, &version, &token, &raw); err != nil {
+		if err = rows.Scan(&id, &name, &status, &desc, &org, &venue, &start, &end, &max, &pricingFree, &pricingPerParticipant, &chargedCoin, &version, &token, &raw); err != nil {
 			return nil, err
 		}
 		item := map[string]any{}
@@ -778,6 +779,7 @@ func (a *app) tournamentSummaries(ctx context.Context, adminID string) ([]map[st
 		item["id"], item["name"], item["status"] = id, name, status
 		item["description"], item["organizer"], item["venue"] = desc, org, venue
 		item["startDate"], item["endDate"], item["maxParticipants"] = start, end, max
+		item["pricingFreeParticipants"], item["pricingCoinPerParticipant"], item["chargedCoin"] = pricingFree, pricingPerParticipant, chargedCoin
 		item["version"], item["publicToken"] = version, token
 		if plain, decryptErr := decryptSecret(token); decryptErr == nil {
 			item["publicToken"] = plain
@@ -1136,14 +1138,16 @@ func (a *app) tournamentLegacyState(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
 	items, _ := a.tournamentSummaries(r.Context(), p.AdminID)
 	players, _ := a.tournamentPayloadRows(r.Context(), `select id,payload||jsonb_build_object(
 		'documentStatus',document_status,'paymentStatus',payment_status,'waitingList',waiting_list,
-		'withdrawn',false,'amountPaid',amount_paid_satang::numeric/100,
+		'withdrawn',withdrawn_at is not null,'amountPaid',amount_paid_satang::numeric/100,
 		'amountDue',greatest(amount_due_satang-amount_paid_satang,0)::numeric/100
-	) from tournament_entries where admin_id=$1 and withdrawn_at is null order by created_at`, p.AdminID)
+	) from tournament_entries where admin_id=$1 order by created_at`, p.AdminID)
 	a.attachTournamentSlipURLs(r.Context(), p.AdminID, players)
 	umpires, _ := a.tournamentPayloadRows(r.Context(), `select id,payload from tournament_officials where admin_id=$1 order by created_at`, p.AdminID)
+	a.attachTournamentOfficialHistory(r.Context(), p.AdminID, "", umpires)
 	matchQuery := `select id,payload||jsonb_build_object('version',version) from tournament_matches where admin_id=$1 order by created_at`
 	if p.Role == "director" {
 		matchQuery = `select id,payload||jsonb_build_object('version',version) from tournament_matches where admin_id=$1 and payload->>'umpireId'='` + strings.ReplaceAll(p.ActorID, "'", "") + `' order by created_at`
@@ -1153,7 +1157,8 @@ func (a *app) tournamentLegacyState(w http.ResponseWriter, r *http.Request) {
 	staff, _ := a.tournamentStaffItems(r.Context(), p.AdminID)
 	incidents, _ := a.tournamentIncidentItems(r.Context(), p.AdminID)
 	audits, _ := a.tournamentAuditItems(r.Context(), p.AdminID)
-	writeJSON(w, 200, map[string]any{"liveMatchFeatureEnabled": true, "activeUserRole": p.Role, "activeUserName": p.Name, "coinBalance": p.Coins, "tournaments": items, "players": players, "umpires": umpires, "matches": matches, "drawRevisions": draws, "subAccounts": staff, "rolePermissions": tournamentPermissionDefaults, "auditLogs": audits, "incidents": incidents})
+	freeParticipants, coinPerParticipant := a.tournamentPricing(r.Context())
+	writeJSON(w, 200, map[string]any{"liveMatchFeatureEnabled": true, "activeUserRole": p.Role, "activeUserName": p.Name, "coinBalance": p.Coins, "pricing": map[string]int{"freeParticipants": freeParticipants, "coinPerParticipant": coinPerParticipant}, "tournaments": items, "players": players, "umpires": umpires, "matches": matches, "drawRevisions": draws, "subAccounts": staff, "rolePermissions": tournamentPermissionDefaults, "auditLogs": audits, "incidents": incidents})
 }
 
 func (a *app) tournamentPayloadRows(ctx context.Context, query, adminID string) ([]map[string]any, error) {
@@ -1175,6 +1180,101 @@ func (a *app) tournamentPayloadRows(ctx context.Context, query, adminID string) 
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (a *app) attachTournamentOfficialHistory(ctx context.Context, adminID, tournamentID string, officials []map[string]any) {
+	byID := make(map[string]map[string]any, len(officials))
+	for _, official := range officials {
+		id := stringValue(official["id"], "")
+		if id == "" {
+			continue
+		}
+		official["assignedMatches"], official["completedMatches"], official["hoursWorked"] = 0, 0, 0.0
+		official["history"] = []any{}
+		byID[id] = official
+	}
+	if len(byID) == 0 {
+		return
+	}
+
+	rows, err := a.db.QueryContext(ctx, `select id,coalesce(official_id,''),status,payload,started_at,ended_at
+		from tournament_matches where admin_id=$1 and official_id is not null and ($2='' or tournament_id=$2)
+		order by updated_at desc,id desc`, adminID, tournamentID)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	type totals struct {
+		assigned, completed int
+		hours               float64
+		history             []any
+	}
+	stats := map[string]*totals{}
+	for rows.Next() {
+		var matchID, officialID, status string
+		var raw []byte
+		var startedAt, endedAt sql.NullTime
+		if rows.Scan(&matchID, &officialID, &status, &raw, &startedAt, &endedAt) != nil || byID[officialID] == nil {
+			continue
+		}
+		stat := stats[officialID]
+		if stat == nil {
+			stat = &totals{history: []any{}}
+			stats[officialID] = stat
+		}
+		stat.assigned++
+		completed := status == "finished" || status == "walkover" || status == "retired" || status == "disqualified"
+		if completed {
+			stat.completed++
+		}
+		if startedAt.Valid && endedAt.Valid && endedAt.Time.After(startedAt.Time) {
+			stat.hours += endedAt.Time.Sub(startedAt.Time).Hours()
+		}
+
+		match := map[string]any{}
+		_ = json.Unmarshal(raw, &match)
+		winsA, winsB := 0, 0
+		scoreParts := []string{}
+		if sets, ok := match["sets"].([]any); ok {
+			for _, rawSet := range sets {
+				set, _ := rawSet.(map[string]any)
+				scoreParts = append(scoreParts, fmt.Sprintf("%d-%d", intValueForTournament(set["scoreA"], 0), intValueForTournament(set["scoreB"], 0)))
+				switch strings.ToUpper(stringValue(set["winner"], "")) {
+				case "A":
+					winsA++
+				case "B":
+					winsB++
+				}
+			}
+		}
+		date := stringValue(match["actualEnd"], stringValue(match["actualStart"], stringValue(match["scheduledDate"], "")))
+		if endedAt.Valid {
+			date = endedAt.Time.In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format(time.RFC3339)
+		} else if startedAt.Valid {
+			date = startedAt.Time.In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format(time.RFC3339)
+		}
+		winner := stringValue(match["winner"], "")
+		result := "รอแข่งขัน"
+		if completed {
+			result = fmt.Sprintf("%d-%d เซต", winsA, winsB)
+			if winner == "draw" {
+				result += " · เสมอ"
+			}
+		}
+		stat.history = append(stat.history, map[string]any{
+			"matchId": matchID, "matchCode": stringValue(match["matchCode"], ""),
+			"date": date, "note": result, "status": status, "stage": stringValue(match["stage"], ""),
+			"teamAName": stringValue(match["teamAName"], ""), "teamBName": stringValue(match["teamBName"], ""),
+			"score": strings.Join(scoreParts, " / "), "winner": winner, "courtId": stringValue(match["courtId"], ""),
+		})
+	}
+	for id, official := range byID {
+		if stat := stats[id]; stat != nil {
+			official["assignedMatches"], official["completedMatches"] = stat.assigned, stat.completed
+			official["hoursWorked"] = math.Round(stat.hours*10) / 10
+			official["history"] = stat.history
+		}
+	}
 }
 
 func (a *app) attachTournamentSlipURLs(ctx context.Context, adminID string, items []map[string]any) {
@@ -1469,7 +1569,11 @@ func (a *app) tournamentRegistrationList(w http.ResponseWriter, r *http.Request)
 		division := stringValue(r.URL.Query().Get("division"), "all")
 		payment := stringValue(r.URL.Query().Get("payment"), "all")
 		checkIn := stringValue(r.URL.Query().Get("checkIn"), "all")
-		base := ` from tournament_entries where admin_id=$1 and tournament_id=$2 and withdrawn_at is null
+		withdrawnScope := ` and withdrawn_at is null`
+		if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("includeWithdrawn")), "true") {
+			withdrawnScope = ``
+		}
+		base := ` from tournament_entries where admin_id=$1 and tournament_id=$2` + withdrawnScope + `
 			and ($3='' or team_name ilike '%'||$3||'%' or registration_code ilike '%'||$3||'%' or coalesce(payload->>'firstName','') ilike '%'||$3||'%' or coalesce(payload->>'lastName','') ilike '%'||$3||'%' or coalesce(payload->>'club','') ilike '%'||$3||'%' or coalesce(payload->>'slipTransferRef','') ilike '%'||$3||'%')
 			and ($4='all' or division_id=$4)
 			and ($5='all' or payment_status=$5 or ($5='rejected' and (payload->>'slipStatus'='rejected')))
@@ -1505,7 +1609,10 @@ func (a *app) tournamentRegistrationList(w http.ResponseWriter, r *http.Request)
 		item["id"] = id
 		items = append(items, item)
 	}
-	if kind != "directors" {
+	_ = rows.Close()
+	if kind == "directors" {
+		a.attachTournamentOfficialHistory(r.Context(), p.AdminID, tournamentID, items)
+	} else {
 		a.attachTournamentSlipURLs(r.Context(), p.AdminID, items)
 	}
 	totalPages := 0
@@ -1623,7 +1730,7 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 			return
 		}
 		var active int
-		if err = tx.QueryRowContext(r.Context(), `select count(*) from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and not waiting_list and withdrawn_at is null`, p.AdminID, tournamentID, divisionID, format).Scan(&active); err != nil {
+		if err = tx.QueryRowContext(r.Context(), `select count(*) from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and not waiting_list and withdrawn_at is null and document_status<>'rejected'`, p.AdminID, tournamentID, divisionID, format).Scan(&active); err != nil {
 			writeJSON(w, 500, map[string]string{"error": "ตรวจสอบโควตาไม่สำเร็จ"})
 			return
 		}
@@ -1636,7 +1743,7 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 			return
 		}
 		_, err = tx.ExecContext(r.Context(), `with ranked as (
-			select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null
+			select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null and document_status<>'rejected'
 		) update tournament_entries e set waiting_position=r.new_position,payload=jsonb_set(e.payload,'{waitingPosition}',to_jsonb(r.new_position),true) from ranked r where e.id=r.id`, p.AdminID, tournamentID, divisionID, format)
 		if err != nil || tx.Commit() != nil {
 			writeJSON(w, 500, map[string]string{"error": "เลื่อนสถานะไม่สำเร็จ"})
@@ -1738,9 +1845,10 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 			return
 		}
 		defer tx.Rollback()
-		var tid string
+		var tid, divisionID, format, currentDocumentStatus string
+		var currentWaiting bool
 		var raw []byte
-		if err = tx.QueryRowContext(r.Context(), `select tournament_id,payload from tournament_entries where id=$1 and admin_id=$2 for update`, id, p.AdminID).Scan(&tid, &raw); err != nil {
+		if err = tx.QueryRowContext(r.Context(), `select tournament_id,payload,coalesce(division_id,''),format,document_status,waiting_list from tournament_entries where id=$1 and admin_id=$2 for update`, id, p.AdminID).Scan(&tid, &raw, &divisionID, &format, &currentDocumentStatus, &currentWaiting); err != nil {
 			writeJSON(w, 404, map[string]string{"error": "not found"})
 			return
 		}
@@ -1748,7 +1856,7 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 		_ = json.Unmarshal(raw, &item)
 		if parts[2] == "review-payment" {
 			decision := stringValue(b["decision"], "pending")
-			if stringValue(item["documentStatus"], "pending") != "approved" {
+			if currentDocumentStatus != "approved" {
 				writeJSON(w, 409, map[string]string{"error": "ต้องอนุมัติใบสมัครก่อนตรวจสอบการชำระเงิน", "code": "registration_not_approved"})
 				return
 			}
@@ -1803,6 +1911,16 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 			item["approvedAt"] = time.Now().In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format(time.RFC3339)
 			next, _ := json.Marshal(item)
 			_, err = tx.ExecContext(r.Context(), `update tournament_entries set document_status=$3,payload=$4,version=version+1,updated_at=now() where id=$1 and admin_id=$2`, id, p.AdminID, status, next)
+			if err == nil && status == "rejected" {
+				if currentDocumentStatus != "rejected" && !currentWaiting {
+					_, _ = tx.ExecContext(r.Context(), `update tournament_entries set waiting_list=false,waiting_position=null,payload=payload||jsonb_build_object('waitingList',false),version=version+1,updated_at=now() where id=(
+						select id from tournament_entries where admin_id=$1 and tournament_id=$2 and coalesce(division_id,'')=$3 and format=$4 and waiting_list and withdrawn_at is null and document_status<>'rejected' order by waiting_position,created_at for update skip locked limit 1
+					)`, p.AdminID, tid, divisionID, format)
+				}
+				_, _ = tx.ExecContext(r.Context(), `with ranked as (
+					select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and coalesce(division_id,'')=$3 and format=$4 and waiting_list and withdrawn_at is null and document_status<>'rejected'
+				) update tournament_entries e set waiting_position=ranked.new_position,payload=e.payload||jsonb_build_object('waitingPosition',ranked.new_position) from ranked where e.id=ranked.id`, p.AdminID, tid, divisionID, format)
+			}
 		}
 		if err != nil || tx.Commit() != nil {
 			writeJSON(w, 500, map[string]string{"error": "บันทึกผลตรวจสอบไม่สำเร็จ"})
@@ -1861,7 +1979,7 @@ func (a *app) tournamentEntryRoutes(w http.ResponseWriter, r *http.Request, path
 				return
 			}
 			var promoted string
-			_ = tx.QueryRowContext(r.Context(), `update tournament_entries set waiting_list=false,waiting_position=null,payload=payload||jsonb_build_object('waitingList',false),version=version+1,updated_at=now() where id=(select id from tournament_entries where tournament_id=$1 and coalesce(division_id,'')=$2 and format=$3 and waiting_list and withdrawn_at is null order by waiting_position,created_at for update skip locked limit 1) returning id`, tid, divisionID, format).Scan(&promoted)
+			_ = tx.QueryRowContext(r.Context(), `update tournament_entries set waiting_list=false,waiting_position=null,payload=payload||jsonb_build_object('waitingList',false),version=version+1,updated_at=now() where id=(select id from tournament_entries where tournament_id=$1 and coalesce(division_id,'')=$2 and format=$3 and waiting_list and withdrawn_at is null and document_status<>'rejected' order by waiting_position,created_at for update skip locked limit 1) returning id`, tid, divisionID, format).Scan(&promoted)
 			if err = tx.Commit(); err != nil {
 				writeJSON(w, 500, map[string]string{"error": err.Error()})
 				return
@@ -1927,7 +2045,7 @@ func (a *app) createTournamentEntry(w http.ResponseWriter, r *http.Request, p to
 			return
 		}
 	}
-	_ = tx.QueryRowContext(r.Context(), `select coalesce(sum(case when format='doubles' then 2 else 1 end),0)::int from tournament_entries where tournament_id=$1 and withdrawn_at is null and waiting_list=false`, tid).Scan(&registeredPeople)
+	_ = tx.QueryRowContext(r.Context(), `select coalesce(sum(case when format='doubles' then 2 else 1 end),0)::int from tournament_entries where tournament_id=$1 and withdrawn_at is null and waiting_list=false and document_status<>'rejected'`, tid).Scan(&registeredPeople)
 	people := len(members)
 	waiting := registeredPeople+people > maxParticipants
 	if waiting && !waitingListEnabled {
@@ -1948,7 +2066,7 @@ func (a *app) createTournamentEntry(w http.ResponseWriter, r *http.Request, p to
 		}
 		if !unlimited {
 			var registeredTeams int
-			if err = tx.QueryRowContext(r.Context(), `select count(*) from tournament_entries where tournament_id=$1 and admin_id=$2 and division_id=$3 and format=$4 and withdrawn_at is null and waiting_list=false`, tid, p.AdminID, divisionID, format).Scan(&registeredTeams); err != nil {
+			if err = tx.QueryRowContext(r.Context(), `select count(*) from tournament_entries where tournament_id=$1 and admin_id=$2 and division_id=$3 and format=$4 and withdrawn_at is null and waiting_list=false and document_status<>'rejected'`, tid, p.AdminID, divisionID, format).Scan(&registeredTeams); err != nil {
 				writeJSON(w, 500, map[string]string{"error": "ตรวจสอบจำนวนผู้สมัครไม่สำเร็จ"})
 				return
 			}
@@ -1997,7 +2115,7 @@ func (a *app) createTournamentEntry(w http.ResponseWriter, r *http.Request, p to
 	if v, err := strconv.ParseFloat(fmt.Sprint(b["amountDue"]), 64); err == nil {
 		due = int64(v * 100)
 	}
-	_, err = tx.ExecContext(r.Context(), `insert into tournament_entries(id,tournament_id,admin_id,division_id,registration_code,verification_code_hash,team_name,format,source,document_status,payment_status,waiting_list,waiting_position,amount_due_satang,payload) values($1,$2,$3,nullif($4,''),$5,$6,$7,$8,$9,$10,$11,$12,case when $12 then (select count(*)+1 from tournament_entries where tournament_id=$2 and waiting_list and withdrawn_at is null) else null end,$13,$14)`, id, tid, p.AdminID, stringValue(b["divisionId"], ""), code, tournamentSecretDigest(verify), stringValue(b["teamName"], stringValue(b["name"], "ผู้สมัคร")), stringValue(b["format"], "doubles"), source, stringValue(b["documentStatus"], "pending"), stringValue(b["paymentStatus"], "unpaid"), waiting, due, raw)
+	_, err = tx.ExecContext(r.Context(), `insert into tournament_entries(id,tournament_id,admin_id,division_id,registration_code,verification_code_hash,team_name,format,source,document_status,payment_status,waiting_list,waiting_position,amount_due_satang,payload) values($1,$2,$3,nullif($4,''),$5,$6,$7,$8,$9,$10,$11,$12,case when $12 then (select count(*)+1 from tournament_entries where tournament_id=$2 and waiting_list and withdrawn_at is null and document_status<>'rejected') else null end,$13,$14)`, id, tid, p.AdminID, stringValue(b["divisionId"], ""), code, tournamentSecretDigest(verify), stringValue(b["teamName"], stringValue(b["name"], "ผู้สมัคร")), stringValue(b["format"], "doubles"), source, stringValue(b["documentStatus"], "pending"), stringValue(b["paymentStatus"], "unpaid"), waiting, due, raw)
 	if err != nil {
 		writeJSON(w, 409, map[string]string{"error": err.Error()})
 		return
@@ -2086,6 +2204,16 @@ func normalizeTournamentEntryMembers(entry map[string]any) ([]map[string]any, *t
 	for index, member := range members {
 		if strings.TrimSpace(stringValue(member["firstName"], "")) == "" || strings.TrimSpace(stringValue(member["lastName"], "")) == "" {
 			return nil, &tournamentRegistrationError{Status: 400, Code: "member_name_required", Message: fmt.Sprintf("กรุณากรอกชื่อและนามสกุลนักกีฬาคนที่ %d", index+1)}
+		}
+		phone := onlyDigits(stringValue(member["phone"], ""))
+		if len(phone) != 10 {
+			return nil, &tournamentRegistrationError{Status: 400, Code: "member_phone_invalid", Message: fmt.Sprintf("เบอร์โทรนักกีฬาคนที่ %d ต้องเป็นตัวเลข 10 หลัก", index+1)}
+		}
+		member["phone"] = phone
+		if index == 0 {
+			entry["phone"] = phone
+		} else {
+			entry["partnerPhone"] = phone
 		}
 		consent, _ := member["pdpaConsent"].(bool)
 		if !consent {
@@ -2204,7 +2332,7 @@ func (a *app) promoteTournamentWaitingLists(ctx context.Context, adminID, tourna
 				continue
 			}
 			var active, waiting int
-			if err = tx.QueryRowContext(ctx, `select count(*) filter(where not waiting_list),count(*) filter(where waiting_list) from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and withdrawn_at is null`, adminID, tournamentID, divisionID, format).Scan(&active, &waiting); err != nil {
+			if err = tx.QueryRowContext(ctx, `select count(*) filter(where not waiting_list),count(*) filter(where waiting_list) from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and withdrawn_at is null and document_status<>'rejected'`, adminID, tournamentID, divisionID, format).Scan(&active, &waiting); err != nil {
 				return 0, err
 			}
 			slots := max(0, quota-active)
@@ -2215,7 +2343,7 @@ func (a *app) promoteTournamentWaitingLists(ctx context.Context, adminID, tourna
 				continue
 			}
 			result, execErr := tx.ExecContext(ctx, `with candidates as (
-				select id from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null order by waiting_position,created_at for update skip locked limit $5
+				select id from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null and document_status<>'rejected' order by waiting_position,created_at for update skip locked limit $5
 			) update tournament_entries e set waiting_list=false,waiting_position=null,payload=e.payload||jsonb_build_object('waitingList',false),version=e.version+1,updated_at=now() from candidates c where e.id=c.id`, adminID, tournamentID, divisionID, format, min(slots, waiting))
 			if execErr != nil {
 				return 0, execErr
@@ -2223,7 +2351,7 @@ func (a *app) promoteTournamentWaitingLists(ctx context.Context, adminID, tourna
 			count, _ := result.RowsAffected()
 			promotedTotal += int(count)
 			_, err = tx.ExecContext(ctx, `with ranked as (
-				select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null
+				select id,row_number() over(order by waiting_position,created_at) new_position from tournament_entries where admin_id=$1 and tournament_id=$2 and division_id=$3 and format=$4 and waiting_list and withdrawn_at is null and document_status<>'rejected'
 			) update tournament_entries e set waiting_position=r.new_position,payload=jsonb_set(e.payload,'{waitingPosition}',to_jsonb(r.new_position),true) from ranked r where e.id=r.id`, adminID, tournamentID, divisionID, format)
 			if err != nil {
 				return 0, err
@@ -2238,7 +2366,7 @@ func (a *app) promoteTournamentWaitingLists(ctx context.Context, adminID, tourna
 
 func (a *app) tournamentRegistrationAvailability(ctx context.Context, adminID, tournamentID string, settings map[string]any) map[string]any {
 	counts := map[string]int{}
-	rows, err := a.db.QueryContext(ctx, `select division_id,format,count(*) from tournament_entries where admin_id=$1 and tournament_id=$2 and withdrawn_at is null and waiting_list=false group by division_id,format`, adminID, tournamentID)
+	rows, err := a.db.QueryContext(ctx, `select division_id,format,count(*) from tournament_entries where admin_id=$1 and tournament_id=$2 and withdrawn_at is null and waiting_list=false and document_status<>'rejected' group by division_id,format`, adminID, tournamentID)
 	if err == nil {
 		defer rows.Close()
 		for rows.Next() {
@@ -2460,6 +2588,11 @@ func (a *app) tournamentOfficialRoutes(w http.ResponseWriter, r *http.Request, p
 				"firstName": true, "lastName": true, "nickname": true, "phone": true, "email": true,
 				"photoUrl": true, "certification": true, "clubAffiliation": true,
 				"experienceNote": true, "address": true, "emergencyContact": true, "lineId": true,
+				"officialRoles": true, "certificationLevel": true, "certificationBody": true,
+				"licenseNumber": true, "certificationExpiry": true, "yearsExperience": true,
+				"matchesOfficiated": true, "scoringSkills": true, "province": true,
+				"emergencyContactName": true, "emergencyContactPhone": true,
+				"shirtSize": true, "logisticsNote": true, "codeOfConductConsent": true,
 				"pdpaConsent": true, "active": true,
 			}
 			cleanPatch := map[string]any{}
@@ -2670,6 +2803,12 @@ func (a *app) tournamentMatchRoutes(w http.ResponseWriter, r *http.Request, path
 		next, _ := json.Marshal(state)
 		_, err = tx.ExecContext(r.Context(), `update tournament_matches set payload=$3,status=$4,locked=$5,court_id=nullif($6,''),official_id=nullif($7,''),started_at=case when $4 in ('live','finished') then coalesce(started_at,now()) else started_at end,ended_at=case when $4='finished' then coalesce(ended_at,now()) else null end,version=version+1,updated_at=now() where id=$1 and admin_id=$2`, parts[1], p.AdminID, next, status, state["locked"] == true, stringValue(state["courtId"], ""), stringValue(state["umpireId"], ""))
 		state["id"], state["version"] = parts[1], version+1
+		// Quick Score and Admin Override must advance the bracket through the
+		// same transactional path as the director's end_match event. Otherwise
+		// the result is locked but the winner never appears in the next round.
+		if err == nil && status == "finished" {
+			err = advanceTournamentMatchTx(r.Context(), tx, p.AdminID, tournamentID, state)
+		}
 		if err == nil {
 			err = insertTournamentRealtimeEventTx(r.Context(), tx, p.AdminID, tournamentID, parts[1], "match_update", map[string]any{"match": state})
 		}
@@ -2735,7 +2874,8 @@ func (a *app) tournamentMatchRoutes(w http.ResponseWriter, r *http.Request, path
 		"start_match": true, "point_A": true, "point_B": true, "point": true, "undo": true,
 		"end_set": true, "end_match": true, "interval": true, "timeout_A": true, "timeout_B": true,
 		"medical_timeout": true, "card": true, "suspend": true, "resume": true, "change_ends": true,
-		"correction_serve": true, "shuttle_add": true, "shuttle_remove": true,
+		"correction_serve": true, "toggle_server": true, "toggle_server_player": true,
+		"shuttle_add": true, "shuttle_remove": true,
 	}
 	if !allowedEvents[b.Type] {
 		writeJSON(w, 400, map[string]string{"error": "ประเภทเหตุการณ์คะแนนไม่ถูกต้อง", "code": "invalid_score_event"})
@@ -2748,6 +2888,16 @@ func (a *app) tournamentMatchRoutes(w http.ResponseWriter, r *http.Request, path
 	if b.Type == "correction_serve" && strings.TrimSpace(stringValue(b.Payload["reason"], "")) == "" {
 		writeJSON(w, 400, map[string]string{"error": "Correction ต้องระบุเหตุผล", "code": "correction_reason_required"})
 		return
+	}
+	if b.Type == "toggle_server_player" {
+		team := strings.ToUpper(stringValue(b.Payload["team"], stringValue(state["servingTeam"], "A")))
+		if team != "B" {
+			team = "A"
+		}
+		if tournamentTeamPlayerCount(state, team) < 2 {
+			writeJSON(w, 409, map[string]string{"error": "ประเภทเดี่ยวมีผู้เล่น 1 คน ไม่สามารถสลับคนเสิร์ฟในทีมได้", "code": "singles_server_swap_not_allowed"})
+			return
+		}
 	}
 	if b.Type == "end_set" {
 		sets, _ := state["sets"].([]any)
@@ -2930,13 +3080,13 @@ func (a *app) tournamentReports(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tid := r.URL.Query().Get("tournamentId")
-	var registrations, matches, officials, incidents int
+	var registrations, withdrawn, waiting, matches, officials, incidents int
 	var due, paid int64
-	_ = a.db.QueryRowContext(r.Context(), `select count(*),coalesce(sum(amount_due_satang),0),coalesce(sum(amount_paid_satang),0) from tournament_entries where admin_id=$1 and ($2='' or tournament_id=$2) and withdrawn_at is null`, p.AdminID, tid).Scan(&registrations, &due, &paid)
+	_ = a.db.QueryRowContext(r.Context(), `select count(*) filter(where withdrawn_at is null),count(*) filter(where withdrawn_at is not null),count(*) filter(where waiting_list and withdrawn_at is null),coalesce(sum(amount_due_satang) filter(where withdrawn_at is null),0),coalesce(sum(amount_paid_satang) filter(where withdrawn_at is null),0) from tournament_entries where admin_id=$1 and ($2='' or tournament_id=$2)`, p.AdminID, tid).Scan(&registrations, &withdrawn, &waiting, &due, &paid)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from tournament_matches where admin_id=$1 and ($2='' or tournament_id=$2)`, p.AdminID, tid).Scan(&matches)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from tournament_officials where admin_id=$1 and ($2='' or tournament_id=$2)`, p.AdminID, tid).Scan(&officials)
 	_ = a.db.QueryRowContext(r.Context(), `select count(*) from tournament_incidents where admin_id=$1 and ($2='' or tournament_id=$2)`, p.AdminID, tid).Scan(&incidents)
-	writeJSON(w, 200, map[string]any{"registrations": map[string]any{"count": registrations}, "finance": map[string]any{"dueSatang": due, "paidSatang": paid}, "results": map[string]any{"matches": matches}, "courtsSchedule": map[string]any{"matches": matches}, "officialsIncidents": map[string]any{"officials": officials, "incidents": incidents}})
+	writeJSON(w, 200, map[string]any{"registrations": map[string]any{"count": registrations, "withdrawn": withdrawn, "waiting": waiting, "totalSubmitted": registrations + withdrawn}, "finance": map[string]any{"dueSatang": due, "paidSatang": paid}, "results": map[string]any{"matches": matches}, "courtsSchedule": map[string]any{"matches": matches}, "officialsIncidents": map[string]any{"officials": officials, "incidents": incidents}})
 }
 
 func applyTournamentScoreEvent(m map[string]any, event string, payload map[string]any, actor string) {
@@ -2947,6 +3097,7 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 		}
 		return n
 	}
+	normalizeTournamentSinglesServeState(m)
 	sets, _ := m["sets"].([]any)
 	if len(sets) == 0 {
 		sets = []any{map[string]any{"setNumber": 1, "scoreA": 0, "scoreB": 0}}
@@ -2960,11 +3111,12 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 		set = map[string]any{"setNumber": currentSet, "scoreA": 0, "scoreB": 0}
 		sets[currentSet-1] = set
 	}
+	m["sets"] = sets
 	timeline, _ := m["timeline"].([]any)
 	snapshot := map[string]any{
 		"status": m["status"], "scoreA": intOf(set["scoreA"], 0), "scoreB": intOf(set["scoreB"], 0),
 		"servingTeam": stringValue(m["servingTeam"], "A"), "servingPlayerIndex": intOf(m["servingPlayerIndex"], 0),
-		"courtPositions": m["courtPositions"], "endsSwapped": m["endsSwapped"],
+		"courtPositions": m["courtPositions"], "endsSwapped": m["endsSwapped"], "manualServerSwaps": m["manualServerSwaps"],
 	}
 	appendTimeline := func(kind, detail string) {
 		item := map[string]any{
@@ -2982,7 +3134,7 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 			serverTeam = "A"
 		}
 		serverPlayer := intOf(payload["serverPlayerIndex"], intOf(m["servingPlayerIndex"], 0))
-		if serverPlayer != 1 {
+		if serverPlayer != 1 || tournamentTeamPlayerCount(m, serverTeam) < 2 {
 			serverPlayer = 0
 		}
 		positions := tournamentCourtPositions(m)
@@ -2992,7 +3144,7 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 		if stringValue(m["actualStart"], "") == "" {
 			m["actualStart"] = time.Now().In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format(time.RFC3339)
 		}
-		appendTimeline(event, fmt.Sprintf("เริ่มการแข่งขัน ทีม %s ผู้เล่นคนที่ %d เป็นฝ่ายเสิร์ฟ", serverTeam, serverPlayer+1))
+		appendTimeline(event, fmt.Sprintf("เริ่มการแข่งขัน ทีม %s ผู้เล่นคนที่ %d เป็นฝ่ายเสิร์ฟ · %s", serverTeam, serverPlayer+1, tournamentServeTimelineDetail(m)))
 	}
 	if event == "point_A" || event == "point_B" || event == "point" {
 		team := strings.ToUpper(stringValue(payload["team"], "A"))
@@ -3030,7 +3182,7 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 		if score%2 == 1 {
 			court = "ซ้าย"
 		}
-		appendTimeline(event, fmt.Sprintf("ทีม %s ได้คะแนนและเป็นฝ่ายเสิร์ฟจากคอร์ท%s", team, court))
+		appendTimeline(event, fmt.Sprintf("ทีม %s ได้คะแนนและเป็นฝ่ายเสิร์ฟจากคอร์ท%s · %s", team, court, tournamentServeTimelineDetail(m)))
 	}
 	if event == "undo" && len(timeline) > 0 {
 		last, _ := timeline[0].(map[string]any)
@@ -3038,18 +3190,87 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 		if undo != nil {
 			set["scoreA"], set["scoreB"] = undo["scoreA"], undo["scoreB"]
 			m["status"], m["servingTeam"], m["servingPlayerIndex"] = undo["status"], undo["servingTeam"], undo["servingPlayerIndex"]
-			m["courtPositions"], m["endsSwapped"] = undo["courtPositions"], undo["endsSwapped"]
+			m["courtPositions"], m["endsSwapped"], m["manualServerSwaps"] = undo["courtPositions"], undo["endsSwapped"], undo["manualServerSwaps"]
 			timeline = timeline[1:]
 		}
 	}
-	if event == "correction_serve" || event == "toggle_server" || event == "toggle_server_player" {
+	if event == "toggle_server" {
+		team := strings.ToUpper(stringValue(payload["team"], ""))
+		if team != "A" && team != "B" {
+			team = "A"
+			if stringValue(m["servingTeam"], "A") == "A" {
+				team = "B"
+			}
+		}
+		positions := tournamentCourtPositions(m)
+		score := intOf(set["scoreA"], 0)
+		if team == "B" {
+			score = intOf(set["scoreB"], 0)
+		}
+		serverPlayer := 0
+		if tournamentTeamPlayerCount(m, team) > 1 {
+			serverPlayer = positions[team][score%2]
+		}
+		m["servingTeam"], m["servingPlayerIndex"] = team, serverPlayer
+		appendTimeline("serve_change", "สลับสิทธิ์เสิร์ฟเป็นทีม "+team+" · "+tournamentServeTimelineDetail(m))
+	}
+	if event == "toggle_server_player" {
 		team := strings.ToUpper(stringValue(payload["team"], stringValue(m["servingTeam"], "A")))
 		if team != "B" {
 			team = "A"
 		}
-		m["servingTeam"] = team
-		m["servingPlayerIndex"] = intOf(payload["playerIndex"], (intOf(m["servingPlayerIndex"], 0)+1)%2)
-		appendTimeline("serve_change", "แก้ไขผู้เสิร์ฟ: "+stringValue(payload["reason"], "กรรมการแก้ไขลำดับการเสิร์ฟ"))
+		if tournamentTeamPlayerCount(m, team) < 2 {
+			m["sets"], m["timeline"], m["updatedBy"] = sets, timeline, actor
+			return
+		}
+		positions := tournamentCourtPositions(m)
+		teamPositions := positions[team]
+		teamPositions[0], teamPositions[1] = teamPositions[1], teamPositions[0]
+		positions[team] = teamPositions
+		m["courtPositions"] = map[string]any{"A": []any{positions["A"][0], positions["A"][1]}, "B": []any{positions["B"][0], positions["B"][1]}}
+		score := intOf(set["scoreA"], 0)
+		if team == "B" {
+			score = intOf(set["scoreB"], 0)
+		}
+		if stringValue(m["servingTeam"], "A") == team {
+			m["servingPlayerIndex"] = positions[team][score%2]
+		}
+		manual, _ := m["manualServerSwaps"].(map[string]any)
+		if manual == nil {
+			manual = map[string]any{}
+		}
+		setKey := strconv.Itoa(currentSet)
+		used, _ := manual[setKey].(map[string]any)
+		if used == nil {
+			used = map[string]any{"A": false, "B": false}
+		}
+		used[team], manual[setKey], m["manualServerSwaps"] = true, used, manual
+		role := "ผู้รับ"
+		if stringValue(m["servingTeam"], "A") == team {
+			role = "ผู้เสิร์ฟ"
+		}
+		appendTimeline("serve_change", "สลับตำแหน่ง"+role+"ทีม "+team+" · "+tournamentServeTimelineDetail(m))
+	}
+	if event == "correction_serve" {
+		team := strings.ToUpper(stringValue(payload["team"], stringValue(m["servingTeam"], "A")))
+		if team != "B" {
+			team = "A"
+		}
+		playerIndex := intOf(payload["playerIndex"], (intOf(m["servingPlayerIndex"], 0)+1)%2)
+		if playerIndex != 1 || tournamentTeamPlayerCount(m, team) < 2 {
+			playerIndex = 0
+		}
+		positions := tournamentCourtPositions(m)
+		score := intOf(set["scoreA"], 0)
+		if team == "B" {
+			score = intOf(set["scoreB"], 0)
+		}
+		teamPositions := positions[team]
+		teamPositions[score%2], teamPositions[1-score%2] = playerIndex, 1-playerIndex
+		positions[team] = teamPositions
+		m["servingTeam"], m["servingPlayerIndex"] = team, playerIndex
+		m["courtPositions"] = map[string]any{"A": []any{positions["A"][0], positions["A"][1]}, "B": []any{positions["B"][0], positions["B"][1]}}
+		appendTimeline("serve_change", "แก้ไขผู้เสิร์ฟ: "+stringValue(payload["reason"], "กรรมการแก้ไขลำดับการเสิร์ฟ")+" · "+tournamentServeTimelineDetail(m))
 	}
 	if event == "change_ends" {
 		current, _ := m["endsSwapped"].(bool)
@@ -3084,10 +3305,15 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 				sets = append(sets, map[string]any{"setNumber": len(sets) + 1, "scoreA": 0, "scoreB": 0})
 				m["currentSet"], m["servingTeam"], m["servingPlayerIndex"] = len(sets), winner, 0
 				m["courtPositions"], m["endsSwapped"] = map[string]any{"A": []any{0, 1}, "B": []any{0, 1}}, true
+				m["sets"] = sets
 			} else {
 				m["status"] = "awaiting_confirmation"
 			}
-			appendTimeline(event, "จบเซต ผู้ชนะทีม "+winner)
+			detail := "จบเซต ผู้ชนะทีม " + winner
+			if stringValue(m["status"], "") != "awaiting_confirmation" {
+				detail += " · เริ่มเซตถัดไป · " + tournamentServeTimelineDetail(m)
+			}
+			appendTimeline(event, detail)
 		}
 	}
 	if event == "suspend" {
@@ -3103,6 +3329,121 @@ func applyTournamentScoreEvent(m map[string]any, event string, payload map[strin
 		appendTimeline(event, "ยืนยันผลการแข่งขัน")
 	}
 	m["sets"], m["timeline"], m["updatedBy"] = sets, timeline, actor
+}
+
+func tournamentTeamPlayerCount(match map[string]any, team string) int {
+	if strings.EqualFold(strings.TrimSpace(stringValue(match["format"], "")), "singles") {
+		return 1
+	}
+	key := "teamAPlayers"
+	if strings.EqualFold(team, "B") {
+		key = "teamBPlayers"
+	}
+	switch players := match[key].(type) {
+	case []any:
+		return len(players)
+	case []string:
+		return len(players)
+	default:
+		return 0
+	}
+}
+
+func normalizeTournamentSinglesServeState(match map[string]any) {
+	if !strings.EqualFold(strings.TrimSpace(stringValue(match["format"], "")), "singles") {
+		return
+	}
+	for _, key := range []string{"teamAPlayers", "teamBPlayers"} {
+		switch players := match[key].(type) {
+		case []any:
+			if len(players) > 1 {
+				match[key] = []any{players[0]}
+			}
+		case []string:
+			if len(players) > 1 {
+				match[key] = []string{players[0]}
+			}
+		}
+	}
+	match["servingPlayerIndex"] = 0
+	match["courtPositions"] = map[string]any{"A": []any{0, 1}, "B": []any{0, 1}}
+}
+
+func tournamentTeamPlayerNames(match map[string]any, team string) []string {
+	key := "teamAPlayers"
+	teamNameKey := "teamAName"
+	if strings.EqualFold(team, "B") {
+		key, teamNameKey = "teamBPlayers", "teamBName"
+	}
+	names := []string{}
+	switch players := match[key].(type) {
+	case []any:
+		for _, player := range players {
+			if name := strings.TrimSpace(fmt.Sprint(player)); name != "" {
+				names = append(names, name)
+			}
+		}
+	case []string:
+		for _, player := range players {
+			if name := strings.TrimSpace(player); name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+	if strings.EqualFold(strings.TrimSpace(stringValue(match["format"], "")), "singles") && len(names) > 1 {
+		names = names[:1]
+	}
+	if len(names) == 0 {
+		names = append(names, stringValue(match[teamNameKey], "ทีม "+strings.ToUpper(team)))
+	}
+	return names
+}
+
+func tournamentServeTimelineDetail(match map[string]any) string {
+	servingTeam := strings.ToUpper(stringValue(match["servingTeam"], "A"))
+	if servingTeam != "B" {
+		servingTeam = "A"
+	}
+	receivingTeam := "B"
+	if servingTeam == "B" {
+		receivingTeam = "A"
+	}
+	sets, _ := match["sets"].([]any)
+	currentSet := intValueForTournament(match["currentSet"], len(sets))
+	if currentSet < 1 || currentSet > len(sets) {
+		currentSet = len(sets)
+	}
+	servingScore := 0
+	if currentSet > 0 {
+		set, _ := sets[currentSet-1].(map[string]any)
+		if servingTeam == "A" {
+			servingScore = intValueForTournament(set["scoreA"], 0)
+		} else {
+			servingScore = intValueForTournament(set["scoreB"], 0)
+		}
+	}
+	boxIndex := servingScore % 2
+	boxLabel := "ขวา · คู่"
+	if boxIndex == 1 {
+		boxLabel = "ซ้าย · คี่"
+	}
+	positions := tournamentCourtPositions(match)
+	serverIndex, receiverIndex := 0, 0
+	if tournamentTeamPlayerCount(match, servingTeam) > 1 {
+		serverIndex = positions[servingTeam][boxIndex]
+	}
+	if tournamentTeamPlayerCount(match, receivingTeam) > 1 {
+		receiverIndex = positions[receivingTeam][boxIndex]
+	}
+	servers := tournamentTeamPlayerNames(match, servingTeam)
+	receivers := tournamentTeamPlayerNames(match, receivingTeam)
+	if serverIndex >= len(servers) {
+		serverIndex = 0
+	}
+	if receiverIndex >= len(receivers) {
+		receiverIndex = 0
+	}
+	return fmt.Sprintf("ผู้เสิร์ฟ: %s (ทีม %s · %s) · ผู้รับ: %s (ทีม %s · %s)", servers[serverIndex], servingTeam, boxLabel, receivers[receiverIndex], receivingTeam, boxLabel)
 }
 
 func tournamentCourtPositions(m map[string]any) map[string][2]int {
@@ -3197,6 +3538,96 @@ func tournamentMatchAllowsDraw(match map[string]any) bool {
 	return strings.EqualFold(stringValue(match["stage"], ""), "group")
 }
 
+func publicTournamentPlayerAge(birthDate string, eventDate time.Time) int {
+	birthDate = strings.TrimSpace(birthDate)
+	if birthDate == "" {
+		return 0
+	}
+	birth, err := time.Parse("2006-01-02", birthDate)
+	if err != nil || birth.After(eventDate) {
+		return 0
+	}
+	age := eventDate.Year() - birth.Year()
+	if eventDate.Month() < birth.Month() || (eventDate.Month() == birth.Month() && eventDate.Day() < birth.Day()) {
+		age--
+	}
+	return max(0, age)
+}
+
+func publicTournamentMember(raw map[string]any, eventDate time.Time) map[string]any {
+	return map[string]any{
+		"firstName": stringValue(raw["firstName"], ""), "lastName": stringValue(raw["lastName"], ""),
+		"nickname": stringValue(raw["nickname"], ""), "photoUrl": stringValue(raw["photoUrl"], ""),
+		"age":  publicTournamentPlayerAge(stringValue(raw["birthDate"], ""), eventDate),
+		"club": stringValue(raw["club"], ""), "province": stringValue(raw["province"], ""),
+	}
+}
+
+func (a *app) publicTournamentTeams(ctx context.Context, adminID, tournamentID string, settings map[string]any) []map[string]any {
+	eventDate := time.Now().In(time.FixedZone("Asia/Bangkok", 7*60*60))
+	if parsed, err := time.Parse("2006-01-02", stringValue(settings["startDate"], "")); err == nil {
+		eventDate = parsed
+	}
+	rows, err := a.db.QueryContext(ctx, `select id,team_name,coalesce(division_id,''),format,waiting_list,payload from tournament_entries where admin_id=$1 and tournament_id=$2 and document_status='approved' and withdrawn_at is null order by division_id,team_name,id`, adminID, tournamentID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	defer rows.Close()
+	result := []map[string]any{}
+	for rows.Next() {
+		var id, teamName, divisionID, format string
+		var waiting bool
+		var raw []byte
+		if rows.Scan(&id, &teamName, &divisionID, &format, &waiting, &raw) != nil {
+			continue
+		}
+		payload := map[string]any{}
+		_ = json.Unmarshal(raw, &payload)
+		players := []any{}
+		if members, ok := payload["members"].([]any); ok {
+			for _, rawMember := range members {
+				if member, ok := rawMember.(map[string]any); ok {
+					players = append(players, publicTournamentMember(member, eventDate))
+				}
+			}
+		}
+		if len(players) == 0 {
+			players = append(players, publicTournamentMember(payload, eventDate))
+			if format == "doubles" && strings.TrimSpace(stringValue(payload["partnerFirstName"], "")) != "" {
+				players = append(players, publicTournamentMember(map[string]any{
+					"firstName": payload["partnerFirstName"], "lastName": payload["partnerLastName"], "nickname": payload["partnerNickname"],
+					"photoUrl": payload["partnerPhotoUrl"], "birthDate": payload["partnerBirthDate"], "club": payload["partnerClub"], "province": payload["partnerProvince"],
+				}, eventDate))
+			}
+		}
+		result = append(result, map[string]any{
+			"id": id, "teamName": teamName, "teamLogoUrl": stringValue(payload["teamLogoUrl"], ""),
+			"divisionId": divisionID, "format": format, "waitingList": waiting, "players": players,
+		})
+	}
+	return result
+}
+
+func (a *app) tournamentPromptPayForPublic(ctx context.Context, adminID string, settings map[string]any) promptPaySettings {
+	if payment, ok := settings["paymentConfig"].(map[string]any); ok {
+		id := strings.TrimSpace(stringValue(payment["promptPayId"], ""))
+		if id != "" {
+			digits := onlyDigits(id)
+			promptType := "mobile"
+			if len(digits) == 13 {
+				promptType = "national_id"
+			}
+			return promptPaySettings{ID: id, Type: promptType, ReceiverName: stringValue(payment["bankAccountName"], "")}
+		}
+	}
+	posSettings, err := a.posSettings(ctx, adminID)
+	if err != nil {
+		return promptPaySettings{}
+	}
+	effective, _ := a.effectivePOSPromptPay(ctx, adminID, posSettings)
+	return effective
+}
+
 func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Request) {
 	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/public-tournament/"), "/")
 	token := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -3204,15 +3635,42 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		token = strings.TrimSpace(r.URL.Query().Get("tournament"))
 	}
 	var tid, adminID string
+	var encryptedPublicToken string
 	var settings []byte
-	err := a.db.QueryRowContext(r.Context(), `select id,admin_id,settings from tournaments where public_token_hash=$1 and archived_at is null`, tournamentSecretDigest(token)).Scan(&tid, &adminID, &settings)
+	// The status portal belongs to an existing registration, not to the public
+	// tournament listing. Old/shared links can therefore have a missing or stale
+	// tournament token (or even point at another active tournament). Resolve the
+	// tenant and tournament from the two private registration credentials first.
+	var err error
+	if path == "player-status" && r.Method == http.MethodGet {
+		code := strings.TrimSpace(r.URL.Query().Get("code"))
+		verify := strings.TrimSpace(r.URL.Query().Get("verification"))
+		if code != "" && verify != "" {
+			err = a.db.QueryRowContext(r.Context(), `select t.id,t.admin_id,t.settings,t.public_token
+				from tournament_entries e
+				join tournaments t on t.id=e.tournament_id and t.admin_id=e.admin_id
+				where e.registration_code=$1 and e.verification_code_hash=$2 and t.archived_at is null
+				order by e.created_at desc limit 1`, code, tournamentSecretDigest(verify)).Scan(&tid, &adminID, &settings, &encryptedPublicToken)
+		} else {
+			err = sql.ErrNoRows
+		}
+	} else {
+		err = a.db.QueryRowContext(r.Context(), `select id,admin_id,settings,public_token from tournaments where public_token_hash=$1 and archived_at is null`, tournamentSecretDigest(token)).Scan(&tid, &adminID, &settings, &encryptedPublicToken)
+	}
 	if err != nil {
+		if path == "player-status" && r.Method == http.MethodGet {
+			writeJSON(w, 404, map[string]string{"error": "ไม่พบข้อมูลทีมหรือรหัสยืนยันไม่ถูกต้อง", "code": "registration_not_found"})
+			return
+		}
 		writeJSON(w, 404, map[string]string{"error": "ไม่พบรายการแข่งขัน"})
 		return
 	}
 	allTournamentSettings := map[string]any{}
 	_ = json.Unmarshal(settings, &allTournamentSettings)
 	publicTournament := scrubPublicTournamentSettings(allTournamentSettings)
+	if publicToken, decryptErr := decryptSecret(encryptedPublicToken); decryptErr == nil {
+		publicTournament["publicToken"] = publicToken
+	}
 	publicConfig, _ := publicTournament["publicViewConfig"].(map[string]any)
 	publicEnabled, _ := publicConfig["enabled"].(bool)
 	if path == "manifest.webmanifest" && r.Method == http.MethodGet {
@@ -3237,6 +3695,7 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		}
 		tournament["id"] = tid
 		tournament["registrationAvailability"] = a.tournamentRegistrationAvailability(r.Context(), adminID, tid, allTournamentSettings)
+		tournament["directorApplicationAvailability"] = tournamentDirectorApplicationAvailability(allTournamentSettings, time.Now())
 		matches, _ := a.tournamentPayloadRows(r.Context(), `select id,payload||jsonb_build_object('version',version) from tournament_matches where admin_id=$1 and tournament_id='`+strings.ReplaceAll(tid, "'", "")+`' order by created_at`, adminID)
 		showUmpire, _ := publicConfig["showUmpireName"].(bool)
 		for _, m := range matches {
@@ -3260,7 +3719,8 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		}
 		var cursor int64
 		_ = a.db.QueryRowContext(r.Context(), `select coalesce(max(id),0) from tournament_realtime_events where admin_id=$1 and tournament_id=$2`, adminID, tid).Scan(&cursor)
-		writeJSON(w, 200, map[string]any{"tournaments": []any{tournament}, "matches": matches, "teams": []any{}, "serverTime": time.Now().UTC().Format(time.RFC3339), "streamCursor": cursor})
+		teams := a.publicTournamentTeams(r.Context(), adminID, tid, allTournamentSettings)
+		writeJSON(w, 200, map[string]any{"tournaments": []any{tournament}, "matches": matches, "teams": teams, "serverTime": time.Now().UTC().Format(time.RFC3339), "streamCursor": cursor})
 		return
 	}
 	if path == "player-status" && r.Method == http.MethodGet {
@@ -3268,12 +3728,13 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		verify := strings.TrimSpace(r.URL.Query().Get("verification"))
 		var id string
 		var raw []byte
-		var hash string
+		var hash, documentStatus, paymentStatus string
+		var withdrawnAt sql.NullTime
 		err := a.db.QueryRowContext(r.Context(), `select id,payload||jsonb_build_object(
 			'documentStatus',document_status,'paymentStatus',payment_status,'waitingList',waiting_list,
 			'withdrawn',withdrawn_at is not null,'amountPaid',amount_paid_satang::numeric/100,
 			'amountDue',greatest(amount_due_satang-amount_paid_satang,0)::numeric/100
-		),verification_code_hash from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3`, adminID, tid, code).Scan(&id, &raw, &hash)
+		),verification_code_hash,document_status,payment_status,withdrawn_at from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3`, adminID, tid, code).Scan(&id, &raw, &hash, &documentStatus, &paymentStatus, &withdrawnAt)
 		if err != nil || hash != tournamentSecretDigest(verify) {
 			writeJSON(w, 404, map[string]string{"error": "ไม่พบข้อมูลหรือรหัสยืนยันไม่ถูกต้อง"})
 			return
@@ -3315,7 +3776,18 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 				teamMatches = append(teamMatches, match)
 			}
 		}
-		writeJSON(w, 200, map[string]any{"tournament": playerTournament, "player": player, "teamMatches": teamMatches, "divisionMatches": matches})
+		payment := map[string]any{"amountLocked": true, "amountSatang": 0, "promptPayPayload": ""}
+		if documentStatus == "approved" && paymentStatus != "paid" && !withdrawnAt.Valid {
+			amountBaht, _ := strconv.ParseFloat(fmt.Sprint(player["amountDue"]), 64)
+			amountSatang := int64(math.Round(amountBaht * 100))
+			payment["amountSatang"] = amountSatang
+			if amountSatang > 0 {
+				if payload, payloadErr := promptPayPayloadSatang(a.tournamentPromptPayForPublic(r.Context(), adminID, allTournamentSettings), amountSatang); payloadErr == nil {
+					payment["promptPayPayload"] = payload
+				}
+			}
+		}
+		writeJSON(w, 200, map[string]any{"tournament": playerTournament, "player": player, "payment": payment, "teamMatches": teamMatches, "divisionMatches": matches})
 		return
 	}
 	if path == "player-status/upload-slip" && r.Method == http.MethodPost {
@@ -3339,9 +3811,10 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		}
 		defer tx.Rollback()
 		var entryID, verificationHash, documentStatus, paymentStatus string
+		var amountDueSatang, amountPaidSatang int64
 		var raw []byte
 		var withdrawnAt sql.NullTime
-		err = tx.QueryRowContext(r.Context(), `select id,payload,verification_code_hash,document_status,payment_status,withdrawn_at from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3 for update`, adminID, tid, code).Scan(&entryID, &raw, &verificationHash, &documentStatus, &paymentStatus, &withdrawnAt)
+		err = tx.QueryRowContext(r.Context(), `select id,payload,verification_code_hash,document_status,payment_status,withdrawn_at,amount_due_satang,amount_paid_satang from tournament_entries where admin_id=$1 and tournament_id=$2 and registration_code=$3 for update`, adminID, tid, code).Scan(&entryID, &raw, &verificationHash, &documentStatus, &paymentStatus, &withdrawnAt, &amountDueSatang, &amountPaidSatang)
 		if err != nil || verificationHash != tournamentSecretDigest(verify) {
 			writeJSON(w, 404, map[string]string{"error": "ไม่พบข้อมูลหรือรหัสยืนยันไม่ถูกต้อง"})
 			return
@@ -3372,8 +3845,11 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		player["slipFileId"] = fileID
 		player["slipStatus"] = "pending"
 		player["paymentStatus"] = "pending_verify"
+		lockedAmountSatang := max(int64(0), amountDueSatang-amountPaidSatang)
+		player["paymentLockedSatang"] = lockedAmountSatang
+		player["slipTransferAmount"] = float64(lockedAmountSatang) / 100
 		player["slipUploadedAt"] = time.Now().In(time.FixedZone("Asia/Bangkok", 7*60*60)).Format(time.RFC3339)
-		for _, key := range []string{"slipTransferBank", "slipTransferAmount", "slipTransferRef"} {
+		for _, key := range []string{"slipTransferBank", "slipTransferRef"} {
 			if value, exists := b[key]; exists {
 				player[key] = value
 			}
@@ -3394,7 +3870,7 @@ func (a *app) handlePublicTournamentRoutes(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if path == "director-apply" && r.Method == http.MethodPost {
-		a.createPublicTournamentOfficial(w, r, tid, adminID)
+		a.createPublicTournamentOfficial(w, r, tid, adminID, allTournamentSettings)
 		return
 	}
 	if path == "register" && r.Method == http.MethodPost {
@@ -3415,7 +3891,7 @@ func scrubPublicTournamentSettings(settings map[string]any) map[string]any {
 	allowed := []string{
 		"name", "description", "organizer", "contact", "venue", "startDate", "endDate",
 		"startTime", "endTime", "timezone", "year", "status", "bannerUrl", "emblemUrl",
-		"sponsors", "rulesText", "divisions", "drawSystem", "teamsPerGroup", "qualifiersPerGroup",
+		"sponsors", "rulesText", "competitionCasesText", "divisions", "drawSystem", "teamsPerGroup", "qualifiersPerGroup",
 		"tieBreakOrder", "scoringRules", "courts", "publicViewConfig", "emergencyPaused", "emergencyReason",
 	}
 	result := make(map[string]any, len(allowed))
@@ -3456,7 +3932,42 @@ func scrubPublicTournamentSettings(settings map[string]any) map[string]any {
 	return result
 }
 
-func (a *app) createPublicTournamentOfficial(w http.ResponseWriter, r *http.Request, tournamentID, adminID string) {
+func tournamentDirectorApplicationAvailability(settings map[string]any, now time.Time) map[string]any {
+	status := strings.TrimSpace(stringValue(settings["status"], "Draft"))
+	for _, closedStatus := range []string{"Archived", "ยกเลิก", "แข่งขันเสร็จแล้ว"} {
+		if status == closedStatus {
+			return map[string]any{"isOpen": false, "reason": "รายการนี้ปิดรับสมัครกรรมการแล้ว", "asOf": now.UTC().Format(time.RFC3339)}
+		}
+	}
+	location := time.FixedZone("Asia/Bangkok", 7*60*60)
+	endDate := strings.TrimSpace(stringValue(settings["endDate"], ""))
+	if endDate != "" {
+		endTime := strings.TrimSpace(stringValue(settings["endTime"], "23:59"))
+		endAt, err := time.ParseInLocation("2006-01-02 15:04", endDate+" "+endTime, location)
+		if err == nil && now.In(location).After(endAt) {
+			return map[string]any{"isOpen": false, "reason": "พ้นวันสิ้นสุดการแข่งขันแล้ว", "asOf": now.UTC().Format(time.RFC3339)}
+		}
+	}
+	return map[string]any{"isOpen": true, "reason": "เปิดรับสมัครกรรมการออนไลน์", "asOf": now.UTC().Format(time.RFC3339)}
+}
+
+func tournamentCertificationLabel(level string) string {
+	labels := map[string]string{
+		"none_club":      "ยังไม่มีใบรับรอง / ระดับชมรม",
+		"provincial":     "ระดับจังหวัด / ภูมิภาค",
+		"national":       "ระดับประเทศ",
+		"badminton_asia": "Badminton Asia",
+		"bwf":            "BWF",
+	}
+	return labels[level]
+}
+
+func (a *app) createPublicTournamentOfficial(w http.ResponseWriter, r *http.Request, tournamentID, adminID string, settings map[string]any) {
+	availability := tournamentDirectorApplicationAvailability(settings, time.Now())
+	if availability["isOpen"] != true {
+		writeJSON(w, 409, map[string]any{"error": availability["reason"], "code": "director_application_closed", "availability": availability})
+		return
+	}
 	var b map[string]any
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 256<<10)).Decode(&b) != nil {
 		writeJSON(w, 400, map[string]string{"error": "ข้อมูลใบสมัครไม่ถูกต้อง"})
@@ -3470,8 +3981,67 @@ func (a *app) createPublicTournamentOfficial(w http.ResponseWriter, r *http.Requ
 	firstName := stringValue(b["firstName"], "")
 	lastName := stringValue(b["lastName"], "")
 	phone := stringValue(b["phone"], "")
-	if firstName == "" || lastName == "" || phone == "" {
-		writeJSON(w, 400, map[string]string{"error": "กรุณากรอกชื่อ นามสกุล และเบอร์โทรให้ครบ"})
+	email := normalizeEmail(stringValue(b["email"], ""))
+	province := strings.TrimSpace(stringValue(b["province"], ""))
+	emergencyName := strings.TrimSpace(stringValue(b["emergencyContactName"], ""))
+	emergencyPhone := stringValue(b["emergencyContactPhone"], "")
+	certificationLevel := strings.TrimSpace(stringValue(b["certificationLevel"], ""))
+	roles, rolesOK := b["officialRoles"].([]any)
+	if tournamentCertificationLabel(certificationLevel) == "" {
+		writeJSON(w, 400, map[string]string{"error": "ระดับการรับรองไม่ถูกต้อง", "code": "invalid_certification_level"})
+		return
+	}
+	allowedRoles := map[string]bool{"chair_umpire": true, "service_judge": true, "line_judge": true, "match_control": true}
+	for _, rawRole := range roles {
+		if !allowedRoles[stringValue(rawRole, "")] {
+			writeJSON(w, 400, map[string]string{"error": "บทบาทกรรมการไม่ถูกต้อง", "code": "invalid_official_role"})
+			return
+		}
+	}
+	phoneDigits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, phone)
+	emergencyPhoneDigits := strings.Map(func(r rune) rune {
+		if r >= '0' && r <= '9' {
+			return r
+		}
+		return -1
+	}, emergencyPhone)
+	if firstName == "" || lastName == "" || phoneDigits == "" || email == "" || province == "" || emergencyName == "" || emergencyPhoneDigits == "" || certificationLevel == "" || !rolesOK || len(roles) == 0 {
+		writeJSON(w, 400, map[string]string{"error": "กรุณากรอกข้อมูลติดต่อ ผู้ติดต่อฉุกเฉิน บทบาท และระดับการรับรองให้ครบ"})
+		return
+	}
+	if len(phoneDigits) < 9 || len(phoneDigits) > 15 {
+		writeJSON(w, 400, map[string]string{"error": "รูปแบบเบอร์โทรไม่ถูกต้อง", "code": "invalid_phone"})
+		return
+	}
+	if len(emergencyPhoneDigits) < 9 || len(emergencyPhoneDigits) > 15 {
+		writeJSON(w, 400, map[string]string{"error": "รูปแบบเบอร์ผู้ติดต่อฉุกเฉินไม่ถูกต้อง", "code": "invalid_emergency_phone"})
+		return
+	}
+	if b["codeOfConductConsent"] != true {
+		writeJSON(w, 400, map[string]string{"error": "กรุณารับรองข้อมูลและยอมรับจรรยาบรรณกรรมการ", "code": "conduct_consent_required"})
+		return
+	}
+	phone = phoneDigits
+	b["phone"] = phone
+	b["email"] = email
+	b["province"] = province
+	b["emergencyContactPhone"] = emergencyPhoneDigits
+	b["emergencyContact"] = strings.TrimSpace(emergencyName + " / " + emergencyPhoneDigits)
+	b["certification"] = tournamentCertificationLabel(certificationLevel)
+	photoFileID := strings.TrimSpace(stringValue(b["photoFileId"], ""))
+	if photoFileID != "" {
+		b["photoFileId"] = photoFileID
+		b["photoUrl"] = "/api/tournament/files/" + url.PathEscape(photoFileID)
+	}
+	var duplicate bool
+	_ = a.db.QueryRowContext(r.Context(), `select exists(select 1 from tournament_officials where admin_id=$1 and tournament_id=$2 and approval_status in ('pending','approved') and (regexp_replace(phone,'[^0-9]','','g')=$3 or ($4<>'' and lower(email)=$4)))`, adminID, tournamentID, phone, stringValue(b["email"], "")).Scan(&duplicate)
+	if duplicate {
+		writeJSON(w, 409, map[string]string{"error": "พบใบสมัครกรรมการของเบอร์โทรหรืออีเมลนี้แล้ว กรุณาติดต่อผู้จัดรายการ", "code": "director_application_duplicate"})
 		return
 	}
 	id := "official-" + randHex(8)
@@ -3504,6 +4074,17 @@ func (a *app) createPublicTournamentOfficial(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 409, map[string]string{"error": "ส่งใบสมัครกรรมการไม่สำเร็จ"})
 		return
 	}
+	if photoFileID != "" {
+		photoResult, photoErr := tx.ExecContext(r.Context(), `update tournament_files set staged=false,expires_at=null where id=$1 and admin_id=$2 and tournament_id=$3 and staged and kind='director_photo' and mime_type like 'image/%'`, photoFileID, adminID, tournamentID)
+		if photoErr != nil {
+			writeJSON(w, 500, map[string]string{"error": "ผูกรูปกรรมการไม่สำเร็จ"})
+			return
+		}
+		if n, _ := photoResult.RowsAffected(); n == 0 {
+			writeJSON(w, 400, map[string]string{"error": "รูปกรรมการไม่ถูกต้องหรือหมดอายุ", "code": "invalid_director_photo"})
+			return
+		}
+	}
 	if fileID := stringValue(b["documentFileId"], ""); fileID != "" {
 		res, fileErr := tx.ExecContext(r.Context(), `update tournament_files set staged=false,expires_at=null where id=$1 and admin_id=$2 and tournament_id=$3 and staged and kind='director_document'`, fileID, adminID, tournamentID)
 		if fileErr != nil {
@@ -3519,6 +4100,8 @@ func (a *app) createPublicTournamentOfficial(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, 500, map[string]string{"error": "บันทึกใบสมัครกรรมการไม่สำเร็จ"})
 		return
 	}
+	publicPrincipal := tournamentPrincipal{AdminID: adminID, ActorID: "public:" + id, Name: strings.TrimSpace(firstName + " " + lastName), Role: "public", TournamentID: tournamentID, Permissions: map[string]bool{}}
+	a.tournamentAudit(r.Context(), publicPrincipal, tournamentID, "PUBLIC_DIRECTOR_APPLY", "official", id, "", map[string]any{"source": "online", "photoAttached": photoFileID != "", "documentAttached": stringValue(b["documentFileId"], "") != ""})
 	b["loginCode12"] = login
 	writeJSON(w, 201, map[string]any{
 		"id": id, "code": code, "loginCode": login, "approvalStatus": "pending",

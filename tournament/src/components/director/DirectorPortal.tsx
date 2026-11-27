@@ -46,8 +46,12 @@ import {
   applyManualTeamServeToggle,
   createSnapshotForUndo,
   getActiveCourtState,
+  getEffectiveTeamPlayers,
   getMatchOutcomeByRules,
+  getServeLogDetail,
+  getSinglesCourtPresentation,
   getSetWinnerByRules,
+  restoreSnapshotForUndo,
 } from '../../utils/badmintonRules';
 import { buildTeamLogoMap, EmptyStateCard, StatusIndicator, TeamLogoBadge } from '../common/UIPrimitives';
 
@@ -112,7 +116,7 @@ export const DirectorPortal: React.FC = () => {
   const [endSetSubmitting, setEndSetSubmitting] = useState(false);
   const [showFinishModal, setShowFinishModal] = useState(false);
   const [finishSpecialStatus, setFinishSpecialStatus] = useState<
-    'finished' | 'walkover' | 'retired'
+    'finished' | 'draw' | 'walkover' | 'retired'
   >('finished');
   const [finishWinner, setFinishWinner] = useState<'A' | 'B' | 'draw'>('A');
   const [umpireNote, setUmpireNote] = useState('');
@@ -281,24 +285,8 @@ export const DirectorPortal: React.FC = () => {
     }
     lastTapRef.current = now;
 
-    let apiType = type;
-    let apiPayload: Record<string, unknown> | undefined = payload ? { ...payload } : undefined;
-    if (type === 'toggle_server' || type === 'toggle_server_player') {
-      const reason = window.prompt('ระบุเหตุผลที่ต้องแก้ไขลำดับการเสิร์ฟ (Correction Audit)');
-      if (!reason?.trim()) {
-        notify('warning', 'ยกเลิกการแก้ไขผู้เสิร์ฟ เนื่องจากไม่ได้ระบุเหตุผล');
-        return false;
-      }
-      const nextTeam = type === 'toggle_server'
-        ? (match.servingTeam === 'A' ? 'B' : 'A')
-        : (payload?.team === 'B' ? 'B' : payload?.team === 'A' ? 'A' : match.servingTeam);
-      apiType = 'correction_serve';
-      apiPayload = {
-        team: nextTeam,
-        playerIndex: type === 'toggle_server_player' ? (match.servingPlayerIndex === 0 ? 1 : 0) : match.servingPlayerIndex,
-        reason: reason.trim(),
-      };
-    }
+    const apiType = type;
+    const apiPayload: Record<string, unknown> | undefined = payload ? { ...payload } : undefined;
 
     const eventId = `ev-${now}-${Math.random().toString(36).slice(2, 6)}`;
     const actorName = authedUmpire
@@ -327,7 +315,7 @@ export const DirectorPortal: React.FC = () => {
           setNumber: optimistic.currentSet,
           type,
           scoreSnapshot: `${activeSet.scoreA} - ${activeSet.scoreB}`,
-          detail: `+1 ${teamName} (${info.wasServiceOver ? 'ได้เสิร์ฟใหม่' : 'รักษาเสิร์ฟ'} · ${boxLabel}${info.serverName ? ` · ${info.serverName}` : ''})`,
+          detail: `+1 ${teamName} (${info.wasServiceOver ? 'ได้เสิร์ฟใหม่' : 'รักษาเสิร์ฟ'} · ${boxLabel}${info.serverName ? ` · ${info.serverName}` : ''}) · ${getServeLogDetail(optimistic)}`,
           actor: actorName,
           undoSnapshot,
         },
@@ -342,18 +330,7 @@ export const DirectorPortal: React.FC = () => {
       if (idx >= 0) {
         const targetEv = optimistic.timeline[idx];
         if (targetEv.undoSnapshot) {
-          optimistic.status = targetEv.undoSnapshot.status;
-          activeSet.scoreA = targetEv.undoSnapshot.scoreA;
-          activeSet.scoreB = targetEv.undoSnapshot.scoreB;
-          optimistic.servingTeam = targetEv.undoSnapshot.servingTeam;
-          optimistic.servingPlayerIndex = targetEv.undoSnapshot.servingPlayerIndex;
-          optimistic.courtPositions = {
-            A: [...targetEv.undoSnapshot.courtPositions.A] as [0 | 1, 0 | 1],
-            B: [...targetEv.undoSnapshot.courtPositions.B] as [0 | 1, 0 | 1],
-          };
-          optimistic.manualServerSwaps = structuredClone(
-            targetEv.undoSnapshot.manualServerSwaps
-          );
+          restoreSnapshotForUndo(optimistic, targetEv.undoSnapshot);
         } else if (targetEv.type === 'point_A' && activeSet.scoreA > 0) {
           activeSet.scoreA -= 1;
         } else if (targetEv.type === 'point_B' && activeSet.scoreB > 0) {
@@ -377,7 +354,7 @@ export const DirectorPortal: React.FC = () => {
           setNumber: optimistic.currentSet,
           type: 'serve_change',
           scoreSnapshot: `${activeSet.scoreA} - ${activeSet.scoreB}`,
-          detail: `สลับทีมเสิร์ฟเป็นทีม ${optimistic.servingTeam}`,
+          detail: `สลับทีมเสิร์ฟเป็นทีม ${optimistic.servingTeam} · ${getServeLogDetail(optimistic)}`,
           actor: actorName,
           undoSnapshot,
         },
@@ -398,7 +375,7 @@ export const DirectorPortal: React.FC = () => {
           setNumber: optimistic.currentSet,
           type: 'serve_change',
           scoreSnapshot: `${activeSet.scoreA} - ${activeSet.scoreB}`,
-          detail: `สลับคนเสิร์ฟทีม ${swapRes.swappedTeam} (${swapRes.serverName}) · ใช้สิทธิ์ 1/1 ของเซต ${optimistic.currentSet}`,
+          detail: `สลับคนเสิร์ฟทีม ${swapRes.swappedTeam} (${swapRes.serverName}) · ใช้สิทธิ์ 1/1 ของเซต ${optimistic.currentSet} · ${getServeLogDetail(optimistic)}`,
           actor: actorName,
           undoSnapshot,
         },
@@ -685,8 +662,7 @@ export const DirectorPortal: React.FC = () => {
       tourney?.scoringRules
     );
     const servingSwapUsed = courtState.swapsInCurrentSet[courtState.servingTeam];
-    const servingPlayers =
-      courtState.servingTeam === 'A' ? activeMatch.teamAPlayers : activeMatch.teamBPlayers;
+    const servingPlayers = getEffectiveTeamPlayers(activeMatch, courtState.servingTeam);
 
     const leftSide: 'A' | 'B' = activeMatch.endsSwapped ? 'B' : 'A';
     const rightSide: 'A' | 'B' = activeMatch.endsSwapped ? 'A' : 'B';
@@ -694,12 +670,14 @@ export const DirectorPortal: React.FC = () => {
     const renderCourtPanel = (side: 'A' | 'B', positionLabel: string) => {
       const isA = side === 'A';
       const name = isA ? activeMatch.teamAName : activeMatch.teamBName;
-      const players = isA ? activeMatch.teamAPlayers : activeMatch.teamBPlayers;
+      const players = getEffectiveTeamPlayers(activeMatch, side);
       const score = isA ? activeSet.scoreA : activeSet.scoreB;
       const setsWon = isA ? winsA : winsB;
       const isServing = courtState.servingTeam === side;
-      const isDoubles = players.length > 1;
+      const isDoubles = activeMatch.format !== 'singles';
+      const singlesPresentation = getSinglesCourtPresentation(activeMatch, side);
       const sideSwapUsed = courtState.swapsInCurrentSet[side];
+      const playerRoleLabel = isServing ? 'คนเสิร์ฟ' : 'คนรับ';
       const boxOrder = courtState.courtPositions[side];
       const isLeadingSetWinner = suggestedSetWinner === side;
 
@@ -787,7 +765,7 @@ export const DirectorPortal: React.FC = () => {
                   highlight={isServing}
                 />
                 <h2 className="text-xs sm:text-sm lg:text-base font-bold text-[#141D2B] dark:text-[#F3F5F8] truncate">
-                  {name}
+                  {isDoubles ? name : singlesPresentation.playerName}
                 </h2>
               </div>
               {isServing && (
@@ -816,8 +794,8 @@ export const DirectorPortal: React.FC = () => {
                     disabled={activeMatch.locked || sideSwapUsed}
                     onClick={() =>
                       setPendingActionConfirm({
-                        title: `ยืนยันสลับคนเสิร์ฟทีม ${side}?`,
-                        description: `สลับตำแหน่งคู่เสิร์ฟของ ${name} (ใช้สิทธิ์ 1/1 สำหรับเซตที่ ${activeMatch.currentSet})`,
+                        title: `ยืนยันสลับ${playerRoleLabel}ทีม ${side}?`,
+                        description: `สลับตำแหน่ง${playerRoleLabel}ของ ${name} (ใช้สิทธิ์ 1/1 สำหรับเซตที่ ${activeMatch.currentSet})`,
                         confirmLabel: `ยืนยันสลับทีม ${side}`,
                         tone: 'warning',
                         onConfirm: () =>
@@ -832,12 +810,31 @@ export const DirectorPortal: React.FC = () => {
                   >
                     <UserCheck className="w-3.5 h-3.5 shrink-0" />
                     <span className="truncate">
-                      {sideSwapUsed ? 'สลับแล้ว (0/1)' : `สลับคนเสิร์ฟ ${side} (1/1)`}
+                      {sideSwapUsed ? 'สลับแล้ว (0/1)' : `สลับ${playerRoleLabel} ${side} (1/1)`}
                     </span>
                   </button>
                 </div>
               ) : (
-                renderServiceSlot(score % 2 === 0 ? 'right' : 'left', 0)
+                <div
+                  className={`rounded-xl px-3 py-2 border flex items-center justify-between gap-2 transition-colors ${
+                    singlesPresentation.role === 'server'
+                      ? 'bg-[#FEF3C7] dark:bg-[#3A280A] border-[#D97706] dark:border-[#FACC15]'
+                      : 'bg-[#ECFDF5] dark:bg-[#0D2E20] border-[#156143]/50 dark:border-[#229A6B]/60'
+                  }`}
+                >
+                  <span
+                    className={`text-[11px] sm:text-xs font-bold ${
+                      singlesPresentation.role === 'server'
+                        ? 'text-[#92400E] dark:text-[#FACC15]'
+                        : 'text-[#156143] dark:text-[#4ADE80]'
+                    }`}
+                  >
+                    {singlesPresentation.roleLabel}
+                  </span>
+                  <span className="text-[11px] sm:text-xs font-mono font-semibold text-[#525C6B] dark:text-[#C5CFDC]">
+                    {singlesPresentation.boxLabel}
+                  </span>
+                </div>
               )}
             </div>
 
@@ -1002,7 +999,7 @@ export const DirectorPortal: React.FC = () => {
         <footer className="sticky bottom-0 z-20 sm:static bg-white dark:bg-[#131E2E] border-t border-[#E2DFD5] dark:border-[#25354C] px-2 sm:px-3 lg:px-4 py-1.5 sm:py-2 space-y-1.5 shrink-0">
           <div className="max-w-6xl mx-auto space-y-1.5">
             {/* Row 1: All Court, Serve, Interval, Card & Extra Tools (4+3 on portrait, 7-across single horizontal row on landscape sm+) */}
-            <div className="grid grid-cols-12 sm:grid-cols-7 gap-1 sm:gap-1.5">
+            <div className={`grid grid-cols-12 gap-1 sm:gap-1.5 ${activeMatch.format === 'singles' ? 'sm:grid-cols-6' : 'sm:grid-cols-7'}`}>
               <button
                 type="button"
                 disabled={activeMatch.locked}
@@ -1039,34 +1036,30 @@ export const DirectorPortal: React.FC = () => {
                 <RefreshCw className="w-3.5 h-3.5 shrink-0" />
                 <span className="truncate">สลับเสิร์ฟ</span>
               </button>
-              <button
-                type="button"
-                disabled={
-                  activeMatch.locked || servingPlayers.length < 2 || servingSwapUsed
-                }
-                onClick={() =>
-                  setPendingActionConfirm({
-                    title: `ยืนยันสลับคนเสิร์ฟทีม ${courtState.servingTeam}?`,
-                    description: `ใช้สิทธิ์สลับตำแหน่งผู้เล่นคู่ของทีม ${courtState.servingTeam} (1/1 ในเซตที่ ${activeMatch.currentSet})`,
-                    confirmLabel: 'ยืนยันสลับคนเสิร์ฟ',
-                    tone: 'warning',
-                    onConfirm: () =>
-                      dispatchMatchEvent(activeMatch, 'toggle_server_player', {
-                        team: courtState.servingTeam,
-                      }),
-                  })
-                }
-                className="col-span-3 sm:col-span-1 min-h-[38px] lg:min-h-[44px] px-1.5 rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C] active:scale-[0.97] text-[10px] sm:text-[11px] lg:text-xs font-bold flex items-center justify-center gap-1 disabled:opacity-40 whitespace-nowrap"
-              >
-                <UserCheck className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">
-                  {servingPlayers.length < 2
-                    ? 'เดี่ยว'
-                    : servingSwapUsed
-                    ? 'คนเสิร์ฟ 0/1'
-                    : 'คนเสิร์ฟ 1/1'}
-                </span>
-              </button>
+              {activeMatch.format !== 'singles' && (
+                <button
+                  type="button"
+                  disabled={activeMatch.locked || servingPlayers.length < 2 || servingSwapUsed}
+                  onClick={() =>
+                    setPendingActionConfirm({
+                      title: `ยืนยันสลับคนเสิร์ฟทีม ${courtState.servingTeam}?`,
+                      description: `ใช้สิทธิ์สลับตำแหน่งผู้เล่นคู่ของทีม ${courtState.servingTeam} (1/1 ในเซตที่ ${activeMatch.currentSet})`,
+                      confirmLabel: 'ยืนยันสลับคนเสิร์ฟ',
+                      tone: 'warning',
+                      onConfirm: () =>
+                        dispatchMatchEvent(activeMatch, 'toggle_server_player', {
+                          team: courtState.servingTeam,
+                        }),
+                    })
+                  }
+                  className="col-span-3 sm:col-span-1 min-h-[38px] lg:min-h-[44px] px-1.5 rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C] active:scale-[0.97] text-[10px] sm:text-[11px] lg:text-xs font-bold flex items-center justify-center gap-1 disabled:opacity-40 whitespace-nowrap"
+                >
+                  <UserCheck className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">
+                    {servingSwapUsed ? 'คนเสิร์ฟ 0/1' : 'คนเสิร์ฟ 1/1'}
+                  </span>
+                </button>
+              )}
               <button
                 type="button"
                 disabled={activeMatch.locked}
@@ -1133,6 +1126,7 @@ export const DirectorPortal: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => {
+                    setFinishSpecialStatus(normalOutcome === 'draw' ? 'draw' : 'finished');
                     setFinishWinner(normalOutcome || (winsA >= winsB ? 'A' : 'B'));
                     setShowFinishModal(true);
                   }}
@@ -1540,18 +1534,19 @@ export const DirectorPortal: React.FC = () => {
                   <select
                     value={finishSpecialStatus}
                     onChange={(e) =>
-                      setFinishSpecialStatus(e.target.value as 'finished' | 'walkover' | 'retired')
+                      setFinishSpecialStatus(e.target.value as 'finished' | 'draw' | 'walkover' | 'retired')
                     }
                     className="w-full min-h-[44px] px-2.5 rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
                   >
                     <option value="finished">แข่งจบปกติ (Finished)</option>
+                    <option value="draw" disabled={normalOutcome !== 'draw'}>เสมอ (Draw · 1–1 เซต)</option>
                     <option value="retired">ขอถอนตัวระหว่างแข่ง (Retired)</option>
                     <option value="walkover">ชนะบาย (Walkover)</option>
                   </select>
                 </div>
                 <div>
                   <label className="block font-medium mb-1">ผลการแข่งขัน</label>
-                  {finishSpecialStatus === 'finished' && normalOutcome === 'draw' ? (
+                  {(finishSpecialStatus === 'draw' || (finishSpecialStatus === 'finished' && normalOutcome === 'draw')) ? (
                     <div className="min-h-[44px] px-3 rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C] flex items-center font-bold text-[#156143] dark:text-[#4ADE80]">
                       เสมอ 1–1 เซต
                     </div>
@@ -1579,7 +1574,7 @@ export const DirectorPortal: React.FC = () => {
               <p className="text-[11px] text-[#B45309] dark:text-[#FACC15] flex items-center gap-1">
                 <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
                 <span>
-                  {finishSpecialStatus === 'finished' && !canFinishNormally
+                  {(finishSpecialStatus === 'finished' && !canFinishNormally) || (finishSpecialStatus === 'draw' && normalOutcome !== 'draw')
                     ? 'คะแนนยังไม่ครบตามกติกา กรุณาจบเซตให้เรียบร้อยก่อนยืนยันผลปกติ'
                     : 'เมื่อกดยืนยันแล้ว ผลจะถูกล็อกทันที (หากแก้ไขภายหลังต้องใช้สิทธิ์ Admin)'}
                 </span>
@@ -1596,13 +1591,14 @@ export const DirectorPortal: React.FC = () => {
                   type="button"
                   disabled={
                     (finishSpecialStatus === 'finished' && !canFinishNormally) ||
-                    (finishSpecialStatus !== 'finished' && !umpireNote.trim())
+                    (finishSpecialStatus === 'draw' && normalOutcome !== 'draw') ||
+                    ((finishSpecialStatus === 'walkover' || finishSpecialStatus === 'retired') && !umpireNote.trim())
                   }
                   onClick={async () => {
                     await dispatchMatchEvent(activeMatch, 'end_match', {
-                      status: finishSpecialStatus,
+                      status: finishSpecialStatus === 'draw' ? 'finished' : finishSpecialStatus,
                       winner:
-                        finishSpecialStatus === 'finished' && normalOutcome === 'draw'
+                        finishSpecialStatus === 'draw' || (finishSpecialStatus === 'finished' && normalOutcome === 'draw')
                           ? 'draw'
                           : finishWinner === 'draw'
                             ? 'A'

@@ -176,6 +176,8 @@ func writePublicTournamentManifest(w http.ResponseWriter, token, appKind string)
 		"live":    {"LiveMatch Live Score", "LM Score"},
 		"bracket": {"LiveMatch Bracket", "LM Bracket"},
 		"venue":   {"LiveMatch Venue TV", "LM Venue"},
+		"players": {"LiveMatch Players", "LM Players"},
+		"rules":   {"LiveMatch Rules", "LM Rules"},
 	}
 	label, valid := labels[appKind]
 	if !valid {

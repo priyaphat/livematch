@@ -80,6 +80,28 @@ const athleteEditValues = (member: TournamentEntryMember): AthleteRegistrationVa
   pdpaConsent: Boolean(member.pdpaConsent),
 });
 
+const officialRoleLabel: Record<string, string> = {
+  chair_umpire: 'กรรมการผู้ตัดสิน',
+  service_judge: 'กรรมการกำกับการส่งลูก',
+  line_judge: 'กรรมการกำกับเส้น',
+  match_control: 'ควบคุมการแข่งขัน / ผู้ช่วย Referee',
+};
+
+const scoringSkillLabel: Record<string, string> = {
+  paper_scoresheet: 'ใบบันทึกคะแนนกระดาษ',
+  digital_scoring: 'ระบบบันทึกคะแนนดิจิทัล',
+  badminton_english: 'คำศัพท์แบดมินตันภาษาอังกฤษ',
+};
+
+const certificationLevelFromRecord = (umpire: DirectorUmpire) => {
+  if (umpire.certificationLevel) return umpire.certificationLevel;
+  if (umpire.certification === 'BWF') return 'bwf';
+  if (umpire.certification === 'Badminton Asia') return 'badminton_asia';
+  if (umpire.certification?.includes('ประเทศ') || umpire.certification?.includes('สมาคม')) return 'national';
+  if (umpire.certification?.includes('จังหวัด') || umpire.certification?.includes('ภูมิภาค')) return 'provincial';
+  return 'none_club';
+};
+
 export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament }) => {
   const { state, refreshState, hasPermission, notify, requestConfirm } = useApp();
   const enabledDivisions = useMemo(
@@ -115,6 +137,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
   const [showUmpireModal, setShowUmpireModal] = useState(false);
   const [editingUmpire, setEditingUmpire] = useState<DirectorUmpire | null>(null);
   const [historyUmpire, setHistoryUmpire] = useState<DirectorUmpire | null>(null);
+  const [historyMatchId, setHistoryMatchId] = useState<string | null>(null);
   const [qrUmpire, setQrUmpire] = useState<DirectorUmpire | null>(null);
 
   // Registration form state (Staff registration)
@@ -171,12 +194,26 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
     email: '',
     photoUrl: '',
     certification: 'กรรมการสมาคมฯ ระดับ 1',
+    certificationLevel: 'none_club',
+    certificationBody: '',
+    licenseNumber: '',
+    certificationExpiry: '',
+    officialRoles: [] as string[],
+    scoringSkills: [] as string[],
+    yearsExperience: '',
+    matchesOfficiated: '',
     clubAffiliation: 'อิสระ (ไม่มีสังกัด)',
     experienceNote: '',
     address: '',
     emergencyContact: '',
+    province: '',
+    emergencyContactName: '',
+    emergencyContactPhone: '',
+    shirtSize: '',
+    logisticsNote: '',
     lineId: '',
     pdpaConsent: false,
+    codeOfConductConsent: false,
   });
 
   // New Umpire form (Staff registration)
@@ -186,10 +223,19 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
     () => state.players.filter((p) => p.tournamentId === tournament.id),
     [state.players, tournament.id]
   );
+  const activePlayerTotal = useMemo(
+    () => tPlayers.filter((player) => !player.withdrawn && player.documentStatus !== 'rejected').length,
+    [tPlayers]
+  );
+  const inactivePlayerTotal = tPlayers.length - activePlayerTotal;
 
   const tUmpires = useMemo(
     () => state.umpires.filter((u) => u.tournamentId === tournament.id),
     [state.umpires, tournament.id]
+  );
+  const historyMatch = useMemo(
+    () => state.matches.find((match) => match.id === historyMatchId) || null,
+    [state.matches, historyMatchId]
   );
 
   useEffect(() => {
@@ -209,7 +255,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
   useEffect(() => {
     const params = new URLSearchParams({
       kind: 'players', tournamentId: tournament.id, page: String(playerPage), pageSize: String(playerPageSize),
-      search, division: filterDiv, payment: filterPay, checkIn: filterCheckIn,
+      search, division: filterDiv, payment: filterPay, checkIn: filterCheckIn, includeWithdrawn: 'true',
     });
     void apiFetch<{ items: PlayerRecord[]; pagination: { total: number } }>(`/api/registrations?${params}`)
       .then((result) => { setListedPlayers(result.items); setListedPlayerTotal(result.pagination.total); })
@@ -402,6 +448,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
         player.divisionId === division.id &&
         player.format === format &&
         !player.withdrawn &&
+        player.documentStatus !== 'rejected' &&
         !player.waitingList
       ).length;
       const rawQuota = format === 'doubles' ? division.quotaDoubles : division.quotaSingles;
@@ -669,12 +716,28 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
       notify('error', 'กรุณายืนยันความยินยอม PDPA ก่อนลงทะเบียนกรรมการ');
       return;
     }
+    const certificationLabels: Record<string, string> = {
+      none_club: 'ยังไม่มีใบรับรอง / ระดับชมรม',
+      provincial: 'ระดับจังหวัด / ภูมิภาค',
+      national: 'ระดับประเทศ',
+      badminton_asia: 'Badminton Asia',
+      bwf: 'BWF',
+    };
+    const normalizedUmpForm = {
+      ...umpForm,
+      certification: certificationLabels[umpForm.certificationLevel] || umpForm.certification,
+      emergencyContact: umpForm.emergencyContactName || umpForm.emergencyContactPhone
+        ? `${umpForm.emergencyContactName} / ${umpForm.emergencyContactPhone}`.trim()
+        : umpForm.emergencyContact,
+      yearsExperience: umpForm.yearsExperience === '' ? undefined : Number(umpForm.yearsExperience),
+      matchesOfficiated: umpForm.matchesOfficiated === '' ? undefined : Number(umpForm.matchesOfficiated),
+    };
     try {
       if (editingUmpire) {
         await apiFetch(`/api/umpires/${editingUmpire.id}`, {
           method: 'PATCH',
           body: JSON.stringify({
-            ...umpForm,
+            ...normalizedUmpForm,
           }),
         });
         await refreshState();
@@ -690,7 +753,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
           id: `ump-${Date.now()}`,
           code: `UMP-0${tUmpires.length + 1}`,
           tournamentId: tournament.id,
-          ...umpForm,
+          ...normalizedUmpForm,
           codeExpiresAt: `${tournament.endDate} 23:59`,
           applicationSource: 'staff',
           approvalStatus: 'approved',
@@ -723,12 +786,26 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
       email: umpire.email || '',
       photoUrl: umpire.photoUrl || '',
       certification: umpire.certification || 'กรรมการสมาคมฯ ระดับ 1',
+      certificationLevel: certificationLevelFromRecord(umpire),
+      certificationBody: umpire.certificationBody || '',
+      licenseNumber: umpire.licenseNumber || '',
+      certificationExpiry: umpire.certificationExpiry || '',
+      officialRoles: umpire.officialRoles || [],
+      scoringSkills: umpire.scoringSkills || [],
+      yearsExperience: umpire.yearsExperience === undefined ? '' : String(umpire.yearsExperience),
+      matchesOfficiated: umpire.matchesOfficiated === undefined ? '' : String(umpire.matchesOfficiated),
       clubAffiliation: umpire.clubAffiliation || 'อิสระ (ไม่มีสังกัด)',
       experienceNote: umpire.experienceNote || '',
       address: umpire.address || '',
       emergencyContact: umpire.emergencyContact || '',
+      province: umpire.province || '',
+      emergencyContactName: umpire.emergencyContactName || '',
+      emergencyContactPhone: umpire.emergencyContactPhone || '',
+      shirtSize: umpire.shirtSize || '',
+      logisticsNote: umpire.logisticsNote || '',
       lineId: umpire.lineId || '',
       pdpaConsent: Boolean(umpire.pdpaConsent),
+      codeOfConductConsent: Boolean(umpire.codeOfConductConsent),
     });
     setShowUmpireModal(true);
   };
@@ -771,7 +848,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                 : 'text-[#525C6B] dark:text-[#9AA8BC]'
             }`}
           >
-            นักกีฬา / ทีม ({listedPlayerTotal || tPlayers.length})
+            นักกีฬา / ทีม (ใช้งาน {activePlayerTotal}{inactivePlayerTotal > 0 ? ` · ไม่ใช้งาน ${inactivePlayerTotal}` : ''})
           </button>
           <button
             onClick={() => setMemberTab('umpire')}
@@ -953,7 +1030,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                           p.partnerName?.trim(),
                         ].filter(Boolean) as string[];
                     return (
-                      <tr key={p.id} className={`${p.withdrawn ? 'opacity-50' : ''} align-top transition-colors hover:bg-[#FAF9F6] dark:hover:bg-[#172235]`}>
+                      <tr key={p.id} className={`${p.withdrawn ? 'bg-[#FFF7F7] dark:bg-[#2A1518]' : p.documentStatus === 'rejected' ? 'bg-[#FFFBEB] dark:bg-[#2A210D]' : ''} align-top transition-colors hover:bg-[#FAF9F6] dark:hover:bg-[#172235]`}>
                         <td className="py-4 px-3 align-top">
                           <input
                             type="checkbox"
@@ -1070,6 +1147,8 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                             tone={
                               p.withdrawn
                                 ? 'danger'
+                                : p.documentStatus === 'rejected'
+                                ? 'danger'
                                 : p.checkedIn
                                 ? 'success'
                                 : p.waitingList
@@ -1079,6 +1158,8 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                             label={
                               p.withdrawn
                                 ? 'ถอนตัว'
+                                : p.documentStatus === 'rejected'
+                                ? 'ปฏิเสธใบสมัคร · ไม่นับโควตา'
                                 : p.checkedIn
                                 ? `เช็คอิน ${formatThaiDateTime(p.checkInTime)}`
                                 : p.waitingList
@@ -1090,7 +1171,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                         </td>
                         <td className="py-4 px-3 align-top text-right">
                           <div className="inline-flex max-w-full flex-wrap items-center justify-end gap-1.5">
-                            {!p.checkedIn && !p.withdrawn && hasPermission('checkIn') && (
+                            {!p.checkedIn && !p.withdrawn && p.documentStatus === 'approved' && hasPermission('checkIn') && (
                               <button
                                 onClick={() =>
                                   handleUpdatePlayer(
@@ -1104,7 +1185,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                                 Check-in
                               </button>
                             )}
-                            {p.waitingList && !p.withdrawn && hasPermission('approveRegistration') && (
+                            {p.waitingList && !p.withdrawn && p.documentStatus !== 'rejected' && hasPermission('approveRegistration') && (
                               <button
                                 onClick={() => void handlePromoteWaitingPlayer(p)}
                                 className="min-h-[34px] px-2.5 rounded-lg border border-[#156143] text-[#156143] dark:text-[#4ADE80] font-semibold"
@@ -1219,7 +1300,7 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                         <div className="absolute right-0 z-30 mt-1 w-52 overflow-hidden rounded-xl border border-[#E2DFD5] bg-white p-1.5 shadow-xl dark:border-[#25354C] dark:bg-[#131E2E]">
                           <button disabled={!hasPermission('assignUmpire')} onClick={() => handleRegenerateCode(u)} className="flex min-h-9 w-full items-center rounded-lg px-2.5 text-left text-xs hover:bg-[#F7F6F2] disabled:opacity-40 dark:hover:bg-[#1B293D]"><RefreshCw className="mr-2 h-3.5 w-3.5" />สร้างรหัสใหม่</button>
                           <button disabled={!revealedCode} title={revealedCode ? 'สร้าง QR สำหรับรหัสที่เพิ่งออก' : 'กดสร้างรหัสใหม่ก่อน'} onClick={() => setQrUmpire({ ...u, loginCode12: revealedCode })} className="flex min-h-9 w-full items-center rounded-lg px-2.5 text-left text-xs hover:bg-[#F7F6F2] disabled:opacity-40 dark:hover:bg-[#1B293D]"><QrCode className="mr-2 h-3.5 w-3.5" />QR เข้าแอปกรรมการ</button>
-                          <button onClick={() => setHistoryUmpire(u)} className="flex min-h-9 w-full items-center rounded-lg px-2.5 text-left text-xs hover:bg-[#F7F6F2] dark:hover:bg-[#1B293D]">ประวัติ ({u.history?.length || 0})</button>
+                          <button onClick={() => { setHistoryUmpire(u); setHistoryMatchId(null); }} className="flex min-h-9 w-full items-center rounded-lg px-2.5 text-left text-xs hover:bg-[#F7F6F2] dark:hover:bg-[#1B293D]">ประวัติ ({u.history?.length || 0})</button>
                           <button disabled={!hasPermission('assignUmpire')} onClick={async () => { await apiFetch(`/api/umpires/${u.id}`, { method: 'PATCH', body: JSON.stringify({ active: !u.active }) }); await refreshState(); notify('info', `${u.firstName}: ${!u.active ? 'เปิดใช้งาน' : 'Revoke รหัสแล้ว'}`); }} className="flex min-h-9 w-full items-center rounded-lg px-2.5 text-left text-xs text-[#B91C1C] hover:bg-[#FEF2F2] disabled:opacity-40 dark:text-[#F87171] dark:hover:bg-[#361215]">{u.active ? 'ยกเลิกรหัสเข้าใช้' : 'เปิดใช้งานกรรมการ'}</button>
                         </div>
                       </details>
@@ -1901,19 +1982,24 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
               )}
             </div>
             <div className="flex flex-wrap justify-between gap-2 border-t border-[#E2DFD5] bg-[#F7F6F2] p-4 dark:border-[#25354C] dark:bg-[#0B121C] sm:px-6">
-              <button
-                onClick={async () => {
-                  await handleUpdatePlayer(
-                    editPlayer.id,
-                    { withdrawn: true },
-                    `ถอนตัวทีม ${editPlayer.teamName}`
-                  );
-                  setEditPlayer(null);
-                }}
-                className="min-h-[40px] px-3 rounded-lg border border-[#FECACA] text-[#B91C1C] font-semibold"
-              >
-                แจ้งถอนตัว (เลื่อน Waiting List)
-              </button>
+              {editPlayer.withdrawn ? (
+                <StatusIndicator tone="danger" label="ทีมนี้ถอนตัวแล้ว · ไม่นับรวมโควตา" />
+              ) : (
+                <button
+                  onClick={async () => {
+                    if (!window.confirm(`ยืนยันถอนตัวทีม ${editPlayer.teamName}? ทีมนี้จะไม่ถูกนับในโควตา และระบบจะเลื่อน Waiting List ลำดับแรกอัตโนมัติ`)) return;
+                    await handleUpdatePlayer(
+                      editPlayer.id,
+                      { withdrawn: true },
+                      `ถอนตัวทีม ${editPlayer.teamName}`
+                    );
+                    setEditPlayer(null);
+                  }}
+                  className="min-h-[40px] px-3 rounded-lg border border-[#FECACA] text-[#B91C1C] font-semibold"
+                >
+                  แจ้งถอนตัว (ไม่นับโควตา)
+                </button>
+              )}
               <button
                 onClick={async () => {
                   const members = editPlayer.members || [];
@@ -2033,19 +2119,32 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                     <div><span className="text-[#667085]">วันที่สมัคร:</span> {editingUmpire.appliedAt ? formatThaiDateTime(editingUmpire.appliedAt) : '-'}</div>
                     <div><span className="text-[#667085]">สถานะอนุมัติ:</span> {editingUmpire.approvalStatus || '-'}</div>
                     {editingUmpire.approvalNote && <div><span className="text-[#667085]">หมายเหตุการอนุมัติ:</span> {editingUmpire.approvalNote}</div>}
+                    {editingUmpire.province && <div><span className="text-[#667085]">จังหวัดที่พำนัก:</span> {editingUmpire.province}</div>}
+                    {editingUmpire.officialRoles && editingUmpire.officialRoles.length > 0 && <div><span className="text-[#667085]">บทบาทที่สมัคร:</span> {editingUmpire.officialRoles.map((role) => officialRoleLabel[role] || role).join(', ')}</div>}
+                    {editingUmpire.certificationBody && <div><span className="text-[#667085]">หน่วยงานรับรอง:</span> {editingUmpire.certificationBody}</div>}
+                    {editingUmpire.licenseNumber && <div><span className="text-[#667085]">เลขใบอนุญาต/สมาชิก:</span> {editingUmpire.licenseNumber}</div>}
+                    {editingUmpire.certificationExpiry && <div><span className="text-[#667085]">ใบรับรองหมดอายุ:</span> {editingUmpire.certificationExpiry}</div>}
                   </div>
-                  <div className="flex items-center justify-start sm:justify-end">
-                    {editingUmpire.documentFileId ? (
-                      <a
-                        href={`/api/tournament/files/${encodeURIComponent(editingUmpire.documentFileId)}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-[#BBDCCF] bg-white px-3 font-semibold text-[#156143] dark:border-[#24533F] dark:bg-[#131E2E] dark:text-[#4ADE80]"
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                        เปิดเอกสารแนบ{editingUmpire.documentName ? ` · ${editingUmpire.documentName}` : ''}
-                      </a>
-                    ) : <span className="text-[11px] text-[#667085]">ไม่มีเอกสารแนบ</span>}
+                  <div className="space-y-1 text-[11px]">
+                    {editingUmpire.yearsExperience !== undefined && <div><span className="text-[#667085]">ประสบการณ์:</span> {editingUmpire.yearsExperience} ปี</div>}
+                    {editingUmpire.matchesOfficiated !== undefined && <div><span className="text-[#667085]">จำนวนแมตช์โดยประมาณ:</span> {editingUmpire.matchesOfficiated}</div>}
+                    {editingUmpire.scoringSkills && editingUmpire.scoringSkills.length > 0 && <div><span className="text-[#667085]">ทักษะ:</span> {editingUmpire.scoringSkills.map((skill) => scoringSkillLabel[skill] || skill).join(', ')}</div>}
+                    {editingUmpire.emergencyContactName && <div><span className="text-[#667085]">ผู้ติดต่อฉุกเฉิน:</span> {editingUmpire.emergencyContactName} · {editingUmpire.emergencyContactPhone || '-'}</div>}
+                    {editingUmpire.shirtSize && <div><span className="text-[#667085]">ขนาดเสื้อ:</span> {editingUmpire.shirtSize}</div>}
+                    {editingUmpire.logisticsNote && <div><span className="text-[#667085]">ข้อมูลประสานงาน:</span> {editingUmpire.logisticsNote}</div>}
+                    <div className="pt-2">
+                      {editingUmpire.documentFileId ? (
+                        <a
+                          href={`/api/tournament/files/${encodeURIComponent(editingUmpire.documentFileId)}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-[#BBDCCF] bg-white px-3 font-semibold text-[#156143] dark:border-[#24533F] dark:bg-[#131E2E] dark:text-[#4ADE80]"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                          เปิดเอกสารแนบ{editingUmpire.documentName ? ` · ${editingUmpire.documentName}` : ''}
+                        </a>
+                      ) : <span className="text-[#667085]">ไม่มีเอกสารแนบ</span>}
+                    </div>
                   </div>
                 </div>
               )}
@@ -2105,43 +2204,62 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div>
-                  <label className="block font-medium mb-1 flex items-center gap-1">
-                    <Award className="w-3.5 h-3.5 text-[#156143]" />
-                    <span>ระดับใบรับรองกรรมการ</span>
-                  </label>
-                  <select
-                    value={umpForm.certification}
-                    onChange={(e) => setUmpForm({ ...umpForm, certification: e.target.value })}
-                    className="w-full min-h-[40px] px-2.5 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
-                  >
-                    <option value="กรรมการสมาคมฯ ระดับ 1">กรรมการสมาคมฯ ระดับ 1</option>
-                    <option value="กรรมการสมาคมฯ ระดับ 2">กรรมการสมาคมฯ ระดับ 2</option>
-                    <option value="กรรมการภูมิภาค ระดับ 1">กรรมการภูมิภาค ระดับ 1</option>
-                    <option value="ผู้ตัดสินชมรม / สโมสร">ผู้ตัดสินชมรม / สโมสร</option>
-                    <option value="ผู้ตัดสินอิสระ">ผู้ตัดสินอิสระ</option>
-                  </select>
+              <fieldset className="space-y-2">
+                <legend className="font-medium">บทบาทที่สมัคร</legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {Object.entries(officialRoleLabel).map(([value, label]) => (
+                    <label key={value} className="flex min-h-[40px] items-center gap-2 rounded-lg border border-[#E2DFD5] px-3 dark:border-[#25354C]">
+                      <input
+                        type="checkbox"
+                        checked={umpForm.officialRoles.includes(value)}
+                        onChange={() => setUmpForm((current) => ({ ...current, officialRoles: current.officialRoles.includes(value) ? current.officialRoles.filter((role) => role !== value) : [...current.officialRoles, value] }))}
+                      />
+                      <span>{label}</span>
+                    </label>
+                  ))}
                 </div>
-                <div>
-                  <label className="block font-medium mb-1">สังกัดสโมสร / ชมรม</label>
-                  <input
-                    placeholder="ระบุชื่อสโมสร หรือ อิสระ"
-                    value={umpForm.clubAffiliation}
-                    onChange={(e) => setUmpForm({ ...umpForm, clubAffiliation: e.target.value })}
-                    className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
-                  />
-                  <div className="mt-1 text-[10px] text-[#525C6B] dark:text-[#9AA8BC]">
-                    ใช้ตรวจป้องกัน Conflict of Interest เวลาจัดคู่แข่งขัน
-                  </div>
-                </div>
-              </div>
+              </fieldset>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <div><label className="block font-medium mb-1">LINE ID</label><input value={umpForm.lineId} onChange={(e) => setUmpForm({ ...umpForm, lineId: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
-                <div><label className="block font-medium mb-1">ผู้ติดต่อฉุกเฉิน (ชื่อ/เบอร์โทร) *</label><input required value={umpForm.emergencyContact} onChange={(e) => setUmpForm({ ...umpForm, emergencyContact: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div>
+                  <label className="block font-medium mb-1 flex items-center gap-1"><Award className="w-3.5 h-3.5 text-[#156143]" /><span>ระดับการรับรอง</span></label>
+                  <select value={umpForm.certificationLevel} onChange={(e) => setUmpForm({ ...umpForm, certificationLevel: e.target.value })} className="w-full min-h-[40px] px-2.5 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]">
+                    <option value="none_club">ยังไม่มีใบรับรอง / ระดับชมรม</option>
+                    <option value="provincial">ระดับจังหวัด / ภูมิภาค</option>
+                    <option value="national">ระดับประเทศ</option>
+                    <option value="badminton_asia">Badminton Asia</option>
+                    <option value="bwf">BWF</option>
+                  </select>
+                </div>
+                <div><label className="block font-medium mb-1">สังกัดสโมสร / ชมรม</label><input value={umpForm.clubAffiliation} onChange={(e) => setUmpForm({ ...umpForm, clubAffiliation: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">หน่วยงานที่ออกใบรับรอง</label><input value={umpForm.certificationBody} onChange={(e) => setUmpForm({ ...umpForm, certificationBody: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">เลขใบอนุญาต / เลขสมาชิก</label><input value={umpForm.licenseNumber} onChange={(e) => setUmpForm({ ...umpForm, licenseNumber: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">วันหมดอายุใบรับรอง</label><input type="date" value={umpForm.certificationExpiry} onChange={(e) => setUmpForm({ ...umpForm, certificationExpiry: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">ขนาดเสื้อ</label><select value={umpForm.shirtSize} onChange={(e) => setUmpForm({ ...umpForm, shirtSize: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"><option value="">ไม่ระบุ</option><option>XS</option><option>S</option><option>M</option><option>L</option><option>XL</option><option>2XL</option><option>3XL</option></select></div>
               </div>
-              <div><label className="block font-medium mb-1">ที่อยู่ติดต่อ *</label><textarea required rows={2} value={umpForm.address} onChange={(e) => setUmpForm({ ...umpForm, address: e.target.value })} className="w-full p-2.5 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                <div><label className="block font-medium mb-1">LINE ID</label><input value={umpForm.lineId} onChange={(e) => setUmpForm({ ...umpForm, lineId: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">จังหวัดที่พำนัก</label><input value={umpForm.province} onChange={(e) => setUmpForm({ ...umpForm, province: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">ชื่อผู้ติดต่อฉุกเฉิน</label><input value={umpForm.emergencyContactName} onChange={(e) => setUmpForm({ ...umpForm, emergencyContactName: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">เบอร์ผู้ติดต่อฉุกเฉิน</label><input type="tel" value={umpForm.emergencyContactPhone} onChange={(e) => setUmpForm({ ...umpForm, emergencyContactPhone: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">ประสบการณ์ (ปี)</label><input type="number" min="0" value={umpForm.yearsExperience} onChange={(e) => setUmpForm({ ...umpForm, yearsExperience: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+                <div><label className="block font-medium mb-1">จำนวนแมตช์โดยประมาณ</label><input type="number" min="0" value={umpForm.matchesOfficiated} onChange={(e) => setUmpForm({ ...umpForm, matchesOfficiated: e.target.value })} className="w-full min-h-[40px] px-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
+              </div>
+
+              <fieldset className="space-y-2">
+                <legend className="font-medium">ทักษะการบันทึกคะแนน</legend>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {Object.entries(scoringSkillLabel).map(([value, label]) => (
+                    <label key={value} className="flex min-h-[40px] items-center gap-2 rounded-lg border border-[#E2DFD5] px-3 dark:border-[#25354C]">
+                      <input type="checkbox" checked={umpForm.scoringSkills.includes(value)} onChange={() => setUmpForm((current) => ({ ...current, scoringSkills: current.scoringSkills.includes(value) ? current.scoringSkills.filter((skill) => skill !== value) : [...current.scoringSkills, value] }))} />
+                      <span>{label}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+
+              {umpForm.address && <div><label className="block font-medium mb-1">ที่อยู่ติดต่อ (ข้อมูลเดิม)</label><textarea rows={2} value={umpForm.address} onChange={(e) => setUmpForm({ ...umpForm, address: e.target.value })} className="w-full p-2.5 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>}
 
               <div>
                 <label className="block font-medium mb-1">ประวัติ / ประสบการณ์ตัดสินที่ผ่านมา</label>
@@ -2153,9 +2271,14 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
                   className="w-full p-2.5 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
                 />
               </div>
+              <div><label className="block font-medium mb-1">ข้อมูลสำหรับการประสานงานเพิ่มเติม</label><textarea rows={2} value={umpForm.logisticsNote} onChange={(e) => setUmpForm({ ...umpForm, logisticsNote: e.target.value })} className="w-full p-2.5 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]" /></div>
               <label className="flex items-start gap-2.5 rounded-xl border border-[#BBDCCF] bg-[#F1FAF6] p-3 dark:border-[#24533F] dark:bg-[#10291E]">
                 <input required={!editingUmpire} type="checkbox" checked={umpForm.pdpaConsent} onChange={(e) => setUmpForm({ ...umpForm, pdpaConsent: e.target.checked })} className="mt-0.5" />
                 <span><strong className="block">ยืนยันความยินยอม PDPA *</strong><span className="mt-1 block text-[11px] leading-5 text-[#526071] dark:text-[#B9C4D3]">{tournament.registrationConfig.pdpaConsentText}</span></span>
+              </label>
+              <label className="flex items-start gap-2.5 rounded-xl border border-[#E2DFD5] p-3 dark:border-[#25354C]">
+                <input type="checkbox" checked={umpForm.codeOfConductConsent} onChange={(e) => setUmpForm({ ...umpForm, codeOfConductConsent: e.target.checked })} className="mt-0.5" />
+                <span><strong className="block">รับรองข้อมูลและยอมรับจรรยาบรรณกรรมการ</strong><span className="mt-1 block text-[11px] leading-5 text-[#526071] dark:text-[#B9C4D3]">สถานะความยินยอมที่ผู้สมัครยืนยันในใบสมัครออนไลน์</span></span>
               </label>
             </div>
 
@@ -2187,28 +2310,60 @@ export const MemberView: React.FC<{ tournament: Tournament }> = ({ tournament })
       {/* Umpire History Modal */}
       {historyUmpire && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog">
-          <div className="w-full max-w-md rounded-xl bg-white dark:bg-[#131E2E] border border-[#E2DFD5] dark:border-[#25354C] p-5 space-y-3 text-xs">
+          <div className="w-full max-w-4xl max-h-[88dvh] overflow-y-auto rounded-xl bg-white dark:bg-[#131E2E] border border-[#E2DFD5] dark:border-[#25354C] p-5 space-y-4 text-xs">
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-bold">
-                ประวัติการตัดสิน: {historyUmpire.firstName} {historyUmpire.lastName}
-              </h3>
-              <button onClick={() => setHistoryUmpire(null)} className="p-1">
+              <div>
+                <h3 className="text-base font-bold">ประวัติการตัดสิน: {historyUmpire.firstName} {historyUmpire.lastName}</h3>
+                <p className="mt-1 text-[#667085] dark:text-[#9AA8BC]">มอบหมาย {historyUmpire.assignedMatches || 0} คู่ · ตัดสินเสร็จ {historyUmpire.completedMatches || 0} คู่ · {historyUmpire.hoursWorked || 0} ชั่วโมง</p>
+              </div>
+              <button onClick={() => { setHistoryUmpire(null); setHistoryMatchId(null); }} className="p-1">
                 <X className="w-4 h-4" />
               </button>
             </div>
             {historyUmpire.history.length === 0 ? (
               <p className="text-[#525C6B] py-4 text-center">ยังไม่มีบันทึกการตัดสินในรายการนี้</p>
             ) : (
-              <ul className="divide-y divide-[#E2DFD5] dark:divide-[#25354C]">
-                {historyUmpire.history.map((h, i) => (
-                  <li key={i} className="py-2 flex justify-between gap-2">
-                    <span>
-                      <strong>{h.matchCode}</strong> · {h.note}
-                    </span>
-                    <span className="font-mono text-[#525C6B]">{h.date}</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="grid gap-4 lg:grid-cols-[minmax(280px,0.8fr)_minmax(0,1.2fr)]">
+                <div className="max-h-[58dvh] overflow-y-auto rounded-xl border border-[#E2DFD5] dark:border-[#25354C] divide-y divide-[#E2DFD5] dark:divide-[#25354C]">
+                  {historyUmpire.history.map((h, i) => (
+                    <button
+                      key={`${h.matchId}-${i}`}
+                      type="button"
+                      onClick={() => setHistoryMatchId(h.matchId)}
+                      className={`w-full p-3 text-left transition-colors ${historyMatchId === h.matchId ? 'bg-[#ECFDF3] dark:bg-[#10291E]' : 'hover:bg-[#F7F6F2] dark:hover:bg-[#1B293D]'}`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <strong className="font-mono text-[#156143] dark:text-[#4ADE80]">{h.matchCode}</strong>
+                        <span className="text-[10px] text-[#667085]">{h.date ? formatThaiDateTime(h.date) : 'ยังไม่กำหนดเวลา'}</span>
+                      </div>
+                      <div className="mt-1 font-semibold">{h.teamAName || 'ทีม A'} vs {h.teamBName || 'ทีม B'}</div>
+                      <div className="mt-1 text-[#667085] dark:text-[#9AA8BC]">{h.note}{h.score ? ` · ${h.score}` : ''}</div>
+                    </button>
+                  ))}
+                </div>
+                <div className="rounded-xl border border-[#E2DFD5] bg-[#FAF9F6] p-4 dark:border-[#25354C] dark:bg-[#0B121C]">
+                  {historyMatch ? (
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div><div className="font-mono text-sm font-bold text-[#156143] dark:text-[#4ADE80]">{historyMatch.matchCode}</div><div className="mt-1 font-semibold">{historyMatch.groupName || historyMatch.stage}</div></div>
+                        <StatusIndicator tone={historyMatch.winner === 'draw' ? 'neutral' : historyMatch.status === 'finished' ? 'success' : 'warning'} label={historyMatch.winner === 'draw' ? 'เสมอ' : historyMatch.status} compact />
+                      </div>
+                      <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3 rounded-xl bg-white p-4 text-center dark:bg-[#131E2E]">
+                        <div><div className="font-bold">{historyMatch.teamAName}</div><div className="mt-1 text-[11px] text-[#667085]">{historyMatch.teamAPlayers.join(' / ')}</div></div>
+                        <div className="font-mono text-lg font-extrabold">{historyMatch.sets.filter((set) => set.winner === 'A').length}–{historyMatch.sets.filter((set) => set.winner === 'B').length}</div>
+                        <div><div className="font-bold">{historyMatch.teamBName}</div><div className="mt-1 text-[11px] text-[#667085]">{historyMatch.teamBPlayers.join(' / ')}</div></div>
+                      </div>
+                      <div className="space-y-2">
+                        {historyMatch.sets.map((set) => <div key={set.setNumber} className="flex justify-between rounded-lg border border-[#E2DFD5] bg-white px-3 py-2 font-mono dark:border-[#25354C] dark:bg-[#131E2E]"><span>เซต {set.setNumber}</span><strong>{set.scoreA}–{set.scoreB}</strong></div>)}
+                      </div>
+                      <div className="grid gap-2 text-[#667085] sm:grid-cols-2 dark:text-[#9AA8BC]"><div>สนาม: {tournament.courts.find((court) => court.id === historyMatch.courtId)?.name || historyMatch.courtId || 'ยังไม่กำหนด'}</div><div>เวลา: {historyMatch.actualEnd ? formatThaiDateTime(historyMatch.actualEnd) : historyMatch.scheduledDate || 'ยังไม่กำหนด'}</div></div>
+                      {historyMatch.umpireNote && <div className="rounded-lg border border-[#BBDCCF] bg-[#F1FAF6] p-3 dark:border-[#24533F] dark:bg-[#10291E]">หมายเหตุกรรมการ: {historyMatch.umpireNote}</div>}
+                    </div>
+                  ) : (
+                    <div className="flex min-h-56 items-center justify-center text-center text-[#667085] dark:text-[#9AA8BC]">เลือกรายการทางซ้ายเพื่อดูทีม คะแนนรายเซต สนาม และหมายเหตุ</div>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </div>

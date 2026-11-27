@@ -58,7 +58,22 @@ export const AthleteRegistrationFields: React.FC<Props> = ({
     </div>
 
     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-      <label className="font-medium">เบอร์โทร *<input required inputMode="tel" value={values.phone} onChange={(e) => onChange('phone', e.target.value)} className={`mt-1 ${inputClass}`} /></label>
+      <label className="font-medium">เบอร์โทร *
+        <input
+          required
+          type="tel"
+          inputMode="numeric"
+          autoComplete="tel"
+          pattern="[0-9]{10}"
+          maxLength={10}
+          value={values.phone}
+          aria-invalid={values.phone.length > 0 && !/^[0-9]{10}$/.test(values.phone)}
+          onChange={(e) => onChange('phone', e.target.value.replace(/\D/g, '').slice(0, 10))}
+          placeholder="ตัวเลข 10 หลัก"
+          className={`mt-1 ${inputClass}`}
+        />
+        {values.phone.length > 0 && values.phone.length !== 10 && <span className="mt-1 block text-[10px] text-[#B91C1C] dark:text-[#F87171]">กรุณากรอกเบอร์โทรให้ครบ 10 หลัก</span>}
+      </label>
       <label className="font-medium">อีเมล<input type="email" value={values.email} onChange={(e) => onChange('email', e.target.value)} className={`mt-1 ${inputClass}`} /></label>
       <label className="font-medium">เลขบัตร/หนังสือเดินทาง<input value={values.idDocumentNo} onChange={(e) => onChange('idDocumentNo', e.target.value)} className={`mt-1 ${inputClass}`} /></label>
     </div>

@@ -7,6 +7,7 @@ import {
   CheckCircle2,
   Clock,
   CreditCard,
+  Eye,
   ExternalLink,
   FileCheck2,
   Globe,
@@ -51,6 +52,7 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
   const [playerSourceFilter, setPlayerSourceFilter] = useState<'all' | 'online' | 'staff'>('all');
   const [playerSearch, setPlayerSearch] = useState('');
   const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
+  const [detailPlayer, setDetailPlayer] = useState<PlayerRecord | null>(null);
 
   // Director Approval filters
   const [directorStatusFilter, setDirectorStatusFilter] = useState<StatusFilter>('pending');
@@ -211,7 +213,7 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
         body: JSON.stringify({ ids: selectedPlayerIds, action: 'approve' }),
       });
       await refreshState();
-      notify('success', `อนุมัติผู้เล่น ${selectedPlayerIds.length} รายการเรียบร้อย`);
+      notify('success', `ให้ผ่านการตรวจข้อมูลและประเมินมือ ${selectedPlayerIds.length} รายการแล้ว`);
       setSelectedPlayerIds([]);
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'อนุมัติไม่สำเร็จ');
@@ -562,6 +564,9 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
       {/* TAB 1: PLAYER APPROVAL */}
       {subTab === 'players' && (
         <div className="space-y-4">
+          <div className="rounded-xl border border-[#B9D8CB] bg-[#F1FAF6] p-3 text-xs text-[#156143] dark:border-[#24533F] dark:bg-[#10291E] dark:text-[#86E0B4]">
+            <strong>อนุมัติครั้งที่ 1 — ตรวจข้อมูลและประเมินระดับมือ:</strong> เปิดดูข้อมูลนักกีฬาทุกคน รูปถ่าย คลิปประเมินมือ และรุ่นที่สมัครก่อนกดให้ผ่าน เมื่อผ่านแล้วผู้สมัครจึงชำระเงินและแนบสลิปได้
+          </div>
           <div className="rounded-xl border border-[#E2DFD5] dark:border-[#25354C] bg-white dark:bg-[#131E2E] p-3.5 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-2">
               {(
@@ -625,7 +630,7 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
                 className="min-h-[36px] px-3.5 rounded-lg bg-[#156143] hover:bg-[#104D35] text-white font-semibold inline-flex items-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
-                <span>อนุมัติทั้งหมดที่เลือก</span>
+                <span>ผ่านการประเมินทั้งหมดที่เลือก</span>
               </button>
             </div>
           )}
@@ -787,6 +792,14 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
                     </div>
 
                     <div className="flex flex-wrap items-center gap-2 shrink-0 pl-6 lg:pl-0">
+                      <button
+                        type="button"
+                        onClick={() => setDetailPlayer(p)}
+                        className="min-h-[38px] px-3 rounded-lg border border-[#B9D8CB] text-[#156143] dark:border-[#24533F] dark:text-[#86E0B4] hover:bg-[#F1FAF6] dark:hover:bg-[#10291E] text-xs font-semibold inline-flex items-center gap-1.5"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>ดูข้อมูล / ประเมินมือ</span>
+                      </button>
                       {isOnline && p.paymentStatus === 'pending_verify' && (
                         <button
                           type="button"
@@ -810,7 +823,7 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
                           className="min-h-[38px] px-3.5 rounded-lg bg-[#156143] hover:bg-[#104D35] text-white text-xs font-semibold inline-flex items-center gap-1.5"
                         >
                           <Check className="w-3.5 h-3.5" />
-                          <span>อนุมัติ</span>
+                          <span>ผ่านการประเมินมือ</span>
                         </button>
                       )}
 
@@ -1407,6 +1420,105 @@ export const ApprovalAndPaymentView: React.FC<{ tournament: Tournament }> = ({ t
               )}
             </div>
           )}
+        </div>
+      )}
+
+      {/* Player Application Detail / Skill Assessment Modal */}
+      {detailPlayer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-0 sm:p-4" role="dialog" aria-modal="true" onClick={() => setDetailPlayer(null)}>
+          <div className="flex max-h-[100dvh] w-full max-w-5xl flex-col overflow-hidden rounded-none border border-[#E2DFD5] bg-white shadow-xl dark:border-[#25354C] dark:bg-[#131E2E] sm:max-h-[92dvh] sm:rounded-2xl" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-3 border-b border-[#E2DFD5] p-4 dark:border-[#25354C]">
+              <div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded bg-[#F1FAF6] px-2 py-1 text-[11px] font-bold text-[#156143] dark:bg-[#10291E] dark:text-[#86E0B4]">อนุมัติครั้งที่ 1</span>
+                  <span className="font-mono text-xs font-bold">{detailPlayer.registrationCode}</span>
+                </div>
+                <h3 className="mt-1 text-base font-bold">ตรวจข้อมูลและประเมินมือ · {detailPlayer.teamName}</h3>
+                <p className="mt-1 text-xs text-[#667085] dark:text-[#9AA8BC]">ตรวจรูป ข้อมูลผู้สมัครทุกคน คลิปประเมินมือ และระดับที่สมัคร ก่อนให้ผ่านเข้าสู่ขั้นตอนชำระเงิน</p>
+              </div>
+              <button type="button" onClick={() => setDetailPlayer(null)} className="flex min-h-10 min-w-10 items-center justify-center rounded-lg hover:bg-[#EFECE4] dark:hover:bg-[#1B293D]"><X className="h-4 w-4" /></button>
+            </div>
+
+            <div className="overflow-y-auto p-4 sm:p-5">
+              {(() => {
+                const division = tournament.divisions.find((item) => item.id === detailPlayer.divisionId);
+                const members = detailPlayer.members?.length ? detailPlayer.members : [{
+                  role: 'primary' as const,
+                  firstName: detailPlayer.firstName,
+                  lastName: detailPlayer.lastName,
+                  nickname: detailPlayer.nickname,
+                  gender: detailPlayer.gender,
+                  birthDate: detailPlayer.birthDate,
+                  nationality: detailPlayer.nationality || '',
+                  idDocumentNo: detailPlayer.idDocumentNo,
+                  address: detailPlayer.address || '',
+                  phone: detailPlayer.phone,
+                  email: detailPlayer.email,
+                  club: detailPlayer.club,
+                  province: detailPlayer.province,
+                  shirtSize: detailPlayer.shirtSize,
+                  photoUrl: detailPlayer.photoUrl,
+                  emergencyContact: detailPlayer.emergencyContact,
+                  healthInfo: detailPlayer.healthInfo,
+                  healthConsent: detailPlayer.healthConsent,
+                  pdpaConsent: detailPlayer.pdpaConsent,
+                }];
+                return (
+                  <div className="space-y-4 text-xs">
+                    <section className="grid gap-3 rounded-xl border border-[#E2DFD5] bg-[#F7F6F2] p-4 dark:border-[#25354C] dark:bg-[#0B121C] sm:grid-cols-2 lg:grid-cols-4">
+                      <div><span className="text-[#667085]">ทีม:</span><strong className="ml-1">{detailPlayer.teamName}</strong></div>
+                      <div><span className="text-[#667085]">ระดับมือ:</span><strong className="ml-1">{division?.nameTh || detailPlayer.divisionId}</strong></div>
+                      <div><span className="text-[#667085]">ประเภท:</span><strong className="ml-1">{detailPlayer.format === 'doubles' ? 'คู่ 2 คน' : 'เดี่ยว 1 คน'}</strong></div>
+                      <div><span className="text-[#667085]">สโมสร:</span><strong className="ml-1">{detailPlayer.club || '-'}</strong></div>
+                    </section>
+
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      {members.map((member, index) => (
+                        <section key={`${member.role}-${index}`} className="rounded-xl border border-[#E2DFD5] p-4 dark:border-[#25354C]">
+                          <div className="flex items-start gap-3">
+                            {member.photoUrl ? <a href={member.photoUrl} target="_blank" rel="noreferrer"><img src={member.photoUrl} alt={`${member.firstName} ${member.lastName}`} className="h-24 w-24 rounded-xl border border-[#E2DFD5] object-cover dark:border-[#25354C]" /></a> : <div className="flex h-24 w-24 items-center justify-center rounded-xl border border-dashed border-[#9AA8BC]"><UserCheck className="h-7 w-7 text-[#667085]" /></div>}
+                            <div className="min-w-0 flex-1">
+                              <div className="text-[11px] font-bold text-[#156143]">นักกีฬาคนที่ {index + 1}</div>
+                              <h4 className="mt-1 text-base font-bold">{member.firstName} {member.lastName}</h4>
+                              <p className="text-[#667085]">ชื่อเล่น {member.nickname || '-'} · {member.gender === 'F' ? 'หญิง' : 'ชาย'}</p>
+                              <p className="mt-1">โทร {member.phone || '-'} · {member.email || '-'}</p>
+                            </div>
+                          </div>
+                          <div className="mt-3 grid gap-2 border-t border-[#E2DFD5] pt-3 dark:border-[#25354C] sm:grid-cols-2">
+                            <div><span className="text-[#667085]">วันเกิด:</span> {member.birthDate || '-'}</div>
+                            <div><span className="text-[#667085]">สัญชาติ:</span> {member.nationality || '-'}</div>
+                            <div><span className="text-[#667085]">เลขเอกสาร:</span> {member.idDocumentNo || '-'}</div>
+                            <div><span className="text-[#667085]">จังหวัด:</span> {member.province || '-'}</div>
+                            <div><span className="text-[#667085]">สโมสร:</span> {member.club || '-'}</div>
+                            <div><span className="text-[#667085]">ขนาดเสื้อ:</span> {member.shirtSize || '-'}</div>
+                            <div className="sm:col-span-2"><span className="text-[#667085]">ที่อยู่:</span> {member.address || '-'}</div>
+                            <div className="sm:col-span-2"><span className="text-[#667085]">ผู้ติดต่อฉุกเฉิน:</span> {member.emergencyContact || '-'}</div>
+                            {hasPermission('viewHealthData') && <div className="sm:col-span-2"><span className="text-[#667085]">ข้อมูลสุขภาพ:</span> {member.healthInfo || 'ไม่มีข้อมูล'}</div>}
+                            <div><span className="text-[#667085]">PDPA:</span> {member.pdpaConsent ? 'ยินยอมแล้ว' : 'ยังไม่ยินยอม'}</div>
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+
+                    <section className="rounded-xl border border-[#E2DFD5] p-4 dark:border-[#25354C]">
+                      <h4 className="font-bold">หลักฐานสำหรับประเมินมือ</h4>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {detailPlayer.skillVideoUrl ? <a href={detailPlayer.skillVideoUrl} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-[#142642] px-3 font-bold text-white"><Video className="h-4 w-4" />เปิดคลิปประเมินมือ<ExternalLink className="h-3.5 w-3.5" /></a> : <span className="rounded-lg bg-[#FFF8E7] px-3 py-2 font-semibold text-[#8A5B00] dark:bg-[#2B210E] dark:text-[#F8D37B]">ผู้สมัครไม่ได้แนบคลิปประเมินมือ</span>}
+                        {detailPlayer.teamLogoUrl && <a href={detailPlayer.teamLogoUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center gap-2 rounded-lg border px-3 font-semibold"><ImageIcon className="h-4 w-4" />ดูโลโก้ทีม</a>}
+                      </div>
+                      {detailPlayer.notes && <p className="mt-3 rounded-lg bg-[#F7F6F2] p-3 dark:bg-[#0B121C]"><span className="font-bold">หมายเหตุผู้สมัคร:</span> {detailPlayer.notes}</p>}
+                    </section>
+                  </div>
+                );
+              })()}
+            </div>
+
+            <div className="flex flex-wrap justify-end gap-2 border-t border-[#E2DFD5] bg-[#F7F6F2] p-4 dark:border-[#25354C] dark:bg-[#0B121C]">
+              <button type="button" onClick={() => setDetailPlayer(null)} className="min-h-10 rounded-lg border border-[#E2DFD5] bg-white px-4 font-semibold dark:border-[#25354C] dark:bg-[#131E2E]">ปิด</button>
+              {hasPermission('approveRegistration') && detailPlayer.documentStatus !== 'rejected' && <button type="button" disabled={submitting} onClick={() => { setRejectReason(''); setRejectTarget({ kind: 'player', player: detailPlayer }); setDetailPlayer(null); }} className="min-h-10 rounded-lg border border-[#FECACA] px-4 font-semibold text-[#B91C1C] dark:border-[#7F1D1D] dark:text-[#F87171]">ไม่ผ่านการประเมิน</button>}
+              {hasPermission('approveRegistration') && detailPlayer.documentStatus !== 'approved' && <button type="button" disabled={submitting} onClick={async () => { await handleReviewPlayer(detailPlayer, 'approved'); setDetailPlayer(null); }} className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-[#156143] px-4 font-bold text-white"><Check className="h-4 w-4" />ผ่านการประเมินมือ</button>}
+            </div>
+          </div>
         </div>
       )}
 

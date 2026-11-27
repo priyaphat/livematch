@@ -51,8 +51,8 @@ interface AppContextValue {
   toggleSidebar: () => void;
   selectedTournamentId: string | null;
   setSelectedTournamentId: (id: string | null) => void;
-  publicInitialTab: 'center' | 'live' | 'bracket' | 'venue';
-  setPublicInitialTab: (tab: 'center' | 'live' | 'bracket' | 'venue') => void;
+  publicInitialTab: 'center' | 'live' | 'bracket' | 'venue' | 'players' | 'rules';
+  setPublicInitialTab: (tab: 'center' | 'live' | 'bracket' | 'venue' | 'players' | 'rules') => void;
   publicFocusMatchId: string | null;
   setPublicFocusMatchId: (id: string | null) => void;
   isPublicKiosk: boolean;
@@ -149,10 +149,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(true);
   const toggleSidebar = useCallback(() => setSidebarOpen((v) => !v), []);
-  const [publicInitialTab, setPublicInitialTab] = useState<'center' | 'live' | 'bracket' | 'venue'>(() => {
+  const [publicInitialTab, setPublicInitialTab] = useState<'center' | 'live' | 'bracket' | 'venue' | 'players' | 'rules'>(() => {
     if (typeof window !== 'undefined') {
       const tab = new URLSearchParams(window.location.search).get('tab');
-      if (tab === 'center' || tab === 'live' || tab === 'bracket' || tab === 'venue') return tab;
+      if (tab === 'center' || tab === 'live' || tab === 'bracket' || tab === 'venue' || tab === 'players' || tab === 'rules') return tab;
     }
     return 'center';
   });

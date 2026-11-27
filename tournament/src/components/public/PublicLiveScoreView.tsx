@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
+  BookOpen,
   Copy,
   ExternalLink,
   GitBranch,
@@ -10,6 +11,7 @@ import {
   Search,
   ShieldCheck,
   Tv,
+  Users,
   X,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
@@ -30,7 +32,21 @@ interface PublicTeamSummary {
   id: string;
   teamName: string;
   teamLogoUrl?: string;
+  divisionId: string;
+  format: 'singles' | 'doubles';
+  waitingList?: boolean;
+  players: Array<{
+    firstName: string;
+    lastName: string;
+    nickname?: string;
+    photoUrl?: string;
+    age?: number;
+    club?: string;
+    province?: string;
+  }>;
 }
+
+type PublicScoreTab = 'center' | 'live' | 'bracket' | 'venue' | 'players' | 'rules';
 
 interface PublicStateResponse {
   tournaments: Tournament[];
@@ -40,8 +56,8 @@ interface PublicStateResponse {
   streamCursor?: number;
 }
 
-function tabLabelsForManifest(tab: 'center' | 'live' | 'bracket' | 'venue') {
-  return ({ center: 'LM Match Center', live: 'LM Live Score', bracket: 'LM Bracket', venue: 'LM Venue TV' } as const)[tab];
+function tabLabelsForManifest(tab: PublicScoreTab) {
+  return ({ center: 'LM Match Center', live: 'LM Live Score', bracket: 'LM Bracket', venue: 'LM Venue TV', players: 'LM Players', rules: 'LM Rules' } as const)[tab];
 }
 
 const isPublicCompletedMatch = (match: MatchRecord) =>
@@ -58,11 +74,12 @@ export const PublicLiveScoreView: React.FC = () => {
     notify,
   } = useApp();
 
-  const [tab, setTab] = useState<'center' | 'live' | 'bracket' | 'venue'>(publicInitialTab);
+  const [tab, setTab] = useState<PublicScoreTab>(publicInitialTab);
   const [focusMatchId, setFocusMatchId] = useState<string | null>(publicFocusMatchId);
   const [publicData, setPublicData] = useState<PublicStateResponse | null>(null);
   const [publicSseConnected, setPublicSseConnected] = useState(false);
   const [showTabPwaModal, setShowTabPwaModal] = useState(false);
+  const [rosterImagePreview, setRosterImagePreview] = useState<{ url: string; alt: string } | null>(null);
 
   const [search, setSearch] = useState('');
   const [filterDiv, setFilterDiv] = useState('all');
@@ -176,6 +193,44 @@ export const PublicLiveScoreView: React.FC = () => {
     return src.filter((m) => m.tournamentId === activeTournament?.id);
   }, [publicData, state.matches, activeTournament?.id]);
 
+  const publicTeams = useMemo(() => publicData?.teams || [], [publicData?.teams]);
+  const filteredPublicTeams = useMemo(
+    () => publicTeams.filter((team) => filterDiv === 'all' || team.divisionId === filterDiv),
+    [publicTeams, filterDiv]
+  );
+  const publicRegistrationRows = useMemo(
+    () => enabledDivisions.flatMap((division) =>
+      division.formats
+        .filter((format) => {
+          const quota = format === 'doubles' ? division.quotaDoubles : division.quotaSingles;
+          return quota === 'unlimited' || Number(quota) > 0;
+        })
+        .map((format) => {
+          const key = `${division.id}|${format}`;
+          const apiAvailability = activeTournament?.registrationAvailability?.[key];
+          const fallbackRegistered = publicTeams.filter(
+            (team) => team.divisionId === division.id && team.format === format && !team.waitingList
+          ).length;
+          const rawQuota = format === 'doubles' ? division.quotaDoubles : division.quotaSingles;
+          const unlimited = apiAvailability?.unlimited ?? rawQuota === 'unlimited';
+          const quota = apiAvailability?.quota ?? (unlimited ? 0 : Number(rawQuota) || 0);
+          const registered = apiAvailability?.registered ?? fallbackRegistered;
+          const remaining = apiAvailability?.remaining ?? (unlimited ? -1 : Math.max(0, quota - registered));
+          return {
+            key,
+            divisionName: division.nameTh,
+            format,
+            registered,
+            quota,
+            remaining,
+            unlimited,
+            full: apiAvailability?.full ?? (!unlimited && remaining === 0),
+          };
+        })
+    ),
+    [activeTournament?.registrationAvailability, enabledDivisions, publicTeams]
+  );
+
   const teamLogos = useMemo(() => {
     const teamSrc =
       publicData?.teams && publicData.teams.length > 0
@@ -244,11 +299,13 @@ export const PublicLiveScoreView: React.FC = () => {
     );
   }
 
-  const tabLabels: Record<'center' | 'live' | 'bracket' | 'venue', string> = {
+  const tabLabels: Record<PublicScoreTab, string> = {
     center: 'Match Center',
     live: 'Live Match View',
     bracket: 'Bracket View',
     venue: 'Venue Display (TV)',
+    players: 'รายชื่อนักกีฬา',
+    rules: 'กติกา & กรณีต่างๆ',
   };
 
   const tabKioskUrl =
@@ -257,6 +314,127 @@ export const PublicLiveScoreView: React.FC = () => {
           publicToken
         )}&tab=${tab}&kiosk=1${tab === 'bracket' && bracketDivId ? `&division=${encodeURIComponent(bracketDivId)}` : ''}`
       : `/?mode=public&tournament=${publicToken}&tab=${tab}&kiosk=1`;
+
+  const renderPublicPlayers = (kiosk = false) => (
+    <div className={`space-y-4 ${kiosk ? 'relative z-10 flex-1 w-full max-w-7xl mx-auto p-4 sm:p-6 text-white' : ''}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 className="text-base font-bold">รายชื่อนักกีฬาที่ผ่านการอนุมัติ ({filteredPublicTeams.length} ทีม)</h2>
+          <p className={`mt-1 text-xs ${kiosk ? 'text-white/60' : 'text-[#667085] dark:text-[#9AA8BC]'}`}>แสดงตามระดับมือและประเภทที่ลงสมัคร โดยไม่เปิดเผยข้อมูลติดต่อ</p>
+        </div>
+        <select value={filterDiv} onChange={(event) => setFilterDiv(event.target.value)} className={`min-h-[42px] rounded-lg border px-3 text-xs font-semibold ${kiosk ? 'border-white/15 bg-[#0D1826] text-white' : 'border-[#E2DFD5] bg-white dark:border-[#25354C] dark:bg-[#131E2E]'}`}>
+          <option value="all">ทุกระดับมือ</option>
+          {enabledDivisions.map((division) => <option key={division.id} value={division.id}>{division.nameTh}</option>)}
+        </select>
+      </div>
+      <div className={`overflow-x-auto rounded-xl border ${kiosk ? 'border-white/10 bg-[#0D1826]/90' : 'border-[#E2DFD5] bg-white dark:border-[#25354C] dark:bg-[#131E2E]'}`}>
+        <div className={`border-b px-4 py-3 text-sm font-bold ${kiosk ? 'border-white/10' : 'border-[#E2DFD5] dark:border-[#25354C]'}`}>สรุประดับมือที่เปิดรับสมัคร</div>
+        <table className="w-full min-w-[650px] border-collapse text-left text-xs">
+          <thead className={kiosk ? 'bg-white/5 text-white/65' : 'bg-[#F7F6F2] text-[#525C6B] dark:bg-[#0B121C] dark:text-[#9AA8BC]'}>
+            <tr className="border-b border-current/10">
+              <th className="px-4 py-3">ระดับมือ</th>
+              <th className="px-4 py-3">ประเภท</th>
+              <th className="px-4 py-3 text-right">สมัครแล้ว / เต็ม</th>
+              <th className="px-4 py-3 text-right">คงเหลือ</th>
+              <th className="px-4 py-3 text-center">สถานะ</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-current/10">
+            {publicRegistrationRows.map((row) => (
+              <tr key={row.key}>
+                <td className="px-4 py-3 font-semibold">{row.divisionName}</td>
+                <td className="px-4 py-3">{row.format === 'doubles' ? 'คู่' : 'เดี่ยว'}</td>
+                <td className="px-4 py-3 text-right font-mono font-bold tabular-nums">{row.registered} / {row.unlimited ? 'ไม่จำกัด' : row.quota}</td>
+                <td className="px-4 py-3 text-right font-mono tabular-nums">{row.unlimited ? 'ไม่จำกัด' : row.remaining}</td>
+                <td className="px-4 py-3 text-center">
+                  <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold ${row.full ? 'bg-[#FEE2E2] text-[#B91C1C] dark:bg-[#3A1518] dark:text-[#FCA5A5]' : 'bg-[#DCFCE7] text-[#166534] dark:bg-[#123321] dark:text-[#86EFAC]'}`}>
+                    {row.full ? 'เต็ม' : 'เปิดรับสมัคร'}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {filteredPublicTeams.length === 0 ? (
+        <EmptyStateCard title="ยังไม่มีรายชื่อนักกีฬาในระดับนี้" description="รายชื่อจะแสดงหลังผู้จัดอนุมัติใบสมัคร" />
+      ) : (
+        <div className={`overflow-x-auto rounded-xl border ${kiosk ? 'border-white/10 bg-[#0D1826]/90' : 'border-[#E2DFD5] bg-white dark:border-[#25354C] dark:bg-[#131E2E]'}`}>
+          <table className="w-full min-w-[1050px] border-collapse text-left text-xs">
+            <thead className={kiosk ? 'bg-white/5 text-white/65' : 'bg-[#F7F6F2] text-[#525C6B] dark:bg-[#0B121C] dark:text-[#9AA8BC]'}>
+              <tr className="border-b border-current/10">
+                <th className="w-12 px-3 py-3 text-center">#</th>
+                <th className="w-20 px-3 py-3">รูป</th>
+                <th className="px-3 py-3">ชื่อ–นามสกุล</th>
+                <th className="px-3 py-3">ชื่อเล่น</th>
+                <th className="px-3 py-3">ทีม</th>
+                <th className="px-3 py-3">ระดับมือ / ประเภท</th>
+                <th className="px-3 py-3 text-center">อายุ</th>
+                <th className="px-3 py-3">สโมสร</th>
+                <th className="px-3 py-3">จังหวัด</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-current/10">
+              {filteredPublicTeams.flatMap((team) => {
+                const division = activeTournament.divisions.find((item) => item.id === team.divisionId);
+                return team.players.map((player, playerIndex) => ({ team, player, playerIndex, division }));
+              }).map(({ team, player, playerIndex, division }, rowIndex) => {
+                const athleteName = `${player.firstName} ${player.lastName}`.trim();
+                return (
+                  <tr key={`${team.id}-${playerIndex}`} className={kiosk ? 'hover:bg-white/5' : 'hover:bg-[#FAF9F6] dark:hover:bg-[#172235]'}>
+                    <td className="px-3 py-3 text-center font-mono tabular-nums">{rowIndex + 1}</td>
+                    <td className="px-3 py-3">
+                      {player.photoUrl ? (
+                        <button type="button" onClick={() => setRosterImagePreview({ url: player.photoUrl!, alt: athleteName })} className="group relative block" title="กดดูรูปขนาดใหญ่">
+                          <img src={player.photoUrl} alt={athleteName} className="h-12 w-12 rounded-lg border border-current/15 object-cover transition group-hover:scale-105" />
+                          <span className="sr-only">ดูรูป {athleteName}</span>
+                        </button>
+                      ) : (
+                        <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-dashed border-current/25"><Users className="h-4 w-4 opacity-60" /></div>
+                      )}
+                    </td>
+                    <td className="px-3 py-3 font-bold">{athleteName || '-'}</td>
+                    <td className="px-3 py-3">{player.nickname || '-'}</td>
+                    <td className="px-3 py-3">
+                      <div className="flex min-w-[150px] items-center gap-2">
+                        {team.teamLogoUrl ? (
+                          <button type="button" onClick={() => setRosterImagePreview({ url: team.teamLogoUrl!, alt: `โลโก้ ${team.teamName}` })} title="กดดูโลโก้ขนาดใหญ่">
+                            <img src={team.teamLogoUrl} alt={`โลโก้ ${team.teamName}`} className="h-8 w-8 rounded-lg border border-current/15 object-cover" />
+                          </button>
+                        ) : <TeamLogoBadge teamName={team.teamName} size="xs" />}
+                        <div><div className="font-semibold">{team.teamName}</div>{team.waitingList && <span className="text-[10px] font-bold text-[#B7791F]">Waiting List</span>}</div>
+                      </div>
+                    </td>
+                    <td className="px-3 py-3">{division?.nameTh || team.divisionId}<div className={kiosk ? 'text-white/55' : 'text-[#667085] dark:text-[#9AA8BC]'}>{team.format === 'doubles' ? 'ประเภทคู่' : 'ประเภทเดี่ยว'}</div></td>
+                    <td className="px-3 py-3 text-center font-mono">{player.age ?? '-'}</td>
+                    <td className="px-3 py-3">{player.club || '-'}</td>
+                    <td className="px-3 py-3">{player.province || '-'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rosterImagePreview && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/80 p-4" role="dialog" aria-modal="true" aria-label={rosterImagePreview.alt} onClick={() => setRosterImagePreview(null)}>
+          <div className="relative max-h-[92vh] max-w-4xl" onClick={(event) => event.stopPropagation()}>
+            <img src={rosterImagePreview.url} alt={rosterImagePreview.alt} className="max-h-[86vh] max-w-full rounded-2xl bg-white object-contain shadow-2xl" />
+            <button type="button" onClick={() => setRosterImagePreview(null)} aria-label="ปิดรูป" className="absolute -right-2 -top-2 flex h-10 w-10 items-center justify-center rounded-full bg-white text-[#141D2B] shadow-lg"><X className="h-5 w-5" /></button>
+            <div className="mt-2 text-center text-sm font-semibold text-white">{rosterImagePreview.alt}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+
+  const renderPublicRules = (kiosk = false) => (
+    <div className={`space-y-4 ${kiosk ? 'relative z-10 flex-1 w-full max-w-5xl mx-auto p-4 sm:p-6 text-white' : ''}`}>
+      <div><h2 className="text-base font-bold">กติกาและกรณีต่างๆ</h2><p className={`mt-1 text-xs ${kiosk ? 'text-white/60' : 'text-[#667085] dark:text-[#9AA8BC]'}`}>ประกาศจากผู้จัดรายการ กรุณาตรวจสอบก่อนลงแข่งขัน</p></div>
+      <section className={`rounded-xl border p-5 ${kiosk ? 'border-white/10 bg-[#0D1826]/90' : 'border-[#E2DFD5] bg-white dark:border-[#25354C] dark:bg-[#131E2E]'}`}><h3 className="font-bold">ระเบียบการแข่งขัน</h3><div className={`mt-3 whitespace-pre-wrap text-sm leading-7 ${kiosk ? 'text-white/75' : 'text-[#334155] dark:text-[#C7D2E3]'}`}>{activeTournament.rulesText?.trim() || 'ผู้จัดยังไม่ได้ระบุกติกาเพิ่มเติม'}</div></section>
+      <section className={`rounded-xl border p-5 ${kiosk ? 'border-white/10 bg-[#0D1826]/90' : 'border-[#E2DFD5] bg-white dark:border-[#25354C] dark:bg-[#131E2E]'}`}><h3 className="font-bold">กรณีพิเศษและแนวทางตัดสิน</h3><div className={`mt-3 whitespace-pre-wrap text-sm leading-7 ${kiosk ? 'text-white/75' : 'text-[#334155] dark:text-[#C7D2E3]'}`}>{activeTournament.competitionCasesText?.trim() || 'ผู้จัดยังไม่ได้ระบุกรณีพิเศษเพิ่มเติม'}</div></section>
+    </div>
+  );
 
   // =========================================================================
   // STANDALONE CHROMELESS PWA KIOSK MODE (Zero logos, zero checkboxes/filters)
@@ -707,6 +885,9 @@ export const PublicLiveScoreView: React.FC = () => {
           </div>
         )}
 
+        {tab === 'players' && renderPublicPlayers(true)}
+        {tab === 'rules' && renderPublicRules(true)}
+
         {/* KIOSK 3: BRACKET VIEW (Zero filters, full-viewport pan/zoom canvas) */}
         {tab === 'bracket' && (
           <div className="relative z-10 flex-1 w-full p-3 sm:p-5 flex flex-col gap-3">
@@ -984,6 +1165,8 @@ export const PublicLiveScoreView: React.FC = () => {
               { id: 'live' as const, label: 'Live Match View', icon: <Monitor className="w-4 h-4" /> },
               { id: 'bracket' as const, label: 'Bracket View', icon: <GitBranch className="w-4 h-4" /> },
               { id: 'venue' as const, label: 'Venue Display (TV)', icon: <Tv className="w-4 h-4" /> },
+              { id: 'players' as const, label: 'รายชื่อนักกีฬา', icon: <Users className="w-4 h-4" /> },
+              { id: 'rules' as const, label: 'กติกา & กรณีต่างๆ', icon: <BookOpen className="w-4 h-4" /> },
             ].map((t) => (
               <button
                 key={t.id}
@@ -1321,6 +1504,9 @@ export const PublicLiveScoreView: React.FC = () => {
           />
         </div>
       )}
+
+      {tab === 'players' && renderPublicPlayers()}
+      {tab === 'rules' && renderPublicRules()}
 
       {/* 4. VENUE DISPLAY (TV / Big Screen) */}
       {tab === 'venue' && (

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ChevronLeft,
   Coins,
@@ -208,6 +208,20 @@ const MainWorkspace: React.FC = () => {
   const [showCoinShopModal, setShowCoinShopModal] = useState(false);
   const [showUtilityMenu, setShowUtilityMenu] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+
+  useEffect(() => {
+    // Director sessions are intentionally limited to the standalone umpire
+    // portal. Do not leave a director inside the admin shell with silently
+    // disabled controls such as Draw/Publish.
+    if (
+      portalMode === 'tournament_system' &&
+      !loading &&
+      !error &&
+      state.activeUserRole === 'director'
+    ) {
+      setPortalMode('director_portal');
+    }
+  }, [error, loading, portalMode, setPortalMode, state.activeUserRole]);
 
   const handleLogout = async () => {
     if (loggingOut) return;

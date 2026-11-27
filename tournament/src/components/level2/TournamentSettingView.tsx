@@ -31,8 +31,6 @@ import {
   TournamentStatus,
 } from '../../types/tournament';
 import {
-  EXTRA_PARTICIPANT_COST,
-  FREE_PARTICIPANTS_LIMIT,
   calculateExpandParticipantsCost,
   getDivisionFormat,
   getDivisionParticipantsCount,
@@ -128,12 +126,25 @@ export const TournamentSettingView: React.FC<{ tournament: Tournament }> = ({ to
   const canEdit = hasPermission('editSettings');
 
   const maxParticipantsCap = draft.maxParticipants ?? 20;
+  const pricingFreeParticipants = Math.max(
+    0,
+    draft.pricingFreeParticipants ?? state.pricing?.freeParticipants ?? 20
+  );
+  const pricingCoinPerParticipant = Math.max(
+    0,
+    draft.pricingCoinPerParticipant ?? state.pricing?.coinPerParticipant ?? 10
+  );
   const allocatedPeople = getTournamentAllocatedParticipants(draft.divisions);
   const remainingPeopleSlots = maxParticipantsCap - allocatedPeople;
   const isOverParticipantsCap = allocatedPeople > maxParticipantsCap;
 
   const safeExpandAdd = Math.max(0, Math.floor(Number(expandParticipantsBy) || 0));
-  const expandCostCoins = calculateExpandParticipantsCost(maxParticipantsCap, safeExpandAdd);
+  const expandCostCoins = calculateExpandParticipantsCost(
+    maxParticipantsCap,
+    safeExpandAdd,
+    pricingFreeParticipants,
+    pricingCoinPerParticipant
+  );
   const availableCoinBalance = state.coinBalance ?? 0;
   const canAffordExpand = safeExpandAdd >= 1 && availableCoinBalance >= expandCostCoins;
 
@@ -570,6 +581,18 @@ export const TournamentSettingView: React.FC<{ tournament: Tournament }> = ({ to
                 className="w-full p-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
               />
             </div>
+            <div>
+              <label className="block font-medium mb-1">กรณีพิเศษและแนวทางตัดสิน</label>
+              <textarea
+                rows={4}
+                disabled={!canEdit}
+                value={draft.competitionCasesText || ''}
+                onChange={(e) => setDraft({ ...draft, competitionCasesText: e.target.value })}
+                placeholder={'ตัวอย่าง: มาสายเกิน 15 นาทีให้ปรับแพ้บาย\nบาดเจ็บระหว่างแข่งขันให้กรรมการบันทึก Retired\nกรณีคะแนนหรือผลการแข่งขันมีข้อโต้แย้งให้ติดต่อผู้ชี้ขาด'}
+                className="w-full p-3 rounded-lg border border-[#E2DFD5] dark:border-[#25354C] bg-[#F7F6F2] dark:bg-[#0B121C]"
+              />
+              <p className="mt-1 text-[11px] text-[#667085] dark:text-[#9AA8BC]">ข้อความนี้จะแสดงใน Tab “กติกา & กรณีต่างๆ” ของ Public Live Score</p>
+            </div>
           </div>
         )}
 
@@ -662,8 +685,9 @@ export const TournamentSettingView: React.FC<{ tournament: Tournament }> = ({ to
                       ขยายจำนวนคนรับสมัคร (ชำระ Coin เพิ่ม)
                     </div>
                     <div className="text-[11px] text-[#525C6B] dark:text-[#9AA8BC]">
-                      ฟรี {FREE_PARTICIPANTS_LIMIT} คนแรก · ตั้งแต่นักกีฬาคนที่ 21 ขึ้นไป คนละ{' '}
-                      {EXTRA_PARTICIPANT_COST} Coin
+                      ฟรี {pricingFreeParticipants.toLocaleString()} คนแรก · ตั้งแต่นักกีฬาคนที่{' '}
+                      {(pricingFreeParticipants + 1).toLocaleString()} ขึ้นไป คนละ{' '}
+                      {pricingCoinPerParticipant.toLocaleString()} Coin
                     </div>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">

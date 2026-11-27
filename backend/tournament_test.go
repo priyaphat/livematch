@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -148,6 +149,83 @@ func TestTournamentDoublesServiceRotation(t *testing.T) {
 	}
 }
 
+func TestTournamentSinglesServiceAlwaysUsesOnlyPlayer(t *testing.T) {
+	state := map[string]any{
+		"format": "singles", "status": "scheduled", "currentSet": 1, "servingTeam": "A", "servingPlayerIndex": 0,
+		"teamAPlayers": []any{"A1"}, "teamBPlayers": []any{"B1"},
+		"courtPositions": map[string]any{"A": []any{0, 1}, "B": []any{0, 1}},
+		"sets":           []any{map[string]any{"setNumber": 1, "scoreA": 0, "scoreB": 0}}, "timeline": []any{},
+	}
+	applyTournamentScoreEvent(state, "start_match", map[string]any{"serverTeam": "A", "serverPlayerIndex": 1}, "Director")
+	if got := intValueForTournament(state["servingPlayerIndex"], -1); got != 0 {
+		t.Fatalf("singles start must force player index 0, got %d", got)
+	}
+	applyTournamentScoreEvent(state, "point_B", nil, "Director")
+	if state["servingTeam"] != "B" || intValueForTournament(state["servingPlayerIndex"], -1) != 0 {
+		t.Fatalf("singles service-over must use B's only player: %+v", state)
+	}
+	applyTournamentScoreEvent(state, "point_B", nil, "Director")
+	if intValueForTournament(state["servingPlayerIndex"], -1) != 0 {
+		t.Fatalf("singles consecutive point changed to nonexistent player: %+v", state)
+	}
+	applyTournamentScoreEvent(state, "toggle_server", map[string]any{"team": "A"}, "Director")
+	if state["servingTeam"] != "A" || intValueForTournament(state["servingPlayerIndex"], -1) != 0 {
+		t.Fatalf("manual singles service toggle selected nonexistent player: %+v", state)
+	}
+}
+
+func TestTournamentSinglesServeTimelineAndUndo(t *testing.T) {
+	state := map[string]any{
+		"format": "singles", "status": "scheduled", "currentSet": 1,
+		"servingTeam": "A", "servingPlayerIndex": 1,
+		"teamAName": "Team A", "teamBName": "Team B",
+		"teamAPlayers": []any{"A1", "STALE A2"}, "teamBPlayers": []any{"B1", "STALE B2"},
+		"courtPositions": map[string]any{"A": []any{1, 0}, "B": []any{1, 0}},
+		"sets":           []any{map[string]any{"setNumber": 1, "scoreA": 0, "scoreB": 0}}, "timeline": []any{},
+	}
+	if got := tournamentTeamPlayerCount(state, "A"); got != 1 {
+		t.Fatalf("singles format must be authoritative, player count=%d", got)
+	}
+	applyTournamentScoreEvent(state, "start_match", map[string]any{"serverTeam": "A", "serverPlayerIndex": 1}, "Director")
+	if got := tournamentServeTimelineDetail(state); !strings.Contains(got, "ผู้เสิร์ฟ: A1 (ทีม A · ขวา · คู่)") || !strings.Contains(got, "ผู้รับ: B1 (ทีม B · ขวา · คู่)") {
+		t.Fatalf("unexpected initial serve detail: %s", got)
+	}
+	if got := len(state["teamAPlayers"].([]any)); got != 1 {
+		t.Fatalf("stale singles players were not normalized: %d", got)
+	}
+
+	applyTournamentScoreEvent(state, "point_A", nil, "Director")
+	if got := tournamentServeTimelineDetail(state); !strings.Contains(got, "A1 (ทีม A · ซ้าย · คี่)") || !strings.Contains(got, "B1 (ทีม B · ซ้าย · คี่)") {
+		t.Fatalf("1-0 must serve and receive from the odd court: %s", got)
+	}
+	applyTournamentScoreEvent(state, "point_B", nil, "Director")
+	if got := tournamentServeTimelineDetail(state); !strings.Contains(got, "ผู้เสิร์ฟ: B1 (ทีม B · ซ้าย · คี่)") {
+		t.Fatalf("1-1 service-over must move serve to B: %s", got)
+	}
+	applyTournamentScoreEvent(state, "point_A", nil, "Director")
+	if got := tournamentServeTimelineDetail(state); !strings.Contains(got, "ผู้เสิร์ฟ: A1 (ทีม A · ขวา · คู่)") {
+		t.Fatalf("2-1 service-over must move serve to A right court: %s", got)
+	}
+
+	applyTournamentScoreEvent(state, "toggle_server", map[string]any{"team": "B"}, "Director")
+	if got := tournamentServeTimelineDetail(state); !strings.Contains(got, "ผู้เสิร์ฟ: B1 (ทีม B · ซ้าย · คี่)") {
+		t.Fatalf("manual toggle must use B current score parity: %s", got)
+	}
+	applyTournamentScoreEvent(state, "undo", nil, "Director")
+	if got := tournamentServeTimelineDetail(state); !strings.Contains(got, "ผู้เสิร์ฟ: A1 (ทีม A · ขวา · คู่)") {
+		t.Fatalf("undo did not restore A serve: %s", got)
+	}
+	set := state["sets"].([]any)[0].(map[string]any)
+	if intValueForTournament(set["scoreA"], -1) != 2 || intValueForTournament(set["scoreB"], -1) != 1 {
+		t.Fatalf("undo of manual serve toggle must preserve score 2-1: %+v", set)
+	}
+	timeline := state["timeline"].([]any)
+	latest := timeline[0].(map[string]any)
+	if detail := stringValue(latest["detail"], ""); !strings.Contains(detail, "ผู้เสิร์ฟ:") || !strings.Contains(detail, "ผู้รับ:") {
+		t.Fatalf("timeline must record server and receiver: %s", detail)
+	}
+}
+
 func TestTournamentStartMatchUsesSelectedInitialServer(t *testing.T) {
 	state := map[string]any{
 		"status": "scheduled", "servingTeam": "A", "servingPlayerIndex": 0,
@@ -162,6 +240,45 @@ func TestTournamentStartMatchUsesSelectedInitialServer(t *testing.T) {
 	positions := tournamentCourtPositions(state)
 	if positions["B"][0] != 1 {
 		t.Fatalf("selected server must begin in the right service court, positions=%v", positions["B"])
+	}
+}
+
+func TestTournamentManualServerSwapPersistsAfterFirstPoint(t *testing.T) {
+	state := map[string]any{
+		"stage": "group", "status": "live", "currentSet": 1,
+		"servingTeam": "A", "servingPlayerIndex": 0,
+		"teamAPlayers": []any{"A1", "A2"}, "teamBPlayers": []any{"B1", "B2"},
+		"courtPositions": map[string]any{"A": []any{0, 1}, "B": []any{0, 1}},
+		"sets":           []any{map[string]any{"setNumber": 1, "scoreA": 0, "scoreB": 0}}, "timeline": []any{},
+	}
+	applyTournamentScoreEvent(state, "toggle_server_player", map[string]any{"team": "A"}, "Director")
+	if got := intValueForTournament(state["servingPlayerIndex"], -1); got != 1 {
+		t.Fatalf("manual swap must select A2 before scoring, got index %d", got)
+	}
+	applyTournamentScoreEvent(state, "point_A", nil, "Director")
+	if got := intValueForTournament(state["servingPlayerIndex"], -1); got != 1 {
+		t.Fatalf("the manually selected server must keep serving after the first point, got index %d", got)
+	}
+	positions := tournamentCourtPositions(state)
+	if positions["A"] != [2]int{0, 1} {
+		t.Fatalf("court rotation after the point is inconsistent: %v", positions["A"])
+	}
+}
+
+func TestTournamentReceiverSwapDoesNotChangeCurrentServer(t *testing.T) {
+	state := map[string]any{
+		"stage": "group", "status": "live", "currentSet": 1,
+		"servingTeam": "A", "servingPlayerIndex": 0,
+		"teamAPlayers": []any{"A1", "A2"}, "teamBPlayers": []any{"B1", "B2"},
+		"courtPositions": map[string]any{"A": []any{0, 1}, "B": []any{0, 1}},
+		"sets":           []any{map[string]any{"setNumber": 1, "scoreA": 0, "scoreB": 0}}, "timeline": []any{},
+	}
+	applyTournamentScoreEvent(state, "toggle_server_player", map[string]any{"team": "B"}, "Director")
+	if state["servingTeam"] != "A" || intValueForTournament(state["servingPlayerIndex"], -1) != 0 {
+		t.Fatalf("swapping receivers must not change the serving team/player: %+v", state)
+	}
+	if got := tournamentCourtPositions(state)["B"]; got != [2]int{1, 0} {
+		t.Fatalf("receiver positions were not swapped: %v", got)
 	}
 }
 
@@ -383,6 +500,64 @@ func TestTournamentSingleEliminationOnlyFirstRoundCanBeBye(t *testing.T) {
 	}
 }
 
+func TestTournamentExpectedQualifierCountUsesGroupsNotClientList(t *testing.T) {
+	groups := map[string]map[string]bool{
+		"A": {"a1": true, "a2": true, "a3": true, "a4": true},
+		"B": {"b1": true, "b2": true, "b3": true, "b4": true},
+		"C": {"c1": true, "c2": true, "c3": true, "c4": true},
+		"D": {"d1": true, "d2": true, "d3": true, "d4": true},
+	}
+	if got, want := tournamentExpectedQualifierCount(groups, 1), 4; got != want {
+		t.Fatalf("one qualifier from four groups = %d, want %d", got, want)
+	}
+	if got, want := tournamentExpectedQualifierCount(groups, 2), 8; got != want {
+		t.Fatalf("two qualifiers from four groups = %d, want %d", got, want)
+	}
+}
+
+func TestTournamentFourTeamKnockoutDoesNotCreateFifthEntrant(t *testing.T) {
+	teams := []tournamentDrawTeam{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}}
+	matches := buildEliminationMatches("t", "four-team", teams, false)
+	realEntrants := map[string]bool{}
+	for _, raw := range matches {
+		match := raw.(map[string]any)
+		for _, key := range []string{"teamAId", "teamBId"} {
+			id := stringValue(match[key], "")
+			if id != "" {
+				realEntrants[id] = true
+			}
+		}
+	}
+	if got, want := len(realEntrants), 4; got != want {
+		t.Fatalf("knockout entrants = %d, want %d", got, want)
+	}
+}
+
+func TestTournamentSinglesKnockoutKeepsFormatInFutureRounds(t *testing.T) {
+	teams := []tournamentDrawTeam{
+		{ID: "1", Format: "singles"},
+		{ID: "2", Format: "singles"},
+		{ID: "3", Format: "singles"},
+		{ID: "4", Format: "singles"},
+		{ID: "5", Format: "singles"},
+		{ID: "6", Format: "singles"},
+		{ID: "7", Format: "singles"},
+		{ID: "8", Format: "singles"},
+	}
+	matches := buildEliminationMatches("t", "singles-eight", teams, false)
+	stageCounts := map[string]int{}
+	for _, raw := range matches {
+		match := raw.(map[string]any)
+		if got := stringValue(match["format"], ""); got != "singles" {
+			t.Fatalf("%s format = %q, want singles", stringValue(match["matchCode"], ""), got)
+		}
+		stageCounts[stringValue(match["stage"], "")]++
+	}
+	if stageCounts["QF"] != 4 || stageCounts["SF"] != 2 || stageCounts["F"] != 1 {
+		t.Fatalf("unexpected singles bracket stages: %#v", stageCounts)
+	}
+}
+
 func TestTournamentSingleEliminationDistributesFiveTeamByes(t *testing.T) {
 	teams := []tournamentDrawTeam{{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"}, {ID: "5"}}
 	matches := buildEliminationMatches("t", "d-five", teams, false)
@@ -495,7 +670,7 @@ func TestValidatePublicTournamentRegistration(t *testing.T) {
 func TestNormalizeTournamentEntryMembersMatchesFormat(t *testing.T) {
 	member := func(role string, consent bool) map[string]any {
 		return map[string]any{
-			"role": role, "firstName": "สมชาย", "lastName": "ใจดี", "pdpaConsent": consent,
+			"role": role, "firstName": "สมชาย", "lastName": "ใจดี", "phone": "0812345678", "pdpaConsent": consent,
 		}
 	}
 	tests := []struct {
@@ -510,6 +685,7 @@ func TestNormalizeTournamentEntryMembersMatchesFormat(t *testing.T) {
 		{name: "doubles two people", format: "doubles", members: []any{member("primary", true), member("partner", true)}, wantCount: 2},
 		{name: "doubles rejects one person", format: "doubles", members: []any{member("primary", true)}, wantErrCode: "invalid_member_count"},
 		{name: "each person needs consent", format: "doubles", members: []any{member("primary", true), member("partner", false)}, wantErrCode: "member_pdpa_consent_required"},
+		{name: "phone must contain ten digits", format: "singles", members: []any{map[string]any{"role": "primary", "firstName": "สมชาย", "lastName": "ใจดี", "phone": "08123", "pdpaConsent": true}}, wantErrCode: "member_phone_invalid"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -525,5 +701,59 @@ func TestNormalizeTournamentEntryMembersMatchesFormat(t *testing.T) {
 				t.Fatalf("members=%d error=%+v want %d", len(members), err, tc.wantCount)
 			}
 		})
+	}
+}
+
+func TestTournamentDirectorApplicationAvailability(t *testing.T) {
+	zone := time.FixedZone("Asia/Bangkok", 7*60*60)
+	now := time.Date(2026, 11, 26, 10, 0, 0, 0, zone)
+	open := tournamentDirectorApplicationAvailability(map[string]any{
+		"status": "เปิดรับสมัคร", "endDate": "2026-12-05", "endTime": "18:00",
+	}, now)
+	if open["isOpen"] != true {
+		t.Fatalf("active tournament should accept director applications: %+v", open)
+	}
+
+	closed := tournamentDirectorApplicationAvailability(map[string]any{
+		"status": "แข่งขันเสร็จแล้ว", "endDate": "2026-12-05",
+	}, now)
+	if closed["isOpen"] != false {
+		t.Fatalf("finished tournament should reject director applications: %+v", closed)
+	}
+
+	past := tournamentDirectorApplicationAvailability(map[string]any{
+		"status": "เปิดรับสมัคร", "endDate": "2026-11-25", "endTime": "23:59",
+	}, now)
+	if past["isOpen"] != false {
+		t.Fatalf("past tournament should reject director applications: %+v", past)
+	}
+}
+
+func TestTournamentCertificationLabel(t *testing.T) {
+	if got := tournamentCertificationLabel("badminton_asia"); got != "Badminton Asia" {
+		t.Fatalf("unexpected certification label: %q", got)
+	}
+	if got := tournamentCertificationLabel("made_up"); got != "" {
+		t.Fatalf("unknown certification level must be rejected, got %q", got)
+	}
+}
+
+func TestPublicTournamentMemberExposesRosterFieldsWithoutPII(t *testing.T) {
+	eventDate := time.Date(2026, 11, 27, 0, 0, 0, 0, time.FixedZone("Asia/Bangkok", 7*60*60))
+	member := publicTournamentMember(map[string]any{
+		"firstName": "สมชาย", "lastName": "ใจดี", "nickname": "ชาย",
+		"birthDate": "2000-12-01", "photoUrl": "/photo.jpg", "club": "สโมสรทดสอบ", "province": "เชียงใหม่",
+		"phone": "0812345678", "email": "private@example.com", "healthInfo": "private",
+	}, eventDate)
+	if member["age"] != 25 {
+		t.Fatalf("age=%v want 25 before birthday", member["age"])
+	}
+	for _, key := range []string{"phone", "email", "birthDate", "healthInfo"} {
+		if _, exists := member[key]; exists {
+			t.Fatalf("public roster exposed %s", key)
+		}
+	}
+	if member["club"] != "สโมสรทดสอบ" || member["province"] != "เชียงใหม่" {
+		t.Fatalf("public roster fields missing: %+v", member)
 	}
 }
