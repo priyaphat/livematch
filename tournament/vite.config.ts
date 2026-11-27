@@ -102,6 +102,10 @@ export default defineConfig(() => {
           changeOrigin: true,
         },
       },
+       allowedHosts: [
+      'tournament.badmintonphrae.club',
+      'tournament.vibestudio.work'
+    ],
     },
   };
 });

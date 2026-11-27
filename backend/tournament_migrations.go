@@ -3,6 +3,18 @@ package main
 import "context"
 
 func (a *app) migrateTournament(ctx context.Context) error {
+	// Keep the Tournament feature flag in the Tournament migration as well as
+	// the base schema migration. Production databases can be restored from an
+	// older backup after the base schema was originally created; this additive,
+	// idempotent migration guarantees the flag exists before Tournament routes
+	// or Backoffice feature updates use it on every backend startup.
+	if _, err := a.db.ExecContext(ctx, `
+		alter table admin_features
+		add column if not exists tournament_enabled boolean not null default false;
+	`); err != nil {
+		return err
+	}
+
 	_, err := a.db.ExecContext(ctx, `
 		create table if not exists tournament_staff (
 			id text primary key, admin_id text not null references admin_users(id) on delete cascade,
